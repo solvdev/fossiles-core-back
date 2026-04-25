@@ -4,12 +4,12 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
-import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
+
 @Data
-@Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class ProductRequest {
@@ -23,12 +23,22 @@ public class ProductRequest {
     @NotNull(message = "Category ID is required")
     private Long categoryId;
 
-    @NotNull(message = "UOM ID is required")
-    private Long uomId;
-
     private Double prdTime;
+
+    private BigDecimal salePrice;
+
+    private BigDecimal discountedPrice;
+
+    private BigDecimal sellerPrice;
 
     @Size(max = 20, message = "Status must not exceed 20 characters")
     private String status;
+
+    @Size(max = 500, message = "Image URL must not exceed 500 characters")
+    private String imageUrl;
+
+    private BigDecimal leatherConsumption;
+
+    private Boolean requiresMaterials;
 }
 

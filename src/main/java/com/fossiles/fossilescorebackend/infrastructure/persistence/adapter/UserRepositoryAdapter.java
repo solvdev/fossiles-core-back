@@ -27,7 +27,9 @@ public class UserRepositoryAdapter implements UserRepositoryPort {
     public User save(User user) {
         UserEntity entity = userMapper.toEntity(user);
         UserEntity saved = userRepository.save(entity);
-        return userMapper.toDomain(saved);
+        return userRepository.findById(saved.getId())
+                .map(userMapper::toDomain)
+                .orElseGet(() -> userMapper.toDomain(saved));
     }
 
     @Override

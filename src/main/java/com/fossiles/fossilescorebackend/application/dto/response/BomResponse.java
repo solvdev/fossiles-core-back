@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -16,8 +17,9 @@ public class BomResponse {
     private Long id;
     private String bomName;
     private Long productId;
-    private String version;
+    private Long colorId;
     private String status;
+    private BigDecimal totalCost; // Costo total del BOM (suma de todos los itemCost)
     private LocalDateTime createdAt;
     private Long createdBy;
     private LocalDateTime updatedAt;

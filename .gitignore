@@ -35,3 +35,28 @@ out/
 
 ### VS Code ###
 .vscode/
+
+# Environment / secrets
+# Root-level (if present)
+application.properties
+application-*.properties
+application.properties.local
+application.yml
+application-*.yml
+application.yaml
+application-*.yaml
+
+# Spring Boot resources (typical location)
+src/main/resources/application.properties
+src/main/resources/application-*.properties
+src/main/resources/application.properties.local
+src/main/resources/application.yml
+src/main/resources/application-*.yml
+src/main/resources/application.yaml
+src/main/resources/application-*.yaml
+
+# Examples are allowed
+!src/main/resources/application.properties.example
+!src/main/resources/application.example.properties
+!application.example.properties
+!application.example.yml

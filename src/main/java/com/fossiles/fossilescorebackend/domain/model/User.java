@@ -18,6 +18,12 @@ public class User {
     private String email;
     private String password;
     private String status;
+    private String firstName;
+    private String lastName;
+    private String profileImageUrl;
+    private Department department;
+    private CostCenter costCenter;
+    private OperationalUnit operationalUnit;
     private Set<Role> roles;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

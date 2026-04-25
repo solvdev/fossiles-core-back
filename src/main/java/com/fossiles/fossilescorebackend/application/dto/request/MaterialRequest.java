@@ -21,16 +21,47 @@ public class MaterialRequest {
     @Size(max = 150, message = "Name must not exceed 150 characters")
     private String name;
 
-    @NotNull(message = "UOM ID is required")
+    // Información de compra
+    @NotNull(message = "Purchase UOM ID is required")
+    private Long purchaseUomId; // Unidad en que se COMPRA (ej: Rollo, Gruesa, Caja)
+    
+    @DecimalMin(value = "0.0", inclusive = false, message = "Purchase quantity must be greater than 0")
+    private BigDecimal purchaseQuantity; // Cantidad en manufacturing_uom que contiene 1 purchase_uom
+    
+    @DecimalMin(value = "0.0", message = "Purchase price must be positive")
+    private BigDecimal purchasePrice; // Precio de 1 unidad de compra completa
+    
+    // Información de manufactura
+    @NotNull(message = "Manufacturing UOM ID is required")
+    private Long manufacturingUomId; // Unidad en que se USA en producción
+    
+    // Campos legacy (mantener por compatibilidad)
     private Long uomId;
-
-    @DecimalMin(value = "0.0", message = "Cost must be positive")
+    private BigDecimal quantity;
     private BigDecimal cost;
+
+    private Integer min;
+
+    private Integer max;
+
+    private Integer deliveryDays;
+
+    private Long materialColorId;
+
+    private Long supplierId;
 
     @Size(max = 255, message = "Description must not exceed 255 characters")
     private String description;
 
     @Size(max = 20, message = "Status must not exceed 20 characters")
     private String status;
+
+    @DecimalMin(value = "0.0", message = "Cost must be positive")
+    private BigDecimal lossPercentage; // Costo unitario (opcional, se calcula automáticamente: purchasePrice / quantity)
+
+    @Size(max = 500, message = "Image URL must not exceed 500 characters")
+    private String imageUrl;
+
+    private Boolean isPrimaryLeather;
 }
 

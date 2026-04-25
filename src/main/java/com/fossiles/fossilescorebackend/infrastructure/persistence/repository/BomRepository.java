@@ -9,5 +9,6 @@ import java.util.List;
 @Repository
 public interface BomRepository extends JpaRepository<BomEntity, Long> {
     List<BomEntity> findByProductId(Long productId);
+    List<BomEntity> findByProductIdAndStatus(Long productId, String status);
 }
 

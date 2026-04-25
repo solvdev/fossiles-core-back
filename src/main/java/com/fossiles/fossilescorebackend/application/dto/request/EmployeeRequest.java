@@ -8,6 +8,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 
 @Data
@@ -33,13 +34,27 @@ public class EmployeeRequest {
 
     private LocalDate hireDate;
 
-    @NotNull(message = "Department ID is required")
+    @Size(max = 100, message = "Position must not exceed 100 characters")
+    private String position;
+
+    private BigDecimal salary;
+
+    @Size(max = 50, message = "Bank account must not exceed 50 characters")
+    private String bankAccount;
+
+    @Size(max = 50, message = "Payment method must not exceed 50 characters")
+    private String paymentMethod;
+
+    private BigDecimal igssDeduction;
+
+    private BigDecimal quincenaBruta;
+
+    private BigDecimal quincenaNeta;
+
     private Long departmentId;
 
-    @NotNull(message = "Cost center ID is required")
     private Long costCenterId;
 
-    @NotNull(message = "Operational unit ID is required")
     private Long operationalUnitId;
 
     @Size(max = 20, message = "Status must not exceed 20 characters")

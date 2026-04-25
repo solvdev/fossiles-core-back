@@ -27,8 +27,8 @@ public class BomEntity {
     @Column(name = "product_id")
     private Long productId;
 
-    @Column(length = 20)
-    private String version;
+    @Column(name = "color_id")
+    private Long colorId;
 
     @Column(length = 20)
     private String status;

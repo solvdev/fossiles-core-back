@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
+
 @Data
 @Builder
 @NoArgsConstructor
@@ -13,5 +15,9 @@ public class ProductCategoryResponse {
     private Long id;
     private String code;
     private String name;
+    private BigDecimal hourlyCost;
+    private BigDecimal payrollTotal;
+    private BigDecimal availableHours;
+    private Integer numberOfTables;
 }
 

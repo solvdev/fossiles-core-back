@@ -25,5 +25,10 @@ public class LocationRequest {
 
     @Size(max = 10, message = "Zona must not exceed 10 characters")
     private String zona;
+
+    @Size(max = 100, message = "Categoria must not exceed 100 characters")
+    private String categoria;
+
+    private Long encargadoId;
 }
 

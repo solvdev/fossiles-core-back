@@ -5,6 +5,10 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import com.fossiles.fossilescorebackend.application.dto.response.CostCenterResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.DepartmentResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.OperationalUnitResponse;
+
 import java.time.LocalDateTime;
 import java.util.Set;
 
@@ -17,6 +21,12 @@ public class UserResponse {
     private String username;
     private String email;
     private String status;
+    private String firstName;
+    private String lastName;
+    private String profileImageUrl;
+    private DepartmentResponse department;
+    private CostCenterResponse costCenter;
+    private OperationalUnitResponse operationalUnit;
     private Set<RoleResponse> roles;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

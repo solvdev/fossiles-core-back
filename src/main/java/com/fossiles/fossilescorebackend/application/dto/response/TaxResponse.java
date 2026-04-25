@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 @Data
 @Builder
@@ -16,5 +17,12 @@ public class TaxResponse {
     private String code;
     private String name;
     private BigDecimal percentage;
+    private String type;
+    private String description;
+    private String status;
+    private LocalDateTime createdAt;
+    private Long createdBy;
+    private LocalDateTime updatedAt;
+    private Long updatedBy;
 }
 

@@ -20,8 +20,7 @@ public class BomRequest {
     @NotNull(message = "Product ID is required")
     private Long productId;
 
-    @Size(max = 20, message = "Version must not exceed 20 characters")
-    private String version;
+    private Long colorId;
 
     @Size(max = 20, message = "Status must not exceed 20 characters")
     private String status;

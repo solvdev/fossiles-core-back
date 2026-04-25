@@ -13,5 +13,8 @@ public class PermissionResponse {
     private Long id;
     private String code;
     private String description;
+    private String module;
+    private String routePath;
+    private String action;
 }
 

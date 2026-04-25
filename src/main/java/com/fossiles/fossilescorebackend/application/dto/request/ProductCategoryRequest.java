@@ -7,6 +7,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
+
 @Data
 @Builder
 @NoArgsConstructor
@@ -18,5 +20,10 @@ public class ProductCategoryRequest {
 
     @Size(max = 100, message = "Name must not exceed 100 characters")
     private String name;
+
+    private BigDecimal hourlyCost;
+    private BigDecimal payrollTotal;
+    private BigDecimal availableHours;
+    private Integer numberOfTables;
 }
 

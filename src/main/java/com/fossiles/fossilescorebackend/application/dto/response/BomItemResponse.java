@@ -17,9 +17,11 @@ public class BomItemResponse {
     private Long bomId;
     private Long materialId;
     private BigDecimal quantity;
+    private BigDecimal measurement;
+    private String measurementUnit;
+    private BigDecimal itemCost;
     private LocalDateTime createdAt;
     private Long createdBy;
     private LocalDateTime updatedAt;
     private Long updatedBy;
 }
-

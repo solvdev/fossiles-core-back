@@ -22,5 +22,14 @@ public class PermissionEntity {
 
     @Column(length = 200)
     private String description;
+
+    @Column(length = 50)
+    private String module; // Módulo al que pertenece (INVENTARIOS, COMPRAS, etc.)
+
+    @Column(name = "route_path", length = 200)
+    private String routePath; // Ruta asociada en el frontend
+
+    @Column(length = 20)
+    private String action; // Acción (VER, CREAR, EDITAR, ELIMINAR, APROBAR)
 }
 

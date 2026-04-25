@@ -20,6 +20,7 @@ public class Material {
     private BigDecimal cost;
     private String description;
     private String status;
+    private BigDecimal lossPercentage;
     private LocalDateTime createdAt;
     private Long createdBy;
     private LocalDateTime updatedAt;

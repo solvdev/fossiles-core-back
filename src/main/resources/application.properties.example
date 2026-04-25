@@ -1,0 +1,77 @@
+# ============================================
+# CONFIGURACIÓN DE EJEMPLO - application.properties
+# ============================================
+# Copia este archivo a application.properties y configura los valores
+
+spring.application.name=fossiles-core-backend
+
+# ============================================
+# DATABASE CONFIGURATION (AWS RDS)
+# ============================================
+spring.datasource.url=jdbc:postgresql://TU_RDS_ENDPOINT:5432/db
+spring.datasource.username=TU_USUARIO
+spring.datasource.password=TU_PASSWORD
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+# ============================================
+# JPA/HIBERNATE CONFIGURATION
+# ============================================
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+spring.jpa.properties.hibernate.format_sql=true
+spring.jpa.properties.hibernate.use_sql_comments=true
+
+# ============================================
+# SERVER CONFIGURATION
+# ============================================
+server.port=8080
+
+# ============================================
+# JWT CONFIGURATION
+# ============================================
+jwt.secret=MySecretKeyForJWTTokenGenerationAndValidationMustBeAtLeast256BitsLongForHS512Algorithm
+jwt.expiration=86400000
+
+# ============================================
+# ENCRYPTION CONFIGURATION (AES)
+# ============================================
+# IMPORTANTE: Esta clave debe ser EXACTAMENTE la misma que ENCRYPTION_KEY en encryptionService.js del frontend
+encryption.key=gdfgsgdfgdf
+encryption.algorithm=AES
+encryption.transformation=AES/CBC/PKCS5Padding
+
+# ============================================
+# AWS S3 CONFIGURATION
+# ============================================
+# OPCIÓN 1: Configurar directamente en este archivo (NO RECOMENDADO para producción)
+# app.s3.bucket=fossiles-bkt
+# app.s3.prefix=materiales/
+# app.s3.region=us-east-2
+# app.s3.access-key-id=TU_ACCESS_KEY_ID
+# app.s3.secret-access-key=TU_SECRET_ACCESS_KEY
+
+# OPCIÓN 2: Usar variables de entorno (RECOMENDADO)
+# Configura las siguientes variables de entorno:
+# - AWS_ACCESS_KEY_ID
+# - AWS_SECRET_ACCESS_KEY
+# Y configura solo estos valores:
+app.s3.bucket=fossiles-bkt
+app.s3.prefix=materiales/
+app.s3.region=us-east-2
+app.s3.access-key-id=${AWS_ACCESS_KEY_ID:}
+app.s3.secret-access-key=${AWS_SECRET_ACCESS_KEY:}
+app.s3.enabled=true
+
+# OPCIÓN 3: Usar credenciales por defecto de AWS (IAM Role, ~/.aws/credentials)
+# Solo configura estos valores y deja las credenciales vacías:
+# app.s3.bucket=fossiles-bkt
+# app.s3.prefix=materiales/
+# app.s3.region=us-east-2
+# app.s3.enabled=true
+
+
+
+
+
+

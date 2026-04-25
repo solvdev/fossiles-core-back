@@ -20,14 +20,20 @@ public class BomItemEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "bom_id")
+    @Column(name = "bom_id", nullable = false)
     private Long bomId;
 
-    @Column(name = "material_id")
+    @Column(name = "material_id", nullable = false)
     private Long materialId;
 
-    @Column(precision = 12, scale = 3)
+    @Column(name = "quantity", nullable = false, precision = 10, scale = 3)
     private BigDecimal quantity;
+
+    @Column(name = "measurement", precision = 10, scale = 3)
+    private BigDecimal measurement;
+
+    @Column(name = "measurement_unit", length = 10)
+    private String measurementUnit;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
@@ -52,4 +58,3 @@ public class BomItemEntity {
         updatedAt = LocalDateTime.now();
     }
 }
-

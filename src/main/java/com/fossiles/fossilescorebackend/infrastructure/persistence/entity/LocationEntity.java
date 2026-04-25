@@ -31,5 +31,15 @@ public class LocationEntity {
 
     @Column(length = 10)
     private String zona;
+
+    @Column(length = 100)
+    private String categoria;
+
+    @Column(name = "encargado_id")
+    private Long encargadoId;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "encargado_id", insertable = false, updatable = false)
+    private UserEntity encargado;
 }
 

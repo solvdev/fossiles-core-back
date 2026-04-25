@@ -6,6 +6,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Entity
@@ -22,22 +23,39 @@ public class ProductionOrderEntity {
     @Column(nullable = false, unique = true, length = 30)
     private String code;
 
-    @Column(name = "product_id")
-    private Long productId;
+    @Column(name = "order_type", length = 20, nullable = false)
+    private String orderType; // CINCHOS, MARCAS, NORMAL
 
-    @Column(name = "po_color", length = 50)
-    private String poColor;
+    @Column(name = "customer_id")
+    private Long customerId;
 
-    private Integer quantity;
+    @Column(name = "customer_name", length = 200)
+    private String customerName; // Para casos donde no hay cliente registrado
 
-    @Column(length = 255)
-    private String location;
+    @Column(name = "seller_name", length = 150)
+    private String sellerName; // Vendedor
 
-    @Column(length = 255)
-    private String description;
+    @Column(name = "start_date")
+    private LocalDate startDate;
+
+    @Column(name = "delivery_date")
+    private LocalDate deliveryDate;
+
+    @Column(name = "observations", length = 1000)
+    private String observations;
+
+    @Column(name = "distribution_id")
+    private Long distributionId;
+
+    @Column(name = "materials_consumed")
+    @Builder.Default
+    private Boolean materialsConsumed = false;
+
+    @Column(name = "materials_consumed_at")
+    private LocalDateTime materialsConsumedAt;
 
     @Column(length = 20)
-    private String status;
+    private String status; // PENDING, IN_PROGRESS, IN_QA, COMPLETED, CANCELLED
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
@@ -55,6 +73,9 @@ public class ProductionOrderEntity {
     protected void onCreate() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
+        if (status == null) {
+            status = "PENDING";
+        }
     }
 
     @PreUpdate

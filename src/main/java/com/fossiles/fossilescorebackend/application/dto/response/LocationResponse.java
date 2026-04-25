@@ -16,5 +16,8 @@ public class LocationResponse {
     private String departamento;
     private String municipio;
     private String zona;
+    private String categoria;
+    private Long encargadoId;
+    private String encargadoNombre;
 }
 

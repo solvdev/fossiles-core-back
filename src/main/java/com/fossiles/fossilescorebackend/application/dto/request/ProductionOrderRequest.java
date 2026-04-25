@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.dto.request;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -8,31 +9,65 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class ProductionOrderRequest {
-    @NotBlank(message = "Code is required")
     @Size(max = 30, message = "Code must not exceed 30 characters")
-    private String code;
+    private String code; // Opcional: se genera automáticamente si no se proporciona
 
-    @NotNull(message = "Product ID is required")
-    private Long productId;
+    @NotBlank(message = "Order type is required")
+    @Size(max = 20, message = "Order type must not exceed 20 characters")
+    private String orderType; // CINCHOS, MARCAS, NORMAL
 
-    @Size(max = 50, message = "PO color must not exceed 50 characters")
-    private String poColor;
+    private Long customerId;
 
-    @NotNull(message = "Quantity is required")
-    private Integer quantity;
+    @Size(max = 200, message = "Customer name must not exceed 200 characters")
+    private String customerName;
 
-    @Size(max = 255, message = "Location must not exceed 255 characters")
-    private String location;
+    @Size(max = 150, message = "Seller name must not exceed 150 characters")
+    private String sellerName;
 
-    @Size(max = 255, message = "Description must not exceed 255 characters")
-    private String description;
+    private LocalDate startDate;
+
+    private LocalDate deliveryDate;
+
+    @Size(max = 1000, message = "Observations must not exceed 1000 characters")
+    private String observations;
 
     @Size(max = 20, message = "Status must not exceed 20 characters")
     private String status;
+
+    private Long distributionId;
+
+    private BigDecimal shippingCost;
+
+    @Valid
+    private List<PackingItemRequest> packingItems;
+
+    @Valid
+    @NotNull(message = "Items are required")
+    private List<ProductionOrderItemRequest> items;
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PackingItemRequest {
+        @NotNull(message = "Material ID is required")
+        private Long materialId;
+
+        @NotNull(message = "Quantity is required")
+        private BigDecimal quantity;
+
+        private BigDecimal unitPrice;
+        private String materialCode;
+        private String materialName;
+    }
 }
 
