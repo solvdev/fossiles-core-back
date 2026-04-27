@@ -23,6 +23,7 @@ public class OnlineSaleProductionOrderService {
     private final OnlineSaleRepository onlineSaleRepository;
     private final OnlineSaleItemRepository onlineSaleItemRepository;
     private final OnlineSaleService saleService;
+    private final OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
 
     // Dependencias para revisión de inventario
     private final ProductInventoryLocationRepository productInventoryLocationRepository;
@@ -44,7 +45,14 @@ public class OnlineSaleProductionOrderService {
         boolean               bodegaPtFound
     ) {}
 
-    public record FulfilledSale(String saleNumber, String customerName, String message) {}
+    public record FulfilledSale(String saleNumber, String customerName, String shipmentNumber, String message) {}
+
+    public record FulfillmentPreviewRow(
+            Long saleId,
+            String saleNumber,
+            String customerName,
+            boolean canFulfillFromInventory
+    ) {}
 
     // ─────────────────────────────────────────────────────────────
     // MÉTODO PRINCIPAL: procesar con revisión de inventario
@@ -94,6 +102,7 @@ public class OnlineSaleProductionOrderService {
                 fulfilled.add(new FulfilledSale(
                         sale.getSaleNumber(),
                         sale.getCustomerName(),
+                        sale.getShipmentNumber(),
                         "Despachado desde inventario BODEGA_PT"));
             } else {
                 needProduction.add(sale);
@@ -114,6 +123,35 @@ public class OnlineSaleProductionOrderService {
                 productionResults.size(),
                 bodegaPtFound
         );
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> previewFulfillment(List<Long> saleIds) throws BusinessException {
+        if (saleIds == null || saleIds.isEmpty()) {
+            throw new BusinessException("Debe seleccionar al menos una venta");
+        }
+
+        List<OnlineSaleEntity> sales = onlineSaleRepository.findAllById(saleIds);
+        if (sales.size() != saleIds.size()) {
+            throw new BusinessException("Una o más ventas no existen");
+        }
+
+        LocationEntity bodegaPT = findBodegaPT();
+        boolean bodegaPtFound = (bodegaPT != null);
+
+        List<FulfillmentPreviewRow> rows = sales.stream()
+                .map(s -> new FulfillmentPreviewRow(
+                        s.getId(),
+                        s.getSaleNumber(),
+                        s.getCustomerName(),
+                        bodegaPT != null && canFulfillFromInventory(s, bodegaPT)
+                ))
+                .toList();
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("bodegaPtFound", bodegaPtFound);
+        out.put("rows", rows);
+        return out;
     }
 
     /**
@@ -146,6 +184,10 @@ public class OnlineSaleProductionOrderService {
      * Descuenta el inventario de BODEGA_PT para todos los items de la venta.
      */
     private void fulfillFromInventory(OnlineSaleEntity sale, LocationEntity bodegaPT) {
+        // Preparación automática: si se resuelve desde inventario PT,
+        // asignar ENVL para que bodega pueda despachar con número ya listo.
+        onlineSaleShipmentNumberService.assignIfMissing(sale);
+
         List<OnlineSaleItemEntity> items = onlineSaleItemRepository
                 .findByOnlineSaleIdOrderByIdAsc(sale.getId());
 

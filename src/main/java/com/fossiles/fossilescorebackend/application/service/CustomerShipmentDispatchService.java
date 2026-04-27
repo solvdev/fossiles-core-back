@@ -25,6 +25,41 @@ public class CustomerShipmentDispatchService {
     private final OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
 
     @Transactional
+    public Map<String, Object> dispatchDirectOnlineSale(long onlineSaleId, Map<String, String> body)
+            throws ResourceNotFoundException, BusinessException {
+        OnlineSaleEntity sale = onlineSaleRepository.findById(onlineSaleId)
+                .orElseThrow(() -> new ResourceNotFoundException("Online Sale", onlineSaleId));
+
+        if (Boolean.TRUE.equals(sale.getInProductionOrder())) {
+            throw new BusinessException("Esta venta está vinculada a una orden de producción. Despáchala desde su OP.");
+        }
+        if ("ENVIADO".equals(sale.getStatus()) || "ENTREGADO".equals(sale.getStatus())) {
+            throw new BusinessException("Esta venta ya fue despachada. Estado actual: " + sale.getStatus());
+        }
+        if (!"PRODUCIDO".equals(sale.getStatus())) {
+            throw new BusinessException("Solo se pueden despachar ventas directas en estado PRODUCIDO. Estado actual: " + sale.getStatus());
+        }
+
+        onlineSaleShipmentNumberService.assignIfMissing(sale);
+        String shipmentNumber = sale.getShipmentNumber();
+        sale.setStatus("ENVIADO");
+        if (body != null && body.get("guideNumber") != null) {
+            sale.setGuideNumber(body.get("guideNumber"));
+        }
+        if (body != null && body.get("shippingCarrier") != null) {
+            sale.setShippingCarrier(body.get("shippingCarrier"));
+        }
+        onlineSaleRepository.save(sale);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("message", "Envío " + shipmentNumber + " despachado para " + sale.getCustomerName());
+        result.put("shipmentNumber", shipmentNumber);
+        result.put("saleStatus", sale.getStatus());
+        result.put("allDispatched", true);
+        return result;
+    }
+
+    @Transactional
     public Map<String, Object> dispatchCustomerShipment(
             long productionOrderId,
             long onlineSaleId,

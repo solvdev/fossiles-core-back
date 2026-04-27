@@ -154,6 +154,18 @@ public class OnlineSaleController {
 
     // ─── Nuevo flujo: procesar ventas revisando inventario BODEGA_PT primero ────
 
+    @PostMapping("/fulfillment-preview")
+    public ResponseEntity<Map<String, Object>> previewFulfillment(@RequestBody Map<String, Object> request)
+            throws BusinessException {
+        @SuppressWarnings("unchecked")
+        List<Integer> saleIdInts = (List<Integer>) request.get("saleIds");
+        if (saleIdInts == null || saleIdInts.isEmpty()) {
+            throw new BusinessException("Debe seleccionar al menos una venta");
+        }
+        List<Long> saleIds = saleIdInts.stream().map(Integer::longValue).toList();
+        return ResponseEntity.ok(onlineSaleProductionOrderService.previewFulfillment(saleIds));
+    }
+
     /**
      * Nuevo flujo correcto:
      * 1. Bodega PT revisa inventario para cada venta seleccionada.
@@ -206,6 +218,7 @@ public class OnlineSaleController {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("saleNumber", f.saleNumber());
             row.put("customerName", f.customerName());
+            row.put("shipmentNumber", f.shipmentNumber());
             row.put("message", f.message());
             return row;
         }).toList();
