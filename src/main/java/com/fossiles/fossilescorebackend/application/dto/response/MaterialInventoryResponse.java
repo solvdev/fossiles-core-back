@@ -30,5 +30,8 @@ public class MaterialInventoryResponse {
     private String conversionText;
     private Integer materialMin;
     private Integer materialMax;
+    /** Proveedor habitual del material (catálogo) */
+    private Long supplierId;
+    private String supplierName;
 }
 

@@ -31,6 +31,7 @@ public class ProductInventoryService {
     private final InventoryLocationTypeRepository inventoryLocationTypeRepository;
     private final ProductFifoBatchRepository productFifoBatchRepository;
     private final ColorRepository colorRepository;
+    private final ProductCategoryRepository productCategoryRepository;
     private final com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil securityUtil;
 
     // ========== PRODUCT INVENTORY LOCATION ==========
@@ -348,6 +349,7 @@ public class ProductInventoryService {
                     ", Location: " + locationId + 
                     (colorId != null ? ", Color: " + colorId : ", Color: NULL")));
 
+        BigDecimal quantityBefore = entity.getQuantity();
         BigDecimal newQuantity = entity.getQuantity().subtract(quantity);
         if (newQuantity.compareTo(BigDecimal.ZERO) < 0) {
             throw new BusinessException("No hay suficiente inventario. Disponible: " + entity.getQuantity() + ", Solicitado: " + quantity);
@@ -355,6 +357,7 @@ public class ProductInventoryService {
 
         entity.setQuantity(newQuantity);
         ProductInventoryLocation saved = productInventoryLocationRepository.save(entity);
+        BigDecimal quantityAfter = saved.getQuantity();
 
         // Consumir lotes FIFO (más antiguos primero) y calcular costo promedio
         BigDecimal remainingQuantity = quantity;
@@ -399,6 +402,29 @@ public class ProductInventoryService {
         if (remainingQuantity.compareTo(BigDecimal.ZERO) > 0) {
             // No lanzar error, solo registrar que no se pudo consumir completamente de lotes FIFO
             // El inventario se decrementa de todas formas
+        }
+
+        // Registrar kardex (salida = cantidad negativa)
+        if (quantity != null && quantity.compareTo(BigDecimal.ZERO) > 0) {
+            String movementType = (referenceType != null && !referenceType.isBlank()) ? referenceType : "OUT";
+            try {
+                recordMovement(
+                        productId,
+                        locationId,
+                        colorId,
+                        movementType,
+                        quantity.negate(),
+                        quantityBefore,
+                        quantityAfter,
+                        null,
+                        referenceType,
+                        referenceId,
+                        referenceNumber,
+                        description
+                );
+            } catch (ResourceNotFoundException e) {
+                // Si algo falla al registrar kardex, no impedir la venta/operación de inventario.
+            }
         }
 
         return toProductInventoryLocationResponse(saved);
@@ -662,9 +688,9 @@ public class ProductInventoryService {
         String categoryUpper = category.toUpperCase();
         List<LocationEntity> categoryLocations;
         
-        // Para KIOSKO, usar TODAS las ubicaciones de locations (kioskos físicos)
+        // Para KIOSKO, usar solo ubicaciones marcadas como kiosko.
         if ("KIOSKO".equals(categoryUpper)) {
-            categoryLocations = locationRepository.findAll();
+            categoryLocations = getKioskLocations();
         } else {
             // Para BODEGA_PT, VENDEDOR, ONLINE: usar inventory_location_type
             LocationEntity location = getOrCreateInventoryLocation(categoryUpper);
@@ -746,15 +772,10 @@ public class ProductInventoryService {
     public List<ProductInventoryLocationResponse> getInventoryByCategory(String category) {
         String categoryUpper = category.toUpperCase();
         
-        // Para KIOSKO, usar todas las ubicaciones de locations
+        // Para KIOSKO, esta ruta devuelve el agregado de todas las ubicaciones kiosko.
+        // Para una ubicación específica, usar /product-inventory/location/{locationId}.
         if ("KIOSKO".equals(categoryUpper)) {
-            // Para kioskos, devolver todas las ubicaciones (no filtramos por categoria porque A, B, C son categorías de kioskos)
-            List<LocationEntity> allKiosks = locationRepository.findAll();
-            if (allKiosks.isEmpty()) {
-                return new java.util.ArrayList<>();
-            }
-            // Devolver inventario de la primera ubicación
-            return getInventoryByLocation(allKiosks.get(0).getId());
+            return getAggregatedInventoryByCategory(categoryUpper);
         }
         
         // Para BODEGA_PT, VENDEDOR, ONLINE: usar inventory_location_type
@@ -806,6 +827,10 @@ public class ProductInventoryService {
         return locationRepository.save(newLocation);
     }
 
+    private List<LocationEntity> getKioskLocations() {
+        return locationRepository.findByCategoriaIgnoreCaseOrderByNameAsc("KIOSKO");
+    }
+
     private String getCategoryDisplayName(String category) {
         switch (category) {
             case "BODEGA_PT": return "Bodega Producto Terminado";
@@ -825,7 +850,7 @@ public class ProductInventoryService {
      * 
      * Lógica:
      * - Si locationId != null: Solo inserta en esa ubicación específica (más rápido)
-     * - Si locationId == null y category == "KIOSKO": Inserta en TODAS las ubicaciones
+     * - Si locationId == null y category == "KIOSKO": Inserta en TODAS las ubicaciones con categoria KIOSKO
      * - Si locationId == null y category == "BODEGA_PT"/"VENDEDOR"/"ONLINE": Inserta solo en ubicaciones de esa categoría
      * 
      * @param category Categoría de ubicación (KIOSKO, BODEGA_PT, VENDEDOR, ONLINE) o null para todas
@@ -848,10 +873,10 @@ public class ProductInventoryService {
         } else if (category != null && !category.trim().isEmpty()) {
             String categoryUpper = category.toUpperCase().trim();
             
-            // Para KIOSKO, cuando locationId es null (todos los kioskos), 
-            // usar TODAS las ubicaciones (ya que no todas tienen categoria=KIOSKO en la BD)
+            // Para KIOSKO, cuando locationId es null (todos los kioskos),
+            // usar solo ubicaciones con categoria=KIOSKO.
             if ("KIOSKO".equals(categoryUpper)) {
-                targetLocations = locationRepository.findAll();
+                targetLocations = getKioskLocations();
             } else {
                 // Para BODEGA_PT, VENDEDOR, ONLINE: usar inventory_location_type
                 LocationEntity location = getOrCreateInventoryLocation(categoryUpper);
@@ -922,7 +947,8 @@ public class ProductInventoryService {
         LocationEntity location = locationRepository.findById(entity.getLocationId()).orElse(null);
         ColorEntity color = entity.getColorId() != null ? colorRepository.findById(entity.getColorId()).orElse(null) : null;
 
-        return ProductInventoryLocationResponse.builder()
+        return enrichProductCategory(product,
+                ProductInventoryLocationResponse.builder()
                 .id(entity.getId())
                 .productId(entity.getProductId())
                 .productCode(product != null ? product.getCode() : null)
@@ -938,7 +964,20 @@ public class ProductInventoryService {
                 .createdBy(entity.getCreatedBy())
                 .updatedAt(entity.getUpdatedAt())
                 .updatedBy(entity.getUpdatedBy())
-                .build();
+        ).build();
+    }
+
+    private ProductInventoryLocationResponse.ProductInventoryLocationResponseBuilder enrichProductCategory(
+            ProductEntity product,
+            ProductInventoryLocationResponse.ProductInventoryLocationResponseBuilder builder
+    ) {
+        if (product == null || product.getCategoryId() == null) {
+            return builder.productCategoryId(null).productCategoryName(null);
+        }
+        Long cid = product.getCategoryId();
+        return builder.productCategoryId(cid)
+                .productCategoryName(productCategoryRepository.findById(cid)
+                        .map(ProductCategoryEntity::getName).orElse(null));
     }
 
     private ProductInventoryKardexResponse toProductInventoryKardexResponse(ProductInventoryKardex entity) {
@@ -1025,7 +1064,8 @@ public class ProductInventoryService {
             Long locationId, 
             ProductEntity product,
             LocationEntity location) {
-        return ProductInventoryLocationResponse.builder()
+        return enrichProductCategory(product,
+                ProductInventoryLocationResponse.builder()
                 .id(null) // No tiene ID porque no existe registro
                 .productId(productId)
                 .productCode(product != null ? product.getCode() : null)
@@ -1040,7 +1080,7 @@ public class ProductInventoryService {
                 .createdBy(null)
                 .updatedAt(null)
                 .updatedBy(null)
-                .build();
+        ).build();
     }
 }
 

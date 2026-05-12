@@ -29,6 +29,7 @@ public class ProductionOrderCodeService {
         if ("NORMAL".equals(orderType)) return "OPK";
         if ("MARCAS".equals(orderType)) return "OPV";
         if ("OPV".equals(orderType)) return "OPV";
+        if ("INTERNA".equals(orderType)) return "OPI";
         if ("CINCHOS".equals(orderType)) return "OPC";
         if ("DISTRIBUTION".equals(orderType)) return "OPD";
         if ("VENTA_EN_LINEA".equals(orderType)) return "OPL";

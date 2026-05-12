@@ -28,6 +28,7 @@ public interface OnlineSaleRepository extends JpaRepository<OnlineSaleEntity, Lo
 
     /** Ventas elegibles para orden de producción (pagadas y no asignadas aún) */
     @Query("SELECT s FROM OnlineSaleEntity s WHERE s.inProductionOrder = false " +
+           "AND s.status NOT IN ('EN_PRODUCCION', 'PRODUCIDO', 'ENVIADO', 'ENTREGADO', 'ANULADA', 'CANCELADO', 'DEVOLUCION') " +
            "AND (s.paymentMethod = 'CONTRA_ENTREGA' " +
            "OR s.paymentMethod = 'CONTRA_ENTREGA_DEPOSITO' " +
            "OR s.paymentMethod = 'TRANSFERENCIA_LISTA' " +
@@ -39,6 +40,7 @@ public interface OnlineSaleRepository extends JpaRepository<OnlineSaleEntity, Lo
 
     /** Ventas elegibles para producción filtradas por rango de fechas */
     @Query("SELECT s FROM OnlineSaleEntity s WHERE s.inProductionOrder = false " +
+           "AND s.status NOT IN ('EN_PRODUCCION', 'PRODUCIDO', 'ENVIADO', 'ENTREGADO', 'ANULADA', 'CANCELADO', 'DEVOLUCION') " +
            "AND (s.paymentMethod = 'CONTRA_ENTREGA' " +
            "OR s.paymentMethod = 'CONTRA_ENTREGA_DEPOSITO' " +
            "OR s.paymentMethod = 'TRANSFERENCIA_LISTA' " +

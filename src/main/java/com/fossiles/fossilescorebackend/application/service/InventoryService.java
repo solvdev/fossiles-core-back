@@ -5,7 +5,9 @@ import com.fossiles.fossilescorebackend.application.dto.response.CriticalInvento
 import com.fossiles.fossilescorebackend.application.dto.response.InventoryKardexResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.InventoryLocationResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialInventoryResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.MaterialInventoryKardexPageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialInventoryKardexResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.InventoryOutflowResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.InventoryTransferResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.InventoryAdjustmentResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -14,13 +16,22 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -45,6 +56,8 @@ public class InventoryService {
     private final MaterialFifoBatchRepository materialFifoBatchRepository;
     private final ProductFifoBatchRepository productFifoBatchRepository;
     private final UomRepository uomRepository;
+    private final InventoryOutflowRepository inventoryOutflowRepository;
+    private final SupplierRepository supplierRepository;
 
     // ========== HELPER METHODS ==========
 
@@ -123,11 +136,21 @@ public class InventoryService {
                     MaterialInventory::getMaterialId,
                     MaterialInventory::getQuantity
                 ));
-        
+
+        Set<Long> supplierIds = allMaterials.stream()
+                .map(MaterialEntity::getSupplierId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, String> supplierNames = new HashMap<>();
+        for (SupplierEntity sup : supplierRepository.findAllById(supplierIds)) {
+            supplierNames.put(sup.getId(), sup.getName());
+        }
+
         // Crear respuesta con inventario de materiales
         return allMaterials.stream()
                 .map(material -> {
                     BigDecimal quantity = materialQuantities.getOrDefault(material.getId(), BigDecimal.ZERO);
+                    Long sid = material.getSupplierId();
                     return MaterialInventoryResponse.builder()
                             .materialId(material.getId())
                             .materialSku(material.getSku())
@@ -143,6 +166,8 @@ public class InventoryService {
                             .conversionText(buildConversionText(material))
                             .materialMin(material.getMin())
                             .materialMax(material.getMax())
+                            .supplierId(sid)
+                            .supplierName(sid != null ? supplierNames.get(sid) : null)
                             .build();
                 })
                 .collect(Collectors.toList());
@@ -159,7 +184,8 @@ public class InventoryService {
         
         MaterialEntity material = materialRepository.findById(materialId).orElse(null);
         
-        return MaterialInventoryResponse.builder()
+        return enrichMaterialSupplier(material,
+                MaterialInventoryResponse.builder()
                 .materialId(entity.getMaterialId())
                 .materialSku(material != null ? material.getSku() : null)
                 .materialName(material != null ? material.getName() : null)
@@ -174,7 +200,7 @@ public class InventoryService {
                 .conversionText(material != null ? buildConversionText(material) : null)
                 .materialMin(material != null ? material.getMin() : null)
                 .materialMax(material != null ? material.getMax() : null)
-                .build();
+        ).build();
     }
 
     /**
@@ -212,7 +238,8 @@ public class InventoryService {
         }
 
         MaterialEntity materialEntity = materialRepository.findById(materialId).orElse(null);
-        return MaterialInventoryResponse.builder()
+        return enrichMaterialSupplier(materialEntity,
+                MaterialInventoryResponse.builder()
                 .materialId(saved.getMaterialId())
                 .materialSku(materialEntity != null ? materialEntity.getSku() : null)
                 .materialName(materialEntity != null ? materialEntity.getName() : null)
@@ -227,7 +254,7 @@ public class InventoryService {
                 .conversionText(materialEntity != null ? buildConversionText(materialEntity) : null)
                 .materialMin(materialEntity != null ? materialEntity.getMin() : null)
                 .materialMax(materialEntity != null ? materialEntity.getMax() : null)
-                .build();
+        ).build();
     }
 
     /**
@@ -309,7 +336,8 @@ public class InventoryService {
         );
 
         MaterialEntity materialEntity = materialRepository.findById(materialId).orElse(null);
-        return MaterialInventoryResponse.builder()
+        return enrichMaterialSupplier(materialEntity,
+                MaterialInventoryResponse.builder()
                 .materialId(saved.getMaterialId())
                 .materialSku(materialEntity != null ? materialEntity.getSku() : null)
                 .materialName(materialEntity != null ? materialEntity.getName() : null)
@@ -324,7 +352,7 @@ public class InventoryService {
                 .conversionText(materialEntity != null ? buildConversionText(materialEntity) : null)
                 .materialMin(materialEntity != null ? materialEntity.getMin() : null)
                 .materialMax(materialEntity != null ? materialEntity.getMax() : null)
-                .build();
+        ).build();
     }
 
     /**
@@ -439,7 +467,8 @@ public class InventoryService {
         );
 
         MaterialEntity materialEntity = materialRepository.findById(materialId).orElse(null);
-        return MaterialInventoryResponse.builder()
+        return enrichMaterialSupplier(materialEntity,
+                MaterialInventoryResponse.builder()
                 .materialId(saved.getMaterialId())
                 .materialSku(materialEntity != null ? materialEntity.getSku() : null)
                 .materialName(materialEntity != null ? materialEntity.getName() : null)
@@ -454,7 +483,22 @@ public class InventoryService {
                 .conversionText(materialEntity != null ? buildConversionText(materialEntity) : null)
                 .materialMin(materialEntity != null ? materialEntity.getMin() : null)
                 .materialMax(materialEntity != null ? materialEntity.getMax() : null)
-                .build();
+        ).build();
+    }
+
+    /**
+     * Agrega datos de proveedor al DTO agregado de material.
+     */
+    private MaterialInventoryResponse.MaterialInventoryResponseBuilder enrichMaterialSupplier(
+            MaterialEntity material,
+            MaterialInventoryResponse.MaterialInventoryResponseBuilder builder
+    ) {
+        if (material == null || material.getSupplierId() == null) {
+            return builder.supplierId(null).supplierName(null);
+        }
+        Long sid = material.getSupplierId();
+        return builder.supplierId(sid)
+                .supplierName(supplierRepository.findById(sid).map(SupplierEntity::getName).orElse(null));
     }
 
     // ========== MATERIAL KARDEX (SIN UBICACIÓN) ==========
@@ -510,6 +554,29 @@ public class InventoryService {
         return materialInventoryKardexRepository.findByMaterialId(materialId).stream()
                 .map(this::toMaterialInventoryKardexResponse)
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Kardex paginado por material (más recientes primero). Tamaño máximo de página: 100.
+     */
+    public MaterialInventoryKardexPageResponse getMaterialKardexPage(Long materialId, int page, int size) {
+        int pageSize = Math.min(Math.max(size, 1), 100);
+        int pageIndex = Math.max(page, 0);
+        Pageable pageable = PageRequest.of(pageIndex, pageSize, Sort.by(Sort.Direction.DESC, "movementDate"));
+        Page<MaterialInventoryKardex> result =
+                materialInventoryKardexRepository.findByMaterialIdOrderByMovementDateDesc(materialId, pageable);
+        List<MaterialInventoryKardexResponse> content = result.getContent().stream()
+                .map(this::toMaterialInventoryKardexResponse)
+                .collect(Collectors.toList());
+        return MaterialInventoryKardexPageResponse.builder()
+                .content(content)
+                .totalElements(result.getTotalElements())
+                .totalPages(result.getTotalPages())
+                .size(result.getSize())
+                .number(result.getNumber())
+                .first(result.isFirst())
+                .last(result.isLast())
+                .build();
     }
 
     /**
@@ -682,6 +749,88 @@ public class InventoryService {
         updateGlobalMaterialQuantity(materialId);
 
         return toInventoryLocationResponse(saved);
+    }
+
+    /**
+     * Boleta de salida desde kiosko: descuenta material en la ubicación, sin destino de inventario.
+     */
+    public InventoryOutflowResponse registerKioskOutflow(InventoryOutflowRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        LocationEntity location = locationRepository.findById(request.getFromLocationId())
+                .orElseThrow(() -> new ResourceNotFoundException("Location", request.getFromLocationId()));
+        if (!isKioskLocation(location)) {
+            throw new BusinessException("La ubicación no es kiosko (use categoría KIOSKO en la ubicación)");
+        }
+
+        InventoryLocation beforeRow = inventoryLocationRepository
+                .findByMaterialIdAndLocationId(request.getMaterialId(), request.getFromLocationId())
+                .orElse(null);
+        BigDecimal qtyBefore = beforeRow != null && beforeRow.getQuantity() != null
+                ? beforeRow.getQuantity() : BigDecimal.ZERO;
+
+        if (qtyBefore.compareTo(request.getQuantity()) < 0) {
+            throw new BusinessException("Stock insuficiente en kiosko. Disponible: " + qtyBefore
+                    + ", solicitado: " + request.getQuantity());
+        }
+
+        decrementInventory(request.getMaterialId(), request.getFromLocationId(), request.getQuantity());
+
+        InventoryLocation afterRow = inventoryLocationRepository
+                .findByMaterialIdAndLocationId(request.getMaterialId(), request.getFromLocationId())
+                .orElse(null);
+        BigDecimal qtyAfter = afterRow != null && afterRow.getQuantity() != null
+                ? afterRow.getQuantity() : BigDecimal.ZERO;
+
+        InventoryOutflowEntity out = InventoryOutflowEntity.builder()
+                .ticketNumber("TEMP")
+                .materialId(request.getMaterialId())
+                .fromLocationId(request.getFromLocationId())
+                .quantity(request.getQuantity())
+                .reason(request.getReason())
+                .referenceType(request.getReferenceType())
+                .referenceId(request.getReferenceId())
+                .referenceNumber(request.getReferenceNumber())
+                .build();
+        out = inventoryOutflowRepository.save(out);
+        out.setTicketNumber("KO-" + out.getId());
+        out = inventoryOutflowRepository.save(out);
+
+        String desc = request.getReason() != null ? request.getReason()
+                : "Salida kiosko material " + request.getMaterialId();
+        recordMovement(
+                request.getMaterialId(),
+                request.getFromLocationId(),
+                "KIOSKO_OUTFLOW",
+                request.getQuantity().negate(),
+                qtyBefore,
+                qtyAfter,
+                null,
+                request.getReferenceType() != null ? request.getReferenceType() : "INVENTORY_OUTFLOW",
+                request.getReferenceId(),
+                out.getTicketNumber(),
+                desc);
+
+        return InventoryOutflowResponse.builder()
+                .id(out.getId())
+                .ticketNumber(out.getTicketNumber())
+                .materialId(out.getMaterialId())
+                .fromLocationId(out.getFromLocationId())
+                .fromLocationName(location.getName())
+                .quantity(out.getQuantity())
+                .reason(out.getReason())
+                .referenceType(out.getReferenceType())
+                .referenceId(out.getReferenceId())
+                .referenceNumber(out.getReferenceNumber())
+                .createdAt(out.getCreatedAt())
+                .build();
+    }
+
+    private boolean isKioskLocation(LocationEntity loc) {
+        if (loc == null || loc.getCategoria() == null) {
+            return false;
+        }
+        String c = loc.getCategoria().toUpperCase(Locale.ROOT);
+        return c.contains("KIOSKO") || c.contains("KIOSK");
     }
 
     /**

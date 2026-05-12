@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.application.service.ProductInventoryServ
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.application.service.CustomerShipmentDispatchService;
+import com.fossiles.fossilescorebackend.application.service.OpvVendorShipmentNumberService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderCodeService;
 import com.fossiles.fossilescorebackend.application.service.SmartMaterialRequestService;
 import com.fossiles.fossilescorebackend.application.service.WarehouseOrderViewAssembler;
@@ -37,9 +38,11 @@ public class ProductionOrderController {
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
+    private final CustomerRepository customerRepository;
     private final DocumentSeriesRepository documentSeriesRepository;
     private final SmartMaterialRequestService smartMaterialRequestService;
     private final ProductionOrderCodeService productionOrderCodeService;
+    private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
     private final CustomerShipmentDispatchService customerShipmentDispatchService;
     private final ProductDistributionRepository distributionRepository;
@@ -58,18 +61,21 @@ public class ProductionOrderController {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @GetMapping
+    @Transactional
     public ResponseEntity<List<ProductionOrderResponse>> getAll() {
         List<ProductionOrderResponse> orders = productionOrderRepository.findAll().stream()
+                .map(this::ensureOpvVendorShipmentNumber)
                 .map(this::toResponse)
                 .collect(Collectors.toList());
         return ResponseEntity.ok(orders);
     }
 
     @GetMapping("/{id}")
+    @Transactional
     public ResponseEntity<ProductionOrderResponse> getById(@PathVariable Long id) throws ResourceNotFoundException {
         ProductionOrderEntity entity = productionOrderRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
-        return ResponseEntity.ok(toResponse(entity));
+        return ResponseEntity.ok(toResponse(ensureOpvVendorShipmentNumber(entity)));
     }
 
     @GetMapping("/type/{orderType}")
@@ -95,7 +101,7 @@ public class ProductionOrderController {
 
         // Validar que el tipo de orden sea válido
         if (!isValidOrderType(effectiveOrderType)) {
-            throw new BusinessException("Invalid order type. Must be one of: CINCHOS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA");
+            throw new BusinessException("Invalid order type. Must be one of: CINCHOS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA, INTERNA(OPI)");
         }
 
         // Generar código automáticamente si no se proporciona
@@ -109,9 +115,15 @@ public class ProductionOrderController {
         }
 
         ProductionOrderEntity entity = toEntity(request);
+        applyCustomerMasterFromId(entity, request.getCustomerId());
         entity.setOrderType(effectiveOrderType);
         entity.setCode(orderCode);
         ProductionOrderEntity saved = productionOrderRepository.save(entity);
+
+        if (isOpvVendorShipmentFlow(saved)) {
+            opvVendorShipmentNumberService.assignIfMissing(saved);
+            saved = productionOrderRepository.save(saved);
+        }
 
         // Guardar items
         if (request.getItems() != null && !request.getItems().isEmpty()) {
@@ -125,10 +137,11 @@ public class ProductionOrderController {
                 }
             }
 
+            final Long savedProductionOrderId = saved.getId();
             List<ProductionOrderItemEntity> items = request.getItems().stream()
                     .map(itemRequest -> {
                         ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                                .productionOrderId(saved.getId())
+                                .productionOrderId(savedProductionOrderId)
                                 .productId(itemRequest.getProductId())
                                 .colorId(itemRequest.getColorId())
                                 .quantity(itemRequest.getQuantity())
@@ -195,12 +208,19 @@ public class ProductionOrderController {
 
         // Validar tipo de orden
         if (!isValidOrderType(effectiveOrderType)) {
-            throw new BusinessException("Invalid order type. Must be one of: CINCHOS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA");
+            throw new BusinessException("Invalid order type. Must be one of: CINCHOS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA, INTERNA(OPI)");
         }
 
         updateEntity(entity, request);
         entity.setOrderType(effectiveOrderType);
+        Long customerIdForSync = request.getCustomerId() != null ? request.getCustomerId() : entity.getCustomerId();
+        applyCustomerMasterFromId(entity, customerIdForSync);
         ProductionOrderEntity updated = productionOrderRepository.save(entity);
+
+        if (isOpvVendorShipmentFlow(updated)) {
+            opvVendorShipmentNumberService.assignIfMissing(updated);
+            updated = productionOrderRepository.save(updated);
+        }
 
         // Actualizar items: eliminar existentes y crear nuevos
         if (request.getItems() != null) {
@@ -217,10 +237,11 @@ public class ProductionOrderController {
                     }
                 }
 
+                final Long updatedProductionOrderId = updated.getId();
                 List<ProductionOrderItemEntity> items = request.getItems().stream()
                         .map(itemRequest -> {
                             ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                                    .productionOrderId(updated.getId())
+                                    .productionOrderId(updatedProductionOrderId)
                                     .productId(itemRequest.getProductId())
                                     .colorId(itemRequest.getColorId())
                                     .quantity(itemRequest.getQuantity())
@@ -525,6 +546,58 @@ public class ProductionOrderController {
     }
 
     // ==================== DASHBOARD & REPORTS ====================
+
+    @GetMapping("/dashboard-v2")
+    public ResponseEntity<ProductionDashboardV2Response> getDashboardV2(
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate to) {
+        List<ProductionOrderEntity> allOrders = productionOrderRepository.findAll();
+        List<TaskEntity> allTasks = taskRepository.findAll();
+        List<ProductionOrderItemEntity> allOrderItems = productionOrderItemRepository.findAll();
+
+        java.time.LocalDate rangeFrom = from != null ? from : java.time.LocalDate.MIN;
+        java.time.LocalDate rangeTo = to != null ? to : java.time.LocalDate.MAX;
+        java.time.LocalDate referenceDay = to != null ? to : java.time.LocalDate.now();
+
+        List<ProductionOrderEntity> scopedOrders = allOrders.stream()
+                .filter(order -> isDateInRange(resolveOrderDate(order), rangeFrom, rangeTo))
+                .toList();
+        List<TaskEntity> scopedTasks = allTasks.stream()
+                .filter(task -> isDateInRange(resolveTaskDate(task), rangeFrom, rangeTo))
+                .toList();
+        Set<Long> scopedOrderIds = scopedOrders.stream()
+                .map(ProductionOrderEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        List<ProductionOrderItemEntity> scopedItems = allOrderItems.stream()
+                .filter(item -> scopedOrderIds.contains(item.getProductionOrderId()))
+                .toList();
+
+        Map<Long, List<TaskEntity>> tasksByOrder = scopedTasks.stream()
+                .filter(task -> task.getProductionOrderId() != null)
+                .collect(Collectors.groupingBy(TaskEntity::getProductionOrderId));
+        Map<Long, List<ProductionOrderItemEntity>> itemsByOrder = scopedItems.stream()
+                .filter(item -> item.getProductionOrderId() != null)
+                .collect(Collectors.groupingBy(ProductionOrderItemEntity::getProductionOrderId));
+
+        ProductionDashboardV2Response.ExecutiveSummary summary = buildExecutiveSummary(scopedOrders, referenceDay);
+        ProductionDashboardV2Response.TaskSummary taskSummary = buildTaskSummary(scopedTasks, referenceDay);
+        ProductionDashboardV2Response.ProductionSummary production = buildProductionSummary(scopedTasks);
+
+        ProductionDashboardV2Response response = ProductionDashboardV2Response.builder()
+                .from(from)
+                .to(to)
+                .referenceDate(referenceDay)
+                .summary(summary)
+                .production(production)
+                .tasks(taskSummary)
+                .desks(buildDeskSummaries(scopedTasks, referenceDay))
+                .criticalOrders(buildCriticalOrders(scopedOrders, tasksByOrder, itemsByOrder, referenceDay))
+                .productStages(buildProductStages(scopedTasks))
+                .build();
+
+        return ResponseEntity.ok(response);
+    }
 
     @GetMapping("/dashboard-stats")
     public ResponseEntity<Map<String, Object>> getDashboardStats(
@@ -963,6 +1036,7 @@ public class ProductionOrderController {
                 .materialsConsumedAt(entity.getMaterialsConsumedAt())
                 .status(entity.getStatus())
                 .distributionId(entity.getDistributionId())
+                .schedulingPriority(entity.getSchedulingPriority())
                 .shippingCost(meta.shippingCost)
                 .packingItems(meta.packingItems.stream().map(item -> {
                     MaterialEntity material = item.materialId != null
@@ -980,7 +1054,16 @@ public class ProductionOrderController {
                 .createdBy(entity.getCreatedBy())
                 .updatedAt(entity.getUpdatedAt())
                 .updatedBy(entity.getUpdatedBy())
+                .vendorShipmentNumber(entity.getVendorShipmentNumber())
                 .items(itemResponses);
+
+        if (entity.getCustomerId() != null) {
+            customerRepository.findById(entity.getCustomerId()).ifPresent(c -> {
+                builder.customerAddress(c.getAddress());
+                builder.customerPhone(c.getPhone());
+                builder.customerTaxId(c.getNit());
+            });
+        }
 
         // Si tiene distribución vinculada, incluir detalles
         if (entity.getDistributionId() != null) {
@@ -1140,9 +1223,391 @@ public class ProductionOrderController {
         }
     }
 
+    private java.time.LocalDate resolveOrderDate(ProductionOrderEntity order) {
+        if (order.getStartDate() != null) return order.getStartDate();
+        if (order.getCreatedAt() != null) return order.getCreatedAt().toLocalDate();
+        return null;
+    }
+
+    private java.time.LocalDate resolveTaskDate(TaskEntity task) {
+        if (task.getScheduledDate() != null) return task.getScheduledDate();
+        if (task.getCompletedAt() != null) return task.getCompletedAt().toLocalDate();
+        if (task.getCreatedAt() != null) return task.getCreatedAt().toLocalDate();
+        return null;
+    }
+
+    private boolean isDateInRange(java.time.LocalDate candidate, java.time.LocalDate from, java.time.LocalDate to) {
+        return candidate == null || (!candidate.isBefore(from) && !candidate.isAfter(to));
+    }
+
+    private ProductionDashboardV2Response.ExecutiveSummary buildExecutiveSummary(
+            List<ProductionOrderEntity> orders,
+            java.time.LocalDate referenceDay) {
+        long pendingOrders = orders.stream().filter(order -> isStatus(order.getStatus(), "PENDING")).count();
+        long inProgressOrders = orders.stream().filter(order -> isStatus(order.getStatus(), "IN_PROGRESS")).count();
+        long inQaOrders = orders.stream().filter(order -> isStatus(order.getStatus(), "IN_QA")).count();
+        long completedOrders = orders.stream().filter(order -> isStatus(order.getStatus(), "COMPLETED")).count();
+        long cancelledOrders = orders.stream().filter(order -> isStatus(order.getStatus(), "CANCELLED")).count();
+        long activeOrders = orders.stream().filter(order -> isActiveOrder(order.getStatus())).count();
+        long overdueOrders = orders.stream()
+                .filter(order -> isActiveOrder(order.getStatus()))
+                .filter(order -> order.getDeliveryDate() != null && order.getDeliveryDate().isBefore(referenceDay))
+                .count();
+        long dueTodayOrders = orders.stream()
+                .filter(order -> isActiveOrder(order.getStatus()))
+                .filter(order -> referenceDay.equals(order.getDeliveryDate()))
+                .count();
+        long dueTomorrowOrders = orders.stream()
+                .filter(order -> isActiveOrder(order.getStatus()))
+                .filter(order -> referenceDay.plusDays(1).equals(order.getDeliveryDate()))
+                .count();
+
+        return ProductionDashboardV2Response.ExecutiveSummary.builder()
+                .totalOrders(orders.size())
+                .activeOrders(activeOrders)
+                .pendingOrders(pendingOrders)
+                .inProgressOrders(inProgressOrders)
+                .inQaOrders(inQaOrders)
+                .completedOrders(completedOrders)
+                .cancelledOrders(cancelledOrders)
+                .overdueOrders(overdueOrders)
+                .dueTodayOrders(dueTodayOrders)
+                .dueTomorrowOrders(dueTomorrowOrders)
+                .build();
+    }
+
+    private ProductionDashboardV2Response.TaskSummary buildTaskSummary(
+            List<TaskEntity> tasks,
+            java.time.LocalDate referenceDay) {
+        long pendingTasks = tasks.stream().filter(task -> isStatus(task.getStatus(), "PENDING")).count();
+        long inProgressTasks = tasks.stream().filter(task -> isInProcessTask(task.getStatus())).count();
+        long completedTasks = tasks.stream().filter(task -> isStatus(task.getStatus(), "COMPLETED")).count();
+        long cancelledTasks = tasks.stream().filter(task -> isStatus(task.getStatus(), "CANCELLED")).count();
+        long actionableTasks = tasks.stream().filter(task -> !isStatus(task.getStatus(), "CANCELLED")).count();
+        long unassignedTasks = tasks.stream()
+                .filter(task -> isActiveTask(task.getStatus()))
+                .filter(task -> task.getDesk() == null || task.getDesk() <= 0)
+                .count();
+        long overdueTasks = tasks.stream()
+                .filter(task -> isActiveTask(task.getStatus()))
+                .filter(task -> task.getDeliveryDate() != null && task.getDeliveryDate().isBefore(referenceDay))
+                .count();
+        long dueTodayTasks = tasks.stream()
+                .filter(task -> isActiveTask(task.getStatus()))
+                .filter(task -> referenceDay.equals(task.getDeliveryDate()) || referenceDay.equals(task.getScheduledDate()))
+                .count();
+
+        return ProductionDashboardV2Response.TaskSummary.builder()
+                .totalTasks(tasks.size())
+                .pendingTasks(pendingTasks)
+                .inProgressTasks(inProgressTasks)
+                .completedTasks(completedTasks)
+                .cancelledTasks(cancelledTasks)
+                .unassignedTasks(unassignedTasks)
+                .overdueTasks(overdueTasks)
+                .dueTodayTasks(dueTodayTasks)
+                .completionRate(actionableTasks > 0 ? oneDecimal(completedTasks * 100.0 / actionableTasks) : 0.0)
+                .build();
+    }
+
+    private ProductionDashboardV2Response.ProductionSummary buildProductionSummary(List<TaskEntity> tasks) {
+        List<TaskEntity> actionableTasks = tasks.stream()
+                .filter(task -> !isStatus(task.getStatus(), "CANCELLED"))
+                .toList();
+        int pendingUnits = actionableTasks.stream()
+                .filter(task -> isStatus(task.getStatus(), "PENDING"))
+                .mapToInt(this::safeTaskQuantity)
+                .sum();
+        int inProgressUnits = actionableTasks.stream()
+                .filter(task -> isInProcessTask(task.getStatus()))
+                .mapToInt(this::safeTaskQuantity)
+                .sum();
+        int completedUnits = actionableTasks.stream()
+                .filter(task -> isStatus(task.getStatus(), "COMPLETED"))
+                .mapToInt(this::safeTaskQuantity)
+                .sum();
+        int plannedUnits = pendingUnits + inProgressUnits + completedUnits;
+        int wasteUnits = actionableTasks.stream()
+                .mapToInt(task -> task.getWasteQuantity() != null ? task.getWasteQuantity() : 0)
+                .sum();
+        List<TaskEntity> completedWithTime = actionableTasks.stream()
+                .filter(task -> isStatus(task.getStatus(), "COMPLETED"))
+                .filter(task -> task.getEstimatedHours() != null && task.getEstimatedHours() > 0)
+                .filter(task -> task.getActualDurationMinutes() != null && task.getActualDurationMinutes() > 0)
+                .toList();
+        long onTime = completedWithTime.stream()
+                .filter(task -> task.getActualDurationMinutes() <= Math.round(task.getEstimatedHours() * 60))
+                .count();
+
+        return ProductionDashboardV2Response.ProductionSummary.builder()
+                .plannedUnits(plannedUnits)
+                .pendingUnits(pendingUnits)
+                .inProgressUnits(inProgressUnits)
+                .completedUnits(completedUnits)
+                .wasteUnits(wasteUnits)
+                .completionRate(plannedUnits > 0 ? oneDecimal(completedUnits * 100.0 / plannedUnits) : 0.0)
+                .wasteRate(plannedUnits > 0 ? oneDecimal(wasteUnits * 100.0 / plannedUnits) : 0.0)
+                .onTimeTaskRate(!completedWithTime.isEmpty() ? oneDecimal(onTime * 100.0 / completedWithTime.size()) : 0.0)
+                .completedTasksWithTime(completedWithTime.size())
+                .completedTasksOnTime(onTime)
+                .build();
+    }
+
+    private List<ProductionDashboardV2Response.DeskSummary> buildDeskSummaries(
+            List<TaskEntity> tasks,
+            java.time.LocalDate referenceDay) {
+        Map<Integer, List<TaskEntity>> byDesk = new HashMap<>();
+        tasks.stream()
+                .filter(task -> !isStatus(task.getStatus(), "CANCELLED"))
+                .forEach(task -> byDesk.computeIfAbsent(task.getDesk(), ignored -> new ArrayList<>()).add(task));
+
+        return byDesk.entrySet().stream()
+                .map(entry -> buildDeskSummary(entry.getKey(), entry.getValue(), referenceDay))
+                .sorted(Comparator
+                        .comparing((ProductionDashboardV2Response.DeskSummary desk) -> desk.getDesk() == null)
+                        .thenComparing(desk -> desk.getDesk() == null ? Integer.MAX_VALUE : desk.getDesk()))
+                .toList();
+    }
+
+    private ProductionDashboardV2Response.DeskSummary buildDeskSummary(
+            Integer desk,
+            List<TaskEntity> tasks,
+            java.time.LocalDate referenceDay) {
+        long pending = tasks.stream().filter(task -> isStatus(task.getStatus(), "PENDING")).count();
+        long inProgress = tasks.stream().filter(task -> isInProcessTask(task.getStatus())).count();
+        long completed = tasks.stream().filter(task -> isStatus(task.getStatus(), "COMPLETED")).count();
+        int plannedUnits = tasks.stream().mapToInt(this::safeTaskQuantity).sum();
+        int completedUnits = tasks.stream()
+                .filter(task -> isStatus(task.getStatus(), "COMPLETED"))
+                .mapToInt(this::safeTaskQuantity)
+                .sum();
+        List<TaskEntity> completedWithTime = tasks.stream()
+                .filter(task -> isStatus(task.getStatus(), "COMPLETED"))
+                .filter(task -> task.getEstimatedHours() != null && task.getEstimatedHours() > 0)
+                .filter(task -> task.getActualDurationMinutes() != null && task.getActualDurationMinutes() > 0)
+                .toList();
+        double avgEstimated = completedWithTime.stream()
+                .mapToDouble(task -> task.getEstimatedHours() * 60)
+                .average()
+                .orElse(0);
+        double avgActual = completedWithTime.stream()
+                .mapToInt(TaskEntity::getActualDurationMinutes)
+                .average()
+                .orElse(0);
+        double efficiency = avgActual > 0 ? oneDecimal(avgEstimated * 100.0 / avgActual) : 0.0;
+        boolean hasOverdue = tasks.stream()
+                .filter(task -> isActiveTask(task.getStatus()))
+                .anyMatch(task -> task.getDeliveryDate() != null && task.getDeliveryDate().isBefore(referenceDay));
+
+        return ProductionDashboardV2Response.DeskSummary.builder()
+                .desk(desk)
+                .totalTasks(tasks.size())
+                .pendingTasks(pending)
+                .inProgressTasks(inProgress)
+                .completedTasks(completed)
+                .plannedUnits(plannedUnits)
+                .completedUnits(completedUnits)
+                .completionRate(plannedUnits > 0 ? oneDecimal(completedUnits * 100.0 / plannedUnits) : 0.0)
+                .efficiencyRate(efficiency)
+                .avgEstimatedMinutes((int) Math.round(avgEstimated))
+                .avgActualMinutes((int) Math.round(avgActual))
+                .health(hasOverdue ? "AT_RISK" : (pending + inProgress > 0 ? "ACTIVE" : "OK"))
+                .build();
+    }
+
+    private List<ProductionDashboardV2Response.CriticalOrder> buildCriticalOrders(
+            List<ProductionOrderEntity> orders,
+            Map<Long, List<TaskEntity>> tasksByOrder,
+            Map<Long, List<ProductionOrderItemEntity>> itemsByOrder,
+            java.time.LocalDate referenceDay) {
+        return orders.stream()
+                .filter(order -> isActiveOrder(order.getStatus()))
+                .map(order -> buildCriticalOrder(order,
+                        tasksByOrder.getOrDefault(order.getId(), List.of()),
+                        itemsByOrder.getOrDefault(order.getId(), List.of()),
+                        referenceDay))
+                .filter(order -> !order.getReasons().isEmpty())
+                .sorted(Comparator
+                        .comparing((ProductionDashboardV2Response.CriticalOrder order) -> !order.isOverdue())
+                        .thenComparing(order -> !order.isDueToday())
+                        .thenComparing(order -> !order.isMaterialsPending())
+                        .thenComparing(ProductionDashboardV2Response.CriticalOrder::getDeliveryDate, Comparator.nullsLast(Comparator.naturalOrder())))
+                .limit(20)
+                .toList();
+    }
+
+    private ProductionDashboardV2Response.CriticalOrder buildCriticalOrder(
+            ProductionOrderEntity order,
+            List<TaskEntity> tasks,
+            List<ProductionOrderItemEntity> items,
+            java.time.LocalDate referenceDay) {
+        boolean overdue = order.getDeliveryDate() != null && order.getDeliveryDate().isBefore(referenceDay);
+        boolean dueToday = referenceDay.equals(order.getDeliveryDate());
+        boolean dueTomorrow = referenceDay.plusDays(1).equals(order.getDeliveryDate());
+        boolean withoutTasks = tasks.isEmpty();
+        boolean materialsPending = !Boolean.TRUE.equals(order.getMaterialsConsumed())
+                || tasks.stream()
+                .filter(task -> isActiveTask(task.getStatus()))
+                .anyMatch(task -> !Boolean.TRUE.equals(task.getMaterialsDelivered()));
+        int plannedUnits = items.stream().mapToInt(this::totalOrderItemQuantity).sum();
+        int completedUnits = items.stream()
+                .mapToInt(item -> item.getWarehouseReceivedQty() != null ? Math.max(item.getWarehouseReceivedQty(), 0) : 0)
+                .sum();
+        long pendingTasks = tasks.stream().filter(task -> isStatus(task.getStatus(), "PENDING")).count();
+        long inProgressTasks = tasks.stream().filter(task -> isInProcessTask(task.getStatus())).count();
+        long completedTasks = tasks.stream().filter(task -> isStatus(task.getStatus(), "COMPLETED")).count();
+
+        List<String> reasons = new ArrayList<>();
+        if (overdue) reasons.add("Vencida");
+        if (dueToday) reasons.add("Vence hoy");
+        if (dueTomorrow) reasons.add("Vence mañana");
+        if (withoutTasks) reasons.add("Sin tareas");
+        if (materialsPending) reasons.add("Materiales pendientes");
+
+        return ProductionDashboardV2Response.CriticalOrder.builder()
+                .id(order.getId())
+                .code(order.getCode())
+                .orderType(order.getOrderType())
+                .status(order.getStatus())
+                .startDate(order.getStartDate())
+                .deliveryDate(order.getDeliveryDate())
+                .customerName(order.getCustomerName())
+                .totalTasks(tasks.size())
+                .pendingTasks(pendingTasks)
+                .inProgressTasks(inProgressTasks)
+                .completedTasks(completedTasks)
+                .overdue(overdue)
+                .dueToday(dueToday)
+                .dueTomorrow(dueTomorrow)
+                .withoutTasks(withoutTasks)
+                .materialsPending(materialsPending)
+                .plannedUnits(plannedUnits)
+                .completedUnits(completedUnits)
+                .completionRate(plannedUnits > 0 ? oneDecimal(completedUnits * 100.0 / plannedUnits) : 0.0)
+                .reasons(reasons)
+                .build();
+    }
+
+    private List<ProductionDashboardV2Response.ProductStageSummary> buildProductStages(List<TaskEntity> tasks) {
+        Map<Long, TaskEntity> tasksById = tasks.stream()
+                .filter(task -> task.getId() != null)
+                .collect(Collectors.toMap(TaskEntity::getId, task -> task, (first, ignored) -> first));
+        List<TaskItemEntity> taskItems = tasksById.isEmpty() ? List.of() : taskItemRepository.findByTaskIdIn(new ArrayList<>(tasksById.keySet()));
+        Set<Long> taskIdsWithItems = taskItems.stream()
+                .map(TaskItemEntity::getTaskId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<String, ProductStageAccumulator> byProduct = new LinkedHashMap<>();
+
+        for (TaskItemEntity item : taskItems) {
+            TaskEntity task = tasksById.get(item.getTaskId());
+            if (task == null || isStatus(task.getStatus(), "CANCELLED")) continue;
+            ProductStageAccumulator accumulator = byProduct.computeIfAbsent(productStageKey(item.getProductId(), item.getProductCode(), item.getProductName()),
+                    ignored -> new ProductStageAccumulator(item.getProductId(), item.getProductCode(), item.getProductName()));
+            accumulator.add(task.getStatus(), item.getQuantity() != null ? Math.max(item.getQuantity(), 0) : 0);
+        }
+
+        tasks.stream()
+                .filter(task -> task.getId() == null || !taskIdsWithItems.contains(task.getId()))
+                .filter(task -> !isStatus(task.getStatus(), "CANCELLED"))
+                .forEach(task -> {
+                    ProductStageAccumulator accumulator = byProduct.computeIfAbsent(productStageKey(task.getProductId(), task.getProductCode(), task.getProductName()),
+                            ignored -> new ProductStageAccumulator(task.getProductId(), task.getProductCode(), task.getProductName()));
+                    accumulator.add(task.getStatus(), safeTaskQuantity(task));
+                });
+
+        return byProduct.values().stream()
+                .map(ProductStageAccumulator::toResponse)
+                .sorted(Comparator.comparing(ProductionDashboardV2Response.ProductStageSummary::getTotalUnits).reversed())
+                .limit(50)
+                .toList();
+    }
+
+    private String productStageKey(Long productId, String productCode, String productName) {
+        return String.valueOf(productId) + "|" + String.valueOf(productCode) + "|" + String.valueOf(productName);
+    }
+
+    private boolean isStatus(String status, String expected) {
+        return expected.equals(String.valueOf(status).toUpperCase(Locale.ROOT));
+    }
+
+    private boolean isActiveOrder(String status) {
+        return !isStatus(status, "COMPLETED") && !isStatus(status, "CANCELLED");
+    }
+
+    private boolean isActiveTask(String status) {
+        return !isStatus(status, "COMPLETED") && !isStatus(status, "CANCELLED");
+    }
+
+    private boolean isInProcessTask(String status) {
+        return isStatus(status, "IN_PROGRESS") || isStatus(status, "IN_QA");
+    }
+
+    private int safeTaskQuantity(TaskEntity task) {
+        return task.getQuantity() != null ? Math.max(task.getQuantity(), 0) : 0;
+    }
+
+    private int totalOrderItemQuantity(ProductionOrderItemEntity item) {
+        if (item.getSizesData() != null && !item.getSizesData().isBlank()) {
+            try {
+                Map<String, Integer> sizes = objectMapper.readValue(item.getSizesData(), new TypeReference<Map<String, Integer>>() {});
+                int total = sizes.values().stream()
+                        .mapToInt(value -> value != null ? Math.max(value, 0) : 0)
+                        .sum();
+                if (total > 0) return total;
+            } catch (Exception ignored) {
+                // quantity remains the authoritative fallback for malformed historical JSON.
+            }
+        }
+        return item.getQuantity() != null ? Math.max(item.getQuantity(), 0) : 0;
+    }
+
+    private double oneDecimal(double value) {
+        return Math.round(value * 10.0) / 10.0;
+    }
+
+    private class ProductStageAccumulator {
+        private final Long productId;
+        private final String productCode;
+        private final String productName;
+        private int pendingUnits;
+        private int inProgressUnits;
+        private int completedUnits;
+
+        private ProductStageAccumulator(Long productId, String productCode, String productName) {
+            this.productId = productId;
+            this.productCode = productCode;
+            this.productName = productName != null && !productName.isBlank() ? productName : "Sin producto";
+        }
+
+        private void add(String status, int quantity) {
+            if (isStatus(status, "COMPLETED")) {
+                completedUnits += quantity;
+            } else if (isInProcessTask(status)) {
+                inProgressUnits += quantity;
+            } else {
+                pendingUnits += quantity;
+            }
+        }
+
+        private ProductionDashboardV2Response.ProductStageSummary toResponse() {
+            int total = pendingUnits + inProgressUnits + completedUnits;
+            return ProductionDashboardV2Response.ProductStageSummary.builder()
+                    .productId(productId)
+                    .productCode(productCode)
+                    .productName(productName)
+                    .pendingUnits(pendingUnits)
+                    .inProgressUnits(inProgressUnits)
+                    .completedUnits(completedUnits)
+                    .totalUnits(total)
+                    .completionRate(total > 0 ? oneDecimal(completedUnits * 100.0 / total) : 0.0)
+                    .build();
+        }
+    }
+
     private boolean isValidOrderType(String orderType) {
         return orderType != null && 
-                (orderType.equals("CINCHOS") || orderType.equals("MARCAS") || orderType.equals("OPV") || orderType.equals("NORMAL") || orderType.equals("DISTRIBUTION") || orderType.equals("VENTA_EN_LINEA"));
+                (orderType.equals("CINCHOS") || orderType.equals("MARCAS") || orderType.equals("OPV") || orderType.equals("NORMAL") || orderType.equals("DISTRIBUTION") || orderType.equals("VENTA_EN_LINEA") || orderType.equals("INTERNA"));
     }
 
     private String normalizeOrderType(String orderType, String sellerName) {
@@ -1152,6 +1617,38 @@ public class ProductionOrderController {
             return "MARCAS";
         }
         return normalizedType;
+    }
+
+    private void applyCustomerMasterFromId(ProductionOrderEntity entity, Long customerId) {
+        if (customerId == null) {
+            return;
+        }
+        customerRepository.findById(customerId).ifPresent(c -> {
+            entity.setCustomerId(c.getId());
+            entity.setCustomerName(c.getName());
+        });
+    }
+
+    private ProductionOrderEntity ensureOpvVendorShipmentNumber(ProductionOrderEntity entity) {
+        if (isOpvVendorShipmentFlow(entity)
+                && (entity.getVendorShipmentNumber() == null || entity.getVendorShipmentNumber().isBlank())) {
+            opvVendorShipmentNumberService.assignIfMissing(entity);
+            return productionOrderRepository.save(entity);
+        }
+        return entity;
+    }
+
+    /** OPV vendedor: orden MARCAS/OPV con vendedor Luis Felipe (recibe correlativo ENVP de envío). */
+    private boolean isOpvVendorShipmentFlow(ProductionOrderEntity order) {
+        if (order == null) {
+            return false;
+        }
+        String type = String.valueOf(order.getOrderType() == null ? "" : order.getOrderType()).trim().toUpperCase();
+        if (!"MARCAS".equals(type) && !"OPV".equals(type)) {
+            return false;
+        }
+        String seller = String.valueOf(order.getSellerName() == null ? "" : order.getSellerName()).trim().toUpperCase();
+        return seller.contains("LUIS FELIPE");
     }
 
     private String convertSizesToJson(Map<String, Integer> sizes) {

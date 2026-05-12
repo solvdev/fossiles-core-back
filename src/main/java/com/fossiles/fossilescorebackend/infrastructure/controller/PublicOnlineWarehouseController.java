@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.WarehouseOrderV
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.CustomerShipmentDispatchService;
+import com.fossiles.fossilescorebackend.application.service.OnlineSaleProductionOrderService;
 import com.fossiles.fossilescorebackend.application.service.WarehouseOrderViewAssembler;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
@@ -36,6 +37,7 @@ public class PublicOnlineWarehouseController {
     private final OnlineSaleItemRepository onlineSaleItemRepository;
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
+    private final OnlineSaleProductionOrderService onlineSaleProductionOrderService;
 
     @GetMapping("/orders")
     @Transactional(readOnly = true)
@@ -44,7 +46,8 @@ public class PublicOnlineWarehouseController {
 
         List<String> statuses = status != null
                 ? List.of(status)
-                : List.of("PENDING", "IN_PROGRESS", "COMPLETED");
+                // Por defecto: solo las que están en proceso (las COMPLETED ya fueron despachadas)
+                : List.of("PENDING", "IN_PROGRESS");
 
         List<WarehouseOrderViewResponse> responses = productionOrderRepository.findByStatusIn(statuses).stream()
                 .filter(o -> "VENTA_EN_LINEA".equals(o.getOrderType()))
@@ -77,6 +80,20 @@ public class PublicOnlineWarehouseController {
     }
 
     /**
+     * Prepara una venta directa (sin OP) desde inventario BODEGA_PT:
+     * - valida stock
+     * - descuenta inventario
+     * - asigna ENVL
+     * - marca PRODUCIDO (lista para despacho)
+     */
+    @PutMapping("/direct-sales/{onlineSaleId}/prepare")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> prepareDirectSale(@PathVariable Long onlineSaleId)
+            throws BusinessException {
+        return ResponseEntity.ok(onlineSaleProductionOrderService.prepareDirectSaleFromInventory(onlineSaleId));
+    }
+
+    /**
      * Ventas online listas para despacho desde BODEGA_PT sin orden de producción.
      * Criterio: PRODUCIDO + NO inProductionOrder + NO ENVIADO/ENTREGADO.
      */
@@ -93,6 +110,38 @@ public class PublicOnlineWarehouseController {
                 .map(this::toShipment)
                 .collect(Collectors.toList());
         return ResponseEntity.ok(rows);
+    }
+
+    /**
+     * Ventas pagadas (no OP) que tienen stock suficiente en BODEGA_PT y pueden prepararse directo.
+     */
+    @GetMapping("/direct-sales/stock-ready")
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<CustomerShipmentResponse>> listDirectSalesStockReady() throws BusinessException {
+        List<OnlineSaleEntity> candidates = onlineSaleRepository.findEligibleForProduction().stream()
+                .filter(s -> Boolean.FALSE.equals(s.getInProductionOrder()))
+                .filter(s -> !"PRODUCIDO".equals(s.getStatus()))
+                .filter(s -> !"ENVIADO".equals(s.getStatus()) && !"ENTREGADO".equals(s.getStatus()))
+                .collect(Collectors.toList());
+
+        // Reusar preview interno para filtrar solo las que sí tienen stock
+        List<Long> ids = candidates.stream().map(OnlineSaleEntity::getId).collect(Collectors.toList());
+        @SuppressWarnings("unchecked")
+        List<OnlineSaleProductionOrderService.FulfillmentPreviewRow> rows =
+                (List<OnlineSaleProductionOrderService.FulfillmentPreviewRow>)
+                        onlineSaleProductionOrderService.previewFulfillment(ids).get("rows");
+
+        List<Long> readyIds = rows.stream()
+                .filter(OnlineSaleProductionOrderService.FulfillmentPreviewRow::canFulfillFromInventory)
+                .map(OnlineSaleProductionOrderService.FulfillmentPreviewRow::saleId)
+                .collect(Collectors.toList());
+
+        List<CustomerShipmentResponse> out = candidates.stream()
+                .filter(s -> readyIds.contains(s.getId()))
+                .map(this::toShipment)
+                .collect(Collectors.toList());
+
+        return ResponseEntity.ok(out);
     }
 
     private CustomerShipmentResponse toShipment(OnlineSaleEntity sale) {

@@ -1,7 +1,9 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.OnlineSaleRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.OnlineSaleExchangeRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.OnlineSaleDailySummaryResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.OnlineSaleReturnPrintResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OnlineSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -20,6 +22,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Comparator;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -145,11 +148,44 @@ public class OnlineSaleController {
         return ResponseEntity.ok(saleService.registerShipment(id, guideNumber, shippingCarrier, observations));
     }
 
+    @PostMapping("/{id}/exchange")
+    public ResponseEntity<OnlineSaleResponse> createExchange(
+            @PathVariable Long id,
+            @RequestBody OnlineSaleExchangeRequest request) throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(saleService.createExchange(id, request));
+    }
+
     @GetMapping("/returns")
     public ResponseEntity<List<ReturnInventoryEntity>> getReturnInventory(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate) {
         return ResponseEntity.ok(saleService.getReturnInventory(startDate, endDate));
+    }
+
+    @GetMapping("/return-events")
+    public ResponseEntity<List<Map<String, Object>>> getReturnEvents(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate) {
+        // Respuesta ligera para listado (evita exponer entidad completa)
+        var events = saleService.getReturnEvents(startDate, endDate);
+        var rows = events.stream().map(e -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", e.getId());
+            row.put("onlineSaleId", e.getOnlineSaleId());
+            row.put("relatedShipmentNumber", e.getRelatedShipmentNumber());
+            row.put("returnReason", e.getReturnReason());
+            row.put("itemCondition", e.getItemCondition());
+            row.put("createdAt", e.getCreatedAt());
+            row.put("createdBy", e.getCreatedBy());
+            return row;
+        }).sorted(Comparator.comparing(r -> (Long) r.get("id"), Comparator.reverseOrder())).toList();
+        return ResponseEntity.ok(rows);
+    }
+
+    @GetMapping("/returns/{returnId}")
+    public ResponseEntity<OnlineSaleReturnPrintResponse> getReturnForPrint(@PathVariable Long returnId)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(saleService.getReturnForPrint(returnId));
     }
 
     // ─── Nuevo flujo: procesar ventas revisando inventario BODEGA_PT primero ────
@@ -164,6 +200,80 @@ public class OnlineSaleController {
         }
         List<Long> saleIds = saleIdInts.stream().map(Integer::longValue).toList();
         return ResponseEntity.ok(onlineSaleProductionOrderService.previewFulfillment(saleIds));
+    }
+
+    @GetMapping("/{id}/items-preview")
+    public ResponseEntity<OnlineSaleProductionOrderService.SaleItemsPreview> getItemsPreview(@PathVariable Long id)
+            throws BusinessException {
+        return ResponseEntity.ok(onlineSaleProductionOrderService.previewSaleItems(id));
+    }
+
+    @PostMapping("/{id}/resolve-mixed")
+    public ResponseEntity<Map<String, Object>> resolveMixedSale(@PathVariable Long id,
+                                                                @RequestBody Map<String, Object> request)
+            throws BusinessException {
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rawItems = (List<Map<String, Object>>) request.get("items");
+        if (rawItems == null || rawItems.isEmpty()) {
+            throw new BusinessException("Debe enviar la lista de items");
+        }
+        List<OnlineSaleProductionOrderService.ItemResolution> resolutions = rawItems.stream()
+                .map(it -> {
+                    Object idObj = it.get("saleItemId");
+                    Long itemId = idObj instanceof Number ? ((Number) idObj).longValue() : null;
+                    String action = it.get("action") != null ? it.get("action").toString() : null;
+                    return new OnlineSaleProductionOrderService.ItemResolution(itemId, action);
+                })
+                .toList();
+
+        OnlineSaleProductionOrderService.ResolveMixedResult result =
+                onlineSaleProductionOrderService.resolveMixedSale(id, resolutions);
+
+        if (result.productionOrderId() != null) {
+            try {
+                List<ProductionOrderItemEntity> opItems = productionOrderItemRepository.findByProductionOrderId(result.productionOrderId());
+                for (ProductionOrderItemEntity item : opItems) {
+                    if (item.getProductId() != null) {
+                        int totalQuantity = item.getQuantity() != null ? item.getQuantity() : 0;
+                        if (totalQuantity > 0) {
+                            smartMaterialRequestService.checkAndGenerateRequestsForProductionOrder(
+                                    result.productionOrderId(), item.getProductId(),
+                                    BigDecimal.valueOf(totalQuantity));
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.error("Error al generar materiales para {}: {}", result.productionOrderCode(), e.getMessage());
+            }
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("originalSaleId", result.originalSaleId());
+        body.put("originalSaleNumber", result.originalSaleNumber());
+        body.put("childSaleId", result.childSaleId());
+        body.put("childSaleNumber", result.childSaleNumber());
+        body.put("productionOrderId", result.productionOrderId());
+        body.put("productionOrderCode", result.productionOrderCode());
+        body.put("dispatchedItems", result.dispatchedItems());
+        body.put("producedItems", result.producedItems());
+        body.put("message", result.message());
+        body.put("kioskOutflows", result.kioskOutflows() != null
+                ? result.kioskOutflows().stream().map(k -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("ticketNumber", k.ticketNumber());
+            row.put("materialId", k.materialId());
+            row.put("materialName", k.materialName());
+            row.put("kioskLocationId", k.kioskLocationId());
+            row.put("kioskName", k.kioskName());
+            row.put("quantity", k.quantity());
+            row.put("saleNumber", k.saleNumber());
+            row.put("onlineSaleId", k.onlineSaleId());
+            return row;
+        }).toList()
+                : List.of());
+        body.put("tasksGenerated", false);
+        body.put("nextStep", "Genera tareas desde Centro (Tareas por mesa) si hay OP creada.");
+        return ResponseEntity.ok(body);
     }
 
     /**
@@ -187,8 +297,8 @@ public class OnlineSaleController {
         OnlineSaleProductionOrderService.FulfillmentResult fulfillment =
                 onlineSaleProductionOrderService.processWithInventoryCheck(saleIds);
 
-        // Generar tareas y materiales para las OPs creadas
-        List<String> tasksErrors = new ArrayList<>();
+        // Generar materiales para las OPs creadas (tareas se generan aparte desde Centro / plan del dia)
+        // Regla: crear OP no debe asignar mesas automáticamente.
         for (OnlineSaleProductionOrderService.CreateResult created : fulfillment.productionOrdersCreated()) {
             try {
                 List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(created.productionOrderId());
@@ -204,12 +314,6 @@ public class OnlineSaleController {
                 }
             } catch (Exception e) {
                 log.error("Error al generar materiales para {}: {}", created.productionOrderCode(), e.getMessage());
-            }
-            try {
-                productionTaskGenerationService.generateTasks(created.productionOrderId(), false);
-            } catch (Exception e) {
-                tasksErrors.add(created.productionOrderCode() + ": " + e.getMessage());
-                log.error("Error al generar tareas para {}: {}", created.productionOrderCode(), e.getMessage(), e);
             }
         }
 
@@ -234,7 +338,7 @@ public class OnlineSaleController {
         // Mensaje resumen
         StringBuilder msg = new StringBuilder();
         if (fulfillment.fulfilledCount() > 0) {
-            msg.append(fulfillment.fulfilledCount()).append(" venta(s) despachada(s) desde inventario. ");
+            msg.append(fulfillment.fulfilledCount()).append(" venta(s) lista(s) para despacho desde inventario. ");
         }
         if (fulfillment.productionCount() > 0) {
             List<String> codes = fulfillment.productionOrdersCreated().stream()
@@ -242,11 +346,24 @@ public class OnlineSaleController {
             msg.append(fulfillment.productionCount()).append(" OP(s) creada(s): ").append(String.join(", ", codes)).append(". ");
         }
         if (!fulfillment.bodegaPtFound()) {
-            msg.append("⚠ No se encontró BODEGA_PT — todas las ventas fueron a producción.");
+            msg.append("⚠ No se encontró BODEGA_PT ni Bodega Devoluciones — todas las ventas fueron a producción.");
         }
         if (fulfillment.fulfilledCount() == 0 && fulfillment.productionCount() == 0) {
             msg.append("No se procesó ninguna venta.");
         }
+
+        List<Map<String, Object>> kioskOutflowRows = fulfillment.kioskOutflows().stream().map(k -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("ticketNumber", k.ticketNumber());
+            row.put("materialId", k.materialId());
+            row.put("materialName", k.materialName());
+            row.put("kioskLocationId", k.kioskLocationId());
+            row.put("kioskName", k.kioskName());
+            row.put("quantity", k.quantity());
+            row.put("saleNumber", k.saleNumber());
+            row.put("onlineSaleId", k.onlineSaleId());
+            return row;
+        }).toList();
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("message", msg.toString().trim());
@@ -255,10 +372,9 @@ public class OnlineSaleController {
         body.put("fulfilledCount", fulfillment.fulfilledCount());
         body.put("productionCount", fulfillment.productionCount());
         body.put("bodegaPtFound", fulfillment.bodegaPtFound());
-        body.put("tasksGenerated", tasksErrors.isEmpty());
-        if (!tasksErrors.isEmpty()) {
-            body.put("tasksError", String.join("; ", tasksErrors));
-        }
+        body.put("kioskOutflows", kioskOutflowRows);
+        body.put("tasksGenerated", false);
+        body.put("nextStep", "Genera tareas desde Centro (Tareas por mesa) para asignar mesas segun el plan del dia.");
         return ResponseEntity.ok(body);
     }
 
@@ -274,9 +390,10 @@ public class OnlineSaleController {
         }
 
         List<Long> saleIds = saleIdInts.stream().map(Integer::longValue).toList();
-        List<OnlineSaleProductionOrderService.CreateResult> createdList = onlineSaleProductionOrderService.createFromSaleIds(saleIds);
+        OnlineSaleProductionOrderService.OplCreationResult oplBatch =
+                onlineSaleProductionOrderService.createOplFromSales(saleIds);
+        List<OnlineSaleProductionOrderService.CreateResult> createdList = oplBatch.productionOrders();
 
-        List<String> tasksErrors = new ArrayList<>();
         for (OnlineSaleProductionOrderService.CreateResult created : createdList) {
             try {
                 List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(created.productionOrderId());
@@ -303,17 +420,23 @@ public class OnlineSaleController {
             } catch (Exception e) {
                 log.error("Error al generar solicitudes de materiales para {}: {}", created.productionOrderCode(), e.getMessage());
             }
-
-            try {
-                productionTaskGenerationService.generateTasks(created.productionOrderId(), false);
-            } catch (Exception e) {
-                tasksErrors.add(created.productionOrderCode() + ": " + e.getMessage());
-                log.error("Error al generar tareas para {}: {}", created.productionOrderCode(), e.getMessage(), e);
-            }
         }
 
         List<String> codes = createdList.stream().map(OnlineSaleProductionOrderService.CreateResult::productionOrderCode).toList();
         int totalSales = createdList.stream().mapToInt(OnlineSaleProductionOrderService.CreateResult::salesCount).sum();
+
+        List<Map<String, Object>> kioskRows = oplBatch.kioskOutflows().stream().map(k -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("ticketNumber", k.ticketNumber());
+            row.put("materialId", k.materialId());
+            row.put("materialName", k.materialName());
+            row.put("kioskLocationId", k.kioskLocationId());
+            row.put("kioskName", k.kioskName());
+            row.put("quantity", k.quantity());
+            row.put("saleNumber", k.saleNumber());
+            row.put("onlineSaleId", k.onlineSaleId());
+            return row;
+        }).toList();
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("message", createdList.size() == 1
@@ -322,10 +445,9 @@ public class OnlineSaleController {
         body.put("ordersCreated", createdList.size());
         body.put("productionOrderCodes", codes);
         body.put("salesCount", totalSales);
-        body.put("tasksGenerated", tasksErrors.isEmpty());
-        if (!tasksErrors.isEmpty()) {
-            body.put("tasksError", String.join("; ", tasksErrors));
-        }
+        body.put("kioskOutflows", kioskRows);
+        body.put("tasksGenerated", false);
+        body.put("nextStep", "Genera tareas desde Centro (Tareas por mesa) para asignar mesas segun el plan del dia.");
         return ResponseEntity.ok(body);
     }
 }

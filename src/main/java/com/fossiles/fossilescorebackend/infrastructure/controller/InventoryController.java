@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.InventoryLocationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InventoryUpdateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.InventoryOutflowRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InventoryTransferRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.BulkInventoryTransferRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InventoryAdjustmentRequest;
@@ -10,6 +11,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.InventoryKardex
 import com.fossiles.fossilescorebackend.application.dto.response.InventoryLocationResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialInventoryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialInventoryKardexResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.InventoryOutflowResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.InventoryTransferResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.InventoryAdjustmentResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -193,7 +195,15 @@ public class InventoryController {
     // ========== MATERIAL KARDEX (SIN UBICACIÓN) ==========
 
     @GetMapping("/materials/{materialId}/kardex")
-    public ResponseEntity<List<MaterialInventoryKardexResponse>> getMaterialKardex(@PathVariable Long materialId) {
+    public ResponseEntity<?> getMaterialKardex(
+            @PathVariable Long materialId,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size) {
+        if (page != null || size != null) {
+            int p = page != null ? page : 0;
+            int s = size != null ? size : 30;
+            return ResponseEntity.ok(inventoryService.getMaterialKardexPage(materialId, p, s));
+        }
         List<MaterialInventoryKardexResponse> kardex = inventoryService.getMaterialKardex(materialId);
         return ResponseEntity.ok(kardex);
     }
@@ -222,6 +232,14 @@ public class InventoryController {
         java.util.Map<String, Object> response = new java.util.HashMap<>();
         response.put("message", "Inventario de materiales inicializado correctamente");
         response.put("createdCount", createdCount);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/outflows")
+    public ResponseEntity<InventoryOutflowResponse> registerOutflow(
+            @Valid @RequestBody InventoryOutflowRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        InventoryOutflowResponse response = inventoryService.registerKioskOutflow(request);
         return ResponseEntity.ok(response);
     }
 

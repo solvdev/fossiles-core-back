@@ -8,13 +8,11 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Uo
 import com.fossiles.fossilescorebackend.infrastructure.service.S3StorageService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.CacheControl;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -105,11 +103,11 @@ public class PublicMaterialController {
             } catch (Exception ignored) {}
         }
 
+        byte[] body = file.getBytes() != null ? file.getBytes() : new byte[0];
         return ResponseEntity.ok()
                 .contentType(mediaType)
                 .cacheControl(CacheControl.maxAge(Duration.ofHours(6)).cachePublic())
-                .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(file.getBytes() != null ? file.getBytes().length : 0))
-                .body(file.getBytes() != null ? file.getBytes() : new byte[0]);
+                .body(body);
     }
 
     @PostMapping("/{id}/image")
@@ -144,14 +142,13 @@ public class PublicMaterialController {
         return ResponseEntity.ok(response);
     }
 
+    /**
+     * Expone la URL almacenada en BD (normalmente HTTPS público en S3).
+     * El endpoint {@code GET /{id}/image} sigue disponible como proxy cuando haga falta.
+     */
     private String buildPublicImageUrl(MaterialEntity entity) {
         if (entity == null || entity.getId() == null) return "";
         String raw = entity.getImageUrl();
-        if (raw == null || raw.trim().isEmpty()) return "";
-        return ServletUriComponentsBuilder.fromCurrentContextPath()
-                .path("/api/public/materials/")
-                .path(String.valueOf(entity.getId()))
-                .path("/image")
-                .toUriString();
+        return raw != null ? raw.trim() : "";
     }
 }

@@ -29,6 +29,7 @@ public class TaskResponse {
     private String observations;
     // Scheduling
     private Integer desk;
+    private Integer workedDesk;
     private Double estimatedHours;
     private LocalDate scheduledDate;
     private LocalDate deliveryDate;

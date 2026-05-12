@@ -92,5 +92,23 @@ public class DistribucionController {
         distribucionService.deleteEnvio(id);
         return ResponseEntity.noContent().build();
     }
+
+    /**
+     * Registra salida de Bodega PT (después de finalizar distribución).
+     */
+    @PostMapping("/envios/{id}/enviar")
+    public ResponseEntity<EnvioResponse> enviarEnvio(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distribucionService.enviarEnvio(id));
+    }
+
+    /**
+     * Ingresa inventario al kiosko al confirmar recepción del envío en tránsito.
+     */
+    @PostMapping("/envios/{id}/confirmar-recepcion")
+    public ResponseEntity<EnvioResponse> confirmarRecepcionEnvio(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distribucionService.confirmarRecepcionEnvio(id));
+    }
 }
 

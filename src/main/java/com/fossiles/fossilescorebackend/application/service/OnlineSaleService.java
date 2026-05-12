@@ -1,18 +1,24 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.OnlineSaleRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.OnlineSaleExchangeRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.OnlineSaleDailySummaryResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.OnlineSaleReturnPrintResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OnlineSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleReturnEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleReturnLineEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ReturnInventoryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleReturnLineRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleReturnRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ReturnInventoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
@@ -22,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -35,6 +42,8 @@ public class OnlineSaleService {
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
     private final ReturnInventoryRepository returnInventoryRepository;
+    private final OnlineSaleReturnRepository onlineSaleReturnRepository;
+    private final OnlineSaleReturnLineRepository onlineSaleReturnLineRepository;
     private final SecurityUtil securityUtil;
     private final OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
 
@@ -42,9 +51,10 @@ public class OnlineSaleService {
     static {
         PAYMENT_METHOD_DISPLAY.put("TRANSFERENCIA_PENDIENTE", "Transferencia Pendiente");
         PAYMENT_METHOD_DISPLAY.put("TRANSFERENCIA_LISTA",     "Transferencia Lista");
-        PAYMENT_METHOD_DISPLAY.put("VISALINK_PAGADO",         "Tarjeta");
-        PAYMENT_METHOD_DISPLAY.put("VISALINK_PENDIENTE",      "Tarjeta Pendiente");
-        PAYMENT_METHOD_DISPLAY.put("TARJETA_PAGADO",          "Tarjeta Web Pagado");
+        PAYMENT_METHOD_DISPLAY.put("VISALINK_PAGADO",         "Visalink");
+        PAYMENT_METHOD_DISPLAY.put("VISALINK_PENDIENTE",      "Visalink Pendiente");
+        // Tarjeta física (débito/crédito). Se muestra como TD/TC para distinguirla de Visalink.
+        PAYMENT_METHOD_DISPLAY.put("TARJETA_PAGADO",          "TD/TC");
         PAYMENT_METHOD_DISPLAY.put("DEPOSITO_LISTO",          "Depósito Listo");
         PAYMENT_METHOD_DISPLAY.put("DEPOSITO_PENDIENTE",      "Depósito Pendiente");
         PAYMENT_METHOD_DISPLAY.put("CONTRA_ENTREGA",          "Contra Entrega");
@@ -76,7 +86,7 @@ public class OnlineSaleService {
                 net = net.add(price.multiply(BigDecimal.valueOf(qty)));
             }
             entity.setNetAmount(net);
-            // totalAmount se calcula en @PrePersist: net + shipping
+            // totalAmount se calcula en @PrePersist: net + shipping (o se fuerza si viene shippingCost custom)
             copyFirstItemToLegacy(entity, itemReqs.get(0));
         } else if (req.getProductId() != null) {
             // Legacy: un solo producto
@@ -84,6 +94,14 @@ public class OnlineSaleService {
             if (entity.getNetAmount() == null && entity.getUnitPrice() != null && entity.getQuantity() != null) {
                 entity.setNetAmount(entity.getUnitPrice().multiply(BigDecimal.valueOf(entity.getQuantity())));
             }
+        }
+
+        // Si el request trae shippingCost (editable en formulario), respetarlo y recalcular total.
+        // Esto evita que @PrePersist lo sobrescriba con la regla fija Q30/Q15.
+        if (req.getShippingCost() != null && entity.getNetAmount() != null) {
+            entity.setShippingCost(req.getShippingCost());
+            entity.setTotalAmount(entity.getNetAmount().add(req.getShippingCost()));
+            entity.setSkipAmountCalculation(true);
         }
 
         OnlineSaleEntity saved = saleRepository.save(entity);
@@ -128,6 +146,13 @@ public class OnlineSaleService {
             if (entity.getUnitPrice() != null && entity.getQuantity() != null) {
                 entity.setNetAmount(entity.getUnitPrice().multiply(BigDecimal.valueOf(entity.getQuantity())));
             }
+        }
+
+        // Si el request trae shippingCost, respetarlo y recalcular total.
+        if (req.getShippingCost() != null && entity.getNetAmount() != null) {
+            entity.setShippingCost(req.getShippingCost());
+            entity.setTotalAmount(entity.getNetAmount().add(req.getShippingCost()));
+            entity.setSkipAmountCalculation(true);
         }
 
         entity.setUpdatedBy(securityUtil.getCurrentUserId());
@@ -430,18 +455,45 @@ public class OnlineSaleService {
             throw new BusinessException("Solo se pueden devolver ventas en estado ENVIADO o ENTREGADO. Estado actual: " + sale.getStatus());
         }
 
+        // Asegurar número de envío para relacionar documento de devolución
+        onlineSaleShipmentNumberService.assignIfMissing(sale);
+
         sale.setStatus("DEVOLUCION");
         sale.setObservations((sale.getObservations() != null ? sale.getObservations() + " | " : "")
                 + "DEVOLUCIÓN: " + (reason != null ? reason : "Sin razón especificada"));
         sale.setUpdatedBy(securityUtil.getCurrentUserId());
         saleRepository.save(sale);
 
+        String condition = (itemCondition != null && !itemCondition.isBlank()) ? itemCondition : "BUENO";
+
+        // Crear cabecera de devolución (evento imprimible)
+        OnlineSaleReturnEntity header = OnlineSaleReturnEntity.builder()
+                .onlineSaleId(id)
+                .relatedShipmentNumber(sale.getShipmentNumber())
+                .returnReason(reason)
+                .itemCondition(condition)
+                .createdBy(securityUtil.getCurrentUserId())
+                .build();
+        OnlineSaleReturnEntity savedHeader = onlineSaleReturnRepository.save(header);
+
         // Crear registros en inventario de devoluciones a partir de los items
-        String condition = itemCondition != null ? itemCondition : "BUENO";
         List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(id);
 
         if (items != null && !items.isEmpty()) {
             for (OnlineSaleItemEntity item : items) {
+                OnlineSaleReturnLineEntity line = OnlineSaleReturnLineEntity.builder()
+                        .returnId(savedHeader.getId())
+                        .productId(item.getProductId())
+                        .productCode(item.getProductCode())
+                        .productName(item.getProductName())
+                        .colorId(item.getColorId())
+                        .colorName(item.getColorName())
+                        .size(item.getSize())
+                        .quantity(item.getQuantity())
+                        .unitPrice(item.getUnitPrice())
+                        .build();
+                onlineSaleReturnLineRepository.save(line);
+
                 ReturnInventoryEntity returnEntry = ReturnInventoryEntity.builder()
                         .onlineSaleId(id)
                         .productId(item.getProductId())
@@ -460,6 +512,18 @@ public class OnlineSaleService {
                 returnInventoryRepository.save(returnEntry);
             }
         } else {
+            onlineSaleReturnLineRepository.save(OnlineSaleReturnLineEntity.builder()
+                    .returnId(savedHeader.getId())
+                    .productId(sale.getProductId())
+                    .productCode(sale.getProductCode())
+                    .productName(sale.getProductName())
+                    .colorId(sale.getColorId())
+                    .colorName(sale.getColorName())
+                    .size(sale.getSize())
+                    .quantity(sale.getQuantity())
+                    .unitPrice(sale.getUnitPrice())
+                    .build());
+
             // Fallback legacy: datos directos de la venta
             ReturnInventoryEntity returnEntry = ReturnInventoryEntity.builder()
                     .onlineSaleId(id)
@@ -546,6 +610,111 @@ public class OnlineSaleService {
     }
 
     /**
+     * Crear un CAMBIO (nuevo envío a Q0) relacionado a una venta original.
+     * Genera un nuevo shipmentNumber (ENVL-*) y guarda items con precio 0.
+     */
+    public OnlineSaleResponse createExchange(Long originalOnlineSaleId, OnlineSaleExchangeRequest req)
+            throws ResourceNotFoundException, BusinessException {
+        OnlineSaleEntity original = saleRepository.findById(originalOnlineSaleId)
+                .orElseThrow(() -> new ResourceNotFoundException("Online Sale", originalOnlineSaleId));
+
+        List<OnlineSaleExchangeRequest.ExchangeItemRequest> itemsReq = req != null ? req.getItems() : null;
+        List<OnlineSaleExchangeRequest.ExchangeItemRequest> safeItems = (itemsReq == null) ? List.of() : itemsReq;
+        List<OnlineSaleExchangeRequest.ExchangeItemRequest> normalizedItems = safeItems.stream()
+                .filter(it -> it != null && it.getProductId() != null && (it.getQuantity() == null || it.getQuantity() > 0))
+                .toList();
+        if (normalizedItems.isEmpty()) {
+            throw new BusinessException("Debe especificar al menos un item para el CAMBIO");
+        }
+
+        OnlineSaleEntity exchange = new OnlineSaleEntity();
+        exchange.setSkipAmountCalculation(true);
+        exchange.setStatus("PENDIENTE");
+        exchange.setInProductionOrder(false);
+        exchange.setProductionOrderId(null);
+        exchange.setSaleDate(LocalDate.now());
+
+        exchange.setCustomerName(original.getCustomerName());
+        exchange.setAddress(original.getAddress());
+        exchange.setPhone(original.getPhone());
+        exchange.setPhone2(original.getPhone2());
+        exchange.setPackaging(original.getPackaging());
+        exchange.setInvoiceTaxId(original.getInvoiceTaxId());
+        exchange.setSocialNetwork(original.getSocialNetwork());
+        exchange.setEmail(original.getEmail());
+        exchange.setSalesperson(original.getSalesperson());
+
+        // Pago ya fue realizado en la venta original → este envío es Q0
+        exchange.setPaymentMethod(original.getPaymentMethod());
+        exchange.setNetAmount(BigDecimal.ZERO);
+        exchange.setShippingCost(BigDecimal.ZERO);
+        exchange.setTotalAmount(BigDecimal.ZERO);
+
+        if (req != null && req.getShippingCarrier() != null && !req.getShippingCarrier().isBlank()) {
+            exchange.setShippingCarrier(req.getShippingCarrier().trim());
+        } else {
+            exchange.setShippingCarrier(original.getShippingCarrier());
+        }
+        if (req != null && req.getGuideNumber() != null && !req.getGuideNumber().isBlank()) {
+            exchange.setGuideNumber(req.getGuideNumber().trim());
+        }
+
+        String baseObs = original.getObservations() != null ? original.getObservations() : "";
+        String rel = original.getShipmentNumber() != null ? ("ENVIO_REL=" + original.getShipmentNumber()) : ("VENTA_REL=" + original.getId());
+        String changeTag = "CAMBIO_Q0(" + rel + ")";
+        String extra = (req != null && req.getObservations() != null && !req.getObservations().isBlank())
+                ? " " + req.getObservations().trim()
+                : "";
+        exchange.setObservations((baseObs.isBlank() ? "" : baseObs + " | ") + changeTag + extra);
+
+        exchange.setCreatedBy(securityUtil.getCurrentUserId());
+
+        // Generar número correlativo del día (igual que create)
+        long count = saleRepository.countBySaleDate(exchange.getSaleDate()) + 1;
+        exchange.setSaleNumber(String.valueOf(count));
+
+        OnlineSaleEntity saved = saleRepository.save(exchange);
+
+        // Guardar items con precio 0, pero mantener producto/color/talla/cantidad
+        for (OnlineSaleExchangeRequest.ExchangeItemRequest ir : normalizedItems) {
+            OnlineSaleItemEntity item = OnlineSaleItemEntity.builder()
+                    .onlineSaleId(saved.getId())
+                    .productId(ir.getProductId())
+                    .colorId(ir.getColorId())
+                    .size(ir.getSize())
+                    .quantity(ir.getQuantity() != null ? ir.getQuantity() : 1)
+                    .unitPrice(BigDecimal.ZERO)
+                    .build();
+
+            enrichItemWithProductAndColor(item);
+            itemRepository.save(item);
+        }
+
+        // Asegurar shipmentNumber nuevo para imprimir/paquetería
+        onlineSaleShipmentNumberService.assignIfMissing(saved);
+        saved.setUpdatedBy(securityUtil.getCurrentUserId());
+        saleRepository.save(saved);
+
+        return toResponse(saved);
+    }
+
+    private void enrichItemWithProductAndColor(OnlineSaleItemEntity item) {
+        if (item.getProductId() != null) {
+            ProductEntity product = productRepository.findById(item.getProductId()).orElse(null);
+            if (product != null) {
+                item.setProductCode(product.getCode());
+                item.setProductName(product.getName());
+            }
+        }
+        if (item.getColorId() != null) {
+            ColorEntity color = colorRepository.findById(item.getColorId()).orElse(null);
+            if (color != null) {
+                item.setColorName(color.getName());
+            }
+        }
+    }
+
+    /**
      * Obtener inventario de devoluciones por rango de fechas.
      */
     @Transactional(readOnly = true)
@@ -554,6 +723,61 @@ public class OnlineSaleService {
             return returnInventoryRepository.findByReturnDateBetweenOrderByReturnDateDesc(startDate, endDate);
         }
         return returnInventoryRepository.findAllByOrderByReturnDateDesc();
+    }
+
+    @Transactional(readOnly = true)
+    public List<OnlineSaleReturnEntity> getReturnEvents(LocalDate startDate, LocalDate endDate) {
+        if (startDate != null && endDate != null) {
+            LocalDateTime start = startDate.atStartOfDay();
+            LocalDateTime end = endDate.plusDays(1).atStartOfDay().minusNanos(1);
+            return onlineSaleReturnRepository.findByCreatedAtBetweenOrderByIdDesc(start, end);
+        }
+        return onlineSaleReturnRepository.findAllByOrderByIdDesc();
+    }
+
+    @Transactional(readOnly = true)
+    public OnlineSaleReturnPrintResponse getReturnForPrint(Long returnId) throws ResourceNotFoundException {
+        OnlineSaleReturnEntity header = onlineSaleReturnRepository.findById(returnId)
+                .orElseThrow(() -> new ResourceNotFoundException("Return", returnId));
+        OnlineSaleEntity sale = saleRepository.findById(header.getOnlineSaleId())
+                .orElseThrow(() -> new ResourceNotFoundException("Online Sale", header.getOnlineSaleId()));
+
+        List<OnlineSaleReturnLineEntity> lines = onlineSaleReturnLineRepository.findByReturnIdOrderByIdAsc(returnId);
+        if (lines == null) lines = List.of();
+        List<OnlineSaleReturnPrintResponse.ReturnLine> items = lines.stream()
+                .map(l -> OnlineSaleReturnPrintResponse.ReturnLine.builder()
+                        .productId(l.getProductId())
+                        .productCode(l.getProductCode())
+                        .productName(l.getProductName())
+                        .colorId(l.getColorId())
+                        .colorName(l.getColorName())
+                        .size(l.getSize())
+                        .quantity(l.getQuantity())
+                        .unitPrice(l.getUnitPrice())
+                        .subtotal(l.getSubtotal())
+                        .build())
+                .toList();
+
+        BigDecimal total = items.stream()
+                .map(it -> it.getSubtotal() != null ? it.getSubtotal() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        LocalDate returnDate = header.getCreatedAt() != null ? header.getCreatedAt().toLocalDate() : LocalDate.now();
+        return OnlineSaleReturnPrintResponse.builder()
+                .returnId(header.getId())
+                .onlineSaleId(sale.getId())
+                .saleNumber(sale.getSaleNumber())
+                .relatedShipmentNumber(header.getRelatedShipmentNumber())
+                .customerName(sale.getCustomerName())
+                .address(sale.getAddress())
+                .phone(sale.getPhone())
+                .phone2(sale.getPhone2())
+                .returnReason(header.getReturnReason())
+                .itemCondition(header.getItemCondition())
+                .returnDate(returnDate)
+                .totalAmount(total)
+                .items(items)
+                .build();
     }
 
     // ─── Vincular a OP ──────────────────────────────────────────────

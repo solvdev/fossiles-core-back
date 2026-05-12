@@ -32,6 +32,10 @@ public class ProductionOrderEntity {
     @Column(name = "customer_name", length = 200)
     private String customerName; // Para casos donde no hay cliente registrado
 
+    /** Número de envío OPV vendedor (ENVP-00001), correlativo aparte del código de orden. */
+    @Column(name = "vendor_shipment_number", length = 30)
+    private String vendorShipmentNumber;
+
     @Column(name = "seller_name", length = 150)
     private String sellerName; // Vendedor
 
@@ -56,6 +60,10 @@ public class ProductionOrderEntity {
 
     @Column(length = 20)
     private String status; // PENDING, IN_PROGRESS, IN_QA, COMPLETED, CANCELLED
+
+    /** Prioridad al distribuir día (menor número = antes en cola entre OP). */
+    @Column(name = "scheduling_priority")
+    private Integer schedulingPriority;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;

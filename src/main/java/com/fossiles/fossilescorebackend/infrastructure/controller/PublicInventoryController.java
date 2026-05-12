@@ -1,7 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.PublicMaterialMovementRequest;
-import com.fossiles.fossilescorebackend.application.dto.response.MaterialInventoryKardexResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialInventoryResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -14,7 +13,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
-import java.util.List;
 import java.util.Locale;
 
 @RestController
@@ -31,8 +29,20 @@ public class PublicInventoryController {
         return ResponseEntity.ok(inventoryService.getMaterialInventory(materialId));
     }
 
+    /**
+     * Sin {@code page} ni {@code size}: lista completa (compatibilidad con clientes existentes).
+     * Con cualquiera de los dos parámetros: respuesta paginada ({@code content}, {@code totalElements}, etc.).
+     */
     @GetMapping("/{materialId}/kardex")
-    public ResponseEntity<List<MaterialInventoryKardexResponse>> getMaterialKardex(@PathVariable Long materialId) {
+    public ResponseEntity<?> getMaterialKardex(
+            @PathVariable Long materialId,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size) {
+        if (page != null || size != null) {
+            int p = page != null ? page : 0;
+            int s = size != null ? size : 30;
+            return ResponseEntity.ok(inventoryService.getMaterialKardexPage(materialId, p, s));
+        }
         return ResponseEntity.ok(inventoryService.getMaterialKardex(materialId));
     }
 

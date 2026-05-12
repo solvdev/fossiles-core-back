@@ -20,6 +20,12 @@ public class ProductionOrderResponse {
     private String orderType; // CINCHOS, MARCAS, NORMAL, DISTRIBUTION
     private Long customerId;
     private String customerName;
+    /** Datos del cliente maestro (si hay customerId); para documentos de envío. */
+    private String customerAddress;
+    private String customerPhone;
+    private String customerTaxId;
+    /** Correlativo envío OPV vendedor (ENVP-nnnnn). */
+    private String vendorShipmentNumber;
     private String sellerName;
     private LocalDate startDate;
     private LocalDate deliveryDate;
@@ -28,6 +34,7 @@ public class ProductionOrderResponse {
     private LocalDateTime materialsConsumedAt;
     private String status; // PENDING, IN_PROGRESS, IN_QA, COMPLETED, CANCELLED
     private Long distributionId;
+    private Integer schedulingPriority;
     private BigDecimal shippingCost;
     private List<PackingItemResponse> packingItems;
     private String distributionNumber;

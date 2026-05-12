@@ -23,6 +23,9 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     List<TaskEntity> findByStatus(String status);
     List<TaskEntity> findByDeskAndScheduledDate(Integer desk, LocalDate scheduledDate);
 
+    /** Tareas sin mesa pero con fecha (cola / pendiente de asignar). */
+    List<TaskEntity> findByDeskIsNullAndScheduledDate(LocalDate scheduledDate);
+
     @Query("SELECT t FROM TaskEntity t WHERE t.status IN ('PENDING', 'IN_PROGRESS') ORDER BY t.scheduledDate, t.priority, t.deliveryDate")
     List<TaskEntity> findActiveTasksOrdered();
 

@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -187,15 +188,44 @@ public class S3StorageService {
             throw new IllegalArgumentException("No se pudo resolver la key de S3 desde la URL");
         }
 
+        URI uri;
+        try {
+            uri = new URI(url.trim());
+        } catch (URISyntaxException e) {
+            throw new IllegalArgumentException("URL inválida");
+        }
+
+        String host = uri.getHost();
+        String targetBucket = bucket;
+        String clientRegion = region;
+
+        Optional<String> bucketFromVirtualHost = extractBucketFromVirtualHostedStyle(host);
+        if (bucketFromVirtualHost.isPresent()) {
+            targetBucket = bucketFromVirtualHost.get();
+            Optional<String> regionFromHost = extractRegionFromS3VirtualHost(host);
+            if (regionFromHost.isPresent()) {
+                clientRegion = regionFromHost.get();
+            }
+        } else {
+            ParsedPathStyleS3 pathStyle = tryParsePathStyle(uri);
+            if (pathStyle != null) {
+                targetBucket = pathStyle.bucket();
+                key = pathStyle.key();
+                if (StringUtils.hasText(pathStyle.region())) {
+                    clientRegion = pathStyle.region();
+                }
+            }
+        }
+
         S3ClientBuilder s3Builder = S3Client.builder()
-                .region(Region.of(region));
+                .region(Region.of(clientRegion));
         if (StringUtils.hasText(accessKeyId) && StringUtils.hasText(secretAccessKey)) {
             AwsBasicCredentials credentials = AwsBasicCredentials.create(accessKeyId, secretAccessKey);
             s3Builder.credentialsProvider(StaticCredentialsProvider.create(credentials));
         }
         S3Client s3 = s3Builder.build();
         GetObjectRequest getRequest = GetObjectRequest.builder()
-                .bucket(bucket)
+                .bucket(targetBucket)
                 .key(key)
                 .build();
 
@@ -216,6 +246,10 @@ public class S3StorageService {
     private String extractS3KeyFromUrl(String url) {
         try {
             URI uri = new URI(url.trim());
+            ParsedPathStyleS3 pathStyle = tryParsePathStyle(uri);
+            if (pathStyle != null) {
+                return pathStyle.key();
+            }
             String path = uri.getPath();
             if (!StringUtils.hasText(path)) return "";
             String cleaned = path.startsWith("/") ? path.substring(1) : path;
@@ -224,6 +258,83 @@ public class S3StorageService {
         } catch (URISyntaxException ex) {
             return "";
         }
+    }
+
+    /**
+     * Host virtual-hosted: {@code bucket.s3.region.amazonaws.com} (y variantes .dualstack, etc.)
+     */
+    private Optional<String> extractBucketFromVirtualHostedStyle(String host) {
+        if (!StringUtils.hasText(host)) {
+            return Optional.empty();
+        }
+        int dotS3 = host.indexOf(".s3.");
+        if (dotS3 <= 0) {
+            return Optional.empty();
+        }
+        return Optional.of(host.substring(0, dotS3));
+    }
+
+    private Optional<String> extractRegionFromS3VirtualHost(String host) {
+        if (!StringUtils.hasText(host)) {
+            return Optional.empty();
+        }
+        int start = host.indexOf(".s3.");
+        if (start < 0) {
+            return Optional.empty();
+        }
+        int afterS3 = start + 4;
+        int end = host.indexOf(".amazonaws.com", afterS3);
+        if (end <= afterS3) {
+            return Optional.empty();
+        }
+        String maybe = host.substring(afterS3, end);
+        // dualstack: bucket.s3.dualstack.us-east-2.amazonaws.com
+        if (maybe.startsWith("dualstack.")) {
+            return Optional.of(maybe.substring("dualstack.".length()));
+        }
+        return StringUtils.hasText(maybe) ? Optional.of(maybe) : Optional.empty();
+    }
+
+    private record ParsedPathStyleS3(String bucket, String key, String region) {}
+
+    /**
+     * Path-style: {@code https://s3.region.amazonaws.com/bucket/key} o {@code https://s3.amazonaws.com/bucket/key}
+     */
+    private ParsedPathStyleS3 tryParsePathStyle(URI uri) {
+        String host = uri.getHost();
+        if (!StringUtils.hasText(host)) {
+            return null;
+        }
+        boolean pathStyleHost = "s3.amazonaws.com".equalsIgnoreCase(host)
+                || host.startsWith("s3.")
+                        && (host.endsWith(".amazonaws.com") || host.endsWith(".amazonaws.com.cn"));
+        if (!pathStyleHost) {
+            return null;
+        }
+        String path = uri.getPath();
+        if (!StringUtils.hasText(path) || "/".equals(path)) {
+            return null;
+        }
+        String trimmed = path.startsWith("/") ? path.substring(1) : path;
+        int slash = trimmed.indexOf('/');
+        if (slash <= 0 || slash >= trimmed.length() - 1) {
+            return null;
+        }
+        String b = trimmed.substring(0, slash);
+        String k = trimmed.substring(slash + 1);
+        if (!StringUtils.hasText(b) || !StringUtils.hasText(k)) {
+            return null;
+        }
+        String r = region;
+        if (host.startsWith("s3.") && !"s3.amazonaws.com".equalsIgnoreCase(host)) {
+            // s3.us-east-2.amazonaws.com
+            String after = host.substring("s3.".length());
+            int dotAmz = after.indexOf(".amazonaws");
+            if (dotAmz > 0) {
+                r = after.substring(0, dotAmz);
+            }
+        }
+        return new ParsedPathStyleS3(b, k, r);
     }
 
     private void validateConfig() {

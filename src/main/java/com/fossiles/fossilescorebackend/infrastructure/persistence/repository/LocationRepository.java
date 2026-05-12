@@ -17,5 +17,8 @@ public interface LocationRepository extends JpaRepository<LocationEntity, Long> 
     
     @EntityGraph(attributePaths = {"encargado"})
     java.util.List<LocationEntity> findAll();
+
+    @EntityGraph(attributePaths = {"encargado"})
+    java.util.List<LocationEntity> findByCategoriaIgnoreCaseOrderByNameAsc(String categoria);
 }
 

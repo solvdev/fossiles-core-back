@@ -54,6 +54,13 @@ public class TaskEntity {
 
     private Integer desk;
 
+    /**
+     * Historial: mesa donde realmente se trabajo la tarea.
+     * Se llena al completar la tarea y se conserva aunque desk sea limpiado.
+     */
+    @Column(name = "worked_desk")
+    private Integer workedDesk;
+
     @Column(name = "estimated_hours")
     private Double estimatedHours;
 

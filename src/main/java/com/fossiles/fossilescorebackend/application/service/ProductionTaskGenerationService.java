@@ -16,6 +16,7 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.Locale;
 import java.util.stream.Collectors;
 
 @Service
@@ -299,7 +300,7 @@ public class ProductionTaskGenerationService {
     }
 
     private SlotAssignment findEarliestSlot(SchedulingContext context,
-                                            LocalDate startDate, double requiredHours) {
+                                           LocalDate startDate, double requiredHours) {
         LocalDate currentDate = startDate;
         int maxDaysSearch = 365;
 

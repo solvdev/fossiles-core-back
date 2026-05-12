@@ -1,5 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.PlanWindowRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.DistributionQueueProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialsTaskViewResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaskResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaskTicketResponse;
@@ -7,6 +9,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.MaterialConsumptionService;
 import com.fossiles.fossilescorebackend.application.service.ProductionTaskGenerationService;
+import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import lombok.RequiredArgsConstructor;
@@ -54,6 +57,7 @@ public class TaskController {
     private final LeatherMovementRepository leatherMovementRepository;
     private final MaterialConsumptionService materialConsumptionService;
     private final ProductionTaskGenerationService productionTaskGenerationService;
+    private final TaskDeskBackfillService taskDeskBackfillService;
 
     // ==================== CRUD ====================
 
@@ -296,30 +300,95 @@ public class TaskController {
                 "message", "Redistribucion completada: " + sorted.size() + " tareas repartidas en " + activeDesks + " mesa(s)."));
     }
 
+    /**
+     * OPs elegibles para priorizar antes de "Distribuir día": OPV, OPK, OPI con tareas pendientes en la ventana,
+     * sin producción iniciada (ninguna tarea IN_PROGRESS de esa OP).
+     */
+    @GetMapping("/distribution-queue/production-orders")
+    public ResponseEntity<List<DistributionQueueProductionOrderResponse>> getDistributionQueueProductionOrders(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) Integer horizonDays) {
+
+        int days = horizonDays == null ? 5 : Math.max(1, horizonDays);
+        LocalDate selectionEndDate = startDate.plusDays(days - 1);
+        List<TaskEntity> pool = taskRepository.findPendingAndInProgressOrdered();
+
+        List<TaskEntity> pendingInWindow = pool.stream()
+                .filter(t -> "PENDING".equals(t.getStatus()))
+                .filter(t -> {
+                    LocalDate sd = t.getScheduledDate();
+                    if (sd == null) return true;
+                    return !sd.isBefore(startDate) && !sd.isAfter(selectionEndDate);
+                })
+                .collect(Collectors.toList());
+
+        Set<Long> candidatePoIds = pendingInWindow.stream()
+                .map(TaskEntity::getProductionOrderId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(HashSet::new));
+
+        Set<Long> inProgressPoIds = pool.stream()
+                .filter(t -> "IN_PROGRESS".equals(t.getStatus()))
+                .map(TaskEntity::getProductionOrderId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(HashSet::new));
+
+        List<DistributionQueueProductionOrderResponse> rows = new ArrayList<>();
+        for (Long poId : candidatePoIds) {
+            if (inProgressPoIds.contains(poId)) {
+                continue;
+            }
+            ProductionOrderEntity po = productionOrderRepository.findById(poId).orElse(null);
+            if (po == null) continue;
+            String st = po.getStatus() == null ? "" : po.getStatus().trim().toUpperCase();
+            if ("COMPLETED".equals(st) || "CANCELLED".equals(st) || "PRODUCED".equals(st)) {
+                continue;
+            }
+            String family = distributionFamilyLabel(po.getOrderType(), po.getCode());
+            if (family == null) {
+                continue;
+            }
+            rows.add(DistributionQueueProductionOrderResponse.builder()
+                    .id(po.getId())
+                    .code(po.getCode())
+                    .orderType(po.getOrderType())
+                    .family(family)
+                    .schedulingPriority(po.getSchedulingPriority())
+                    .customerName(po.getCustomerName())
+                    .productionStarted(false)
+                    .createdAt(po.getCreatedAt())
+                    .build());
+        }
+
+        // FIFO por defecto: OP creada antes va primero (luego el front puede mezclar con prioridad guardada).
+        rows.sort(Comparator
+                .comparing(DistributionQueueProductionOrderResponse::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(DistributionQueueProductionOrderResponse::getId, Comparator.nullsLast(Comparator.naturalOrder())));
+
+        return ResponseEntity.ok(rows);
+    }
+
     @PostMapping("/plan-window")
     @Transactional
     public ResponseEntity<Map<String, Object>> planWindowTasks(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam(required = false) Integer desksCount,
             @RequestParam(required = false) Integer horizonDays,
-            @RequestParam(required = false) Long productionOrderId) {
+            @RequestParam(required = false) Long productionOrderId,
+            @RequestBody(required = false) PlanWindowRequest planBody) {
+
+        mergeSchedulingPrioritiesFromRequest(planBody != null ? planBody.getSchedulingPriorities() : null);
 
         int maxConfiguredDesks = getNumDesks();
         int activeDesks = desksCount == null ? maxConfiguredDesks : Math.max(1, Math.min(desksCount, maxConfiguredDesks));
         int days = horizonDays == null ? 5 : Math.max(1, horizonDays);
 
-        LocalDate selectionEndDate = startDate.plusDays(days - 1);
-
         List<TaskEntity> pool = taskRepository.findPendingAndInProgressOrdered();
 
+        // Distribuir mesas: incluir TODAS las PENDING, sin filtrar por scheduledDate (pasado/hoy/futuro/null).
         List<TaskEntity> candidates = pool.stream()
                 .filter(t -> "PENDING".equals(t.getStatus()))
                 .filter(t -> productionOrderId == null || Objects.equals(t.getProductionOrderId(), productionOrderId))
-                .filter(t -> {
-                    LocalDate scheduledDate = t.getScheduledDate();
-                    if (scheduledDate == null) return true;
-                    return !scheduledDate.isBefore(startDate) && !scheduledDate.isAfter(selectionEndDate);
-                })
                 .collect(Collectors.toList());
 
         if (candidates.isEmpty()) {
@@ -329,68 +398,125 @@ public class TaskController {
                     "horizonDays", days,
                     "selectedTasks", 0,
                     "updatedTasks", 0,
-                    "message", "No hay tareas PENDIENTES para planificar en la ventana indicada."));
+                    "message", "No hay tareas PENDIENTES para distribuir a mesas."));
         }
 
-        Comparator<TaskEntity> byPriorityThenWorkload = Comparator
+        Set<Long> poIds = candidates.stream()
+                .map(TaskEntity::getProductionOrderId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(HashSet::new));
+        List<ProductionOrderEntity> pos = poIds.isEmpty() ? List.of() : productionOrderRepository.findAllById(poIds);
+        Map<Long, Integer> prioByPo = new HashMap<>();
+        Map<Long, LocalDateTime> createdAtByPo = new HashMap<>();
+        Map<Long, Boolean> isOplByPo = new HashMap<>();
+        for (ProductionOrderEntity po : pos) {
+            Long id = po.getId();
+            if (id == null) continue;
+            prioByPo.put(id, Optional.ofNullable(po.getSchedulingPriority()).orElse(Integer.MAX_VALUE));
+            createdAtByPo.put(id, po.getCreatedAt() != null ? po.getCreatedAt() : LocalDateTime.MAX);
+            isOplByPo.put(id, "VENTA_EN_LINEA".equalsIgnoreCase(String.valueOf(po.getOrderType() == null ? "" : po.getOrderType()).trim()));
+        }
+        for (Long id : poIds) {
+            prioByPo.putIfAbsent(id, Integer.MAX_VALUE);
+            createdAtByPo.putIfAbsent(id, LocalDateTime.MAX);
+            isOplByPo.putIfAbsent(id, false);
+        }
+
+        Comparator<Long> opQueueComparator = Comparator
+                .comparing((Long poId) -> prioByPo.getOrDefault(poId, Integer.MAX_VALUE))
+                .thenComparing(poId -> createdAtByPo.getOrDefault(poId, LocalDateTime.MAX), Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparingLong(poId -> poId != null ? poId : Long.MAX_VALUE);
+
+        Map<Long, List<TaskEntity>> tasksByPo = candidates.stream()
+                .filter(t -> t.getProductionOrderId() != null)
+                .collect(Collectors.groupingBy(TaskEntity::getProductionOrderId));
+
+        Comparator<TaskEntity> withinPoComparator = Comparator
                 .comparing((TaskEntity t) -> -getTaskBaseHours(t))
                 .thenComparing(TaskEntity::getDeliveryDate, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(TaskEntity::getPriority, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(TaskEntity::getId);
 
-        List<TaskEntity> sorted = candidates.stream()
-                .sorted(byPriorityThenWorkload)
-                .collect(Collectors.toList());
+        for (Map.Entry<Long, List<TaskEntity>> e : tasksByPo.entrySet()) {
+            e.getValue().sort(withinPoComparator);
+        }
 
-        Map<LocalDate, Map<Integer, Double>> deskLoadsByDate = new HashMap<>();
+        // Cargas iniciales: solo IN_PROGRESS (PENDING se replantea completo según cola).
+        Map<LocalDate, Map<Integer, Double>> loadsByDate = new HashMap<>();
+        for (int d = 0; d < days; d++) {
+            LocalDate date = startDate.plusDays(d);
+            Map<Integer, Double> m = new HashMap<>();
+            for (int desk = 1; desk <= activeDesks; desk++) m.put(desk, 0.0);
+            loadsByDate.put(date, m);
+        }
+        for (TaskEntity t : pool) {
+            if (!"IN_PROGRESS".equals(t.getStatus())) continue;
+            if (t.getDesk() == null || t.getScheduledDate() == null) continue;
+            if (t.getDesk() < 1 || t.getDesk() > activeDesks) continue;
+            Map<Integer, Double> m = loadsByDate.get(t.getScheduledDate());
+            if (m == null) continue; // fuera del horizonte
+            m.put(t.getDesk(), m.getOrDefault(t.getDesk(), 0.0) + getTaskBaseHours(t));
+        }
 
         int updated = 0;
         LocalDate maxAssignedDate = startDate;
+        int selected = 0;
 
-        for (TaskEntity task : sorted) {
-            double taskHours = getTaskBaseHours(task);
+        List<Long> opQueue = tasksByPo.keySet().stream()
+                .sorted(opQueueComparator)
+                .collect(Collectors.toList());
 
-            LocalDate targetDate = startDate;
-            while (true) {
-                Map<Integer, Double> loads = deskLoadsByDate.computeIfAbsent(targetDate, d -> {
-                    Map<Integer, Double> m = new HashMap<>();
-                    for (int desk = 1; desk <= activeDesks; desk++) m.put(desk, 0.0);
-                    return m;
-                });
+        // Greedy por OP: agotar OP #1 en todas las mesas posibles antes de pasar a la siguiente.
+        for (Long poId : opQueue) {
+            List<TaskEntity> poTasks = tasksByPo.getOrDefault(poId, List.of());
+            if (poTasks.isEmpty()) continue;
+            selected += poTasks.size();
 
-                int targetDesk = findLeastLoadedDesk(loads);
-                double currentLoad = loads.getOrDefault(targetDesk, 0.0);
+            boolean isOpl = Boolean.TRUE.equals(isOplByPo.get(poId));
+            for (TaskEntity task : poTasks) {
+                double taskHours = getTaskBaseHours(task);
 
-                boolean alwaysFits = taskHours <= MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
-                if (!alwaysFits) {
-                    // Caso raro: si una sola tarea supera la capacidad diaria, se asigna igual para evitar loops infinitos.
-                    loads.put(targetDesk, currentLoad + taskHours);
-                    maxAssignedDate = maxAssignedDate.isBefore(targetDate) ? targetDate : maxAssignedDate;
+                LocalDate targetDate = startDate;
+                boolean assigned = false;
 
-                    if (!Objects.equals(task.getDesk(), targetDesk) || !Objects.equals(task.getScheduledDate(), targetDate)) {
-                        task.setDesk(targetDesk);
-                        task.setScheduledDate(targetDate);
-                        taskRepository.save(task);
-                        updated++;
+                int maxDayIdx = isOpl ? 0 : Math.max(0, days - 1);
+                for (int dayIdx = 0; dayIdx <= maxDayIdx && !assigned; dayIdx++) {
+                    targetDate = startDate.plusDays(dayIdx);
+                    Map<Integer, Double> loads = loadsByDate.get(targetDate);
+                    if (loads == null) continue;
+
+                    int chosenDesk = -1;
+                    double chosenDeskLoad = Double.POSITIVE_INFINITY;
+                    for (int desk = 1; desk <= activeDesks; desk++) {
+                        double currentLoad = loads.getOrDefault(desk, 0.0);
+
+                        boolean oversizedSingle = taskHours > MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
+                        boolean canOvercap = isOpl && targetDate.equals(startDate);
+                        boolean fits =
+                                canOvercap
+                                        || (oversizedSingle && currentLoad <= 1e-9)
+                                        || (currentLoad + taskHours <= MAX_HOURS_PER_DESK_PER_DAY + 1e-9);
+
+                        if (!fits) continue;
+                        if (currentLoad < chosenDeskLoad) {
+                            chosenDeskLoad = currentLoad;
+                            chosenDesk = desk;
+                        }
                     }
-                    break;
-                }
 
-                if (currentLoad + taskHours <= MAX_HOURS_PER_DESK_PER_DAY + 1e-9) {
-                    loads.put(targetDesk, currentLoad + taskHours);
-                    maxAssignedDate = maxAssignedDate.isBefore(targetDate) ? targetDate : maxAssignedDate;
+                    if (chosenDesk != -1) {
+                        loads.put(chosenDesk, loads.getOrDefault(chosenDesk, 0.0) + taskHours);
+                        maxAssignedDate = maxAssignedDate.isBefore(targetDate) ? targetDate : maxAssignedDate;
 
-                    if (!Objects.equals(task.getDesk(), targetDesk) || !Objects.equals(task.getScheduledDate(), targetDate)) {
-                        task.setDesk(targetDesk);
-                        task.setScheduledDate(targetDate);
-                        taskRepository.save(task);
-                        updated++;
+                        if (!Objects.equals(task.getDesk(), chosenDesk) || !Objects.equals(task.getScheduledDate(), targetDate)) {
+                            task.setDesk(chosenDesk);
+                            task.setScheduledDate(targetDate);
+                            taskRepository.save(task);
+                            updated++;
+                        }
+                        assigned = true;
                     }
-                    break;
                 }
-
-                // Si el menos cargado no tiene espacio, empuja a la siguiente fecha.
-                targetDate = targetDate.plusDays(1);
             }
         }
 
@@ -398,15 +524,16 @@ public class TaskController {
                 "startDate", startDate,
                 "activeDesks", activeDesks,
                 "horizonDays", days,
-                "selectedTasks", sorted.size(),
+                "selectedTasks", selected,
                 "updatedTasks", updated,
                 "maxAssignedDate", maxAssignedDate,
-                "message", "Planificación multi-día completada: " + sorted.size()
-                        + " tareas planificadas a partir de " + startDate
-                        + " (ventana inicial " + days + " día(s))."));
+                "message", "Distribución por OP completada: " + selected
+                        + " tarea(s) procesada(s) desde " + startDate
+                        + " (horizonte " + days + " día(s))."));
     }
 
     @PutMapping("/{id}/status")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<TaskResponse> updateStatus(@PathVariable Long id, @RequestBody Map<String, String> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity entity = taskRepository.findById(id)
@@ -425,6 +552,15 @@ public class TaskController {
         }
         if ("COMPLETED".equals(newStatus) && entity.getStartedAt() == null) {
             throw new BusinessException("No se puede completar una tarea que no ha sido iniciada.");
+        }
+
+        Integer deskToFreeAfterComplete = null;
+        LocalDate backfillAnchorDate = null;
+        if ("COMPLETED".equals(newStatus)) {
+            deskToFreeAfterComplete = entity.getDesk();
+            backfillAnchorDate = entity.getScheduledDate() != null
+                    ? entity.getScheduledDate()
+                    : ZonedDateTime.now(GUATEMALA_ZONE).toLocalDate();
         }
 
         if ("IN_PROGRESS".equals(newStatus)) {
@@ -447,6 +583,13 @@ public class TaskController {
                 long minutes = java.time.Duration.between(entity.getStartedAt(), entity.getCompletedAt()).toMinutes();
                 entity.setActualDurationMinutes((int) minutes);
             }
+
+            // Al completar: desasignar de mesa (para liberar la cola de mesas),
+            // pero conservar el historial de donde se trabajo.
+            if (entity.getWorkedDesk() == null && entity.getDesk() != null) {
+                entity.setWorkedDesk(entity.getDesk());
+            }
+            entity.setDesk(null);
         }
         if ("PENDING".equals(newStatus)) {
             entity.setStartedAt(null);
@@ -456,8 +599,184 @@ public class TaskController {
         }
 
         TaskEntity updated = taskRepository.save(entity);
+        if ("COMPLETED".equals(newStatus) && deskToFreeAfterComplete != null && backfillAnchorDate != null) {
+            taskDeskBackfillService.backfillFreedDeskAfterCompletion(deskToFreeAfterComplete, backfillAnchorDate, getNumDesks());
+        }
         syncProductionOrderStatusFromTasks(updated.getProductionOrderId());
         return ResponseEntity.ok(toResponse(updated));
+    }
+
+    @PutMapping("/{id}/started-at")
+    public ResponseEntity<TaskResponse> updateStartedAt(@PathVariable Long id, @RequestBody Map<String, Object> body)
+            throws ResourceNotFoundException, BusinessException {
+        TaskEntity entity = taskRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Task", id));
+
+        Object raw = body.get("startedAt");
+        if (raw == null || String.valueOf(raw).isBlank()) {
+            throw new BusinessException("startedAt es requerido (ISO LocalDateTime)");
+        }
+
+        String status = String.valueOf(entity.getStatus() != null ? entity.getStatus() : "");
+        if (!"IN_PROGRESS".equals(status) && !"COMPLETED".equals(status)) {
+            throw new BusinessException("Solo se puede editar startedAt en tareas IN_PROGRESS o COMPLETED.");
+        }
+
+        LocalDateTime newStartedAt;
+        try {
+            newStartedAt = LocalDateTime.parse(String.valueOf(raw));
+        } catch (Exception e) {
+            throw new BusinessException("Formato inválido para startedAt. Use yyyy-MM-ddTHH:mm:ss");
+        }
+
+        if (entity.getCompletedAt() != null && newStartedAt.isAfter(entity.getCompletedAt())) {
+            throw new BusinessException("startedAt no puede ser posterior a completedAt.");
+        }
+
+        entity.setStartedAt(newStartedAt);
+        entity.setStartTime(newStartedAt.toLocalTime().format(HOUR_MINUTE_FORMATTER));
+
+        if (entity.getCompletedAt() != null) {
+            long minutes = java.time.Duration.between(entity.getStartedAt(), entity.getCompletedAt()).toMinutes();
+            entity.setActualDurationMinutes((int) minutes);
+        }
+
+        TaskEntity updated = taskRepository.save(entity);
+        return ResponseEntity.ok(toResponse(updated));
+    }
+
+    private record MoveTaskItemRequest(Long taskItemId, Integer targetDesk, String targetDate) {}
+
+    private record MoveTaskItemResult(
+            Long taskItemId,
+            TaskResponse sourceTask,
+            Long sourceTaskDeletedId,
+            TaskResponse targetTask
+    ) {}
+
+    @PutMapping("/move-item")
+    @Transactional
+    public ResponseEntity<MoveTaskItemResult> moveTaskItem(@RequestBody MoveTaskItemRequest req)
+            throws ResourceNotFoundException, BusinessException {
+        if (req == null || req.taskItemId() == null) {
+            throw new BusinessException("taskItemId es requerido");
+        }
+
+        TaskItemEntity item = taskItemRepository.findById(req.taskItemId())
+                .orElseThrow(() -> new ResourceNotFoundException("Task Item", req.taskItemId()));
+
+        TaskEntity sourceTask = taskRepository.findById(item.getTaskId())
+                .orElseThrow(() -> new ResourceNotFoundException("Task", item.getTaskId()));
+
+        if ("CANCELLED".equals(sourceTask.getStatus()) || "COMPLETED".equals(sourceTask.getStatus())) {
+            throw new BusinessException("No se puede redistribuir items de una tarea cancelada/completada.");
+        }
+        if ("IN_PROGRESS".equals(sourceTask.getStatus())) {
+            throw new BusinessException("No se puede redistribuir items de una tarea en progreso.");
+        }
+
+        LocalDate targetDate = null;
+        if (req.targetDate() != null && !req.targetDate().isBlank()) {
+            try {
+                targetDate = LocalDate.parse(req.targetDate());
+            } catch (Exception e) {
+                throw new BusinessException("targetDate inválida (use yyyy-MM-dd)");
+            }
+        }
+
+        Integer targetDesk = req.targetDesk();
+        TaskEntity targetTask = resolveOrCreateTargetTask(sourceTask, targetDesk, targetDate);
+
+        Long sourceTaskId = sourceTask.getId();
+        Long targetTaskId = targetTask.getId();
+        if (Objects.equals(sourceTaskId, targetTaskId)) {
+            TaskResponse same = toResponse(sourceTask);
+            return ResponseEntity.ok(new MoveTaskItemResult(item.getId(), same, null, same));
+        }
+
+        item.setTaskId(targetTaskId);
+        taskItemRepository.save(item);
+
+        TaskResponse sourceResponse = null;
+        Long sourceDeletedId = null;
+        List<TaskItemEntity> sourceItems = taskItemRepository.findByTaskId(sourceTaskId);
+        if (!sourceItems.isEmpty()) {
+            recalculateTaskTotals(sourceTask, sourceItems);
+            sourceTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(sourceTask));
+            sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+            sourceResponse = toResponse(taskRepository.save(sourceTask));
+        } else {
+            boolean safeToDelete = "PENDING".equals(sourceTask.getStatus())
+                    && sourceTask.getStartedAt() == null
+                    && sourceTask.getCompletedAt() == null;
+            if (safeToDelete) {
+                taskRepository.deleteById(sourceTaskId);
+                sourceDeletedId = sourceTaskId;
+            } else {
+                sourceTask.setQuantity(0);
+                sourceTask.setEstimatedHours(0.0);
+                sourceResponse = toResponse(taskRepository.save(sourceTask));
+            }
+        }
+
+        List<TaskItemEntity> targetItems = taskItemRepository.findByTaskId(targetTaskId);
+        recalculateTaskTotals(targetTask, targetItems);
+        targetTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(targetTask));
+        targetTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(targetTask.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+        TaskResponse targetResponse = toResponse(taskRepository.save(targetTask));
+
+        return ResponseEntity.ok(new MoveTaskItemResult(
+                item.getId(),
+                sourceResponse,
+                sourceDeletedId,
+                targetResponse
+        ));
+    }
+
+    private TaskEntity resolveOrCreateTargetTask(TaskEntity sourceTask, Integer targetDesk, LocalDate targetDate) throws BusinessException {
+        if (sourceTask == null) throw new BusinessException("Task origen inválida");
+        Long poId = sourceTask.getProductionOrderId();
+        if (poId == null) throw new BusinessException("La tarea origen no tiene productionOrderId");
+
+        // Buscar una tarea PENDING compatible en la mesa/fecha destino (mesa o sin mesa).
+        if (targetDate != null) {
+            List<TaskEntity> base = targetDesk != null
+                    ? taskRepository.findByDeskAndScheduledDate(targetDesk, targetDate)
+                    : taskRepository.findByDeskIsNullAndScheduledDate(targetDate);
+            List<TaskEntity> candidates = base.stream()
+                    .filter(t -> Objects.equals(t.getProductionOrderId(), poId))
+                    .filter(t -> "PENDING".equals(t.getStatus()))
+                    .toList();
+            if (!candidates.isEmpty()) {
+                return candidates.get(0);
+            }
+        }
+
+        // Crear nueva tarea destino
+        String code = generateTaskCode();
+        TaskEntity dest = TaskEntity.builder()
+                .code(code)
+                .productionOrderId(sourceTask.getProductionOrderId())
+                .productionOrderCode(sourceTask.getProductionOrderCode())
+                .deliveryDate(sourceTask.getDeliveryDate())
+                .priority(sourceTask.getPriority())
+                .observations("Redistribuida manualmente desde " + sourceTask.getCode())
+                .desk(targetDesk)
+                .scheduledDate(targetDate)
+                .startTime(null)
+                .startedAt(null)
+                .completedAt(null)
+                .actualDurationMinutes(null)
+                .status("PENDING")
+                .leatherDelivered(sourceTask.getLeatherDelivered())
+                .leatherDeliveredAt(sourceTask.getLeatherDeliveredAt())
+                .dieCutReady(sourceTask.getDieCutReady())
+                .dieCutDate(sourceTask.getDieCutDate())
+                .materialsDelivered(false)
+                .materialsDeliveredAt(null)
+                .build();
+
+        return taskRepository.save(dest);
     }
 
     @PutMapping("/{id}/waste")
@@ -955,7 +1274,7 @@ public class TaskController {
         }
 
         List<MaterialsTaskViewResponse> responses = tasks.stream()
-                .filter(t -> !"CANCELLED".equals(t.getStatus()))
+                .filter(this::isPendingMaterialsViewTask)
                 .map(this::toMaterialsView)
                 .collect(Collectors.toList());
 
@@ -972,7 +1291,7 @@ public class TaskController {
 
         List<TaskEntity> tasks = findTasksLinkedToProductionOrder(productionOrderId);
         List<MaterialsTaskViewResponse> responses = tasks.stream()
-                .filter(t -> !"CANCELLED".equals(t.getStatus()))
+                .filter(this::isPendingMaterialsViewTask)
                 .map(this::toMaterialsView)
                 .collect(Collectors.toList());
 
@@ -1398,6 +1717,19 @@ public class TaskController {
                 && hasStockForMaterialsDelivery(entity);
     }
 
+    private boolean isPendingMaterialsViewTask(TaskEntity entity) {
+        if (entity == null || "CANCELLED".equals(entity.getStatus()) || "COMPLETED".equals(entity.getStatus())) {
+            return false;
+        }
+        if (entity.getProductionOrderId() != null) {
+            ProductionOrderEntity order = productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null);
+            if (order != null && ("COMPLETED".equals(order.getStatus()) || "CANCELLED".equals(order.getStatus()))) {
+                return false;
+            }
+        }
+        return taskRequiresMaterials(entity) && !areRequiredTaskItemsDelivered(entity);
+    }
+
     private boolean canDeliverMaterialsForTaskItem(TaskEntity entity, TaskItemEntity item) {
         if (!canDeliverMaterialsPreconditions(entity)) {
             return false;
@@ -1720,6 +2052,7 @@ public class TaskController {
                 .quantity(entity.getQuantity())
                 .observations(entity.getObservations())
                 .desk(entity.getDesk())
+                .workedDesk(entity.getWorkedDesk())
                 .estimatedHours(entity.getEstimatedHours())
                 .scheduledDate(entity.getScheduledDate())
                 .deliveryDate(entity.getDeliveryDate())
@@ -1749,6 +2082,56 @@ public class TaskController {
     }
 
     // ==================== INNER CLASSES ====================
+
+    /**
+     * OPV / OPK / OPI según tipo o prefijo de código; null si no aplica al tablero de prioridad.
+     */
+    private static String distributionFamilyLabel(String orderType, String code) {
+        String ot = orderType == null ? "" : orderType.trim();
+        String c = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
+        if ("NORMAL".equalsIgnoreCase(ot)) return "OPK";
+        if ("MARCAS".equalsIgnoreCase(ot) || "OPV".equalsIgnoreCase(ot)) return "OPV";
+        if ("INTERNA".equalsIgnoreCase(ot)) return "OPI";
+        if (c.startsWith("OPK-")) return "OPK";
+        if (c.startsWith("OPV-")) return "OPV";
+        if (c.startsWith("OPI-")) return "OPI";
+        return null;
+    }
+
+    private void mergeSchedulingPrioritiesFromRequest(Map<String, Integer> schedulingPriorities) {
+        if (schedulingPriorities == null || schedulingPriorities.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, Integer> e : schedulingPriorities.entrySet()) {
+            if (e.getKey() == null || e.getKey().isBlank()) continue;
+            long id;
+            try {
+                id = Long.parseLong(e.getKey().trim());
+            } catch (NumberFormatException ex) {
+                continue;
+            }
+            Integer p = e.getValue();
+            if (p == null || p < 1) continue;
+            productionOrderRepository.findById(id).ifPresent(po -> {
+                po.setSchedulingPriority(p);
+                productionOrderRepository.save(po);
+            });
+        }
+    }
+
+    private Map<Long, Integer> loadSchedulingPriorityByProductionOrderId(Set<Long> productionOrderIds) {
+        if (productionOrderIds == null || productionOrderIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, Integer> out = new HashMap<>();
+        for (ProductionOrderEntity po : productionOrderRepository.findAllById(productionOrderIds)) {
+            out.put(po.getId(), Optional.ofNullable(po.getSchedulingPriority()).orElse(Integer.MAX_VALUE));
+        }
+        for (Long id : productionOrderIds) {
+            out.putIfAbsent(id, Integer.MAX_VALUE);
+        }
+        return out;
+    }
 
     private record DeskDateKey(LocalDate date, Integer desk) {}
 }

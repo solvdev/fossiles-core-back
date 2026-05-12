@@ -17,6 +17,9 @@ public class ProductInventoryLocationResponse {
     private Long productId;
     private String productCode;
     private String productName;
+    /** Categoría de catálogo del producto */
+    private Long productCategoryId;
+    private String productCategoryName;
     private Long locationId;
     private String locationCode;
     private String locationName;
