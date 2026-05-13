@@ -8,6 +8,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.util.Map;
 
 @Data
 @Builder
@@ -19,6 +20,10 @@ public class InventoryAdjustmentRequest {
     private Long materialId;
     private Long productId;
     private Long colorId; // Opcional: solo para productos con colores
+
+    /** Cinchos FOSS: inventario sistema por talla (opcional) */
+    private Map<String, BigDecimal> systemSizes;
+    private Map<String, BigDecimal> physicalSizes;
 
     @NotNull(message = "System Stock is required")
     @DecimalMin(value = "0.0", message = "System Stock must be positive")

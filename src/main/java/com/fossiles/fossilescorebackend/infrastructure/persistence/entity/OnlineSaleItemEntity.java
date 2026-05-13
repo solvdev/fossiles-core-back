@@ -51,6 +51,13 @@ public class OnlineSaleItemEntity {
     @Column(name = "subtotal", precision = 12, scale = 2)
     private BigDecimal subtotal;
 
+    /**
+     * Ruta después de resolver venta mixta: DISPATCH (stock PT/Devoluciones) o PRODUCE (OP).
+     * NULL = venta sin clasificar por línea (datos legacy o sólo despacho directo histórico).
+     */
+    @Column(name = "fulfillment_route", length = 20)
+    private String fulfillmentRoute;
+
     @PrePersist
     @PreUpdate
     protected void calculateSubtotal() {

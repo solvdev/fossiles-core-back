@@ -34,6 +34,10 @@ public class CustomerShipmentResponse {
     private BigDecimal shippingCost;
     private Boolean packaging;
     private List<ShipmentItem> items;
+    /** OP VENTA_EN_LINEA asociada (si hay ítems de OP con esta venta). Solo se rellena en detalle público por id. */
+    private Long productionOrderId;
+    /** Indicador de la entidad venta (campo inProductionOrder). */
+    private Boolean inProductionOrder;
 
     @Data
     @Builder

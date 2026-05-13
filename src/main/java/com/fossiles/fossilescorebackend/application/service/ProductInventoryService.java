@@ -9,13 +9,17 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -35,6 +39,33 @@ public class ProductInventoryService {
     private final com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil securityUtil;
 
     // ========== PRODUCT INVENTORY LOCATION ==========
+
+    /**
+     * Cantidad disponible en una ubicación para una línea de producto (FOSS con sizes_data por talla).
+     */
+    @Transactional(readOnly = true)
+    public BigDecimal getAvailableQuantity(Long productId, Long locationId, Long colorId, String sizeLabel) {
+        Optional<ProductInventoryLocation> opt =
+                productInventoryLocationRepository.findByProductIdAndLocationIdAndColorId(productId, locationId, colorId);
+        if (opt.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        ProductInventoryLocation pil = opt.get();
+        ProductEntity p = productRepository.findById(productId).orElse(null);
+        if (!CinchoProductUtils.isFossCinchoProduct(p)) {
+            return pil.getQuantity() != null ? pil.getQuantity() : BigDecimal.ZERO;
+        }
+        Map<String, BigDecimal> bySize = ProductInventorySizesJson.parse(pil.getSizesData());
+        if (bySize.isEmpty()) {
+            return pil.getQuantity() != null ? pil.getQuantity() : BigDecimal.ZERO;
+        }
+        String sk = ProductInventorySizesJson.normalizeKey(sizeLabel);
+        if (sk.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal q = bySize.get(sk);
+        return q != null ? q : BigDecimal.ZERO;
+    }
 
     /**
      * Obtiene el inventario de un producto en una ubicación específica
@@ -181,7 +212,7 @@ public class ProductInventoryService {
      * Crea o actualiza el inventario de un producto en una ubicación
      */
     public ProductInventoryLocationResponse createOrUpdateInventory(ProductInventoryLocationRequest request) 
-            throws ResourceNotFoundException {
+            throws ResourceNotFoundException, BusinessException {
         // Validar que el producto existe
         if (!productRepository.existsById(request.getProductId())) {
             throw new ResourceNotFoundException("Product", request.getProductId());
@@ -202,20 +233,43 @@ public class ProductInventoryService {
 
         ProductInventoryLocation entity;
         if (existing.isPresent()) {
-            // Actualizar
             entity = existing.get();
-            entity.setQuantity(request.getQuantity());
+            if (request.getSizes() != null && !request.getSizes().isEmpty()) {
+                ProductEntity product = productRepository.findById(request.getProductId()).orElse(null);
+                if (!CinchoProductUtils.isFossCinchoProduct(product)) {
+                    throw new BusinessException("El desglose por tallas solo aplica a productos cincho FOSS.");
+                }
+                Map<String, BigDecimal> m = normalizeSizesMap(request.getSizes());
+                entity.setSizesData(ProductInventorySizesJson.serialize(m));
+                entity.setQuantity(ProductInventorySizesJson.sum(m));
+            } else {
+                entity.setQuantity(request.getQuantity());
+            }
             if (request.getColorId() != null) {
                 entity.setColorId(request.getColorId());
             }
         } else {
-            // Crear nuevo
-            entity = ProductInventoryLocation.builder()
-                    .productId(request.getProductId())
-                    .locationId(request.getLocationId())
-                    .colorId(request.getColorId())
-                    .quantity(request.getQuantity())
-                    .build();
+            if (request.getSizes() != null && !request.getSizes().isEmpty()) {
+                ProductEntity product = productRepository.findById(request.getProductId()).orElse(null);
+                if (!CinchoProductUtils.isFossCinchoProduct(product)) {
+                    throw new BusinessException("El desglose por tallas solo aplica a productos cincho FOSS.");
+                }
+                Map<String, BigDecimal> m = normalizeSizesMap(request.getSizes());
+                entity = ProductInventoryLocation.builder()
+                        .productId(request.getProductId())
+                        .locationId(request.getLocationId())
+                        .colorId(request.getColorId())
+                        .quantity(ProductInventorySizesJson.sum(m))
+                        .sizesData(ProductInventorySizesJson.serialize(m))
+                        .build();
+            } else {
+                entity = ProductInventoryLocation.builder()
+                        .productId(request.getProductId())
+                        .locationId(request.getLocationId())
+                        .colorId(request.getColorId())
+                        .quantity(request.getQuantity())
+                        .build();
+            }
         }
 
         ProductInventoryLocation saved = productInventoryLocationRepository.save(entity);
@@ -250,7 +304,7 @@ public class ProductInventoryService {
      * Incrementa el inventario de un producto en una ubicación
      */
     public ProductInventoryLocationResponse incrementInventory(Long productId, Long locationId, BigDecimal quantity) 
-            throws ResourceNotFoundException {
+            throws ResourceNotFoundException, BusinessException {
         return incrementInventory(productId, locationId, null, quantity, null, null, null, null, null);
     }
 
@@ -258,7 +312,7 @@ public class ProductInventoryService {
      * Incrementa el inventario de un producto en una ubicación considerando variantes de color
      */
     public ProductInventoryLocationResponse incrementInventory(Long productId, Long locationId, Long colorId, BigDecimal quantity)
-            throws ResourceNotFoundException {
+            throws ResourceNotFoundException, BusinessException {
         return incrementInventory(productId, locationId, colorId, quantity, null, null, null, null, null);
     }
 
@@ -275,22 +329,44 @@ public class ProductInventoryService {
             Long referenceId,
             String referenceNumber,
             String description) 
-            throws ResourceNotFoundException {
-        // SIEMPRE buscar por (productId, locationId, colorId) incluso si colorId es null
+            throws ResourceNotFoundException, BusinessException {
+        return incrementInventory(productId, locationId, colorId, quantity, unitCost, referenceType, referenceId, referenceNumber, description, null);
+    }
+
+    /**
+     * Incrementa inventario; para cinchos FOSS con desglose por talla use {@code sizeKey}.
+     */
+    public ProductInventoryLocationResponse incrementInventory(
+            Long productId, 
+            Long locationId, 
+            Long colorId,
+            BigDecimal quantity,
+            BigDecimal unitCost,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String sizeKey) 
+            throws ResourceNotFoundException, BusinessException {
+        if (!productRepository.existsById(productId)) {
+            throw new ResourceNotFoundException("Product", productId);
+        }
+        ProductEntity product = productRepository.findById(productId).orElse(null);
         Optional<ProductInventoryLocation> existing =
                 productInventoryLocationRepository.findByProductIdAndLocationIdAndColorId(productId, locationId, colorId);
 
         ProductInventoryLocation entity;
         if (existing.isPresent()) {
             entity = existing.get();
-            entity.setQuantity(entity.getQuantity().add(quantity));
+            applyFossIncrementToEntity(entity, product, quantity, sizeKey);
         } else {
             entity = ProductInventoryLocation.builder()
                     .productId(productId)
                     .locationId(locationId)
                     .colorId(colorId)
-                    .quantity(quantity)
+                    .quantity(BigDecimal.ZERO)
                     .build();
+            applyFossIncrementToEntity(entity, product, quantity, sizeKey);
         }
 
         ProductInventoryLocation saved = productInventoryLocationRepository.save(entity);
@@ -323,7 +399,7 @@ public class ProductInventoryService {
      */
     public ProductInventoryLocationResponse decrementInventory(Long productId, Long locationId, BigDecimal quantity) 
             throws ResourceNotFoundException, BusinessException {
-        return decrementInventory(productId, locationId, null, quantity, null, null, null, null);
+        return decrementInventory(productId, locationId, null, quantity, null, null, null, null, null);
     }
 
     /**
@@ -339,8 +415,20 @@ public class ProductInventoryService {
             String referenceNumber,
             String description) 
             throws ResourceNotFoundException, BusinessException {
-        // SIEMPRE usar el método que considera colorId (incluso si es null)
-        // Esto evita errores cuando hay múltiples registros con diferentes colores
+        return decrementInventory(productId, locationId, colorId, quantity, referenceType, referenceId, referenceNumber, description, null);
+    }
+
+    public ProductInventoryLocationResponse decrementInventory(
+            Long productId, 
+            Long locationId, 
+            Long colorId,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String sizeKey) 
+            throws ResourceNotFoundException, BusinessException {
         ProductInventoryLocation entity = productInventoryLocationRepository
                 .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
                 .orElseThrow(() -> new ResourceNotFoundException(
@@ -349,15 +437,13 @@ public class ProductInventoryService {
                     ", Location: " + locationId + 
                     (colorId != null ? ", Color: " + colorId : ", Color: NULL")));
 
-        BigDecimal quantityBefore = entity.getQuantity();
-        BigDecimal newQuantity = entity.getQuantity().subtract(quantity);
-        if (newQuantity.compareTo(BigDecimal.ZERO) < 0) {
-            throw new BusinessException("No hay suficiente inventario. Disponible: " + entity.getQuantity() + ", Solicitado: " + quantity);
-        }
+        ProductEntity product = productRepository.findById(productId).orElse(null);
+        BigDecimal quantityBefore = entity.getQuantity() != null ? entity.getQuantity() : BigDecimal.ZERO;
 
-        entity.setQuantity(newQuantity);
+        applyFossDecrementToEntity(entity, product, quantity, sizeKey);
+
+        BigDecimal quantityAfter = entity.getQuantity() != null ? entity.getQuantity() : BigDecimal.ZERO;
         ProductInventoryLocation saved = productInventoryLocationRepository.save(entity);
-        BigDecimal quantityAfter = saved.getQuantity();
 
         // Consumir lotes FIFO (más antiguos primero) y calcular costo promedio
         BigDecimal remainingQuantity = quantity;
@@ -942,6 +1028,84 @@ public class ProductInventoryService {
 
     // ========== HELPER METHODS ==========
 
+    private Map<String, BigDecimal> sizesMapForResponse(ProductEntity product, ProductInventoryLocation entity) {
+        if (!CinchoProductUtils.isFossCinchoProduct(product)) {
+            return null;
+        }
+        Map<String, BigDecimal> m = ProductInventorySizesJson.parse(entity.getSizesData());
+        return m.isEmpty() ? null : new LinkedHashMap<>(m);
+    }
+
+    private Map<String, BigDecimal> normalizeSizesMap(Map<String, BigDecimal> raw) {
+        return ProductInventorySizesJson.normalizeIncomingMap(raw);
+    }
+
+    private void applyFossIncrementToEntity(ProductInventoryLocation entity, ProductEntity product,
+            BigDecimal quantity, String sizeKey) throws BusinessException {
+        if (quantity == null) {
+            throw new BusinessException("Cantidad invalida");
+        }
+        if (!CinchoProductUtils.isFossCinchoProduct(product)) {
+            BigDecimal base = entity.getQuantity() != null ? entity.getQuantity() : BigDecimal.ZERO;
+            entity.setQuantity(base.add(quantity));
+            return;
+        }
+        Map<String, BigDecimal> m = ProductInventorySizesJson.parse(entity.getSizesData());
+        boolean breakdown = !m.isEmpty();
+        String k = ProductInventorySizesJson.normalizeKey(sizeKey);
+        if (breakdown || !k.isEmpty()) {
+            if (k.isEmpty()) {
+                throw new BusinessException("Indique la talla para el ingreso de inventario del cincho FOSS.");
+            }
+            m.merge(k, quantity, BigDecimal::add);
+            ProductInventorySizesJson.removeZeroEntries(m);
+            entity.setSizesData(ProductInventorySizesJson.serialize(m));
+            entity.setQuantity(ProductInventorySizesJson.sum(m));
+            return;
+        }
+        BigDecimal base = entity.getQuantity() != null ? entity.getQuantity() : BigDecimal.ZERO;
+        entity.setQuantity(base.add(quantity));
+    }
+
+    private void applyFossDecrementToEntity(ProductInventoryLocation entity, ProductEntity product,
+            BigDecimal quantity, String sizeKey) throws BusinessException {
+        if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("Cantidad a descontar invalida");
+        }
+        if (!CinchoProductUtils.isFossCinchoProduct(product)) {
+            BigDecimal cur = entity.getQuantity() != null ? entity.getQuantity() : BigDecimal.ZERO;
+            BigDecimal newQ = cur.subtract(quantity);
+            if (newQ.compareTo(BigDecimal.ZERO) < 0) {
+                throw new BusinessException("No hay suficiente inventario. Disponible: " + cur + ", Solicitado: " + quantity);
+            }
+            entity.setQuantity(newQ);
+            return;
+        }
+        Map<String, BigDecimal> m = ProductInventorySizesJson.parse(entity.getSizesData());
+        if (!m.isEmpty()) {
+            String k = ProductInventorySizesJson.normalizeKey(sizeKey);
+            if (k.isEmpty()) {
+                throw new BusinessException("Indique la talla del cincho FOSS para descontar inventario.");
+            }
+            BigDecimal have = m.getOrDefault(k, BigDecimal.ZERO);
+            if (have.compareTo(quantity) < 0) {
+                throw new BusinessException("Stock insuficiente de talla " + k + ". Disponible: " + have.stripTrailingZeros().toPlainString()
+                        + ", solicitado: " + quantity.stripTrailingZeros().toPlainString());
+            }
+            m.put(k, have.subtract(quantity));
+            ProductInventorySizesJson.removeZeroEntries(m);
+            entity.setSizesData(ProductInventorySizesJson.serialize(m));
+            entity.setQuantity(ProductInventorySizesJson.sum(m));
+            return;
+        }
+        BigDecimal cur = entity.getQuantity() != null ? entity.getQuantity() : BigDecimal.ZERO;
+        BigDecimal newQ = cur.subtract(quantity);
+        if (newQ.compareTo(BigDecimal.ZERO) < 0) {
+            throw new BusinessException("No hay suficiente inventario. Disponible: " + cur + ", Solicitado: " + quantity);
+        }
+        entity.setQuantity(newQ);
+    }
+
     private ProductInventoryLocationResponse toProductInventoryLocationResponse(ProductInventoryLocation entity) {
         ProductEntity product = productRepository.findById(entity.getProductId()).orElse(null);
         LocationEntity location = locationRepository.findById(entity.getLocationId()).orElse(null);
@@ -960,6 +1124,7 @@ public class ProductInventoryService {
                 .colorId(entity.getColorId())
                 .colorName(color != null ? color.getName() : null)
                 .quantity(entity.getQuantity())
+                .sizes(sizesMapForResponse(product, entity))
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
                 .updatedAt(entity.getUpdatedAt())
@@ -1076,6 +1241,7 @@ public class ProductInventoryService {
                 .colorId(null)
                 .colorName(null)
                 .quantity(BigDecimal.ZERO) // Cantidad 0
+                .sizes(null)
                 .createdAt(null)
                 .createdBy(null)
                 .updatedAt(null)

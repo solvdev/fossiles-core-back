@@ -22,6 +22,7 @@ public class ProductionOrderItemResponse {
     private String productCode;
     private Long colorId;
     private String colorName;
+    private String brandName;
     private Integer quantity;
     private Integer warehouseReceivedQty;
     private BigDecimal leatherConsumption; // ft² por unidad

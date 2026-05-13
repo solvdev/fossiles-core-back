@@ -8,14 +8,17 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.BomEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.BomItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.MaterialEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductVariantLeatherEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.BomItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.BomRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.MaterialRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductVariantLeatherRepository;
 import jakarta.validation.Valid;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -24,6 +27,7 @@ import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @RestController
@@ -35,6 +39,7 @@ public class BomController {
     private final BomItemRepository bomItemRepository;
     private final ProductRepository productRepository;
     private final MaterialRepository materialRepository;
+    private final ProductVariantLeatherRepository productVariantLeatherRepository;
 
     @GetMapping
     public ResponseEntity<List<BomResponse>> getAll() {
@@ -60,6 +65,7 @@ public class BomController {
     }
 
     @PostMapping
+    @Transactional
     public ResponseEntity<BomResponse> create(@Valid @RequestBody BomRequest request)
             throws BusinessException, ResourceNotFoundException {
         if (!productRepository.existsById(request.getProductId())) {
@@ -89,10 +95,13 @@ public class BomController {
             saved.setItems(items);
         }
 
+        syncLeatherConfig(saved.getProductId(), saved.getColorId(), request);
+
         return ResponseEntity.created(URI.create("/api/boms/" + saved.getId())).body(toResponse(saved));
     }
 
     @PutMapping("/{id}")
+    @Transactional
     public ResponseEntity<BomResponse> update(@PathVariable Long id, @Valid @RequestBody BomRequest request) 
             throws ResourceNotFoundException, BusinessException {
         BomEntity entity = bomRepository.findById(id)
@@ -124,6 +133,8 @@ public class BomController {
             }
         }
         
+        syncLeatherConfig(entity.getProductId(), entity.getColorId(), request);
+
         BomEntity updated = bomRepository.save(entity);
         return ResponseEntity.ok(toResponse(updated));
     }
@@ -176,12 +187,21 @@ public class BomController {
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(2, RoundingMode.HALF_UP);
 
+        Optional<ProductVariantLeatherEntity> leatherConfig = findLeatherConfig(entity.getProductId(), entity.getColorId());
+        MaterialEntity leatherMaterial = leatherConfig
+                .flatMap(config -> materialRepository.findById(config.getLeatherMaterialId()))
+                .orElse(null);
+
         return BomResponse.builder()
                 .id(entity.getId())
                 .bomName(entity.getBomName())
                 .productId(entity.getProductId())
                 .colorId(entity.getColorId())
                 .status(entity.getStatus())
+                .leatherMaterialId(leatherConfig.map(ProductVariantLeatherEntity::getLeatherMaterialId).orElse(null))
+                .leatherMaterialSku(leatherMaterial != null ? leatherMaterial.getSku() : null)
+                .leatherMaterialName(leatherMaterial != null ? leatherMaterial.getName() : null)
+                .leatherQtyPerUnit(leatherConfig.map(ProductVariantLeatherEntity::getQtyPerUnit).orElse(null))
                 .totalCost(totalCost)
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
@@ -223,8 +243,60 @@ public class BomController {
     private void updateEntity(BomEntity entity, BomRequest request) {
         if (request.getBomName() != null) entity.setBomName(request.getBomName());
         if (request.getProductId() != null) entity.setProductId(request.getProductId());
-        if (request.getColorId() != null) entity.setColorId(request.getColorId());
+        entity.setColorId(request.getColorId());
         if (request.getStatus() != null) entity.setStatus(request.getStatus());
+    }
+
+    private Optional<ProductVariantLeatherEntity> findLeatherConfig(Long productId, Long colorId) {
+        if (productId == null) {
+            return Optional.empty();
+        }
+        if (colorId != null) {
+            Optional<ProductVariantLeatherEntity> exact = productVariantLeatherRepository
+                    .findByProductIdAndColorId(productId, colorId);
+            if (exact.isPresent()) {
+                return exact;
+            }
+        }
+        return productVariantLeatherRepository.findByProductIdAndColorIdIsNull(productId);
+    }
+
+    private Optional<ProductVariantLeatherEntity> findExactLeatherConfig(Long productId, Long colorId) {
+        if (productId == null) {
+            return Optional.empty();
+        }
+        return colorId != null
+                ? productVariantLeatherRepository.findByProductIdAndColorId(productId, colorId)
+                : productVariantLeatherRepository.findByProductIdAndColorIdIsNull(productId);
+    }
+
+    private void syncLeatherConfig(Long productId, Long colorId, BomRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        if (request.getLeatherMaterialId() == null) {
+            if (request.getLeatherQtyPerUnit() != null) {
+                throw new BusinessException("Seleccione el material de cuero");
+            }
+            findExactLeatherConfig(productId, colorId).ifPresent(productVariantLeatherRepository::delete);
+            return;
+        }
+        if (!materialRepository.existsById(request.getLeatherMaterialId())) {
+            throw new ResourceNotFoundException("Material", request.getLeatherMaterialId());
+        }
+        BigDecimal qtyPerUnit = request.getLeatherQtyPerUnit() != null
+                ? request.getLeatherQtyPerUnit()
+                : BigDecimal.ONE;
+        if (qtyPerUnit.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("La cantidad de cuero por unidad debe ser mayor a 0");
+        }
+
+        ProductVariantLeatherEntity config = findExactLeatherConfig(productId, colorId)
+                .orElseGet(() -> ProductVariantLeatherEntity.builder()
+                        .productId(productId)
+                        .colorId(colorId)
+                        .build());
+        config.setLeatherMaterialId(request.getLeatherMaterialId());
+        config.setQtyPerUnit(qtyPerUnit);
+        productVariantLeatherRepository.save(config);
     }
 }
 

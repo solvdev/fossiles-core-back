@@ -32,6 +32,12 @@ public class InventoryAdjustment {
     @Column(name = "color_id")
     private Long colorId; // Opcional: solo para productos con colores
 
+    @Column(name = "system_sizes_data", columnDefinition = "TEXT")
+    private String systemSizesData;
+
+    @Column(name = "physical_sizes_data", columnDefinition = "TEXT")
+    private String physicalSizesData;
+
     @Column(name = "system_stock", nullable = false, precision = 12, scale = 3)
     private BigDecimal systemStock;
 

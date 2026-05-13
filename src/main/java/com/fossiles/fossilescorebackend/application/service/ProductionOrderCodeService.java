@@ -26,14 +26,30 @@ public class ProductionOrderCodeService {
     }
 
     public String getOrderCodePrefix(String orderType) {
-        if ("NORMAL".equals(orderType)) return "OPK";
-        if ("MARCAS".equals(orderType)) return "OPV";
-        if ("OPV".equals(orderType)) return "OPV";
-        if ("INTERNA".equals(orderType)) return "OPI";
-        if ("CINCHOS".equals(orderType)) return "OPC";
-        if ("DISTRIBUTION".equals(orderType)) return "OPD";
-        if ("VENTA_EN_LINEA".equals(orderType)) return "OPL";
-        return null;
+        String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase();
+        switch (normalizedType) {
+            case "NORMAL":
+                return "OPK";
+            case "MARCAS":
+            case "OPV":
+                return "OPV";
+            case "INTERNA":
+                return "OPI";
+            case "CINCHOS":
+                return "OPC";
+            case "CINCHOS_FOSSILES":
+                return "OPCF";
+            case "CINCHOS_MARCAS":
+                return "OPCM";
+            case "DISTRIBUTION":
+                return "OPD";
+            case "VENTA_EN_LINEA":
+                return "OPL";
+            case "CLIENTE_KIOSKO":
+                return "OPCK";
+            default:
+                return null;
+        }
     }
 
     public int getNextCorrelative(String prefix) {

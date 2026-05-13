@@ -40,6 +40,10 @@ public class ProductInventoryLocation {
     @Column(name = "min", precision = 12, scale = 3)
     private BigDecimal min = BigDecimal.ZERO;
 
+    /** Cinchos FOSS: JSON talla → cantidad (misma convención que production_order_item.sizes_data). */
+    @Column(name = "sizes_data", columnDefinition = "TEXT")
+    private String sizesData;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

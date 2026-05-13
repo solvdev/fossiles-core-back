@@ -11,10 +11,12 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorE
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -23,6 +25,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 @RestController
@@ -38,6 +41,19 @@ public class PublicOnlineWarehouseController {
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
     private final OnlineSaleProductionOrderService onlineSaleProductionOrderService;
+    private final ProductionOrderItemRepository productionOrderItemRepository;
+
+    /**
+     * Detalle de una venta online para bodega / QR (incluye ENVIADO y ENTREGADO; consulta histórica).
+     */
+    @GetMapping("/sales/{onlineSaleId}")
+    @Transactional(readOnly = true)
+    public ResponseEntity<CustomerShipmentResponse> getOnlineSaleDetail(@PathVariable Long onlineSaleId)
+            throws ResourceNotFoundException {
+        OnlineSaleEntity sale = onlineSaleRepository.findById(onlineSaleId)
+                .orElseThrow(() -> new ResourceNotFoundException("Online Sale", onlineSaleId));
+        return ResponseEntity.ok(toShipment(sale, true));
+    }
 
     @GetMapping("/orders")
     @Transactional(readOnly = true)
@@ -80,11 +96,9 @@ public class PublicOnlineWarehouseController {
     }
 
     /**
-     * Prepara una venta directa (sin OP) desde inventario BODEGA_PT:
-     * - valida stock
-     * - descuenta inventario
-     * - asigna ENVL
-     * - marca PRODUCIDO (lista para despacho)
+     * Prepara venta desde inventario BODEGA_PT / Devoluciones cuando corresponde el cierre completo:
+     * Ventas mixtas (DISPATCH+PRODUCE) exigen recepciones OP en PT y stock para todas las lineas;
+     * legado sin rutas y con OP igual.
      */
     @PutMapping("/direct-sales/{onlineSaleId}/prepare")
     @Transactional
@@ -107,7 +121,7 @@ public class PublicOnlineWarehouseController {
                 .collect(Collectors.toList());
 
         List<CustomerShipmentResponse> rows = candidates.stream()
-                .map(this::toShipment)
+                .map(s -> toShipment(s, false))
                 .collect(Collectors.toList());
         return ResponseEntity.ok(rows);
     }
@@ -126,6 +140,9 @@ public class PublicOnlineWarehouseController {
 
         // Reusar preview interno para filtrar solo las que sí tienen stock
         List<Long> ids = candidates.stream().map(OnlineSaleEntity::getId).collect(Collectors.toList());
+        if (ids.isEmpty()) {
+            return ResponseEntity.ok(List.of());
+        }
         @SuppressWarnings("unchecked")
         List<OnlineSaleProductionOrderService.FulfillmentPreviewRow> rows =
                 (List<OnlineSaleProductionOrderService.FulfillmentPreviewRow>)
@@ -138,13 +155,13 @@ public class PublicOnlineWarehouseController {
 
         List<CustomerShipmentResponse> out = candidates.stream()
                 .filter(s -> readyIds.contains(s.getId()))
-                .map(this::toShipment)
+                .map(s -> toShipment(s, false))
                 .collect(Collectors.toList());
 
         return ResponseEntity.ok(out);
     }
 
-    private CustomerShipmentResponse toShipment(OnlineSaleEntity sale) {
+    private CustomerShipmentResponse toShipment(OnlineSaleEntity sale, boolean includeProductionContext) {
         List<OnlineSaleItemEntity> items = onlineSaleItemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId());
 
         List<CustomerShipmentResponse.ShipmentItem> shipItems = (items != null && !items.isEmpty())
@@ -166,7 +183,7 @@ public class PublicOnlineWarehouseController {
                 }).collect(Collectors.toList())
                 : List.of();
 
-        return CustomerShipmentResponse.builder()
+        CustomerShipmentResponse.CustomerShipmentResponseBuilder b = CustomerShipmentResponse.builder()
                 .onlineSaleId(sale.getId())
                 .saleNumber(sale.getSaleNumber())
                 .customerName(sale.getCustomerName())
@@ -182,7 +199,22 @@ public class PublicOnlineWarehouseController {
                 .totalAmount(sale.getTotalAmount())
                 .shippingCost(sale.getShippingCost())
                 .packaging(sale.getPackaging())
-                .items(shipItems)
-                .build();
+                .items(shipItems);
+
+        if (includeProductionContext) {
+            Long productionOrderId = null;
+            List<ProductionOrderItemEntity> opItems = productionOrderItemRepository.findByOnlineSaleId(sale.getId());
+            if (opItems != null && !opItems.isEmpty()) {
+                productionOrderId = opItems.stream()
+                        .map(ProductionOrderItemEntity::getProductionOrderId)
+                        .filter(Objects::nonNull)
+                        .findFirst()
+                        .orElse(null);
+            }
+            b.productionOrderId(productionOrderId)
+                    .inProductionOrder(Boolean.TRUE.equals(sale.getInProductionOrder()));
+        }
+
+        return b.build();
     }
 }

@@ -33,6 +33,13 @@ import java.util.stream.Collectors;
 public class ProductionOrderController {
     private static final String OPV_PACKING_TAG = "__OPV_PACKING__:";
     private static final String OPV_SHIPPING_TAG = "__OPV_SHIPPING__:";
+    private static final Set<String> ALLOWED_BRANDS = Set.of(
+            "LEVIS",
+            "NAUTICA",
+            "TOMMY HILFIGER",
+            "LACOSTE",
+            "ABERCROMBIE"
+    );
 
     private final ProductionOrderRepository productionOrderRepository;
     private final ProductionOrderItemRepository productionOrderItemRepository;
@@ -101,7 +108,7 @@ public class ProductionOrderController {
 
         // Validar que el tipo de orden sea válido
         if (!isValidOrderType(effectiveOrderType)) {
-            throw new BusinessException("Invalid order type. Must be one of: CINCHOS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA, INTERNA(OPI)");
+            throw new BusinessException("Invalid order type. Must be one of: CINCHOS, CINCHOS_FOSSILES, CINCHOS_MARCAS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA, CLIENTE_KIOSKO, INTERNA(OPI)");
         }
 
         // Generar código automáticamente si no se proporciona
@@ -117,6 +124,7 @@ public class ProductionOrderController {
         ProductionOrderEntity entity = toEntity(request);
         applyCustomerMasterFromId(entity, request.getCustomerId());
         entity.setOrderType(effectiveOrderType);
+        applyDefaultSchedulingPriority(entity, effectiveOrderType);
         entity.setCode(orderCode);
         ProductionOrderEntity saved = productionOrderRepository.save(entity);
 
@@ -129,12 +137,7 @@ public class ProductionOrderController {
         if (request.getItems() != null && !request.getItems().isEmpty()) {
             // Validar items antes de procesarlos
             for (ProductionOrderItemRequest itemRequest : request.getItems()) {
-                if (itemRequest.getProductId() != null && !productRepository.existsById(itemRequest.getProductId())) {
-                    throw new ResourceNotFoundException("Product", itemRequest.getProductId());
-                }
-                if (itemRequest.getColorId() != null && !colorRepository.existsById(itemRequest.getColorId())) {
-                    throw new ResourceNotFoundException("Color", itemRequest.getColorId());
-                }
+                validateProductionOrderItemRequest(itemRequest, effectiveOrderType);
             }
 
             final Long savedProductionOrderId = saved.getId();
@@ -144,6 +147,7 @@ public class ProductionOrderController {
                                 .productionOrderId(savedProductionOrderId)
                                 .productId(itemRequest.getProductId())
                                 .colorId(itemRequest.getColorId())
+                                .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, itemRequest.getBrandName()))
                                 .quantity(itemRequest.getQuantity())
                                 .warehouseReceivedQty(0)
                                 .sizesData(itemRequest.getSizes() != null ? 
@@ -208,11 +212,12 @@ public class ProductionOrderController {
 
         // Validar tipo de orden
         if (!isValidOrderType(effectiveOrderType)) {
-            throw new BusinessException("Invalid order type. Must be one of: CINCHOS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA, INTERNA(OPI)");
+            throw new BusinessException("Invalid order type. Must be one of: CINCHOS, CINCHOS_FOSSILES, CINCHOS_MARCAS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA, CLIENTE_KIOSKO, INTERNA(OPI)");
         }
 
         updateEntity(entity, request);
         entity.setOrderType(effectiveOrderType);
+        applyDefaultSchedulingPriority(entity, effectiveOrderType);
         Long customerIdForSync = request.getCustomerId() != null ? request.getCustomerId() : entity.getCustomerId();
         applyCustomerMasterFromId(entity, customerIdForSync);
         ProductionOrderEntity updated = productionOrderRepository.save(entity);
@@ -229,12 +234,7 @@ public class ProductionOrderController {
             if (!request.getItems().isEmpty()) {
                 // Validar items antes de procesarlos
                 for (ProductionOrderItemRequest itemRequest : request.getItems()) {
-                    if (itemRequest.getProductId() != null && !productRepository.existsById(itemRequest.getProductId())) {
-                        throw new ResourceNotFoundException("Product", itemRequest.getProductId());
-                    }
-                    if (itemRequest.getColorId() != null && !colorRepository.existsById(itemRequest.getColorId())) {
-                        throw new ResourceNotFoundException("Color", itemRequest.getColorId());
-                    }
+                    validateProductionOrderItemRequest(itemRequest, effectiveOrderType);
                 }
 
                 final Long updatedProductionOrderId = updated.getId();
@@ -244,6 +244,7 @@ public class ProductionOrderController {
                                     .productionOrderId(updatedProductionOrderId)
                                     .productId(itemRequest.getProductId())
                                     .colorId(itemRequest.getColorId())
+                                    .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, itemRequest.getBrandName()))
                                     .quantity(itemRequest.getQuantity())
                                     .warehouseReceivedQty(0)
                                     .sizesData(itemRequest.getSizes() != null ? 
@@ -272,6 +273,30 @@ public class ProductionOrderController {
         productionOrderRepository.deleteById(id);
         
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Cambia el estado solo de órdenes de cinchos gestionadas en la vista dedicada (OPCF / OPCM).
+     */
+    @PutMapping("/{id}/status")
+    @Transactional
+    public ResponseEntity<ProductionOrderResponse> updateManagedCinchoOrderStatus(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> body) throws ResourceNotFoundException, BusinessException {
+        ProductionOrderEntity entity = productionOrderRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
+        String orderType = String.valueOf(entity.getOrderType() == null ? "" : entity.getOrderType()).trim().toUpperCase();
+        if (!isManagedCinchoOrderType(orderType)) {
+            throw new BusinessException("Solo se puede cambiar el estado por este endpoint en órdenes CINCHOS_FOSSILES u CINCHOS_MARCAS.");
+        }
+        String rawStatus = body == null ? null : body.get("status");
+        String nextStatus = String.valueOf(rawStatus == null ? "" : rawStatus).trim().toUpperCase();
+        if (!isValidManagedCinchoOrderStatus(nextStatus)) {
+            throw new BusinessException("Estado inválido. Use: PENDING, IN_PROGRESS, COMPLETED o CANCELLED.");
+        }
+        entity.setStatus(nextStatus);
+        ProductionOrderEntity saved = productionOrderRepository.save(entity);
+        return ResponseEntity.ok(toResponse(saved));
     }
 
     // ==================== CUSTOMER SHIPMENTS (Online Sales) ====================
@@ -1008,6 +1033,7 @@ public class ProductionOrderController {
                             .productCode(product != null ? product.getCode() : null)
                             .colorId(item.getColorId())
                             .colorName(color != null ? color.getName() : null)
+                            .brandName(item.getBrandName())
                             .quantity(item.getQuantity())
                             .warehouseReceivedQty(item.getWarehouseReceivedQty())
                             .leatherConsumption(leatherCons)
@@ -1606,17 +1632,68 @@ public class ProductionOrderController {
     }
 
     private boolean isValidOrderType(String orderType) {
-        return orderType != null && 
-                (orderType.equals("CINCHOS") || orderType.equals("MARCAS") || orderType.equals("OPV") || orderType.equals("NORMAL") || orderType.equals("DISTRIBUTION") || orderType.equals("VENTA_EN_LINEA") || orderType.equals("INTERNA"));
+        return orderType != null &&
+                (isCinchoOrderType(orderType) || orderType.equals("MARCAS") || orderType.equals("OPV") || orderType.equals("NORMAL") || orderType.equals("DISTRIBUTION") || orderType.equals("VENTA_EN_LINEA") || orderType.equals("CLIENTE_KIOSKO") || orderType.equals("INTERNA"));
+    }
+
+    private boolean isCinchoOrderType(String orderType) {
+        return "CINCHOS".equals(orderType) || "CINCHOS_FOSSILES".equals(orderType) || "CINCHOS_MARCAS".equals(orderType);
+    }
+
+    /** Cinchos con flujo dedicado fuera del centro de producción estándar (prefijos OPCF / OPCM). */
+    private boolean isManagedCinchoOrderType(String orderType) {
+        return "CINCHOS_FOSSILES".equals(orderType) || "CINCHOS_MARCAS".equals(orderType);
+    }
+
+    private boolean isValidManagedCinchoOrderStatus(String status) {
+        return "PENDING".equals(status)
+                || "IN_PROGRESS".equals(status)
+                || "COMPLETED".equals(status)
+                || "CANCELLED".equals(status);
     }
 
     private String normalizeOrderType(String orderType, String sellerName) {
         String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase();
         String normalizedSeller = String.valueOf(sellerName == null ? "" : sellerName).trim().toUpperCase();
-        if (normalizedSeller.contains("LUIS FELIPE")) {
+        // OPV vendedor (Luis Felipe): orden tipo MARCAS (prefijo OPV-). No debe quedar como CLIENTE_KIOSKO ni como NORMAL si se eligió ese vendedor.
+        if (normalizedSeller.contains("LUIS FELIPE") && !isCinchoOrderType(normalizedType)) {
             return "MARCAS";
         }
         return normalizedType;
+    }
+
+    private void applyDefaultSchedulingPriority(ProductionOrderEntity entity, String orderType) {
+        if ("CLIENTE_KIOSKO".equals(orderType)) {
+            entity.setSchedulingPriority(1);
+        }
+    }
+
+    private void validateProductionOrderItemRequest(ProductionOrderItemRequest itemRequest, String orderType)
+            throws ResourceNotFoundException, BusinessException {
+        if (itemRequest.getProductId() != null && !productRepository.existsById(itemRequest.getProductId())) {
+            throw new ResourceNotFoundException("Product", itemRequest.getProductId());
+        }
+        if (itemRequest.getColorId() != null && !colorRepository.existsById(itemRequest.getColorId())) {
+            throw new ResourceNotFoundException("Color", itemRequest.getColorId());
+        }
+        if ("MARCAS".equals(orderType)) {
+            String normalizedBrand = normalizeItemBrandName(itemRequest.getBrandName());
+            if (normalizedBrand == null) {
+                throw new BusinessException("Brand name is required for each item in MARCAS production orders");
+            }
+            if (!ALLOWED_BRANDS.contains(normalizedBrand)) {
+                throw new BusinessException("Invalid brand name. Must be one of: LEVIS, NAUTICA, TOMMY HILFIGER, LACOSTE, ABERCROMBIE");
+            }
+        }
+    }
+
+    private String normalizeItemBrandName(String brandName) {
+        String normalizedBrand = String.valueOf(brandName == null ? "" : brandName).trim().toUpperCase();
+        return normalizedBrand.isEmpty() ? null : normalizedBrand;
+    }
+
+    private String normalizeItemBrandNameForStorage(String orderType, String brandName) {
+        return "MARCAS".equals(orderType) ? normalizeItemBrandName(brandName) : null;
     }
 
     private void applyCustomerMasterFromId(ProductionOrderEntity entity, Long customerId) {

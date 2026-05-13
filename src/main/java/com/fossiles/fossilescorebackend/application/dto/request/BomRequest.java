@@ -7,6 +7,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 @Data
@@ -24,6 +25,10 @@ public class BomRequest {
 
     @Size(max = 20, message = "Status must not exceed 20 characters")
     private String status;
+
+    /** Configuración de cuero por producto/color asociada a esta BOM. */
+    private Long leatherMaterialId;
+    private BigDecimal leatherQtyPerUnit;
 
     private List<BomItemRequest> items;
 }

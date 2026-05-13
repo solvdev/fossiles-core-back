@@ -18,7 +18,7 @@ import java.util.stream.Collectors;
 /**
  * Al completarse una tarea y liberarse una mesa, asigna a esa mesa (mismo día) las siguientes
  * tareas PENDING sin mesa, siguiendo la cola por OP (schedulingPriority + FIFO createdAt),
- * respetando 4h por mesa/día con excepción OPL (VENTA_EN_LINEA) en el día ancla.
+ * respetando 4h por mesa/día con excepción de órdenes urgentes en el día ancla.
  */
 @Service
 @RequiredArgsConstructor
@@ -72,18 +72,18 @@ public class TaskDeskBackfillService {
         List<ProductionOrderEntity> pos = poIds.isEmpty() ? List.of() : productionOrderRepository.findAllById(poIds);
         Map<Long, Integer> prioByPo = new HashMap<>();
         Map<Long, LocalDateTime> createdAtByPo = new HashMap<>();
-        Map<Long, Boolean> isOplByPo = new HashMap<>();
+        Map<Long, Boolean> canOvercapByPo = new HashMap<>();
         for (ProductionOrderEntity po : pos) {
             Long id = po.getId();
             if (id == null) continue;
             prioByPo.put(id, Optional.ofNullable(po.getSchedulingPriority()).orElse(Integer.MAX_VALUE));
             createdAtByPo.put(id, po.getCreatedAt() != null ? po.getCreatedAt() : LocalDateTime.MAX);
-            isOplByPo.put(id, "VENTA_EN_LINEA".equalsIgnoreCase(String.valueOf(po.getOrderType() == null ? "" : po.getOrderType()).trim()));
+            canOvercapByPo.put(id, canOvercapDeskDay(po.getOrderType()));
         }
         for (Long id : poIds) {
             prioByPo.putIfAbsent(id, Integer.MAX_VALUE);
             createdAtByPo.putIfAbsent(id, LocalDateTime.MAX);
-            isOplByPo.putIfAbsent(id, false);
+            canOvercapByPo.putIfAbsent(id, false);
         }
 
         Comparator<Long> opQueueComparator = Comparator
@@ -117,14 +117,14 @@ public class TaskDeskBackfillService {
                 List<TaskEntity> list = byPo.get(poId);
                 if (list == null || list.isEmpty()) continue;
 
-                boolean isOpl = Boolean.TRUE.equals(isOplByPo.get(poId));
+                boolean canOvercapDeskDay = Boolean.TRUE.equals(canOvercapByPo.get(poId));
 
                 for (int i = 0; i < list.size(); i++) {
                     TaskEntity cand = list.get(i);
                     double h = getTaskBaseHours(cand);
                     boolean oversizedSingle = h > MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
 
-                    boolean canOvercap = isOpl; // anchorDate ya es el día ancla del evento
+                    boolean canOvercap = canOvercapDeskDay; // anchorDate ya es el día ancla del evento
                     boolean fits = canOvercap || (oversizedSingle && load <= 1e-9) || (load + h <= MAX_HOURS_PER_DESK_PER_DAY + 1e-9);
                     if (!fits) {
                         continue;
@@ -183,6 +183,11 @@ public class TaskDeskBackfillService {
                 .mapToDouble(Double::doubleValue)
                 .sum();
         return Math.max(total - extra, 0.0);
+    }
+
+    private boolean canOvercapDeskDay(String orderType) {
+        String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase(Locale.ROOT);
+        return "VENTA_EN_LINEA".equals(normalizedType) || "CLIENTE_KIOSKO".equals(normalizedType);
     }
 
     private double sumHoursAssignedToDeskDay(List<TaskEntity> pool, int desk, LocalDate date) {

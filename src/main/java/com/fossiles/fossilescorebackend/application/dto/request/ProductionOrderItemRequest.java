@@ -21,6 +21,9 @@ public class ProductionOrderItemRequest {
 
     private Long colorId;
 
+    @Size(max = 100, message = "Brand name must not exceed 100 characters")
+    private String brandName;
+
     private Integer quantity; // Para productos normales
 
     // Para cinchos: mapa de talla -> cantidad

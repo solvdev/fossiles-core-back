@@ -14,6 +14,8 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -2058,12 +2060,46 @@ public class InventoryService {
             }
         }
 
+        String systemSizesJson = null;
+        String physicalSizesJson = null;
+        if (request.getProductId() != null) {
+            ProductEntity prod = productRepository.findById(request.getProductId()).orElse(null);
+            boolean hasSys = request.getSystemSizes() != null && !request.getSystemSizes().isEmpty();
+            boolean hasPhy = request.getPhysicalSizes() != null && !request.getPhysicalSizes().isEmpty();
+            if (CinchoProductUtils.isFossCinchoProduct(prod)) {
+                if (hasSys != hasPhy) {
+                    throw new BusinessException("Para cincho FOSS debe enviar systemSizes y physicalSizes juntos.");
+                }
+                if (hasSys) {
+                    Map<String, BigDecimal> sysM = ProductInventorySizesJson.normalizeIncomingMap(request.getSystemSizes());
+                    Map<String, BigDecimal> phyM = ProductInventorySizesJson.normalizeIncomingMap(request.getPhysicalSizes());
+                    if (sysM.isEmpty() || phyM.isEmpty()) {
+                        throw new BusinessException("Los mapas de tallas no pueden quedar vacios.");
+                    }
+                    BigDecimal sumS = ProductInventorySizesJson.sum(sysM);
+                    BigDecimal sumP = ProductInventorySizesJson.sum(phyM);
+                    if (sumS.compareTo(request.getSystemStock()) != 0) {
+                        throw new BusinessException("systemStock debe coincidir con la suma de systemSizes.");
+                    }
+                    if (sumP.compareTo(request.getPhysicalStock()) != 0) {
+                        throw new BusinessException("physicalStock debe coincidir con la suma de physicalSizes.");
+                    }
+                    systemSizesJson = ProductInventorySizesJson.serialize(sysM);
+                    physicalSizesJson = ProductInventorySizesJson.serialize(phyM);
+                }
+            } else if (hasSys || hasPhy) {
+                throw new BusinessException("systemSizes/physicalSizes solo aplican a productos cincho FOSS.");
+            }
+        }
+
         // Crear el ajuste
         InventoryAdjustment adjustment = InventoryAdjustment.builder()
                 .locationId(request.getLocationId()) // null para materiales, requerido para productos
                 .materialId(request.getMaterialId())
                 .productId(request.getProductId())
                 .colorId(request.getColorId()) // Opcional: solo para productos
+                .systemSizesData(systemSizesJson)
+                .physicalSizesData(physicalSizesJson)
                 .systemStock(request.getSystemStock())
                 .physicalStock(request.getPhysicalStock())
                 .adjustmentQuantity(adjustmentQuantity)
@@ -2135,6 +2171,11 @@ public class InventoryService {
             );
         } else {
             // Ajuste de producto
+            ProductEntity productEntity = productRepository.findById(adjustment.getProductId()).orElse(null);
+            boolean fossWithSizes = CinchoProductUtils.isFossCinchoProduct(productEntity)
+                    && adjustment.getPhysicalSizesData() != null
+                    && !adjustment.getPhysicalSizesData().isBlank();
+
             ProductInventoryLocation inventory;
             if (adjustment.getColorId() != null) {
                 // Buscar por producto, ubicación y color
@@ -2158,17 +2199,20 @@ public class InventoryService {
             BigDecimal quantityAfter = adjustment.getPhysicalStock();
 
             if (inventory == null) {
-                // Crear nuevo registro
-                ProductInventoryLocationRequest createRequest = ProductInventoryLocationRequest.builder()
+                ProductInventoryLocationRequest.ProductInventoryLocationRequestBuilder cr = ProductInventoryLocationRequest.builder()
                         .productId(adjustment.getProductId())
                         .locationId(adjustment.getLocationId())
                         .colorId(adjustment.getColorId())
-                        .quantity(adjustment.getPhysicalStock())
-                        .build();
-                productInventoryService.createOrUpdateInventory(createRequest);
+                        .quantity(adjustment.getPhysicalStock());
+                if (fossWithSizes) {
+                    cr.sizes(ProductInventorySizesJson.parse(adjustment.getPhysicalSizesData()));
+                }
+                productInventoryService.createOrUpdateInventory(cr.build());
             } else {
-                // Actualizar existente
                 inventory.setQuantity(adjustment.getPhysicalStock());
+                if (fossWithSizes) {
+                    inventory.setSizesData(adjustment.getPhysicalSizesData());
+                }
                 productInventoryLocationRepository.save(inventory);
             }
 
@@ -2238,6 +2282,14 @@ public class InventoryService {
     /**
      * Convierte entidad a DTO de respuesta
      */
+    private Map<String, BigDecimal> adjustmentSizesOrNull(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        Map<String, BigDecimal> m = ProductInventorySizesJson.parse(json);
+        return m.isEmpty() ? null : m;
+    }
+
     private InventoryAdjustmentResponse toInventoryAdjustmentResponse(InventoryAdjustment entity) {
         LocationEntity location = entity.getLocationId() != null 
                 ? locationRepository.findById(entity.getLocationId()).orElse(null) 
@@ -2273,6 +2325,8 @@ public class InventoryService {
                 .productName(product != null ? product.getName() : null)
                 .colorId(entity.getColorId())
                 .colorName(color != null ? color.getName() : null)
+                .systemSizes(adjustmentSizesOrNull(entity.getSystemSizesData()))
+                .physicalSizes(adjustmentSizesOrNull(entity.getPhysicalSizesData()))
                 .systemStock(entity.getSystemStock())
                 .physicalStock(entity.getPhysicalStock())
                 .adjustmentQuantity(entity.getAdjustmentQuantity())

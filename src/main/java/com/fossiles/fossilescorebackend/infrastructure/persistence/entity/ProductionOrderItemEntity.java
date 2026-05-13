@@ -25,11 +25,17 @@ public class ProductionOrderItemEntity {
     @Column(name = "online_sale_id")
     private Long onlineSaleId;
 
+    @Column(name = "online_sale_item_id")
+    private Long onlineSaleItemId;
+
     @Column(name = "product_id")
     private Long productId;
 
     @Column(name = "color_id")
     private Long colorId;
+
+    @Column(name = "brand_name", length = 100)
+    private String brandName;
 
     @Column(name = "quantity")
     private Integer quantity;

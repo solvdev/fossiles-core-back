@@ -408,18 +408,18 @@ public class TaskController {
         List<ProductionOrderEntity> pos = poIds.isEmpty() ? List.of() : productionOrderRepository.findAllById(poIds);
         Map<Long, Integer> prioByPo = new HashMap<>();
         Map<Long, LocalDateTime> createdAtByPo = new HashMap<>();
-        Map<Long, Boolean> isOplByPo = new HashMap<>();
+        Map<Long, Boolean> canOvercapByPo = new HashMap<>();
         for (ProductionOrderEntity po : pos) {
             Long id = po.getId();
             if (id == null) continue;
             prioByPo.put(id, Optional.ofNullable(po.getSchedulingPriority()).orElse(Integer.MAX_VALUE));
             createdAtByPo.put(id, po.getCreatedAt() != null ? po.getCreatedAt() : LocalDateTime.MAX);
-            isOplByPo.put(id, "VENTA_EN_LINEA".equalsIgnoreCase(String.valueOf(po.getOrderType() == null ? "" : po.getOrderType()).trim()));
+            canOvercapByPo.put(id, canOvercapDeskDay(po.getOrderType()));
         }
         for (Long id : poIds) {
             prioByPo.putIfAbsent(id, Integer.MAX_VALUE);
             createdAtByPo.putIfAbsent(id, LocalDateTime.MAX);
-            isOplByPo.putIfAbsent(id, false);
+            canOvercapByPo.putIfAbsent(id, false);
         }
 
         Comparator<Long> opQueueComparator = Comparator
@@ -472,14 +472,14 @@ public class TaskController {
             if (poTasks.isEmpty()) continue;
             selected += poTasks.size();
 
-            boolean isOpl = Boolean.TRUE.equals(isOplByPo.get(poId));
+            boolean canOvercapDeskDay = Boolean.TRUE.equals(canOvercapByPo.get(poId));
             for (TaskEntity task : poTasks) {
                 double taskHours = getTaskBaseHours(task);
 
                 LocalDate targetDate = startDate;
                 boolean assigned = false;
 
-                int maxDayIdx = isOpl ? 0 : Math.max(0, days - 1);
+                int maxDayIdx = canOvercapDeskDay ? 0 : Math.max(0, days - 1);
                 for (int dayIdx = 0; dayIdx <= maxDayIdx && !assigned; dayIdx++) {
                     targetDate = startDate.plusDays(dayIdx);
                     Map<Integer, Double> loads = loadsByDate.get(targetDate);
@@ -491,7 +491,7 @@ public class TaskController {
                         double currentLoad = loads.getOrDefault(desk, 0.0);
 
                         boolean oversizedSingle = taskHours > MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
-                        boolean canOvercap = isOpl && targetDate.equals(startDate);
+                        boolean canOvercap = canOvercapDeskDay && targetDate.equals(startDate);
                         boolean fits =
                                 canOvercap
                                         || (oversizedSingle && currentLoad <= 1e-9)
@@ -1068,6 +1068,10 @@ public class TaskController {
             double estimatedHours = roundHours(qty * prdTimePerUnit);
             ProductionOrderEntity order = orderById.get(poi.getProductionOrderId());
 
+            if (isFossCinchosProductCode(product != null ? product.getCode() : null)) {
+                continue;
+            }
+
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("taskId", task.getId());
             row.put("productionOrderId", poi.getProductionOrderId());
@@ -1138,6 +1142,9 @@ public class TaskController {
             ProductEntity product = selected.getProductId() != null
                     ? productRepository.findById(selected.getProductId()).orElse(null)
                     : null;
+            if (isFossCinchosProductCode(product != null ? product.getCode() : null)) {
+                throw new BusinessException("Los productos cincho FOSS se gestionan en la vista de Cinchos, no como extra de venta del día.");
+            }
             String colorName = null;
             if (selected.getColorId() != null) {
                 ColorEntity color = colorRepository.findById(selected.getColorId()).orElse(null);
@@ -2084,7 +2091,7 @@ public class TaskController {
     // ==================== INNER CLASSES ====================
 
     /**
-     * OPV / OPK / OPI según tipo o prefijo de código; null si no aplica al tablero de prioridad.
+     * OPV / OPK / OPI / OPCK según tipo o prefijo de código; null si no aplica al tablero de prioridad.
      */
     private static String distributionFamilyLabel(String orderType, String code) {
         String ot = orderType == null ? "" : orderType.trim();
@@ -2092,10 +2099,23 @@ public class TaskController {
         if ("NORMAL".equalsIgnoreCase(ot)) return "OPK";
         if ("MARCAS".equalsIgnoreCase(ot) || "OPV".equalsIgnoreCase(ot)) return "OPV";
         if ("INTERNA".equalsIgnoreCase(ot)) return "OPI";
+        if ("CLIENTE_KIOSKO".equalsIgnoreCase(ot)) return "OPCK";
         if (c.startsWith("OPK-")) return "OPK";
         if (c.startsWith("OPV-")) return "OPV";
         if (c.startsWith("OPI-")) return "OPI";
+        if (c.startsWith("OPCK-")) return "OPCK";
         return null;
+    }
+
+    private static boolean canOvercapDeskDay(String orderType) {
+        String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase(Locale.ROOT);
+        return "VENTA_EN_LINEA".equals(normalizedType) || "CLIENTE_KIOSKO".equals(normalizedType);
+    }
+
+    /** Productos cincho de venta en línea (código FOSS...); no entran al selector de venta del día del centro. */
+    private boolean isFossCinchosProductCode(String productCode) {
+        String c = String.valueOf(productCode == null ? "" : productCode).trim().toUpperCase(Locale.ROOT);
+        return c.startsWith("FOSS");
     }
 
     private void mergeSchedulingPrioritiesFromRequest(Map<String, Integer> schedulingPriorities) {

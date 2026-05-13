@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Map;
 
 @Data
 @Builder
@@ -27,6 +28,8 @@ public class ProductInventoryLocationResponse {
     private String colorName;
     private BigDecimal quantity;
     private BigDecimal min;
+    /** Cinchos FOSS: talla → cantidad en esta ubicación/color */
+    private Map<String, BigDecimal> sizes;
     private LocalDateTime createdAt;
     private Long createdBy;
     private LocalDateTime updatedAt;

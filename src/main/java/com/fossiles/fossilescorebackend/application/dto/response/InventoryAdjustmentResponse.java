@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Map;
 
 @Data
 @Builder
@@ -25,6 +26,8 @@ public class InventoryAdjustmentResponse {
     private String productName;
     private Long colorId;
     private String colorName;
+    private Map<String, BigDecimal> systemSizes;
+    private Map<String, BigDecimal> physicalSizes;
     private BigDecimal systemStock;
     private BigDecimal physicalStock;
     private BigDecimal adjustmentQuantity;

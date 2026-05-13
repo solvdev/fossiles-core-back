@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductInventory
 import com.fossiles.fossilescorebackend.application.dto.response.CriticalProductInventoryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryKardexResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryLocationResponse;
+import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.ProductInventoryService;
 import jakarta.validation.Valid;
@@ -61,7 +62,7 @@ public class ProductInventoryController {
 
     @PostMapping
     public ResponseEntity<ProductInventoryLocationResponse> createOrUpdateInventory(
-            @Valid @RequestBody ProductInventoryLocationRequest request) throws ResourceNotFoundException {
+            @Valid @RequestBody ProductInventoryLocationRequest request) throws ResourceNotFoundException, BusinessException {
         ProductInventoryLocationResponse response = productInventoryService.createOrUpdateInventory(request);
         return ResponseEntity.ok(response);
     }

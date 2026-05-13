@@ -8,6 +8,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.util.Map;
 
 @Data
 @Builder
@@ -25,5 +26,8 @@ public class ProductInventoryLocationRequest {
     @NotNull(message = "Quantity is required")
     @DecimalMin(value = "0.0", message = "Quantity must be positive")
     private BigDecimal quantity;
+
+    /** Opcional: cinchos FOSS — si se envía, persiste sizes_data y quantity debe coincidir con la suma */
+    private Map<String, BigDecimal> sizes;
 }
 

@@ -19,6 +19,10 @@ public class BomResponse {
     private Long productId;
     private Long colorId;
     private String status;
+    private Long leatherMaterialId;
+    private String leatherMaterialSku;
+    private String leatherMaterialName;
+    private BigDecimal leatherQtyPerUnit;
     private BigDecimal totalCost; // Costo total del BOM (suma de todos los itemCost)
     private LocalDateTime createdAt;
     private Long createdBy;
