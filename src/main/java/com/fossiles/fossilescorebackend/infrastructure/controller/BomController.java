@@ -64,6 +64,42 @@ public class BomController {
         return ResponseEntity.ok(boms);
     }
 
+    /**
+     * Reemplaza las líneas de materiales de la BOM destino por una copia de las de la BOM origen.
+     * No modifica cabecera (producto/color/nombre) del destino.
+     */
+    @PostMapping("/{targetId}/copy-items-from/{sourceId}")
+    @Transactional
+    public ResponseEntity<BomResponse> copyItemsFrom(
+            @PathVariable Long targetId,
+            @PathVariable Long sourceId) throws ResourceNotFoundException, BusinessException {
+        if (Objects.equals(targetId, sourceId)) {
+            throw new BusinessException("La BOM origen y destino no pueden ser la misma.");
+        }
+        BomEntity target = bomRepository.findById(targetId)
+                .orElseThrow(() -> new ResourceNotFoundException("BOM", targetId));
+        bomRepository.findById(sourceId)
+                .orElseThrow(() -> new ResourceNotFoundException("BOM", sourceId));
+
+        bomItemRepository.findByBomId(targetId).forEach(bomItemRepository::delete);
+
+        List<BomItemEntity> sourceItems = bomItemRepository.findByBomId(sourceId);
+        for (BomItemEntity src : sourceItems) {
+            BomItemEntity copy = BomItemEntity.builder()
+                    .bomId(targetId)
+                    .materialId(src.getMaterialId())
+                    .quantity(src.getQuantity())
+                    .measurement(src.getMeasurement())
+                    .measurementUnit(src.getMeasurementUnit())
+                    .build();
+            bomItemRepository.save(copy);
+        }
+
+        BomEntity refreshed = bomRepository.findById(target.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("BOM", targetId));
+        return ResponseEntity.ok(toResponse(refreshed));
+    }
+
     @PostMapping
     @Transactional
     public ResponseEntity<BomResponse> create(@Valid @RequestBody BomRequest request)

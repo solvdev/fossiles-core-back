@@ -12,6 +12,7 @@ import com.fossiles.fossilescorebackend.application.service.ProductionTaskGenera
 import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -58,6 +59,8 @@ public class TaskController {
     private final MaterialConsumptionService materialConsumptionService;
     private final ProductionTaskGenerationService productionTaskGenerationService;
     private final TaskDeskBackfillService taskDeskBackfillService;
+    private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
+    private final SecurityUtil securityUtil;
 
     // ==================== CRUD ====================
 
@@ -544,9 +547,6 @@ public class TaskController {
             throw new BusinessException("Invalid status. Must be: PENDING, IN_PROGRESS, COMPLETED, CANCELLED");
         }
 
-        if ("IN_PROGRESS".equals(newStatus) && !canMoveToInProgress(entity)) {
-            throw new BusinessException("No se puede iniciar la tarea. Debe tener cuero entregado, troquelado, mesa asignada y materiales entregados (si aplica).");
-        }
         if (!canTransitionStatus(entity.getStatus(), newStatus)) {
             throw new BusinessException("Transición de estado no permitida: " + entity.getStatus() + " -> " + newStatus);
         }
@@ -867,9 +867,7 @@ public class TaskController {
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
 
         boolean delivered = body.get("delivered") != null && Boolean.parseBoolean(body.get("delivered").toString());
-        if (delivered && taskRequiresMaterials(entity) && !canDeliverMaterials(entity)) {
-            throw new BusinessException("No se puede entregar materiales aún. Requiere cuero entregado, troquelado y entrada a mesa.");
-        }
+        boolean force = body.get("force") != null && Boolean.parseBoolean(body.get("force").toString());
         if (!delivered && ("IN_PROGRESS".equals(entity.getStatus()) || "COMPLETED".equals(entity.getStatus()))) {
             throw new BusinessException("No se puede desmarcar materiales entregados cuando la tarea ya está en proceso o completada.");
         }
@@ -893,7 +891,7 @@ public class TaskController {
                     }
                     if (!Boolean.TRUE.equals(item.getMaterialsDelivered())) {
                         if (!alreadyConsumedAtOrderLevel) {
-                            materialConsumptionService.consumeMaterialsForTaskItem(entity.getId(), item.getId());
+                            materialConsumptionService.consumeMaterialsForTaskItem(entity.getId(), item.getId(), force);
                         }
                         item.setMaterialsDelivered(true);
                         item.setMaterialsDeliveredAt(LocalDateTime.now());
@@ -903,6 +901,9 @@ public class TaskController {
             } else {
                 for (TaskItemEntity item : taskItems) {
                     if (isTaskItemRequiresMaterials(item)) {
+                        if (item.getId() != null) {
+                            taskItemMaterialPickRepository.deleteByTaskItemId(item.getId());
+                        }
                         item.setMaterialsDelivered(false);
                         item.setMaterialsDeliveredAt(null);
                         taskItemRepository.save(item);
@@ -918,7 +919,7 @@ public class TaskController {
                         : null;
                 boolean alreadyConsumedAtOrderLevel = order != null && Boolean.TRUE.equals(order.getMaterialsConsumed());
                 if (!alreadyConsumedAtOrderLevel) {
-                    materialConsumptionService.consumeMaterialsForTask(entity.getId());
+                    materialConsumptionService.consumeMaterialsForTask(entity.getId(), force);
                 }
             }
             entity.setMaterialsDelivered(delivered);
@@ -944,20 +945,18 @@ public class TaskController {
         }
 
         boolean delivered = body.get("delivered") != null && Boolean.parseBoolean(body.get("delivered").toString());
+        boolean force = body.get("force") != null && Boolean.parseBoolean(body.get("force").toString());
         if (!isTaskItemRequiresMaterials(item)) {
             item.setMaterialsDelivered(true);
             item.setMaterialsDeliveredAt(item.getMaterialsDeliveredAt() != null ? item.getMaterialsDeliveredAt() : LocalDateTime.now());
         } else if (delivered) {
-            if (!canDeliverMaterialsPreconditions(entity)) {
-                throw new BusinessException("No se puede entregar materiales aún. Requiere cuero entregado, troquelado y entrada a mesa.");
-            }
             if (!Boolean.TRUE.equals(item.getMaterialsDelivered())) {
                 ProductionOrderEntity order = entity.getProductionOrderId() != null
                         ? productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null)
                         : null;
                 boolean alreadyConsumedAtOrderLevel = order != null && Boolean.TRUE.equals(order.getMaterialsConsumed());
                 if (!alreadyConsumedAtOrderLevel) {
-                    materialConsumptionService.consumeMaterialsForTaskItem(entity.getId(), item.getId());
+                    materialConsumptionService.consumeMaterialsForTaskItem(entity.getId(), item.getId(), force);
                 }
             }
             item.setMaterialsDelivered(true);
@@ -966,6 +965,7 @@ public class TaskController {
             if ("IN_PROGRESS".equals(entity.getStatus()) || "COMPLETED".equals(entity.getStatus())) {
                 throw new BusinessException("No se puede desmarcar materiales cuando la tarea ya está en proceso o completada.");
             }
+            taskItemMaterialPickRepository.deleteByTaskItemId(item.getId());
             item.setMaterialsDelivered(false);
             item.setMaterialsDeliveredAt(null);
         }
@@ -1260,25 +1260,44 @@ public class TaskController {
 
     /**
      * Vista para el equipo de materiales: tareas con recetas (BOM) para saber qué despachar.
-     * Filtra por fecha programada (por defecto hoy).
+     * Filtra por fecha programada (por defecto hoy en zona Guatemala).
+     *
+     * @param scheduleDay si true (con {@code date}), devuelve todas las tareas con {@code scheduledDate} en ese día
+     *                    (no canceladas), incluidas las que ya tienen materiales entregados — para la vista “día de trabajo”.
+     * @param includeDelivered si true (y {@code scheduleDay} es false), devuelve tareas con entrega de materiales
+     *                         registrada en {@code date} (día completo, por timestamp).
      */
     @GetMapping("/materials-view")
     @Transactional(readOnly = true)
     public ResponseEntity<List<MaterialsTaskViewResponse>> getMaterialsView(
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(name = "includeDelivered", defaultValue = "false") boolean includeDelivered,
+            @RequestParam(name = "scheduleDay", defaultValue = "false") boolean scheduleDay) {
 
-        LocalDate targetDate = date != null ? date : LocalDate.now();
+        LocalDate targetDate = date != null ? date : LocalDate.now(GUATEMALA_ZONE);
 
-        List<TaskEntity> tasks = taskRepository.findByScheduledDate(targetDate);
-        // Also include tasks without a scheduled date that are pending/in-progress
-        if (date == null) {
-            List<TaskEntity> unscheduled = taskRepository.findPendingAndInProgressOrdered().stream()
-                    .filter(t -> t.getScheduledDate() == null)
-                    .toList();
-            List<TaskEntity> combined = new ArrayList<>(tasks);
-            combined.addAll(unscheduled);
-            tasks = combined;
+        if (scheduleDay) {
+            LocalDate day = date != null ? date : LocalDate.now(GUATEMALA_ZONE);
+            List<TaskEntity> tasks = collectTasksScheduledForMaterialsDay(day);
+            List<MaterialsTaskViewResponse> responses = tasks.stream()
+                    .filter(t -> !"CANCELLED".equals(t.getStatus()))
+                    .map(this::toMaterialsView)
+                    .collect(Collectors.toList());
+            return ResponseEntity.ok(responses);
         }
+
+        if (includeDelivered) {
+            LocalDateTime start = targetDate.atStartOfDay();
+            LocalDateTime end = targetDate.plusDays(1).atStartOfDay();
+            List<TaskEntity> delivered = taskRepository.findTasksWithMaterialsDeliveredBetween(start, end);
+            List<MaterialsTaskViewResponse> responses = delivered.stream()
+                    .map(this::toMaterialsView)
+                    .collect(Collectors.toList());
+            return ResponseEntity.ok(responses);
+        }
+
+        List<TaskEntity> tasks = mergeActiveMaterialsBacklogForToday(
+                targetDate, taskRepository.findByScheduledDate(targetDate));
 
         List<MaterialsTaskViewResponse> responses = tasks.stream()
                 .filter(this::isPendingMaterialsViewTask)
@@ -1294,15 +1313,81 @@ public class TaskController {
     @GetMapping("/materials-view/production-order/{productionOrderId}")
     @Transactional(readOnly = true)
     public ResponseEntity<List<MaterialsTaskViewResponse>> getMaterialsViewByOrder(
-            @PathVariable Long productionOrderId) {
+            @PathVariable Long productionOrderId,
+            @RequestParam(name = "includeDelivered", defaultValue = "false") boolean includeDelivered) {
 
         List<TaskEntity> tasks = findTasksLinkedToProductionOrder(productionOrderId);
         List<MaterialsTaskViewResponse> responses = tasks.stream()
-                .filter(this::isPendingMaterialsViewTask)
+                .filter(t -> !"CANCELLED".equals(t.getStatus()))
+                .filter(t -> includeDelivered || isPendingMaterialsViewTask(t))
                 .map(this::toMaterialsView)
                 .collect(Collectors.toList());
 
         return ResponseEntity.ok(responses);
+    }
+
+    /**
+     * Marca o desmarca una línea de la receta (BOM) como preparada/despachada para un ítem de tarea.
+     */
+    @PutMapping("/{taskId}/materials-pick/item/{taskItemId}/material/{materialId}")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> setTaskItemMaterialPick(
+            @PathVariable Long taskId,
+            @PathVariable Long taskItemId,
+            @PathVariable Long materialId,
+            @RequestBody Map<String, Object> body)
+            throws ResourceNotFoundException, BusinessException {
+        TaskEntity task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new ResourceNotFoundException("Task", taskId));
+        TaskItemEntity item = taskItemRepository.findById(taskItemId)
+                .orElseThrow(() -> new ResourceNotFoundException("Task Item", taskItemId));
+        if (!Objects.equals(item.getTaskId(), task.getId())) {
+            throw new BusinessException("El item no pertenece a la tarea indicada.");
+        }
+        if (Boolean.TRUE.equals(item.getMaterialsDelivered())) {
+            throw new BusinessException("No se puede modificar la receta luego de entregar materiales del producto.");
+        }
+        boolean picked = body.get("picked") != null && Boolean.parseBoolean(body.get("picked").toString());
+        if (!picked && ("IN_PROGRESS".equals(task.getStatus()) || "COMPLETED".equals(task.getStatus()))) {
+            throw new BusinessException("No se puede desmarcar material cuando la tarea ya está en proceso o completada.");
+        }
+        if (!materialBelongsToTaskItemRecipe(item, materialId)) {
+            throw new BusinessException("El material no pertenece a la receta de este producto.");
+        }
+        Long userId = securityUtil.getCurrentUserId();
+        Optional<TaskItemMaterialPickEntity> existing = taskItemMaterialPickRepository
+                .findByTaskItemIdAndMaterialId(taskItemId, materialId);
+        if (picked) {
+            TaskItemMaterialPickEntity pick = existing.orElseGet(() -> TaskItemMaterialPickEntity.builder()
+                    .taskItemId(taskItemId)
+                    .materialId(materialId)
+                    .picked(false)
+                    .build());
+            pick.setPicked(true);
+            pick.setPickedAt(LocalDateTime.now());
+            pick.setPickedBy(userId);
+            taskItemMaterialPickRepository.save(pick);
+        } else {
+            existing.ifPresent(taskItemMaterialPickRepository::delete);
+        }
+        return ResponseEntity.ok(Map.of("ok", true, "picked", picked));
+    }
+
+    private boolean materialBelongsToTaskItemRecipe(TaskItemEntity item, Long materialId) {
+        if (item.getProductId() == null || materialId == null) {
+            return false;
+        }
+        List<BomEntity> boms = bomRepository.findByProductIdAndStatus(item.getProductId(), "A");
+        Long colorId = item.getColorId();
+        BomEntity matchedBom = boms.stream()
+                .filter(b -> colorId != null && colorId.equals(b.getColorId()))
+                .findFirst()
+                .orElse(boms.isEmpty() ? null : boms.get(0));
+        if (matchedBom == null) {
+            return false;
+        }
+        return bomItemRepository.findByBomId(matchedBom.getId()).stream()
+                .anyMatch(bi -> materialId.equals(bi.getMaterialId()));
     }
 
     private MaterialsTaskViewResponse toMaterialsView(TaskEntity task) {
@@ -1374,6 +1459,13 @@ public class TaskController {
         String colorName = item.getColorName();
         Integer quantity = item.getQuantity();
 
+        Map<Long, TaskItemMaterialPickEntity> picksByMaterial = new HashMap<>();
+        if (item.getId() != null) {
+            for (TaskItemMaterialPickEntity p : taskItemMaterialPickRepository.findByTaskItemId(item.getId())) {
+                picksByMaterial.put(p.getMaterialId(), p);
+            }
+        }
+
         if (productId != null) {
             // Find active BOM for this product (and optionally color)
             // BOM status is stored as "A" (active)
@@ -1398,6 +1490,7 @@ public class TaskController {
                                     ? material.getQuantity()
                                     : BigDecimal.ZERO;
                             boolean sufficientStock = availableStock.compareTo(totalQty) >= 0;
+                            TaskItemMaterialPickEntity pick = picksByMaterial.get(bomItem.getMaterialId());
 
                             return MaterialsTaskViewResponse.RecipeMaterial.builder()
                                     .materialId(bomItem.getMaterialId())
@@ -1408,6 +1501,8 @@ public class TaskController {
                                     .availableStock(availableStock)
                                     .sufficientStock(sufficientStock)
                                     .measurementUnit(bomItem.getMeasurementUnit())
+                                    .picked(pick != null && Boolean.TRUE.equals(pick.getPicked()))
+                                    .pickedAt(pick != null ? pick.getPickedAt() : null)
                                     .build();
                         })
                         .collect(Collectors.toList());
@@ -1677,51 +1772,58 @@ public class TaskController {
                 || (entity.getStartTime() != null && !entity.getStartTime().isBlank());
     }
 
-    private boolean hasStockForMaterialsDelivery(TaskEntity entity) {
-        if (entity.getId() == null) return false;
-        try {
-            ProductionOrderEntity order = entity.getProductionOrderId() != null
-                    ? productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null)
-                    : null;
-            // Backward compatibility for tasks created before per-task consumption:
-            // if the OP was already consumed, allow materials delivery for pending tasks.
-            if (order != null && Boolean.TRUE.equals(order.getMaterialsConsumed())) {
-                return true;
-            }
-            List<TaskItemEntity> taskItems = taskItemRepository.findByTaskId(entity.getId());
-            if (taskItems.isEmpty()) {
-                Map<String, Object> validation = materialConsumptionService.validateMaterialAvailabilityForTask(entity.getId());
-                Object allAvailable = validation.get("allAvailable");
-                return Boolean.TRUE.equals(allAvailable);
-            }
-            for (TaskItemEntity item : taskItems) {
-                if (!isTaskItemRequiresMaterials(item) || Boolean.TRUE.equals(item.getMaterialsDelivered())) {
-                    continue;
-                }
-                Map<String, Object> validation = materialConsumptionService
-                        .validateMaterialAvailabilityForTaskItem(entity.getId(), item.getId());
-                if (!Boolean.TRUE.equals(validation.get("allAvailable"))) {
-                    return false;
-                }
-            }
-            return true;
-        } catch (Exception ignored) {
+    private boolean canDeliverMaterials(TaskEntity entity) {
+        if (entity == null || "CANCELLED".equals(entity.getStatus())) {
             return false;
         }
-    }
-
-    private boolean canDeliverMaterialsPreconditions(TaskEntity entity) {
-        return Boolean.TRUE.equals(entity.getLeatherDelivered())
-                && Boolean.TRUE.equals(entity.getDieCutReady())
-                && hasEnteredTable(entity);
-    }
-
-    private boolean canDeliverMaterials(TaskEntity entity) {
-        if (!taskRequiresMaterials(entity)) {
-            return canDeliverMaterialsPreconditions(entity);
+        if ("COMPLETED".equals(entity.getStatus())) {
+            return false;
         }
-        return canDeliverMaterialsPreconditions(entity)
-                && hasStockForMaterialsDelivery(entity);
+        if (!taskRequiresMaterials(entity)) {
+            return true;
+        }
+        return !Boolean.TRUE.equals(entity.getMaterialsDelivered());
+    }
+
+    /**
+     * Tareas con {@code scheduledDate} = día, y si el día es hoy (Guatemala) también:
+     * cola sin fecha o atrasadas, y tareas con mesa asignada aunque la fecha planificada sea otra
+     * (siguen en piso y bodega debe verlas para materiales).
+     */
+    private List<TaskEntity> collectTasksScheduledForMaterialsDay(LocalDate targetDate) {
+        List<TaskEntity> scheduled = taskRepository.findByScheduledDate(targetDate);
+        return mergeActiveMaterialsBacklogForToday(targetDate, scheduled);
+    }
+
+    /**
+     * Si {@code targetDate} es hoy (GT): suma tareas activas sin programar, atrasadas, o con mesa asignada
+     * (aunque {@code scheduledDate} sea futura — ya están en mesa).
+     */
+    private List<TaskEntity> mergeActiveMaterialsBacklogForToday(LocalDate targetDate, List<TaskEntity> base) {
+        Map<Long, TaskEntity> byId = new LinkedHashMap<>();
+        for (TaskEntity t : base) {
+            byId.put(t.getId(), t);
+        }
+        if (!targetDate.equals(LocalDate.now(GUATEMALA_ZONE))) {
+            return new ArrayList<>(byId.values());
+        }
+        for (TaskEntity t : taskRepository.findPendingAndInProgressOrdered()) {
+            if (shouldAugmentMaterialsDayWithTask(t, targetDate)) {
+                byId.putIfAbsent(t.getId(), t);
+            }
+        }
+        return new ArrayList<>(byId.values());
+    }
+
+    /** Tareas activas que bodega debe ver el día de trabajo “hoy” además de las programadas para esa fecha. */
+    private boolean shouldAugmentMaterialsDayWithTask(TaskEntity t, LocalDate targetDate) {
+        LocalDate sd = t.getScheduledDate();
+        Integer desk = t.getDesk();
+        boolean hasDesk = desk != null && desk > 0;
+        if (hasDesk) {
+            return true;
+        }
+        return sd == null || sd.isBefore(targetDate);
     }
 
     private boolean isPendingMaterialsViewTask(TaskEntity entity) {
@@ -1738,29 +1840,13 @@ public class TaskController {
     }
 
     private boolean canDeliverMaterialsForTaskItem(TaskEntity entity, TaskItemEntity item) {
-        if (!canDeliverMaterialsPreconditions(entity)) {
+        if (entity == null || "CANCELLED".equals(entity.getStatus()) || "COMPLETED".equals(entity.getStatus())) {
             return false;
         }
         if (!isTaskItemRequiresMaterials(item)) {
             return true;
         }
-        if (Boolean.TRUE.equals(item.getMaterialsDelivered())) {
-            return true;
-        }
-        try {
-            Map<String, Object> validation = materialConsumptionService
-                    .validateMaterialAvailabilityForTaskItem(entity.getId(), item.getId());
-            return Boolean.TRUE.equals(validation.get("allAvailable"));
-        } catch (Exception ignored) {
-            return false;
-        }
-    }
-
-    private boolean canMoveToInProgress(TaskEntity entity) {
-        if (!taskRequiresMaterials(entity)) {
-            return canDeliverMaterialsPreconditions(entity);
-        }
-        return canDeliverMaterialsPreconditions(entity) && hasAtLeastOneReadyTaskItem(entity);
+        return !Boolean.TRUE.equals(item.getMaterialsDelivered());
     }
 
     private boolean hasActiveLeatherDelivery(Long productionOrderId) {
@@ -1828,14 +1914,6 @@ public class TaskController {
         return Boolean.TRUE.equals(item.getMaterialsDelivered());
     }
 
-    private boolean hasAtLeastOneReadyTaskItem(TaskEntity entity) {
-        List<TaskItemEntity> items = taskItemRepository.findByTaskId(entity.getId());
-        if (items.isEmpty()) {
-            return !taskRequiresMaterials(entity) || Boolean.TRUE.equals(entity.getMaterialsDelivered());
-        }
-        return items.stream().anyMatch(this::isTaskItemReadyToStart);
-    }
-
     private void syncProductionOrderStatusFromTasks(Long productionOrderId) {
         if (productionOrderId == null) return;
         ProductionOrderEntity order = productionOrderRepository.findById(productionOrderId).orElse(null);
@@ -1886,7 +1964,10 @@ public class TaskController {
         }
 
         if (readyItems.isEmpty()) {
-            throw new BusinessException("No hay productos listos para avanzar en esta mesa. Entrega materiales de al menos un producto o mueve la tarea.");
+            recalculateTaskTotals(sourceTask, sourceItems);
+            sourceTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(sourceTask));
+            sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+            return;
         }
 
         TaskItemEntity firstBlocked = blockedItems.get(0);

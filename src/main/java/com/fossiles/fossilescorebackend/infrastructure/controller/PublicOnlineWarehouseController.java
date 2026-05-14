@@ -127,7 +127,8 @@ public class PublicOnlineWarehouseController {
     }
 
     /**
-     * Ventas pagadas (no OP) que tienen stock suficiente en BODEGA_PT y pueden prepararse directo.
+     * Ventas pagadas (no OP) que tienen stock suficiente para prepararse desde bodega.
+     * La regla de inventario revisa primero bodega de devoluciones y luego Bodega PT (mismo criterio que al preparar).
      */
     @GetMapping("/direct-sales/stock-ready")
     @Transactional(readOnly = true)

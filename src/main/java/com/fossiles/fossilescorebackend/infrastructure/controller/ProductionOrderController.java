@@ -104,7 +104,7 @@ public class ProductionOrderController {
     @PostMapping
     public ResponseEntity<ProductionOrderResponse> create(@Valid @RequestBody ProductionOrderRequest request)
             throws BusinessException, ResourceNotFoundException {
-        String effectiveOrderType = normalizeOrderType(request.getOrderType(), request.getSellerName());
+        String effectiveOrderType = normalizeOrderType(request.getOrderType());
 
         // Validar que el tipo de orden sea válido
         if (!isValidOrderType(effectiveOrderType)) {
@@ -114,7 +114,7 @@ public class ProductionOrderController {
         // Generar código automáticamente si no se proporciona
         String orderCode = request.getCode();
         if (orderCode == null || orderCode.trim().isEmpty()) {
-            orderCode = productionOrderCodeService.generateNextCode(effectiveOrderType);
+            orderCode = productionOrderCodeService.generateNextCode(effectiveOrderType, request.getSellerName());
         }
 
         if (productionOrderRepository.existsByCode(orderCode)) {
@@ -201,9 +201,8 @@ public class ProductionOrderController {
         ProductionOrderEntity entity = productionOrderRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
 
-        String nextSeller = request.getSellerName() != null ? request.getSellerName() : entity.getSellerName();
         String requestedOrderType = request.getOrderType() != null ? request.getOrderType() : entity.getOrderType();
-        String effectiveOrderType = normalizeOrderType(requestedOrderType, nextSeller);
+        String effectiveOrderType = normalizeOrderType(requestedOrderType);
 
         if (!entity.getCode().equals(request.getCode()) 
                 && productionOrderRepository.existsByCode(request.getCode())) {
@@ -276,7 +275,7 @@ public class ProductionOrderController {
     }
 
     /**
-     * Cambia el estado solo de órdenes de cinchos gestionadas en la vista dedicada (OPCF / OPCM).
+     * Cambia el estado solo de órdenes de cinchos gestionadas en la vista dedicada (tipos CINCHOS_FOSSILES / CINCHOS_MARCAS; correlativo unificado OPC, legado OPCF/OPCM).
      */
     @PutMapping("/{id}/status")
     @Transactional
@@ -1640,7 +1639,7 @@ public class ProductionOrderController {
         return "CINCHOS".equals(orderType) || "CINCHOS_FOSSILES".equals(orderType) || "CINCHOS_MARCAS".equals(orderType);
     }
 
-    /** Cinchos con flujo dedicado fuera del centro de producción estándar (prefijos OPCF / OPCM). */
+    /** Cinchos con flujo dedicado fuera del centro de producción estándar (por orderType, no por prefijo de código). */
     private boolean isManagedCinchoOrderType(String orderType) {
         return "CINCHOS_FOSSILES".equals(orderType) || "CINCHOS_MARCAS".equals(orderType);
     }
@@ -1652,14 +1651,8 @@ public class ProductionOrderController {
                 || "CANCELLED".equals(status);
     }
 
-    private String normalizeOrderType(String orderType, String sellerName) {
-        String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase();
-        String normalizedSeller = String.valueOf(sellerName == null ? "" : sellerName).trim().toUpperCase();
-        // OPV vendedor (Luis Felipe): orden tipo MARCAS (prefijo OPV-). No debe quedar como CLIENTE_KIOSKO ni como NORMAL si se eligió ese vendedor.
-        if (normalizedSeller.contains("LUIS FELIPE") && !isCinchoOrderType(normalizedType)) {
-            return "MARCAS";
-        }
-        return normalizedType;
+    private String normalizeOrderType(String orderType) {
+        return String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase();
     }
 
     private void applyDefaultSchedulingPriority(ProductionOrderEntity entity, String orderType) {
@@ -1715,17 +1708,17 @@ public class ProductionOrderController {
         return entity;
     }
 
-    /** OPV vendedor: orden MARCAS/OPV con vendedor Luis Felipe (recibe correlativo ENVP de envío). */
+    /** OPV vendedor: vendedor Luis Felipe y tipo no cincho (misma regla que el formulario; correlativo ENVP de envío). */
     private boolean isOpvVendorShipmentFlow(ProductionOrderEntity order) {
         if (order == null) {
             return false;
         }
-        String type = String.valueOf(order.getOrderType() == null ? "" : order.getOrderType()).trim().toUpperCase();
-        if (!"MARCAS".equals(type) && !"OPV".equals(type)) {
+        String seller = String.valueOf(order.getSellerName() == null ? "" : order.getSellerName()).trim().toUpperCase();
+        if (!seller.contains("LUIS FELIPE")) {
             return false;
         }
-        String seller = String.valueOf(order.getSellerName() == null ? "" : order.getSellerName()).trim().toUpperCase();
-        return seller.contains("LUIS FELIPE");
+        String type = String.valueOf(order.getOrderType() == null ? "" : order.getOrderType()).trim().toUpperCase();
+        return !isCinchoOrderType(type);
     }
 
     private String convertSizesToJson(Map<String, Integer> sizes) {

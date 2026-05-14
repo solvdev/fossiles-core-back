@@ -25,15 +25,6 @@ public class OnlineSaleProductionOrderService {
     // TODO: Reactivar cuando la configuración/inventario de cuero para OPL esté estabilizada.
     private static final boolean ONLINE_SALE_LEATHER_CHECK_ENABLED = false;
 
-    private static final List<String> RETURNS_WAREHOUSE_CODES = List.of(
-            "BODEGA_DEVOLUCIONES",
-            "BODEGA_DEV",
-            "DEVOLUCION",
-            "DEVOLUCIONES",
-            "BODEGA_RET",
-            "BODEGA_RETURN"
-    );
-
     private final ProductionOrderCodeService productionOrderCodeService;
     private final ProductionOrderRepository productionOrderRepository;
     private final ProductionOrderItemRepository productionOrderItemRepository;
@@ -50,6 +41,7 @@ public class OnlineSaleProductionOrderService {
     private final MaterialRepository materialRepository;
     private final InventoryLocationRepository inventoryLocationRepository;
     private final InventoryService inventoryService;
+    private final OnlineSaleReturnsWarehouseLocator returnsWarehouseLocator;
 
     public record CreateResult(long productionOrderId, String productionOrderCode, int salesCount, String customerName) {}
 
@@ -179,7 +171,7 @@ public class OnlineSaleProductionOrderService {
 
         // Buscar ubicaciones: Bodega PT + Bodega Devoluciones (si existe)
         LocationEntity bodegaPT = findBodegaPT();
-        LocationEntity bodegaDevoluciones = findBodegaDevoluciones();
+        LocationEntity bodegaDevoluciones = returnsWarehouseLocator.find().orElse(null);
         List<LocationEntity> sourceWarehouses = List.of(bodegaDevoluciones, bodegaPT).stream()
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
@@ -242,7 +234,7 @@ public class OnlineSaleProductionOrderService {
         }
 
         LocationEntity bodegaPT = findBodegaPT();
-        LocationEntity bodegaDevoluciones = findBodegaDevoluciones();
+        LocationEntity bodegaDevoluciones = returnsWarehouseLocator.find().orElse(null);
         List<LocationEntity> sourceWarehouses = List.of(bodegaDevoluciones, bodegaPT).stream()
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
@@ -368,7 +360,7 @@ public class OnlineSaleProductionOrderService {
             return new SaleItemStock(saleItemId, productId, productCode, productName,
                     colorId, colorName, size, quantity, stockDev, stockPt, total, suggested,
                     null, null, null, null, null, List.of(), "DESPACHO", List.of(
-                            "Stock cubierto en Devoluciones / Bodega PT según orden de consumo."));
+                            "Stock: primero bodega de devoluciones, luego Bodega PT (mismo orden al preparar)."));
         }
         return buildProduceItemStock(saleItemId, productId, productCode, productName,
                 colorId, colorName, size, quantity, stockDev, stockPt, total, suggested);
@@ -446,7 +438,7 @@ public class OnlineSaleProductionOrderService {
                 .orElseThrow(() -> new BusinessException("Venta no encontrada: " + saleId));
 
         LocationEntity bodegaPT = findBodegaPT();
-        LocationEntity bodegaDevoluciones = findBodegaDevoluciones();
+        LocationEntity bodegaDevoluciones = returnsWarehouseLocator.find().orElse(null);
         List<OnlineSaleItemEntity> items = onlineSaleItemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId());
         List<SaleItemStock> stocks = buildItemStocks(sale, items, bodegaDevoluciones, bodegaPT);
 
@@ -471,7 +463,7 @@ public class OnlineSaleProductionOrderService {
         }
 
         LocationEntity bodegaPT = findBodegaPT();
-        LocationEntity bodegaDevoluciones = findBodegaDevoluciones();
+        LocationEntity bodegaDevoluciones = returnsWarehouseLocator.find().orElse(null);
         List<LocationEntity> sourceWarehouses = List.of(bodegaDevoluciones, bodegaPT).stream()
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
@@ -537,7 +529,7 @@ public class OnlineSaleProductionOrderService {
         out.put("saleNumber", sale.getSaleNumber());
         out.put("shipmentNumber", sale.getShipmentNumber());
         out.put("saleStatus", sale.getStatus());
-        out.put("message", "Venta preparada desde inventario (Bodega PT / Devoluciones)");
+        out.put("message", "Venta preparada desde inventario (primero devoluciones, luego Bodega PT)");
         return out;
     }
 
@@ -752,14 +744,44 @@ public class OnlineSaleProductionOrderService {
     }
 
     /**
-     * Stock consolidado en bodegas origen.
+     * Stock consolidado para venta online: siempre suma primero bodega(s) de devoluciones y luego Bodega PT,
+     * alineado con el consumo en {@link #consumeAcrossWarehouses}.
      */
     private BigDecimal getStockAcrossWarehouses(Long productId, Long colorId, List<LocationEntity> sourceWarehouses, String sizeLabel) {
+        if (sourceWarehouses == null || sourceWarehouses.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
         BigDecimal total = BigDecimal.ZERO;
-        for (LocationEntity loc : sourceWarehouses) {
+        for (LocationEntity loc : orderWarehousesReturnsFirst(sourceWarehouses)) {
             total = total.add(getStock(productId, loc.getId(), colorId, sizeLabel));
         }
         return total;
+    }
+
+    /**
+     * Garantiza orden Devoluciones → PT aunque la lista venga en otro orden.
+     */
+    private List<LocationEntity> orderWarehousesReturnsFirst(List<LocationEntity> sourceWarehouses) {
+        List<LocationEntity> returns = new ArrayList<>();
+        List<LocationEntity> rest = new ArrayList<>();
+        for (LocationEntity loc : sourceWarehouses) {
+            if (loc == null) {
+                continue;
+            }
+            if (isReturnsWarehouseLocation(loc)) {
+                returns.add(loc);
+            } else {
+                rest.add(loc);
+            }
+        }
+        List<LocationEntity> out = new ArrayList<>(returns.size() + rest.size());
+        out.addAll(returns);
+        out.addAll(rest);
+        return out;
+    }
+
+    private boolean isReturnsWarehouseLocation(LocationEntity loc) {
+        return returnsWarehouseLocator.matchesReturnsWarehouse(loc);
     }
 
     private void consumeAcrossWarehouses(
@@ -774,7 +796,7 @@ public class OnlineSaleProductionOrderService {
             return;
         }
 
-        for (LocationEntity loc : sourceWarehouses) {
+        for (LocationEntity loc : orderWarehousesReturnsFirst(sourceWarehouses)) {
             if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
                 break;
             }
@@ -819,23 +841,6 @@ public class OnlineSaleProductionOrderService {
                 .filter(loc -> "BODEGA_PT".equals(loc.getCode()))
                 .findFirst()
                 .orElse(null);
-    }
-
-    private LocationEntity findBodegaDevoluciones() {
-        for (String code : RETURNS_WAREHOUSE_CODES) {
-            Optional<InventoryLocationTypeEntity> locType =
-                    inventoryLocationTypeRepository.findByCodeAndIsActiveTrue(code);
-            if (locType.isEmpty()) continue;
-
-            LocationEntity loc = locationRepository.findAll().stream()
-                    .filter(l -> code.equals(l.getCode()))
-                    .findFirst()
-                    .orElse(null);
-            if (loc != null) {
-                return loc;
-            }
-        }
-        return null;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -905,7 +910,7 @@ public class OnlineSaleProductionOrderService {
         }
 
         LocationEntity bodegaPT = findBodegaPT();
-        LocationEntity bodegaDevoluciones = findBodegaDevoluciones();
+        LocationEntity bodegaDevoluciones = returnsWarehouseLocator.find().orElse(null);
         List<LocationEntity> warehouses = List.of(bodegaDevoluciones, bodegaPT).stream()
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());

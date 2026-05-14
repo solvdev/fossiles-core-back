@@ -243,6 +243,12 @@ public class MaterialConsumptionService {
     @Transactional
     public Map<String, Object> consumeMaterialsForTask(Long taskId)
             throws ResourceNotFoundException, BusinessException {
+        return consumeMaterialsForTask(taskId, false);
+    }
+
+    @Transactional
+    public Map<String, Object> consumeMaterialsForTask(Long taskId, boolean force)
+            throws ResourceNotFoundException, BusinessException {
         TaskEntity task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", taskId));
 
@@ -251,7 +257,6 @@ public class MaterialConsumptionService {
             throw new BusinessException("La tarea no tiene receta (BOM) activa para consumir materiales.");
         }
 
-        // Validate availability for this task.
         List<String> shortages = new ArrayList<>();
         for (Map.Entry<Long, BigDecimal> entry : requirements.entrySet()) {
             Long materialId = entry.getKey();
@@ -263,9 +268,11 @@ public class MaterialConsumptionService {
                 shortages.add(name + ": necesita " + needed + ", disponible " + available);
             }
         }
-        if (!shortages.isEmpty()) {
+        if (!shortages.isEmpty() && !force) {
             throw new BusinessException("Material insuficiente para la tarea:\n• " + String.join("\n• ", shortages));
         }
+        boolean allowNegative = force && !shortages.isEmpty();
+        String noteSuffix = allowNegative ? " | ENTREGA_FORZADA_FALTA_STOCK" : "";
 
         Long userId = securityUtil.getCurrentUserId();
         int consumedLines = 0;
@@ -278,7 +285,8 @@ public class MaterialConsumptionService {
                     materialId, qty, null,
                     "TASK", taskId,
                     task.getCode(),
-                    "Consumo por entrega de materiales tarea " + task.getCode());
+                    "Consumo por entrega de materiales tarea " + task.getCode() + noteSuffix,
+                    allowNegative);
 
             MaterialConsumptionEntity consumption = MaterialConsumptionEntity.builder()
                     .productionOrderId(task.getProductionOrderId())
@@ -286,7 +294,7 @@ public class MaterialConsumptionService {
                     .quantityConsumed(qty)
                     .status("CONSUMED")
                     .consumedBy(userId)
-                    .notes("Consumo por tarea " + task.getCode())
+                    .notes("Consumo por tarea " + task.getCode() + noteSuffix)
                     .build();
             materialConsumptionRepository.save(consumption);
             consumedLines++;
@@ -351,6 +359,12 @@ public class MaterialConsumptionService {
     @Transactional
     public Map<String, Object> consumeMaterialsForTaskItem(Long taskId, Long taskItemId)
             throws ResourceNotFoundException, BusinessException {
+        return consumeMaterialsForTaskItem(taskId, taskItemId, false);
+    }
+
+    @Transactional
+    public Map<String, Object> consumeMaterialsForTaskItem(Long taskId, Long taskItemId, boolean force)
+            throws ResourceNotFoundException, BusinessException {
         TaskEntity task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", taskId));
         TaskItemEntity item = taskItemRepository.findById(taskItemId)
@@ -376,9 +390,11 @@ public class MaterialConsumptionService {
                 shortages.add(name + ": necesita " + needed + ", disponible " + available);
             }
         }
-        if (!shortages.isEmpty()) {
+        if (!shortages.isEmpty() && !force) {
             throw new BusinessException("Material insuficiente para el producto:\n• " + String.join("\n• ", shortages));
         }
+        boolean allowNegative = force && !shortages.isEmpty();
+        String noteSuffix = allowNegative ? " | ENTREGA_FORZADA_FALTA_STOCK" : "";
 
         Long userId = securityUtil.getCurrentUserId();
         int consumedLines = 0;
@@ -391,7 +407,8 @@ public class MaterialConsumptionService {
                     materialId, qty, null,
                     "TASK_ITEM", taskItemId,
                     task.getCode(),
-                    "Consumo por entrega de materiales item " + taskItemId + " de tarea " + task.getCode());
+                    "Consumo por entrega de materiales item " + taskItemId + " de tarea " + task.getCode() + noteSuffix,
+                    allowNegative);
 
             MaterialConsumptionEntity consumption = MaterialConsumptionEntity.builder()
                     .productionOrderId(task.getProductionOrderId())
@@ -399,7 +416,7 @@ public class MaterialConsumptionService {
                     .quantityConsumed(qty)
                     .status("CONSUMED")
                     .consumedBy(userId)
-                    .notes("Consumo por item " + taskItemId + " de tarea " + task.getCode())
+                    .notes("Consumo por item " + taskItemId + " de tarea " + task.getCode() + noteSuffix)
                     .build();
             materialConsumptionRepository.save(consumption);
             consumedLines++;

@@ -75,6 +75,9 @@ public class MaterialsTaskViewResponse {
         private BigDecimal availableStock;
         private Boolean sufficientStock;
         private String measurementUnit;
+        /** Línea marcada como despachada/preparada en almacén */
+        private Boolean picked;
+        private LocalDateTime pickedAt;
     }
 }
 

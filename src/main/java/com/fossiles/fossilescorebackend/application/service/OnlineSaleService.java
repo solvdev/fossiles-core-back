@@ -12,6 +12,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Online
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleReturnEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleReturnLineEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ReturnInventoryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
@@ -46,6 +47,8 @@ public class OnlineSaleService {
     private final OnlineSaleReturnLineRepository onlineSaleReturnLineRepository;
     private final SecurityUtil securityUtil;
     private final OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
+    private final OnlineSaleReturnsWarehouseLocator returnsWarehouseLocator;
+    private final ProductInventoryService productInventoryService;
 
     private static final Map<String, String> PAYMENT_METHOD_DISPLAY = new LinkedHashMap<>();
     static {
@@ -445,7 +448,7 @@ public class OnlineSaleService {
     /**
      * Marcar una venta como DEVOLUCION.
      * Solo permitido si el estado actual es ENVIADO o ENTREGADO.
-     * Crea automáticamente registros en el inventario de devoluciones.
+     * Incrementa stock en la ubicación de devoluciones y crea registros de historial / documento imprimible.
      */
     public OnlineSaleResponse markAsReturn(Long id, String reason, String itemCondition) throws ResourceNotFoundException, BusinessException {
         OnlineSaleEntity sale = saleRepository.findById(id)
@@ -455,8 +458,30 @@ public class OnlineSaleService {
             throw new BusinessException("Solo se pueden devolver ventas en estado ENVIADO o ENTREGADO. Estado actual: " + sale.getStatus());
         }
 
-        // Asegurar número de envío para relacionar documento de devolución
         onlineSaleShipmentNumberService.assignIfMissing(sale);
+
+        LocationEntity returnsLocation = returnsWarehouseLocator.find()
+                .orElseThrow(() -> new BusinessException(
+                        "No está configurada la ubicación de inventario de devoluciones "
+                                + "(active un tipo DEVOLUCION / BODEGA_DEVOLUCIONES en inventory_location_type "
+                                + "y cree la ubicación con el mismo código)."));
+
+        String condition = (itemCondition != null && !itemCondition.isBlank()) ? itemCondition : "BUENO";
+        List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(id);
+
+        if (items != null && !items.isEmpty()) {
+            for (OnlineSaleItemEntity item : items) {
+                incrementReturnPhysicalStock(sale, returnsLocation, item);
+            }
+        } else {
+            incrementReturnPhysicalStock(
+                    sale,
+                    returnsLocation,
+                    sale.getProductId(),
+                    sale.getColorId(),
+                    sale.getSize(),
+                    sale.getQuantity());
+        }
 
         sale.setStatus("DEVOLUCION");
         sale.setObservations((sale.getObservations() != null ? sale.getObservations() + " | " : "")
@@ -464,9 +489,6 @@ public class OnlineSaleService {
         sale.setUpdatedBy(securityUtil.getCurrentUserId());
         saleRepository.save(sale);
 
-        String condition = (itemCondition != null && !itemCondition.isBlank()) ? itemCondition : "BUENO";
-
-        // Crear cabecera de devolución (evento imprimible)
         OnlineSaleReturnEntity header = OnlineSaleReturnEntity.builder()
                 .onlineSaleId(id)
                 .relatedShipmentNumber(sale.getShipmentNumber())
@@ -475,9 +497,6 @@ public class OnlineSaleService {
                 .createdBy(securityUtil.getCurrentUserId())
                 .build();
         OnlineSaleReturnEntity savedHeader = onlineSaleReturnRepository.save(header);
-
-        // Crear registros en inventario de devoluciones a partir de los items
-        List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(id);
 
         if (items != null && !items.isEmpty()) {
             for (OnlineSaleItemEntity item : items) {
@@ -524,7 +543,6 @@ public class OnlineSaleService {
                     .unitPrice(sale.getUnitPrice())
                     .build());
 
-            // Fallback legacy: datos directos de la venta
             ReturnInventoryEntity returnEntry = ReturnInventoryEntity.builder()
                     .onlineSaleId(id)
                     .productId(sale.getProductId())
@@ -544,6 +562,50 @@ public class OnlineSaleService {
         }
 
         return toResponse(sale);
+    }
+
+    private void incrementReturnPhysicalStock(OnlineSaleEntity sale, LocationEntity returnsLocation, OnlineSaleItemEntity item)
+            throws BusinessException {
+        incrementReturnPhysicalStock(
+                sale,
+                returnsLocation,
+                item.getProductId(),
+                item.getColorId(),
+                item.getSize(),
+                item.getQuantity());
+    }
+
+    private void incrementReturnPhysicalStock(
+            OnlineSaleEntity sale,
+            LocationEntity returnsLocation,
+            Long productId,
+            Long colorId,
+            String size,
+            Integer quantity) throws BusinessException {
+        if (productId == null) {
+            return;
+        }
+        int q = quantity != null ? quantity : 1;
+        if (q <= 0) {
+            return;
+        }
+        String saleRef = sale.getSaleNumber() != null ? sale.getSaleNumber() : String.valueOf(sale.getId());
+        String desc = "Devolución venta online #" + saleRef;
+        try {
+            productInventoryService.incrementInventory(
+                    productId,
+                    returnsLocation.getId(),
+                    colorId,
+                    BigDecimal.valueOf(q),
+                    null,
+                    "ONLINE_SALE_RETURN",
+                    sale.getId(),
+                    sale.getSaleNumber(),
+                    desc,
+                    size);
+        } catch (ResourceNotFoundException e) {
+            throw new BusinessException("No se pudo ingresar stock en devoluciones: " + e.getMessage());
+        }
     }
 
     /**

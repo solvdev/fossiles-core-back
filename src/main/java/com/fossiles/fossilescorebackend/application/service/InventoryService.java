@@ -361,21 +361,36 @@ public class InventoryService {
      * Decrementa el inventario de un material (salida)
      */
     public MaterialInventoryResponse decrementMaterialInventory(
-            Long materialId, 
+            Long materialId,
             BigDecimal quantity,
             BigDecimal unitCost,
             String referenceType,
             Long referenceId,
             String referenceNumber,
             String description) throws ResourceNotFoundException, BusinessException {
-        
+        return decrementMaterialInventory(materialId, quantity, unitCost, referenceType, referenceId, referenceNumber, description, false);
+    }
+
+    /**
+     * Decrementa inventario; si {@code allowNegativeStock} es true no valida saldo (solo entrega materiales a OP forzada).
+     */
+    public MaterialInventoryResponse decrementMaterialInventory(
+            Long materialId,
+            BigDecimal quantity,
+            BigDecimal unitCost,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            boolean allowNegativeStock) throws ResourceNotFoundException, BusinessException {
+
         MaterialInventory entity = materialInventoryRepository.findByMaterialId(materialId)
                 .orElseThrow(() -> new ResourceNotFoundException("Material Inventory", materialId));
 
         BigDecimal quantityBefore = entity.getQuantity();
         BigDecimal newQuantity = entity.getQuantity().subtract(quantity);
-        
-        if (newQuantity.compareTo(BigDecimal.ZERO) < 0) {
+
+        if (!allowNegativeStock && newQuantity.compareTo(BigDecimal.ZERO) < 0) {
             throw new BusinessException("No hay suficiente inventario. Disponible: " + entity.getQuantity() + ", Solicitado: " + quantity);
         }
 

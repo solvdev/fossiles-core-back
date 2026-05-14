@@ -9,6 +9,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -45,4 +46,21 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     @Transactional
     @Query("DELETE FROM TaskEntity t WHERE t.productionOrderId = :productionOrderId")
     void deleteByProductionOrderId(@Param("productionOrderId") Long productionOrderId);
+
+    @Query("""
+            SELECT DISTINCT t FROM TaskEntity t
+            WHERE t.status <> 'CANCELLED'
+            AND (
+              (t.materialsDeliveredAt IS NOT NULL AND t.materialsDeliveredAt >= :start AND t.materialsDeliveredAt < :end)
+              OR EXISTS (
+                SELECT 1 FROM TaskItemEntity ti
+                WHERE ti.taskId = t.id
+                AND ti.materialsDeliveredAt IS NOT NULL
+                AND ti.materialsDeliveredAt >= :start
+                AND ti.materialsDeliveredAt < :end
+              )
+            )
+            ORDER BY t.id DESC
+            """)
+    List<TaskEntity> findTasksWithMaterialsDeliveredBetween(@Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
 }
