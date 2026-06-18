@@ -20,6 +20,8 @@ public class KioskPosContextResponse {
     private Long kioskId;
     private String kioskCode;
     private String kioskName;
+    /** Kiosko en piloto: ventas no cuentan en reportes de producción. */
+    private Boolean posTestMode;
     private List<KioskOption> kiosks;
     private List<InventoryItem> inventory;
 
@@ -44,6 +46,8 @@ public class KioskPosContextResponse {
         private String productImageUrl;
         private Long colorId;
         private String colorName;
+        private Long categoryId;
+        private String categoryName;
         private BigDecimal quantity;
         private BigDecimal suggestedUnitPrice;
     }

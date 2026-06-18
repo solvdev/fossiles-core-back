@@ -1,0 +1,52 @@
+-- =============================================================================
+-- Merge de sub-ventas (#-OP legacy) hacia la madre: UNA venta, items PRODUCE
+-- con fulfillment_route, production_order_item enlazados a la madre.
+--
+-- EJECUCION: copia de BD, revision manual de parejas, ejecutar por transaccion y par.
+-- Si padre e hijo llegaron ambos a PRODUCIDO/ENVIADO, NO merge automatico: resolver a mano.
+-- =============================================================================
+
+-- Paso 0: candidatos (ajusta nombres de tabla/columna si difieren en tu esquema).
+-- SELECT id, sale_number, sale_date, customer_name, status, in_production_order, production_order_id
+-- FROM online_sale
+-- WHERE sale_number REGEXP '-OP[0-9]*$'
+--    OR sale_number LIKE '%-OP-%';
+
+-- Por cada par conocido (_padre = id venta original, _hijo = id #-OP, _op = id orden si aplica):
+--
+-- START TRANSACTION;
+--
+-- -- 1) Mover lineas del hijo a la madre y marcar rutas de produccion (lineas que venian en OP)
+-- UPDATE online_sale_item
+-- SET online_sale_id = @_padre,
+--     fulfillment_route = COALESCE(fulfillment_route, 'PRODUCE')
+-- WHERE online_sale_id = @_hijo;
+--
+-- -- 2) Actualizar OP: encabezados y lineas apuntan a la madre
+-- UPDATE production_order_item
+-- SET online_sale_id = @_padre
+-- WHERE online_sale_id = @_hijo;
+--
+-- UPDATE online_sale SET
+--     production_order_id = COALESCE(@_op, production_order_id),
+--     in_production_order = 1,
+--     status = CASE
+--         WHEN status IN ('ENVIADO','ENTREGADO','ANULADA') THEN status
+--         ELSE 'EN_PRODUCCION'
+--     END
+-- WHERE id = @_padre;
+--
+-- -- 3) Opcional: poblar online_sale_item_id en PO items por coincidencia producto+color
+-- --    (si el script de app ya lo hace, omitir).
+--
+-- -- 4) Anular sub-venta hijo (no borrar filas)
+-- UPDATE online_sale SET
+--     status = 'ANULADA',
+--     observations = CONCAT(IFNULL(observations,''), ' | MERGED a venta id ', @_padre)
+-- WHERE id = @_hijo;
+--
+-- -- 5) Reconciliar totales de la madre si hubo envio u otros ajustes solo en el hijo (manual o app).
+--
+-- COMMIT;
+
+-- Fin plantilla.

@@ -15,6 +15,10 @@ import java.util.List;
 public class ProductShipmentResponse {
     private Long id;
     private Long distributionId;
+    /** OP (OPI/OPCK) cuando el envío no usa distribución. */
+    private Long productionOrderId;
+    private Long partialReleaseId;
+    private String productionOrderCode;
     private String distributionNumber;
     private String shipmentNumber;
     private Long locationId;
@@ -31,6 +35,7 @@ public class ProductShipmentResponse {
     private List<ProductShipmentDetailResponse> products;
     private LocalDateTime createdAt;
     private Long createdBy;
+    private String createdByName;
     private LocalDateTime updatedAt;
     private Long updatedBy;
 

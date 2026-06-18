@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
@@ -60,9 +61,21 @@ public class InventoryService {
     private final UomRepository uomRepository;
     private final InventoryOutflowRepository inventoryOutflowRepository;
     private final SupplierRepository supplierRepository;
+    private final KioskInventoryGuard kioskInventoryGuard;
+    private final KioscoInventoryService kioscoInventoryService;
 
     // ========== HELPER METHODS ==========
 
+    /** Evita falsos negativos por escala al comparar suma de tallas con totales del request. */
+    private static boolean sumsMatchStock(BigDecimal sum, BigDecimal stock) {
+        if (sum == null || stock == null) {
+            return false;
+        }
+        if (sum.compareTo(stock) == 0) {
+            return true;
+        }
+        return sum.setScale(6, RoundingMode.HALF_UP).compareTo(stock.setScale(6, RoundingMode.HALF_UP)) == 0;
+    }
 
     // ========== INVENTORY LOCATION ==========
 
@@ -383,6 +396,11 @@ public class InventoryService {
             String referenceNumber,
             String description,
             boolean allowNegativeStock) throws ResourceNotFoundException, BusinessException {
+
+        if (referenceType != null && referenceId != null
+                && materialInventoryKardexRepository.existsMovement(materialId, referenceType, referenceId, "EXIT")) {
+            return getMaterialInventory(materialId);
+        }
 
         MaterialInventory entity = materialInventoryRepository.findByMaterialId(materialId)
                 .orElseThrow(() -> new ResourceNotFoundException("Material Inventory", materialId));
@@ -1589,6 +1607,9 @@ public class InventoryService {
             throw new ResourceNotFoundException("Location", request.getToLocationId());
         }
 
+        kioskInventoryGuard.assertSupervisorMayModifyKioskInventory(request.getFromLocationId());
+        kioskInventoryGuard.assertSupervisorMayModifyKioskInventory(request.getToLocationId());
+
         // Validar que no sea la misma ubicación
         if (request.getFromLocationId().equals(request.getToLocationId())) {
             throw new BusinessException("No se puede transferir a la misma ubicación");
@@ -1720,6 +1741,10 @@ public class InventoryService {
      */
     private void executeTransfer(InventoryTransfer transfer) 
             throws ResourceNotFoundException, BusinessException {
+
+        if ("COMPLETED".equalsIgnoreCase(transfer.getStatus())) {
+            return;
+        }
         
         if (transfer.getMaterialId() != null) {
             // Transferencia de material
@@ -1894,24 +1919,10 @@ public class InventoryService {
             BigDecimal originAfterQty = originAfter != null ? originAfter.getQuantity() : BigDecimal.ZERO;
             BigDecimal destAfterQty = destAfter != null ? destAfter.getQuantity() : BigDecimal.ZERO;
 
-            productInventoryService.recordMovement(
-                    transfer.getProductId(),
-                    transfer.getFromLocationId(),
-                    colorId, // Pasar colorId para soportar variantes de color
-                    "TRANSFER_OUT",
-                    transfer.getQuantity().negate(),
-                    originBefore,
-                    originAfterQty,
-                    null,
-                    "TRANSFER",
-                    transfer.getId(),
-                    "TRF-" + transfer.getId(),
-                    "Transferencia a " + (toLocation != null ? toLocation.getName() : "")
-            );
-
-            productInventoryService.recordMovement(
+            productInventoryService.recordProductMovementIfAbsent(
                     transfer.getProductId(),
                     transfer.getToLocationId(),
+                    colorId,
                     "TRANSFER_IN",
                     transfer.getQuantity(),
                     destBefore,
@@ -1922,6 +1933,17 @@ public class InventoryService {
                     "TRF-" + transfer.getId(),
                     "Transferencia desde " + (fromLocation != null ? fromLocation.getName() : "")
             );
+
+            if (kioskInventoryGuard.isKioskLocation(fromLocation) && kioskInventoryGuard.isKioskLocation(toLocation)) {
+                kioscoInventoryService.registrarTrasladoDesdeIntegracion(
+                        transfer.getFromLocationId(),
+                        transfer.getToLocationId(),
+                        transfer.getProductId(),
+                        colorId,
+                        transfer.getQuantity(),
+                        transfer.getUpdatedBy()
+                );
+            }
         }
 
         // Marcar transferencia como completada
@@ -2055,10 +2077,11 @@ public class InventoryService {
             if (!locationRepository.existsById(request.getLocationId())) {
                 throw new ResourceNotFoundException("Location", request.getLocationId());
             }
+            kioskInventoryGuard.assertSupervisorMayModifyKioskInventory(request.getLocationId());
         }
 
-        // Validar que los stocks sean diferentes
-        if (request.getSystemStock().compareTo(request.getPhysicalStock()) == 0) {
+        boolean allowZeroDifference = Boolean.TRUE.equals(request.getAllowZeroDifference());
+        if (request.getSystemStock().compareTo(request.getPhysicalStock()) == 0 && !allowZeroDifference) {
             throw new BusinessException("El stock del sistema y el stock físico son iguales. No se requiere ajuste.");
         }
 
@@ -2082,28 +2105,40 @@ public class InventoryService {
             boolean hasSys = request.getSystemSizes() != null && !request.getSystemSizes().isEmpty();
             boolean hasPhy = request.getPhysicalSizes() != null && !request.getPhysicalSizes().isEmpty();
             if (CinchoProductUtils.isFossCinchoProduct(prod)) {
-                if (hasSys != hasPhy) {
-                    throw new BusinessException("Para cincho FOSS debe enviar systemSizes y physicalSizes juntos.");
+                if (!hasSys || !hasPhy) {
+                    throw new BusinessException(
+                            "Los productos cincho requieren desglose por talla: envie systemSizes y physicalSizes (use el ajuste por lote en el sistema si aplica).");
                 }
-                if (hasSys) {
-                    Map<String, BigDecimal> sysM = ProductInventorySizesJson.normalizeIncomingMap(request.getSystemSizes());
-                    Map<String, BigDecimal> phyM = ProductInventorySizesJson.normalizeIncomingMap(request.getPhysicalSizes());
-                    if (sysM.isEmpty() || phyM.isEmpty()) {
-                        throw new BusinessException("Los mapas de tallas no pueden quedar vacios.");
-                    }
-                    BigDecimal sumS = ProductInventorySizesJson.sum(sysM);
-                    BigDecimal sumP = ProductInventorySizesJson.sum(phyM);
-                    if (sumS.compareTo(request.getSystemStock()) != 0) {
-                        throw new BusinessException("systemStock debe coincidir con la suma de systemSizes.");
-                    }
-                    if (sumP.compareTo(request.getPhysicalStock()) != 0) {
-                        throw new BusinessException("physicalStock debe coincidir con la suma de physicalSizes.");
-                    }
-                    systemSizesJson = ProductInventorySizesJson.serialize(sysM);
-                    physicalSizesJson = ProductInventorySizesJson.serialize(phyM);
+                Map<String, BigDecimal> sysM = ProductInventorySizesJson.normalizeAdjustmentSizeMap(request.getSystemSizes());
+                Map<String, BigDecimal> phyM = ProductInventorySizesJson.normalizeAdjustmentSizeMap(request.getPhysicalSizes());
+                if (sysM.isEmpty() && phyM.isEmpty()) {
+                    throw new BusinessException("Los mapas de tallas no pueden quedar vacios.");
                 }
+                java.util.TreeSet<String> union = new java.util.TreeSet<>();
+                union.addAll(sysM.keySet());
+                union.addAll(phyM.keySet());
+                Map<String, BigDecimal> sysAligned = new java.util.LinkedHashMap<>();
+                Map<String, BigDecimal> phyAligned = new java.util.LinkedHashMap<>();
+                BigDecimal sumS = BigDecimal.ZERO;
+                BigDecimal sumP = BigDecimal.ZERO;
+                for (String k : union) {
+                    BigDecimal s = sysM.getOrDefault(k, BigDecimal.ZERO);
+                    BigDecimal p = phyM.getOrDefault(k, BigDecimal.ZERO);
+                    sumS = sumS.add(s);
+                    sumP = sumP.add(p);
+                    sysAligned.put(k, s);
+                    phyAligned.put(k, p);
+                }
+                if (!sumsMatchStock(sumS, request.getSystemStock())) {
+                    throw new BusinessException("systemStock debe coincidir con la suma de systemSizes (verifique decimales).");
+                }
+                if (!sumsMatchStock(sumP, request.getPhysicalStock())) {
+                    throw new BusinessException("physicalStock debe coincidir con la suma de physicalSizes (verifique decimales).");
+                }
+                systemSizesJson = ProductInventorySizesJson.serializeIncludingZeros(sysAligned);
+                physicalSizesJson = ProductInventorySizesJson.serializeIncludingZeros(phyAligned);
             } else if (hasSys || hasPhy) {
-                throw new BusinessException("systemSizes/physicalSizes solo aplican a productos cincho FOSS.");
+                throw new BusinessException("systemSizes/physicalSizes solo aplican a productos cincho (codigo FOSS o nombre con cincho).");
             }
         }
 
@@ -2167,23 +2202,24 @@ public class InventoryService {
                 materialRepository.save(material);
             }
 
-            // Registrar en kardex de materiales (sin ubicación)
-            String movementType = adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) > 0 
-                    ? "ADJUSTMENT_IN" 
-                    : "ADJUSTMENT_OUT";
+            if (adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) != 0) {
+                String movementType = adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) > 0
+                        ? "ADJUSTMENT_IN"
+                        : "ADJUSTMENT_OUT";
 
-            recordMaterialMovement(
-                    adjustment.getMaterialId(),
-                    movementType,
-                    adjustment.getAdjustmentQuantity(),
-                    quantityBefore,
-                    quantityAfter,
-                    null,
-                    "ADJUSTMENT",
-                    adjustment.getId(),
-                    "AJT-" + adjustment.getId(),
-                    adjustment.getReason()
-            );
+                recordMaterialMovement(
+                        adjustment.getMaterialId(),
+                        movementType,
+                        adjustment.getAdjustmentQuantity(),
+                        quantityBefore,
+                        quantityAfter,
+                        null,
+                        "ADJUSTMENT",
+                        adjustment.getId(),
+                        "AJT-" + adjustment.getId(),
+                        adjustment.getReason()
+                );
+            }
         } else {
             // Ajuste de producto
             ProductEntity productEntity = productRepository.findById(adjustment.getProductId()).orElse(null);
@@ -2231,25 +2267,26 @@ public class InventoryService {
                 productInventoryLocationRepository.save(inventory);
             }
 
-            // Registrar en kardex
-            String movementType = adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) > 0 
-                    ? "ADJUSTMENT_IN" 
-                    : "ADJUSTMENT_OUT";
+            if (adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) != 0) {
+                String movementType = adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) > 0
+                        ? "ADJUSTMENT_IN"
+                        : "ADJUSTMENT_OUT";
 
-            productInventoryService.recordMovement(
-                    adjustment.getProductId(),
-                    adjustment.getLocationId(),
-                    adjustment.getColorId(),
-                    movementType,
-                    adjustment.getAdjustmentQuantity(),
-                    quantityBefore,
-                    quantityAfter,
-                    null,
-                    "ADJUSTMENT",
-                    adjustment.getId(),
-                    "AJT-" + adjustment.getId(),
-                    adjustment.getReason()
-            );
+                productInventoryService.recordMovement(
+                        adjustment.getProductId(),
+                        adjustment.getLocationId(),
+                        adjustment.getColorId(),
+                        movementType,
+                        adjustment.getAdjustmentQuantity(),
+                        quantityBefore,
+                        quantityAfter,
+                        null,
+                        "ADJUSTMENT",
+                        adjustment.getId(),
+                        "AJT-" + adjustment.getId(),
+                        adjustment.getReason()
+                );
+            }
         }
     }
 

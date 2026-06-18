@@ -17,9 +17,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -37,6 +39,8 @@ public class ProductInventoryService {
     private final ColorRepository colorRepository;
     private final ProductCategoryRepository productCategoryRepository;
     private final com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil securityUtil;
+    private final OnlineSaleReturnsWarehouseLocator returnsWarehouseLocator;
+    private final KioskInventoryGuard kioskInventoryGuard;
 
     // ========== PRODUCT INVENTORY LOCATION ==========
 
@@ -65,6 +69,129 @@ public class ProductInventoryService {
         }
         BigDecimal q = bySize.get(sk);
         return q != null ? q : BigDecimal.ZERO;
+    }
+
+    /**
+     * Bodegas de despacho PT: Devoluciones primero, luego Bodega PT (misma regla que venta en línea).
+     */
+    @Transactional(readOnly = true)
+    public List<LocationEntity> getDispatchSourceWarehouses() throws BusinessException {
+        List<LocationEntity> warehouses = new ArrayList<>();
+        returnsWarehouseLocator.find().ifPresent(warehouses::add);
+        LocationEntity bodegaPt = findBodegaPtLocation();
+        if (bodegaPt == null) {
+            throw new BusinessException("No existe una ubicacion configurada para BODEGA_PT.");
+        }
+        boolean ptAlreadyListed = warehouses.stream()
+                .anyMatch(loc -> Objects.equals(loc.getId(), bodegaPt.getId()));
+        if (!ptAlreadyListed) {
+            warehouses.add(bodegaPt);
+        }
+        return warehouses;
+    }
+
+    @Transactional(readOnly = true)
+    public BigDecimal getAvailableQuantityAcrossDispatchWarehouses(
+            Long productId, Long colorId, String sizeLabel) throws BusinessException {
+        BigDecimal total = BigDecimal.ZERO;
+        for (LocationEntity loc : getDispatchSourceWarehouses()) {
+            total = total.add(getAvailableQuantity(productId, loc.getId(), colorId, sizeLabel));
+        }
+        return total;
+    }
+
+    @Transactional(readOnly = true)
+    public BigDecimal getConsumedQuantityForReference(
+            String referenceType,
+            Long referenceId,
+            String movementType,
+            Long productId,
+            Long colorId) {
+        if (referenceType == null || referenceId == null || movementType == null || productId == null) {
+            return BigDecimal.ZERO;
+        }
+        return productInventoryKardexRepository.findByReferenceTypeAndReferenceId(referenceType, referenceId).stream()
+                .filter(k -> movementType.equals(k.getMovementType()))
+                .filter(k -> productId.equals(k.getProductId()))
+                .filter(k -> Objects.equals(colorId, k.getColorId()))
+                .map(k -> k.getQuantity() != null ? k.getQuantity().abs() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /**
+     * Descuenta inventario para envío/distribución: consume primero Devoluciones y luego Bodega PT.
+     */
+    public void decrementFromDispatchWarehouses(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String kardexMovementType) throws BusinessException {
+        if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        String movementType = (kardexMovementType != null && !kardexMovementType.isBlank())
+                ? kardexMovementType
+                : referenceType;
+
+        BigDecimal alreadyConsumed = getConsumedQuantityForReference(
+                referenceType, referenceId, movementType, productId, colorId);
+        BigDecimal remaining = quantity.subtract(alreadyConsumed);
+        if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+
+        List<LocationEntity> warehouses = getDispatchSourceWarehouses();
+        for (LocationEntity loc : warehouses) {
+            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+                break;
+            }
+            if (hasProductKardexMovement(referenceType, referenceId, movementType, productId, loc.getId(), colorId)) {
+                continue;
+            }
+            BigDecimal available = getAvailableQuantity(productId, loc.getId(), colorId, sizeLabel);
+            if (available.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            BigDecimal toConsume = available.min(remaining);
+            try {
+                decrementInventory(
+                        productId,
+                        loc.getId(),
+                        colorId,
+                        toConsume,
+                        referenceType,
+                        referenceId,
+                        referenceNumber,
+                        description,
+                        sizeLabel,
+                        movementType);
+            } catch (ResourceNotFoundException e) {
+                throw new BusinessException("Sin inventario registrado para producto en ubicacion " + loc.getName());
+            }
+            remaining = remaining.subtract(toConsume);
+        }
+
+        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            throw new BusinessException(
+                    "Stock insuficiente en Devoluciones / Bodega PT (faltan " + remaining + " unidades).");
+        }
+    }
+
+    private LocationEntity findBodegaPtLocation() {
+        Optional<InventoryLocationTypeEntity> bodegaType =
+                inventoryLocationTypeRepository.findByCodeAndIsActiveTrue("BODEGA_PT");
+        if (bodegaType.isEmpty()) {
+            return null;
+        }
+        return locationRepository.findAll().stream()
+                .filter(loc -> "BODEGA_PT".equalsIgnoreCase(loc.getCode()))
+                .findFirst()
+                .orElse(null);
     }
 
     /**
@@ -222,6 +349,8 @@ public class ProductInventoryService {
         if (!locationRepository.existsById(request.getLocationId())) {
             throw new ResourceNotFoundException("Location", request.getLocationId());
         }
+
+        kioskInventoryGuard.assertSupervisorMayModifyKioskInventory(request.getLocationId());
 
         // Buscar si ya existe - SIEMPRE considerar color_id (incluso si es null)
         // Esto es importante porque la restricción única incluye color_id
@@ -429,6 +558,22 @@ public class ProductInventoryService {
             String description,
             String sizeKey) 
             throws ResourceNotFoundException, BusinessException {
+        return decrementInventory(productId, locationId, colorId, quantity, referenceType, referenceId,
+                referenceNumber, description, sizeKey, null);
+    }
+
+    public ProductInventoryLocationResponse decrementInventory(
+            Long productId, 
+            Long locationId, 
+            Long colorId,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String sizeKey,
+            String kardexMovementType) 
+            throws ResourceNotFoundException, BusinessException {
         ProductInventoryLocation entity = productInventoryLocationRepository
                 .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
                 .orElseThrow(() -> new ResourceNotFoundException(
@@ -436,6 +581,17 @@ public class ProductInventoryService {
                     "Product: " + productId + 
                     ", Location: " + locationId + 
                     (colorId != null ? ", Color: " + colorId : ", Color: NULL")));
+
+        if (quantity != null && quantity.compareTo(BigDecimal.ZERO) > 0
+                && referenceType != null && !referenceType.isBlank()
+                && referenceId != null) {
+            String movementTypeCheck = (kardexMovementType != null && !kardexMovementType.isBlank())
+                    ? kardexMovementType
+                    : referenceType;
+            if (hasProductKardexMovement(referenceType, referenceId, movementTypeCheck, productId, locationId, colorId)) {
+                return toProductInventoryLocationResponse(entity);
+            }
+        }
 
         ProductEntity product = productRepository.findById(productId).orElse(null);
         BigDecimal quantityBefore = entity.getQuantity() != null ? entity.getQuantity() : BigDecimal.ZERO;
@@ -490,30 +646,86 @@ public class ProductInventoryService {
             // El inventario se decrementa de todas formas
         }
 
-        // Registrar kardex (salida = cantidad negativa)
-        if (quantity != null && quantity.compareTo(BigDecimal.ZERO) > 0) {
-            String movementType = (referenceType != null && !referenceType.isBlank()) ? referenceType : "OUT";
+        // Registrar kardex (salida = cantidad negativa), idempotente por referencia
+        if (quantity != null && quantity.compareTo(BigDecimal.ZERO) > 0
+                && referenceType != null && !referenceType.isBlank()
+                && referenceId != null) {
+            String movementType = (kardexMovementType != null && !kardexMovementType.isBlank())
+                    ? kardexMovementType
+                    : referenceType;
             try {
-                recordMovement(
-                        productId,
-                        locationId,
-                        colorId,
-                        movementType,
-                        quantity.negate(),
-                        quantityBefore,
-                        quantityAfter,
-                        null,
-                        referenceType,
-                        referenceId,
-                        referenceNumber,
-                        description
-                );
+                if (!hasProductKardexMovement(referenceType, referenceId, movementType, productId, locationId, colorId)) {
+                    recordMovement(
+                            productId,
+                            locationId,
+                            colorId,
+                            movementType,
+                            quantity.negate(),
+                            quantityBefore,
+                            quantityAfter,
+                            null,
+                            referenceType,
+                            referenceId,
+                            referenceNumber,
+                            description
+                    );
+                }
             } catch (ResourceNotFoundException e) {
                 // Si algo falla al registrar kardex, no impedir la venta/operación de inventario.
             }
         }
 
         return toProductInventoryLocationResponse(saved);
+    }
+
+    public boolean hasProductKardexMovement(
+            String referenceType,
+            Long referenceId,
+            String movementType,
+            Long productId,
+            Long locationId,
+            Long colorId) {
+        if (referenceType == null || referenceId == null || movementType == null) {
+            return false;
+        }
+        return productInventoryKardexRepository.existsMovement(
+                referenceType, referenceId, movementType, productId, locationId, colorId);
+    }
+
+    public boolean hasProductKardexMovement(
+            String referenceType,
+            Long referenceId,
+            String movementType,
+            Long productId,
+            Long locationId,
+            Long colorId,
+            String referenceNumber) {
+        if (referenceNumber == null || referenceNumber.isBlank()) {
+            return hasProductKardexMovement(referenceType, referenceId, movementType, productId, locationId, colorId);
+        }
+        return productInventoryKardexRepository.existsMovementWithReferenceNumber(
+                referenceType, referenceId, movementType, productId, locationId, colorId, referenceNumber);
+    }
+
+    public void recordProductMovementIfAbsent(
+            Long productId,
+            Long locationId,
+            Long colorId,
+            String movementType,
+            BigDecimal quantity,
+            BigDecimal quantityBefore,
+            BigDecimal quantityAfter,
+            BigDecimal unitCost,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description) throws ResourceNotFoundException {
+        if (referenceType != null && referenceId != null
+                && hasProductKardexMovement(referenceType, referenceId, movementType, productId, locationId, colorId)) {
+            return;
+        }
+        recordMovement(productId, locationId, colorId, movementType, quantity, quantityBefore, quantityAfter,
+                unitCost, referenceType, referenceId, referenceNumber, description);
     }
 
     // ========== KARDEX ==========
@@ -636,9 +848,12 @@ public class ProductInventoryService {
             totalCost = finalUnitCost.multiply(quantity.abs());
         }
 
+        Long createdBy = securityUtil != null ? securityUtil.getCurrentUserId() : null;
+
         ProductInventoryKardex entity = ProductInventoryKardex.builder()
                 .productId(productId)
                 .locationId(locationId)
+                .colorId(colorId)
                 .movementType(movementType)
                 .quantity(quantity)
                 .quantityBefore(quantityBefore)
@@ -650,6 +865,7 @@ public class ProductInventoryService {
                 .referenceNumber(referenceNumber)
                 .description(fifoDescription)
                 .movementDate(LocalDateTime.now())
+                .createdBy(createdBy)
                 .build();
 
         ProductInventoryKardex saved = productInventoryKardexRepository.save(entity);
@@ -1145,9 +1361,30 @@ public class ProductInventoryService {
                         .map(ProductCategoryEntity::getName).orElse(null));
     }
 
+    /**
+     * Color guardado en la fila de kardex, o —si es histórico sin color— la única fila de inventario
+     * producto+ubicación (evita adivinar si hay varias variantes).
+     */
+    private Long resolveKardexColorId(ProductInventoryKardex entity) {
+        if (entity.getColorId() != null) {
+            return entity.getColorId();
+        }
+        List<ProductInventoryLocation> rows = productInventoryLocationRepository
+                .findAllByProductIdAndLocationId(entity.getProductId(), entity.getLocationId());
+        if (rows.size() == 1) {
+            return rows.get(0).getColorId();
+        }
+        return null;
+    }
+
     private ProductInventoryKardexResponse toProductInventoryKardexResponse(ProductInventoryKardex entity) {
         ProductEntity product = productRepository.findById(entity.getProductId()).orElse(null);
         LocationEntity location = locationRepository.findById(entity.getLocationId()).orElse(null);
+
+        Long colorIdForFifoAndName = resolveKardexColorId(entity);
+        ColorEntity color = colorIdForFifoAndName != null
+                ? colorRepository.findById(colorIdForFifoAndName).orElse(null)
+                : null;
 
         // Separar entradas y salidas para método FIFO
         BigDecimal cantidadEntrada = null;
@@ -1171,15 +1408,10 @@ public class ProductInventoryService {
             }
         }
 
-        // Obtener lotes FIFO disponibles después de este movimiento
-        // Necesitamos obtener el colorId si está disponible en el inventario
-        ProductInventoryLocation inventory = productInventoryLocationRepository
-                .findByProductIdAndLocationIdAndColorId(entity.getProductId(), entity.getLocationId(), null)
-                .orElse(null);
-        Long colorId = inventory != null ? inventory.getColorId() : null;
-        
+        // Lotes FIFO alineados con el color del movimiento (o inferencia conservadora en histórico)
         List<ProductFifoBatch> availableBatches = productFifoBatchRepository
-                .findAvailableBatchesByProductAndLocationAndColor(entity.getProductId(), entity.getLocationId(), colorId);
+                .findAvailableBatchesByProductAndLocationAndColor(
+                        entity.getProductId(), entity.getLocationId(), colorIdForFifoAndName);
         
         List<ProductInventoryKardexResponse.FifoBatchInfo> lotesFifo = availableBatches.stream()
                 .map(batch -> ProductInventoryKardexResponse.FifoBatchInfo.builder()
@@ -1198,6 +1430,8 @@ public class ProductInventoryService {
                 .locationId(entity.getLocationId())
                 .locationCode(location != null ? location.getCode() : null)
                 .locationName(location != null ? location.getName() : null)
+                .colorId(entity.getColorId())
+                .colorName(color != null ? color.getName() : null)
                 .movementType(entity.getMovementType())
                 .quantity(entity.getQuantity())
                 .quantityBefore(entity.getQuantityBefore())

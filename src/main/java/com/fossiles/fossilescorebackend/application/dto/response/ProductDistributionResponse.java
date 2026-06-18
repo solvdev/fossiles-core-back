@@ -25,6 +25,7 @@ public class ProductDistributionResponse {
     private String productionOrderCode;
     private LocalDateTime createdAt;
     private Long createdBy;
+    private String createdByName;
     private LocalDateTime updatedAt;
     private Long updatedBy;
 }

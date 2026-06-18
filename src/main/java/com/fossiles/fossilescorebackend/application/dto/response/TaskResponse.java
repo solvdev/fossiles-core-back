@@ -56,6 +56,8 @@ public class TaskResponse {
     private Long updatedBy;
     // Items (multiple products per task)
     private List<TaskItemDTO> items;
+    /** Solo en respuestas de entrega por ítem: líneas de material descontadas en esta operación. */
+    private Integer lastItemMaterialsConsumed;
 
     @Data
     @Builder
@@ -63,6 +65,7 @@ public class TaskResponse {
     @AllArgsConstructor
     public static class TaskItemDTO {
         private Long id;
+        private Long productionOrderItemId;
         private Long productId;
         private String productCode;
         private String productName;

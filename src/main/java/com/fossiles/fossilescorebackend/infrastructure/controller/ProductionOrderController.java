@@ -1,8 +1,11 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.PartialReleaseUpsertRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseReceiptRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.*;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -10,9 +13,13 @@ import com.fossiles.fossilescorebackend.application.service.ProductInventoryServ
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.application.service.CustomerShipmentDispatchService;
+import com.fossiles.fossilescorebackend.application.service.OpiVendorShipmentNumberService;
 import com.fossiles.fossilescorebackend.application.service.OpvVendorShipmentNumberService;
+import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderPartialReleaseService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderCodeService;
 import com.fossiles.fossilescorebackend.application.service.SmartMaterialRequestService;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderWarehouseUnitService;
 import com.fossiles.fossilescorebackend.application.service.WarehouseOrderViewAssembler;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -50,6 +57,7 @@ public class ProductionOrderController {
     private final SmartMaterialRequestService smartMaterialRequestService;
     private final ProductionOrderCodeService productionOrderCodeService;
     private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
+    private final OpiVendorShipmentNumberService opiVendorShipmentNumberService;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
     private final CustomerShipmentDispatchService customerShipmentDispatchService;
     private final ProductDistributionRepository distributionRepository;
@@ -65,6 +73,9 @@ public class ProductionOrderController {
     private final InventoryLocationTypeRepository inventoryLocationTypeRepository;
     private final ProductInventoryService productInventoryService;
     private final com.fossiles.fossilescorebackend.application.service.MaterialConsumptionService materialConsumptionService;
+    private final ProductDistributionService productDistributionService;
+    private final ProductionOrderPartialReleaseService productionOrderPartialReleaseService;
+    private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @GetMapping
@@ -72,6 +83,7 @@ public class ProductionOrderController {
     public ResponseEntity<List<ProductionOrderResponse>> getAll() {
         List<ProductionOrderResponse> orders = productionOrderRepository.findAll().stream()
                 .map(this::ensureOpvVendorShipmentNumber)
+                .map(this::ensureOpiVendorShipmentNumber)
                 .map(this::toResponse)
                 .collect(Collectors.toList());
         return ResponseEntity.ok(orders);
@@ -82,7 +94,81 @@ public class ProductionOrderController {
     public ResponseEntity<ProductionOrderResponse> getById(@PathVariable Long id) throws ResourceNotFoundException {
         ProductionOrderEntity entity = productionOrderRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
-        return ResponseEntity.ok(toResponse(ensureOpvVendorShipmentNumber(entity)));
+        ProductionOrderEntity resolved = ensureOpvVendorShipmentNumber(entity);
+        resolved = ensureOpiVendorShipmentNumber(resolved);
+        return ResponseEntity.ok(toResponse(resolved));
+    }
+
+    /**
+     * Envíos de producto: distribución vinculada (si aplica) + envíos directos OPI/OPCK/OPC.
+     */
+    @GetMapping("/{id}/shipments")
+    @Transactional
+    public ResponseEntity<List<ProductShipmentResponse>> getShipmentsForOrder(@PathVariable Long id)
+            throws ResourceNotFoundException {
+        productionOrderRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
+        return ResponseEntity.ok(productDistributionService.getShipmentsLinkedToProductionOrder(id));
+    }
+
+    /**
+     * Crear o actualizar envío sin distribución (INTERNA / CLIENTE_KIOSKO / OPC cinchos).
+     */
+    @PostMapping("/{id}/shipments")
+    @Transactional
+    public ResponseEntity<ProductShipmentResponse> createOrUpdateShipmentForOrder(
+            @PathVariable Long id,
+            @Valid @RequestBody ProductShipmentRequest request) throws ResourceNotFoundException, BusinessException {
+        ProductShipmentResponse shipment = productDistributionService.createOrUpdateShipmentForProductionOrder(id, request);
+        return ResponseEntity.ok(shipment);
+    }
+
+    /**
+     * Genera envío CONFIRMED desde ítems de la OP (solo CINCHOS / CINCHOS_FOSSILES / CINCHOS_MARCAS).
+     */
+    @PostMapping("/{id}/shipments/generate-from-order")
+    @Transactional
+    public ResponseEntity<ProductShipmentResponse> generateShipmentFromOrder(
+            @PathVariable Long id,
+            @Valid @RequestBody com.fossiles.fossilescorebackend.application.dto.request.OpcShipmentGenerateRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(productDistributionService.generateShipmentFromProductionOrder(id, request));
+    }
+
+    /**
+     * Anula documento de envío OPV/OPI impreso sin registro product_shipment activo.
+     */
+    @PutMapping("/{id}/void-shipment-document")
+    @Transactional
+    public ResponseEntity<ProductionOrderResponse> voidVendorShipmentDocument(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        ProductionOrderEntity order = productDistributionService.voidVendorShipmentDocument(id);
+        return ResponseEntity.ok(toResponse(order));
+    }
+
+    /** Liberaciones parciales (Luis Felipe) dentro de la OP. */
+    @GetMapping("/{id}/partial-releases")
+    @Transactional(readOnly = true)
+    public ResponseEntity<PartialReleaseListResponse> listPartialReleases(
+            @PathVariable Long id) throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(productionOrderPartialReleaseService.listForOrder(id));
+    }
+
+    @GetMapping("/{id}/partial-releases/{releaseId}")
+    @Transactional(readOnly = true)
+    public ResponseEntity<PartialReleaseResponse> getPartialRelease(
+            @PathVariable Long id,
+            @PathVariable Long releaseId) throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(productionOrderPartialReleaseService.getRelease(id, releaseId));
+    }
+
+    @PostMapping("/{id}/partial-releases")
+    @Transactional(rollbackFor = Exception.class)
+    public ResponseEntity<PartialReleaseResponse> createPartialRelease(
+            @PathVariable Long id,
+            @RequestBody PartialReleaseUpsertRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(productionOrderPartialReleaseService.createDraft(id, request));
     }
 
     @GetMapping("/type/{orderType}")
@@ -102,6 +188,7 @@ public class ProductionOrderController {
     }
 
     @PostMapping
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductionOrderResponse> create(@Valid @RequestBody ProductionOrderRequest request)
             throws BusinessException, ResourceNotFoundException {
         String effectiveOrderType = normalizeOrderType(request.getOrderType());
@@ -153,6 +240,7 @@ public class ProductionOrderController {
                                 .sizesData(itemRequest.getSizes() != null ? 
                                         convertSizesToJson(itemRequest.getSizes()) : null)
                                 .observations(itemRequest.getObservations())
+                                .unitPrice(itemRequest.getUnitPrice())
                                 .build();
                         return productionOrderItemRepository.save(item);
                     })
@@ -188,7 +276,11 @@ public class ProductionOrderController {
             e.printStackTrace();
         }
 
-
+        if (isManagedCinchoOrderType(effectiveOrderType)
+                && request.getItems() != null
+                && !request.getItems().isEmpty()) {
+            materialConsumptionService.assertManagedCinchoOrderMaterialsAvailable(saved.getId());
+        }
 
         return ResponseEntity.created(URI.create("/api/production-orders/" + saved.getId()))
                 .body(toResponse(saved));
@@ -246,10 +338,11 @@ public class ProductionOrderController {
                                     .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, itemRequest.getBrandName()))
                                     .quantity(itemRequest.getQuantity())
                                     .warehouseReceivedQty(0)
-                                    .sizesData(itemRequest.getSizes() != null ? 
-                                            convertSizesToJson(itemRequest.getSizes()) : null)
-                                    .observations(itemRequest.getObservations())
-                                    .build();
+                                .sizesData(itemRequest.getSizes() != null ?
+                                        convertSizesToJson(itemRequest.getSizes()) : null)
+                                .observations(itemRequest.getObservations())
+                                .unitPrice(itemRequest.getUnitPrice())
+                                .build();
                             return productionOrderItemRepository.save(item);
                         })
                         .collect(Collectors.toList());
@@ -278,7 +371,7 @@ public class ProductionOrderController {
      * Cambia el estado solo de órdenes de cinchos gestionadas en la vista dedicada (tipos CINCHOS_FOSSILES / CINCHOS_MARCAS; correlativo unificado OPC, legado OPCF/OPCM).
      */
     @PutMapping("/{id}/status")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductionOrderResponse> updateManagedCinchoOrderStatus(
             @PathVariable Long id,
             @RequestBody Map<String, String> body) throws ResourceNotFoundException, BusinessException {
@@ -290,8 +383,12 @@ public class ProductionOrderController {
         }
         String rawStatus = body == null ? null : body.get("status");
         String nextStatus = String.valueOf(rawStatus == null ? "" : rawStatus).trim().toUpperCase();
+        String prevStatus = String.valueOf(entity.getStatus() == null ? "" : entity.getStatus()).trim().toUpperCase();
         if (!isValidManagedCinchoOrderStatus(nextStatus)) {
             throw new BusinessException("Estado inválido. Use: PENDING, IN_PROGRESS, COMPLETED o CANCELLED.");
+        }
+        if ("IN_PROGRESS".equals(nextStatus) && "PENDING".equals(prevStatus)) {
+            materialConsumptionService.assertManagedCinchoOrderMaterialsAvailable(id);
         }
         entity.setStatus(nextStatus);
         ProductionOrderEntity saved = productionOrderRepository.save(entity);
@@ -414,12 +511,34 @@ public class ProductionOrderController {
         return ResponseEntity.ok(responses);
     }
 
+    @GetMapping("/{id}/warehouse-workspace")
+    public ResponseEntity<WarehouseWorkspaceResponse> getWarehouseWorkspace(@PathVariable Long id)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(productionOrderWarehouseUnitService.getWorkspace(id));
+    }
+
+    @PutMapping("/{id}/warehouse-units/receipt")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> updateWarehouseUnitsReceipt(
+            @PathVariable Long id,
+            @RequestBody WarehouseUnitReceiptRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(productionOrderWarehouseUnitService.updateUnitsReceipt(id, request));
+    }
+
+    @PostMapping("/{id}/warehouse-receipt/close")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> closeWarehouseReceipt(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(productionOrderWarehouseUnitService.closeWarehouseReceipt(id));
+    }
+
     @PutMapping("/{id}/warehouse-receipt")
     @Transactional
     public ResponseEntity<Map<String, Object>> receiveWarehouseProducts(
             @PathVariable Long id,
             @RequestBody WarehouseReceiptRequest request) throws ResourceNotFoundException, BusinessException {
-        ProductionOrderEntity po = productionOrderRepository.findById(id)
+        ProductionOrderEntity po = productionOrderRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
 
         if (request == null || request.getItems() == null || request.getItems().isEmpty()) {
@@ -469,46 +588,58 @@ public class ProductionOrderController {
                     throw new BusinessException("El item " + item.getId() + " no tiene producto válido para ingreso a inventario.");
                 }
                 BigDecimal qty = BigDecimal.valueOf(approved);
-                BigDecimal before = productInventoryService
-                        .getInventoryByProductAndLocationAndColor(item.getProductId(), finishedGoodsLocation.getId(), item.getColorId())
-                        .getQuantity();
-
-                productInventoryService.incrementInventory(
-                        item.getProductId(),
-                        finishedGoodsLocation.getId(),
-                        item.getColorId(),
-                        qty,
-                        null,
-                        "PRODUCTION_ORDER",
-                        po.getId(),
-                        po.getCode(),
-                        "Ingreso por recepción en bodega PT"
-                );
-                BigDecimal after = productInventoryService
-                        .getInventoryByProductAndLocationAndColor(item.getProductId(), finishedGoodsLocation.getId(), item.getColorId())
-                        .getQuantity();
-
-                productInventoryService.recordMovement(
-                        item.getProductId(),
-                        finishedGoodsLocation.getId(),
-                        item.getColorId(),
+                String receiptRefNumber = po.getCode() + "-WH-RCP-" + item.getId() + "-" + alreadyReceived;
+                boolean alreadyRecorded = productInventoryService.hasProductKardexMovement(
+                        "PRODUCTION_ORDER_ITEM",
+                        item.getId(),
                         "PRODUCTION_ENTRY",
-                        qty,
-                        before,
-                        after,
-                        null,
-                        "PRODUCTION_ORDER",
-                        po.getId(),
-                        po.getCode(),
-                        "Recepción bodega PT - " + (product != null ? product.getCode() : "ITEM " + item.getId())
-                );
+                        item.getProductId(),
+                        finishedGoodsLocation.getId(),
+                        item.getColorId(),
+                        receiptRefNumber);
+
+                if (!alreadyRecorded) {
+                    BigDecimal before = productInventoryService
+                            .getInventoryByProductAndLocationAndColor(item.getProductId(), finishedGoodsLocation.getId(), item.getColorId())
+                            .getQuantity();
+
+                    productInventoryService.incrementInventory(
+                            item.getProductId(),
+                            finishedGoodsLocation.getId(),
+                            item.getColorId(),
+                            qty,
+                            null,
+                            "PRODUCTION_ORDER_ITEM",
+                            item.getId(),
+                            receiptRefNumber,
+                            "Ingreso por recepción en bodega PT"
+                    );
+                    BigDecimal after = productInventoryService
+                            .getInventoryByProductAndLocationAndColor(item.getProductId(), finishedGoodsLocation.getId(), item.getColorId())
+                            .getQuantity();
+
+                    productInventoryService.recordMovement(
+                            item.getProductId(),
+                            finishedGoodsLocation.getId(),
+                            item.getColorId(),
+                            "PRODUCTION_ENTRY",
+                            qty,
+                            before,
+                            after,
+                            null,
+                            "PRODUCTION_ORDER_ITEM",
+                            item.getId(),
+                            receiptRefNumber,
+                            "Recepción bodega PT - " + (product != null ? product.getCode() : "ITEM " + item.getId())
+                    );
+                    item.setWarehouseReceivedQty(alreadyReceived + approved);
+                }
             }
 
             if (rejected > 0) {
                 createReprocessTask(po, item, product, rejected, row.getRejectionReason());
             }
 
-            item.setWarehouseReceivedQty(alreadyReceived + approved);
             productionOrderItemRepository.save(item);
 
             totalApproved += approved;
@@ -1039,6 +1170,7 @@ public class ProductionOrderController {
                             .leatherTotal(leatherTotal)
                             .sizes(sizes)
                             .observations(item.getObservations())
+                            .unitPrice(item.getUnitPrice())
                             .createdAt(item.getCreatedAt())
                             .createdBy(item.getCreatedBy())
                             .updatedAt(item.getUpdatedAt())
@@ -1080,6 +1212,8 @@ public class ProductionOrderController {
                 .updatedAt(entity.getUpdatedAt())
                 .updatedBy(entity.getUpdatedBy())
                 .vendorShipmentNumber(entity.getVendorShipmentNumber())
+                .vendorShipmentVoidedAt(entity.getVendorShipmentVoidedAt())
+                .vendorShipmentVoidedBy(entity.getVendorShipmentVoidedBy())
                 .items(itemResponses);
 
         if (entity.getCustomerId() != null) {
@@ -1090,19 +1224,19 @@ public class ProductionOrderController {
             });
         }
 
-        // Si tiene distribución vinculada, incluir detalles
+        List<ProductShipmentResponse> mergedShipments;
+        try {
+            mergedShipments = productDistributionService.getShipmentsLinkedToProductionOrder(entity.getId());
+        } catch (ResourceNotFoundException e) {
+            mergedShipments = List.of();
+        }
         if (entity.getDistributionId() != null) {
             distributionRepository.findById(entity.getDistributionId()).ifPresent(dist -> {
                 builder.distributionNumber(dist.getDistributionNumber());
                 builder.distributionDate(dist.getDistributionDate());
-
-                List<ProductShipmentResponse> shipmentResponses = shipmentRepository
-                        .findByDistributionId(dist.getId()).stream()
-                        .map(warehouseOrderViewAssembler::toShipmentResponse)
-                        .collect(Collectors.toList());
-                builder.distributionShipments(shipmentResponses);
             });
         }
+        builder.distributionShipments(mergedShipments);
 
         return builder.build();
     }
@@ -1708,17 +1842,34 @@ public class ProductionOrderController {
         return entity;
     }
 
-    /** OPV vendedor: vendedor Luis Felipe y tipo no cincho (misma regla que el formulario; correlativo ENVP de envío). */
+    /** OPI (INTERNA): correlativo ENVI-nnnnn en vendor_shipment_number para documento de envío interno. */
+    private ProductionOrderEntity ensureOpiVendorShipmentNumber(ProductionOrderEntity entity) {
+        if (!isOpiInternaOrder(entity)) {
+            return entity;
+        }
+        String before = entity.getVendorShipmentNumber();
+        opiVendorShipmentNumberService.assignIfMissing(entity);
+        if (!java.util.Objects.equals(before, entity.getVendorShipmentNumber())) {
+            return productionOrderRepository.save(entity);
+        }
+        return entity;
+    }
+
+    private boolean isOpiInternaOrder(ProductionOrderEntity order) {
+        if (order == null) {
+            return false;
+        }
+        String type = String.valueOf(order.getOrderType() == null ? "" : order.getOrderType()).trim().toUpperCase();
+        return "INTERNA".equals(type);
+    }
+
+    /** OPV vendedor: Luis Felipe (incluye cinchos OPC; correlativo ENVP de envío). */
     private boolean isOpvVendorShipmentFlow(ProductionOrderEntity order) {
         if (order == null) {
             return false;
         }
         String seller = String.valueOf(order.getSellerName() == null ? "" : order.getSellerName()).trim().toUpperCase();
-        if (!seller.contains("LUIS FELIPE")) {
-            return false;
-        }
-        String type = String.valueOf(order.getOrderType() == null ? "" : order.getOrderType()).trim().toUpperCase();
-        return !isCinchoOrderType(type);
+        return seller.contains("LUIS FELIPE");
     }
 
     private String convertSizesToJson(Map<String, Integer> sizes) {

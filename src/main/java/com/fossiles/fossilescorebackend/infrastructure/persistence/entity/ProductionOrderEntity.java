@@ -36,6 +36,13 @@ public class ProductionOrderEntity {
     @Column(name = "vendor_shipment_number", length = 30)
     private String vendorShipmentNumber;
 
+    /** Documento OPV/OPI impreso anulado sin fila en product_shipment. */
+    @Column(name = "vendor_shipment_voided_at")
+    private LocalDateTime vendorShipmentVoidedAt;
+
+    @Column(name = "vendor_shipment_voided_by")
+    private Long vendorShipmentVoidedBy;
+
     @Column(name = "seller_name", length = 150)
     private String sellerName; // Vendedor
 
@@ -60,6 +67,9 @@ public class ProductionOrderEntity {
 
     @Column(length = 20)
     private String status; // PENDING, IN_PROGRESS, IN_QA, COMPLETED, CANCELLED
+
+    @Column(name = "warehouse_receipt_closed_at")
+    private LocalDateTime warehouseReceiptClosedAt;
 
     /** Prioridad al distribuir día (menor número = antes en cola entre OP). */
     @Column(name = "scheduling_priority")

@@ -1,0 +1,104 @@
+package com.fossiles.fossilescorebackend.application.service;
+
+import com.fossiles.fossilescorebackend.application.model.TaxInvoiceDocument;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
+import org.springframework.stereotype.Component;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+@Component
+public class KioskSaleInvoiceMapper {
+
+    public TaxInvoiceDocument fromSale(KioskSaleEntity sale) {
+        BigDecimal subtotal = nz(sale.getSubtotal());
+        BigDecimal totalAmount = nz(sale.getTotalAmount());
+        BigDecimal discountRatio = subtotal.compareTo(BigDecimal.ZERO) > 0
+                ? totalAmount.divide(subtotal, 8, RoundingMode.HALF_UP)
+                : BigDecimal.ONE;
+
+        List<TaxInvoiceDocument.Line> lines = new ArrayList<>();
+        List<KioskSaleItemEntity> saleLines = sale.getItems() == null ? List.of() : sale.getItems();
+        for (KioskSaleItemEntity line : saleLines) {
+            BigDecimal lineTotal = nz(line.getLineTotal())
+                    .multiply(discountRatio)
+                    .setScale(2, RoundingMode.HALF_UP);
+            if (lineTotal.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            BigDecimal qty = nz(line.getQuantity()).setScale(3, RoundingMode.HALF_UP);
+            BigDecimal unitPrice = qty.compareTo(BigDecimal.ZERO) > 0
+                    ? lineTotal.divide(qty, 2, RoundingMode.HALF_UP)
+                    : lineTotal;
+            lines.add(TaxInvoiceDocument.Line.builder()
+                    .description(buildLineDescription(line))
+                    .quantity(qty)
+                    .unitPrice(unitPrice)
+                    .lineTotal(lineTotal)
+                    .build());
+        }
+
+        return TaxInvoiceDocument.builder()
+                .transactionId(buildTransactionId(sale))
+                .issuedAt(sale.getSoldAt())
+                .customerTaxId(sale.getCustomerTaxId())
+                .customerName(sale.getCustomerName())
+                .address(sale.getAddress())
+                .phone(sale.getPhone())
+                .email(sale.getEmail())
+                .subtotal(subtotal)
+                .discountAmount(nz(sale.getDiscountAmount()))
+                .totalAmount(totalAmount)
+                .lines(lines)
+                .build();
+    }
+
+    public static boolean shouldEmitForPos(String taxId, Boolean requestInvoice) {
+        String normalized = normalizeTaxId(taxId);
+        if (!"CF".equals(normalized)) {
+            return true;
+        }
+        return Boolean.TRUE.equals(requestInvoice);
+    }
+
+    private static String buildTransactionId(KioskSaleEntity sale) {
+        if (sale.getSaleNumber() != null && !sale.getSaleNumber().isBlank()) {
+            return sale.getSaleNumber().trim();
+        }
+        return "POS-" + sale.getId();
+    }
+
+    private static String buildLineDescription(KioskSaleItemEntity line) {
+        List<String> parts = new ArrayList<>();
+        if (line.getProductCode() != null && !line.getProductCode().isBlank()) {
+            parts.add(line.getProductCode().trim());
+        }
+        if (line.getProductName() != null && !line.getProductName().isBlank()) {
+            parts.add(line.getProductName().trim());
+        }
+        if (line.getColorName() != null && !line.getColorName().isBlank()) {
+            parts.add(line.getColorName().trim());
+        }
+        String text = String.join(" ", parts).trim();
+        if (text.length() > 450) {
+            return text.substring(0, 450);
+        }
+        return text.isBlank() ? "Producto" : text;
+    }
+
+    static String normalizeTaxId(String taxId) {
+        String raw = taxId == null ? "" : taxId.trim().toUpperCase(Locale.ROOT);
+        if (raw.isBlank() || "CF".equals(raw) || "C/F".equals(raw)) {
+            return "CF";
+        }
+        return raw.replace(" ", "").replace("-", "");
+    }
+
+    private static BigDecimal nz(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+}

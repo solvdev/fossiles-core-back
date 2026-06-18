@@ -26,6 +26,7 @@ public class WarehouseOrderViewResponse {
     private LocalDate deliveryDate;
     private String observations;
     private LocalDateTime createdAt;
+    private LocalDateTime warehouseReceiptClosedAt;
 
     // Totals
     private int totalItems;

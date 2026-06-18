@@ -35,5 +35,11 @@ public class InventoryAdjustmentRequest {
 
     @NotNull(message = "Reason is required")
     private String reason;
+
+    /**
+     * Si es true, permite ajuste con stock sistema = físico (auditoría / confirmación en UI).
+     * Por defecto el backend rechaza diferencia cero.
+     */
+    private Boolean allowZeroDifference;
 }
 

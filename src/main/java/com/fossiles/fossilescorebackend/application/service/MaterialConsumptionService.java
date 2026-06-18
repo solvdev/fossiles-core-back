@@ -4,6 +4,8 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -12,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -55,13 +58,13 @@ public class MaterialConsumptionService {
         Map<Long, List<BomUsage>> bomUsages = new LinkedHashMap<>();
 
         for (ProductionOrderItemEntity item : items) {
-            List<BomEntity> boms = bomRepository.findByProductIdAndStatus(item.getProductId(), "A");
-            BomEntity bom = boms.stream().findFirst().orElse(null);
+            BomEntity bom = resolveBomForOrderItem(item);
 
             if (bom == null || bom.getItems() == null || bom.getItems().isEmpty()) continue;
 
+            int effQty = ProductionOrderItemQuantityHelper.effectiveQuantityForBom(item);
             for (BomItemEntity bi : bom.getItems()) {
-                BigDecimal needed = bi.getQuantity().multiply(BigDecimal.valueOf(item.getQuantity()));
+                BigDecimal needed = bi.getQuantity().multiply(BigDecimal.valueOf(effQty));
                 totalRequirements.merge(bi.getMaterialId(), needed, BigDecimal::add);
 
                 bomUsages.computeIfAbsent(bi.getMaterialId(), k -> new ArrayList<>())
@@ -142,59 +145,236 @@ public class MaterialConsumptionService {
     }
 
     /**
-     * Valida si hay material suficiente sin descontar
+     * Valida si hay material suficiente sin descontar (incluye quantity + tallas; desglose por línea y cincho).
      */
     public Map<String, Object> validateMaterialAvailability(Long productionOrderId)
             throws ResourceNotFoundException {
-
+        productionOrderRepository.findById(productionOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
         List<ProductionOrderItemEntity> items = productionOrderItemRepository
                 .findByProductionOrderId(productionOrderId);
+        return buildMaterialAvailabilityResult(items);
+    }
+
+    /**
+     * Garantiza que la OP de cinchos gestionada puede crearse: stock según BOM y cantidades efectivas.
+     */
+    public void assertManagedCinchoOrderMaterialsAvailable(Long productionOrderId)
+            throws ResourceNotFoundException, BusinessException {
+        productionOrderRepository.findById(productionOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
+        List<ProductionOrderItemEntity> items = productionOrderItemRepository
+                .findByProductionOrderId(productionOrderId);
+        Map<String, Object> result = buildMaterialAvailabilityResult(items);
+        if (!Boolean.TRUE.equals(result.get("allAvailable"))) {
+            String msg = String.valueOf(result.getOrDefault(
+                    "shortageMessage", "Material insuficiente para crear la orden."));
+            throw new BusinessException(msg);
+        }
+    }
+
+    /**
+     * Resultado de validación (también para respuesta HTTP).
+     */
+    public Map<String, Object> buildMaterialAvailabilityResult(List<ProductionOrderItemEntity> items) {
+        if (items == null) {
+            items = List.of();
+        }
 
         Map<Long, BigDecimal> requirements = new LinkedHashMap<>();
-        Map<Long, String> materialNames = new HashMap<>();
+        Map<Long, Map<Long, BigDecimal>> neededByItemAndMaterial = new LinkedHashMap<>();
+
         int itemsWithBom = 0;
-
         for (ProductionOrderItemEntity item : items) {
-            List<BomEntity> boms = bomRepository.findByProductIdAndStatus(item.getProductId(), "A");
-            BomEntity bom = boms.stream().findFirst().orElse(null);
-            if (bom == null || bom.getItems() == null) continue;
+            BomEntity bom = resolveBomForOrderItem(item);
+            if (bom == null || bom.getItems() == null || bom.getItems().isEmpty()) {
+                continue;
+            }
             itemsWithBom++;
-
+            int effQty = ProductionOrderItemQuantityHelper.effectiveQuantityForBom(item);
+            Map<Long, BigDecimal> perItem = neededByItemAndMaterial.computeIfAbsent(
+                    item.getId(), k -> new LinkedHashMap<>());
             for (BomItemEntity bi : bom.getItems()) {
-                BigDecimal needed = bi.getQuantity().multiply(BigDecimal.valueOf(item.getQuantity()));
+                BigDecimal needed = bi.getQuantity().multiply(BigDecimal.valueOf(effQty));
                 requirements.merge(bi.getMaterialId(), needed, BigDecimal::add);
+                perItem.merge(bi.getMaterialId(), needed, BigDecimal::add);
             }
         }
 
-        List<Map<String, Object>> details = new ArrayList<>();
+        Map<Long, Map<String, Object>> materialDetailById = new LinkedHashMap<>();
         boolean allAvailable = true;
-
         for (Map.Entry<Long, BigDecimal> entry : requirements.entrySet()) {
             Long materialId = entry.getKey();
             BigDecimal needed = entry.getValue();
             BigDecimal available = getBestAvailableQuantity(materialId);
-
             MaterialEntity mat = materialRepository.findById(materialId).orElse(null);
             String name = mat != null ? mat.getName() : "Material #" + materialId;
-
             boolean sufficient = available.compareTo(needed) >= 0;
-            if (!sufficient) allAvailable = false;
-
-            details.add(Map.of(
-                    "materialId", materialId,
-                    "materialName", name,
-                    "required", needed,
-                    "available", available,
-                    "sufficient", sufficient
-            ));
+            if (!sufficient) {
+                allAvailable = false;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("materialId", materialId);
+            row.put("materialName", name);
+            row.put("required", needed);
+            row.put("available", available);
+            row.put("sufficient", sufficient);
+            materialDetailById.put(materialId, row);
         }
 
-        return Map.of(
-                "allAvailable", allAvailable,
-                "itemsWithBom", itemsWithBom,
-                "totalItems", items.size(),
-                "materials", details
-        );
+        List<Map<String, Object>> materials = new ArrayList<>(materialDetailById.values());
+
+        List<Map<String, Object>> byOrderItem = new ArrayList<>();
+        boolean cinchoAllAvailable = true;
+        boolean nonCinchoAllAvailable = true;
+        boolean anyCinchoWithBom = false;
+        boolean anyNonCinchoWithBom = false;
+
+        for (ProductionOrderItemEntity item : items) {
+            BomEntity bom = resolveBomForOrderItem(item);
+            ProductEntity product = item.getProductId() != null
+                    ? productRepository.findById(item.getProductId()).orElse(null)
+                    : null;
+            boolean isCinchoLine = CinchoProductUtils.isFossCinchoProduct(product);
+            String productCode = product != null ? product.getCode() : "";
+
+            if (bom == null || bom.getItems() == null || bom.getItems().isEmpty()) {
+                Map<String, Object> emptyRow = new LinkedHashMap<>();
+                emptyRow.put("productionOrderItemId", item.getId());
+                emptyRow.put("productId", item.getProductId());
+                emptyRow.put("productCode", productCode);
+                emptyRow.put("isCinchoLine", isCinchoLine);
+                emptyRow.put("hasBom", false);
+                emptyRow.put("allAvailable", true);
+                emptyRow.put("materials", List.of());
+                byOrderItem.add(emptyRow);
+                continue;
+            }
+
+            boolean itemAllAvailable = true;
+            List<Map<String, Object>> itemMats = new ArrayList<>();
+            Map<Long, BigDecimal> perItem = neededByItemAndMaterial.getOrDefault(item.getId(), Map.of());
+            for (BomItemEntity bi : bom.getItems()) {
+                Long mid = bi.getMaterialId();
+                BigDecimal req = perItem.getOrDefault(mid, BigDecimal.ZERO);
+                Map<String, Object> glob = materialDetailById.get(mid);
+                boolean suff = glob != null && Boolean.TRUE.equals(glob.get("sufficient"));
+                if (!suff) {
+                    itemAllAvailable = false;
+                }
+                Map<String, Object> matRow = new LinkedHashMap<>();
+                matRow.put("materialId", mid);
+                matRow.put("materialName", glob != null ? glob.get("materialName") : "");
+                matRow.put("required", req);
+                matRow.put("available", glob != null ? glob.get("available") : BigDecimal.ZERO);
+                matRow.put("sufficient", suff);
+                itemMats.add(matRow);
+            }
+
+            if (isCinchoLine) {
+                anyCinchoWithBom = true;
+                if (!itemAllAvailable) {
+                    cinchoAllAvailable = false;
+                }
+            } else {
+                anyNonCinchoWithBom = true;
+                if (!itemAllAvailable) {
+                    nonCinchoAllAvailable = false;
+                }
+            }
+
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("productionOrderItemId", item.getId());
+            row.put("productId", item.getProductId());
+            row.put("productCode", productCode);
+            row.put("isCinchoLine", isCinchoLine);
+            row.put("hasBom", true);
+            row.put("allAvailable", itemAllAvailable);
+            row.put("materials", itemMats);
+            byOrderItem.add(row);
+        }
+
+        if (!anyCinchoWithBom) {
+            cinchoAllAvailable = true;
+        }
+        if (!anyNonCinchoWithBom) {
+            nonCinchoAllAvailable = true;
+        }
+
+        String cinchoShortageMessage = null;
+        if (!cinchoAllAvailable) {
+            Set<String> cinchoShortageLines = new LinkedHashSet<>();
+            for (Map<String, Object> row : byOrderItem) {
+                if (!Boolean.TRUE.equals(row.get("isCinchoLine")) || !Boolean.TRUE.equals(row.get("hasBom"))) {
+                    continue;
+                }
+                if (Boolean.TRUE.equals(row.get("allAvailable"))) {
+                    continue;
+                }
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> mats = (List<Map<String, Object>>) row.get("materials");
+                if (mats == null) {
+                    continue;
+                }
+                for (Map<String, Object> m : mats) {
+                    if (!Boolean.FALSE.equals(m.get("sufficient"))) {
+                        continue;
+                    }
+                    cinchoShortageLines.add(
+                            m.get("materialName") + ": necesita " + m.get("required") + ", disponible "
+                                    + m.get("available"));
+                }
+            }
+            if (!cinchoShortageLines.isEmpty()) {
+                cinchoShortageMessage = "Material insuficiente en líneas cincho:\n• "
+                        + String.join("\n• ", cinchoShortageLines);
+            }
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("allAvailable", allAvailable);
+        out.put("itemsWithBom", itemsWithBom);
+        out.put("totalItems", items.size());
+        out.put("materials", materials);
+        out.put("byOrderItem", byOrderItem);
+        out.put("cinchoAllAvailable", cinchoAllAvailable);
+        out.put("nonCinchoAllAvailable", nonCinchoAllAvailable);
+        if (cinchoShortageMessage != null) {
+            out.put("cinchoShortageMessage", cinchoShortageMessage);
+        }
+        if (!allAvailable) {
+            out.put("shortageMessage", formatMaterialShortageMessage(materials));
+        }
+        return out;
+    }
+
+    private static String formatMaterialShortageMessage(List<Map<String, Object>> materials) {
+        String body = materials.stream()
+                .filter(m -> !Boolean.TRUE.equals(m.get("sufficient")))
+                .map(m -> m.get("materialName") + ": necesita " + m.get("required") + ", disponible " + m.get("available"))
+                .collect(Collectors.joining("\n• "));
+        if (body.isEmpty()) {
+            return "Material insuficiente para la orden.";
+        }
+        return "Material insuficiente para la orden:\n• " + body;
+    }
+
+    private BomEntity resolveBomForOrderItem(ProductionOrderItemEntity item) {
+        if (item == null || item.getProductId() == null) {
+            return null;
+        }
+        List<BomEntity> boms = bomRepository.findByProductIdAndStatus(item.getProductId(), "A");
+        if (boms.isEmpty()) {
+            return null;
+        }
+        Long colorId = item.getColorId();
+        return boms.stream()
+                .filter(b -> colorId != null && colorId.equals(b.getColorId()))
+                .findFirst()
+                .orElseGet(() -> boms.stream()
+                        .filter(b -> b.getColorId() == null)
+                        .findFirst()
+                        .orElseGet(() -> boms.stream().findFirst().orElse(null)));
     }
 
     /**
@@ -254,6 +434,13 @@ public class MaterialConsumptionService {
 
         Map<Long, BigDecimal> requirements = calculateTaskRequirements(task);
         if (requirements.isEmpty()) {
+            if (!taskRequiresMaterialsConsumption(task)) {
+                return Map.of(
+                        "message", "Tarea sin materiales de bodega (solo cuero)",
+                        "taskId", taskId,
+                        "materialsConsumed", 0
+                );
+            }
             throw new BusinessException("La tarea no tiene receta (BOM) activa para consumir materiales.");
         }
 
@@ -374,6 +561,15 @@ public class MaterialConsumptionService {
             throw new ResourceNotFoundException("Task Item", taskItemId);
         }
 
+        if (!productRequiresMaterials(item.getProductId())) {
+            return Map.of(
+                    "message", "Producto solo cuero: sin consumo de materiales de bodega",
+                    "taskId", taskId,
+                    "taskItemId", taskItemId,
+                    "materialsConsumed", 0
+            );
+        }
+
         Map<Long, BigDecimal> requirements = calculateTaskItemRequirements(item);
         if (requirements.isEmpty()) {
             throw new BusinessException("Este producto no tiene receta (BOM) activa para consumir materiales.");
@@ -430,13 +626,24 @@ public class MaterialConsumptionService {
         );
     }
 
+    /**
+     * True si ya hay consumos registrados para este ítem de tarea (notas de entrega por producto).
+     */
+    public boolean hasConsumptionForTaskItem(Long productionOrderId, Long taskItemId) {
+        if (productionOrderId == null || taskItemId == null) {
+            return false;
+        }
+        String pattern = "%item " + taskItemId + " %";
+        return materialConsumptionRepository.existsByProductionOrderIdAndNotesLike(productionOrderId, pattern);
+    }
+
     private Map<Long, BigDecimal> calculateTaskRequirements(TaskEntity task) {
         Map<Long, BigDecimal> requirements = new LinkedHashMap<>();
 
         List<TaskItemEntity> taskItems = taskItemRepository.findByTaskId(task.getId());
         if (!taskItems.isEmpty()) {
             for (TaskItemEntity item : taskItems) {
-                if (item.getProductId() == null) continue;
+                if (item.getProductId() == null || !productRequiresMaterials(item.getProductId())) continue;
                 int qty = item.getQuantity() != null ? item.getQuantity() : 0;
                 accumulateRequirementsForProduct(requirements, item.getProductId(), item.getColorId(), qty);
             }
@@ -444,21 +651,39 @@ public class MaterialConsumptionService {
         }
 
         // Legacy fallback: single-product task
-        if (task.getProductId() != null) {
+        if (task.getProductId() != null && productRequiresMaterials(task.getProductId())) {
             int qty = task.getQuantity() != null ? task.getQuantity() : 0;
             accumulateRequirementsForProduct(requirements, task.getProductId(), task.getColorId(), qty);
         }
         return requirements;
     }
 
+    private boolean taskRequiresMaterialsConsumption(TaskEntity task) {
+        List<TaskItemEntity> taskItems = taskItemRepository.findByTaskId(task.getId());
+        if (!taskItems.isEmpty()) {
+            return taskItems.stream().anyMatch(i -> productRequiresMaterials(i.getProductId()));
+        }
+        return productRequiresMaterials(task.getProductId());
+    }
+
     private Map<Long, BigDecimal> calculateTaskItemRequirements(TaskItemEntity item) {
         Map<Long, BigDecimal> requirements = new LinkedHashMap<>();
-        if (item == null || item.getProductId() == null) {
+        if (item == null || item.getProductId() == null || !productRequiresMaterials(item.getProductId())) {
             return requirements;
         }
-        int qty = item.getQuantity() != null ? item.getQuantity() : 0;
+        int qty = resolveQuantityForTaskItemBom(item);
         accumulateRequirementsForProduct(requirements, item.getProductId(), item.getColorId(), qty);
         return requirements;
+    }
+
+    private int resolveQuantityForTaskItemBom(TaskItemEntity item) {
+        if (item.getProductionOrderItemId() != null) {
+            return productionOrderItemRepository.findById(item.getProductionOrderItemId())
+                    .map(ProductionOrderItemQuantityHelper::effectiveQuantityForBom)
+                    .orElse(item.getQuantity() != null ? item.getQuantity() : 1);
+        }
+        int qty = item.getQuantity() != null ? item.getQuantity() : 0;
+        return qty > 0 ? qty : 1;
     }
 
     public boolean productRequiresMaterials(Long productId) {
@@ -473,7 +698,7 @@ public class MaterialConsumptionService {
             Long productId,
             Long colorId,
             int quantity) {
-        if (productId == null || quantity <= 0) return;
+        if (productId == null || quantity <= 0 || !productRequiresMaterials(productId)) return;
         List<BomEntity> boms = bomRepository.findByProductIdAndStatus(productId, "A");
         BomEntity bom = boms.stream()
                 .filter(b -> colorId != null && colorId.equals(b.getColorId()))

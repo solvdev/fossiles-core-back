@@ -25,6 +25,10 @@ public class CustomerEntity {
     @Column(unique = true, length = 30)
     private String nit;
 
+    /** Clave legacy para búsqueda en CxC (ej. CB490). */
+    @Column(name = "legacy_code", length = 30)
+    private String legacyCode;
+
     @Column(length = 30)
     private String phone;
 
@@ -33,6 +37,9 @@ public class CustomerEntity {
 
     @Column(length = 200)
     private String address;
+
+    @Column(name = "route_location_code", length = 10)
+    private String routeLocationCode;
 
     @Column(length = 20)
     private String status;

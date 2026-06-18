@@ -16,4 +16,5 @@ public class KioskProductAvailabilityResponse {
     private String kioskCode;
     private String kioskName;
     private Boolean available;
+    private BigDecimal quantity;
 }

@@ -22,6 +22,8 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ro
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.DepartmentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.CostCenterRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OperationalUnitRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.util.EncryptionUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -52,6 +54,7 @@ public class UserService {
     private final OperationalUnitRepository operationalUnitRepository;
     private final PasswordEncoder passwordEncoder;
     private final EncryptionUtil encryptionUtil;
+    private final LocationRepository locationRepository;
 
     /**
      * Crear un nuevo usuario con validaciones de negocio
@@ -235,7 +238,18 @@ public class UserService {
 
         user.setStatus(status);
         User updatedUser = userRepositoryPort.save(user);
+        if ("inactive".equals(status)) {
+            clearEncargadoAssignments(id);
+        }
         return userMapper.toResponse(updatedUser);
+    }
+
+    private void clearEncargadoAssignments(Long userId) {
+        List<LocationEntity> locations = locationRepository.findByEncargadoIdOrderByNameAsc(userId);
+        for (LocationEntity location : locations) {
+            location.setEncargadoId(null);
+            locationRepository.save(location);
+        }
     }
 
     @Transactional(readOnly = true)

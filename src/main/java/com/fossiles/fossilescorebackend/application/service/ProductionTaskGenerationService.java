@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import lombok.Builder;
@@ -48,6 +49,11 @@ public class ProductionTaskGenerationService {
 
         ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
+
+        if (isCinchoOrderType(po.getOrderType())) {
+            throw new BusinessException(
+                    "Las órdenes de tipo cinchos se gestionan en la vista de Cinchos, no en el centro de producción.");
+        }
 
         List<TaskEntity> existingTasks = taskRepository.findByProductionOrderId(productionOrderId);
         if (!existingTasks.isEmpty()) {
@@ -163,6 +169,200 @@ public class ProductionTaskGenerationService {
         return generatedTasks;
     }
 
+    /**
+     * Tareas ligeras solo para entrega de materiales en OP cincho (sin mesas ni centro de producción).
+     * Si la OP ya tiene tareas, las devuelve sin duplicar.
+     */
+    @Transactional
+    public List<TaskEntity> generateCinchoMaterialsTasks(long productionOrderId)
+            throws ResourceNotFoundException, BusinessException {
+
+        ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
+
+        if (!isCinchoOrderType(po.getOrderType())) {
+            throw new BusinessException(
+                    "Solo aplica a órdenes CINCHOS, CINCHOS_FOSSILES o CINCHOS_MARCAS.");
+        }
+
+        List<TaskEntity> existingTasks = taskRepository.findByProductionOrderId(productionOrderId);
+        if (!existingTasks.isEmpty()) {
+            return existingTasks;
+        }
+
+        List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
+        if (items.isEmpty()) {
+            throw new BusinessException("La orden no tiene líneas para registrar entrega de materiales.");
+        }
+
+        LocalDate scheduledDate = po.getStartDate() != null ? po.getStartDate() : LocalDate.now();
+        LocalDate today = LocalDate.now();
+        if (scheduledDate.isBefore(today)) {
+            scheduledDate = today;
+        }
+
+        int totalPieces = items.stream().mapToInt(this::calculateItemTotalQuantity).sum();
+
+        TaskEntity task = taskRepository.save(TaskEntity.builder()
+                .code(generateTaskCode())
+                .productionOrderId(po.getId())
+                .productionOrderCode(po.getCode())
+                .quantity(totalPieces)
+                .estimatedHours(0.1)
+                .deliveryDate(po.getDeliveryDate())
+                .scheduledDate(scheduledDate)
+                .priority(5)
+                .status("PENDING")
+                .observations("Materiales cincho (bodega)")
+                .leatherDelivered(true)
+                .leatherDeliveredAt(LocalDateTime.now())
+                .dieCutReady(true)
+                .build());
+
+        for (ProductionOrderItemEntity item : items) {
+            ProductEntity product = item.getProductId() != null
+                    ? productRepository.findById(item.getProductId()).orElse(null)
+                    : null;
+            String colorName = null;
+            if (item.getColorId() != null) {
+                colorName = colorRepository.findById(item.getColorId()).map(ColorEntity::getName).orElse(null);
+            }
+            int qty = calculateItemTotalQuantity(item);
+            boolean requiresMaterials = product == null || !Boolean.FALSE.equals(product.getRequiresMaterials());
+
+            taskItemRepository.save(TaskItemEntity.builder()
+                    .taskId(task.getId())
+                    .productionOrderItemId(item.getId())
+                    .productId(item.getProductId())
+                    .productCode(product != null ? product.getCode() : null)
+                    .productName(product != null ? product.getName() : null)
+                    .colorId(item.getColorId())
+                    .colorName(colorName)
+                    .quantity(qty)
+                    .estimatedHours(0.1)
+                    .observations(item.getObservations())
+                    .leatherDelivered(true)
+                    .leatherDeliveredAt(LocalDateTime.now())
+                    .materialsDelivered(!requiresMaterials)
+                    .materialsDeliveredAt(!requiresMaterials ? LocalDateTime.now() : null)
+                    .build());
+        }
+
+        return List.of(task);
+    }
+
+    /**
+     * Genera tareas únicamente para los items seleccionados de una OP.
+     * No elimina tareas existentes de la orden — solo agrega tareas para items que aún no las tienen.
+     */
+    @Transactional
+    public List<TaskEntity> generateTasksForSelectedItems(long productionOrderId, List<Long> selectedItemIds)
+            throws ResourceNotFoundException, BusinessException {
+
+        if (selectedItemIds == null || selectedItemIds.isEmpty()) {
+            throw new BusinessException("Debe seleccionar al menos un producto para generar tareas.");
+        }
+
+        ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
+
+        if (isCinchoOrderType(po.getOrderType())) {
+            throw new BusinessException(
+                    "Las órdenes de tipo cinchos se gestionan en la vista de Cinchos, no en el centro de producción.");
+        }
+
+        List<ProductionOrderItemEntity> allItems = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
+        List<ProductionOrderItemEntity> selectedItems = allItems.stream()
+                .filter(item -> selectedItemIds.contains(item.getId()))
+                .collect(Collectors.toList());
+
+        if (selectedItems.isEmpty()) {
+            throw new BusinessException("No se encontraron los items seleccionados en esta orden.");
+        }
+
+        // buildChunksForOrder con skipAlreadyPlannedItems=true omite automáticamente items con tareas existentes.
+        List<TaskChunk> primaryChunks = buildChunksForOrder(po, selectedItems, true);
+        if (primaryChunks.isEmpty()) {
+            throw new BusinessException("Los productos seleccionados ya tienen tareas generadas o no son válidos para producción.");
+        }
+
+        List<List<TaskChunk>> taskGroups = groupChunksIntoTasks(primaryChunks);
+
+        boolean canSchedule = po.getStartDate() != null && po.getDeliveryDate() != null
+                && !po.getStartDate().isAfter(po.getDeliveryDate());
+        int numDesks = getNumDesks();
+        SchedulingContext schedulingContext = canSchedule ? buildSchedulingContext(numDesks) : null;
+
+        int priorityCounter = 5;
+        List<TaskEntity> generatedTasks = new ArrayList<>();
+
+        for (List<TaskChunk> group : taskGroups) {
+            double totalHours = Math.round(group.stream().mapToDouble(TaskChunk::getEstimatedHours).sum() * 100.0) / 100.0;
+            TaskChunk primary = group.get(0);
+
+            TaskEntity.TaskEntityBuilder builder = TaskEntity.builder()
+                    .code(generateTaskCode())
+                    .productionOrderId(primary.getProductionOrderId())
+                    .productionOrderCode(primary.getProductionOrderCode())
+                    .productionOrderItemId(primary.getProductionOrderItemId())
+                    .productId(primary.getProductId())
+                    .productName(primary.getProductName())
+                    .productCode(primary.getProductCode())
+                    .colorId(primary.getColorId())
+                    .colorName(primary.getColorName())
+                    .observations(primary.getObservations())
+                    .quantity(group.stream().mapToInt(TaskChunk::getQuantity).sum())
+                    .estimatedHours(totalHours)
+                    .deliveryDate(primary.getDeliveryDate() != null ? primary.getDeliveryDate() : po.getDeliveryDate())
+                    .priority(priorityCounter++)
+                    .status("PENDING");
+
+            if (canSchedule) {
+                SlotAssignment slot = findEarliestSlot(
+                        schedulingContext,
+                        primary.getStartDate() != null ? primary.getStartDate() : po.getStartDate(),
+                        totalHours);
+                schedulingContext.scheduleMap.computeIfAbsent(slot.date, k -> new HashMap<>());
+                schedulingContext.scheduleMap.get(slot.date).merge(slot.desk, totalHours, Double::sum);
+                builder.desk(slot.desk).scheduledDate(slot.date);
+            }
+
+            TaskEntity task = taskRepository.save(builder.build());
+
+            for (TaskChunk chunk : group) {
+                boolean requiresMaterials = chunk.getProductId() == null
+                        || productRepository.findById(chunk.getProductId())
+                        .map(p -> !Boolean.FALSE.equals(p.getRequiresMaterials()))
+                        .orElse(true);
+                taskItemRepository.save(TaskItemEntity.builder()
+                        .taskId(task.getId())
+                        .productionOrderItemId(chunk.getProductionOrderItemId())
+                        .productId(chunk.getProductId())
+                        .productCode(chunk.getProductCode())
+                        .productName(chunk.getProductName())
+                        .colorId(chunk.getColorId())
+                        .colorName(chunk.getColorName())
+                        .quantity(chunk.getQuantity())
+                        .estimatedHours(chunk.getEstimatedHours())
+                        .observations(chunk.getObservations())
+                        .leatherDelivered(false)
+                        .leatherDeliveredAt(null)
+                        .materialsDelivered(!requiresMaterials)
+                        .materialsDeliveredAt(!requiresMaterials ? LocalDateTime.now() : null)
+                        .build());
+            }
+
+            generatedTasks.add(task);
+        }
+
+        if ("PENDING".equals(po.getStatus())) {
+            po.setStatus("IN_PROGRESS");
+            productionOrderRepository.save(po);
+        }
+
+        return generatedTasks;
+    }
+
     private RegenerationRisk assessRegenerationRisk(Long productionOrderId, List<TaskEntity> existingTasks) {
         boolean hasInProgress = existingTasks.stream()
                 .anyMatch(t -> "IN_PROGRESS".equals(t.getStatus()) || "COMPLETED".equals(t.getStatus()));
@@ -204,6 +404,14 @@ public class ProductionTaskGenerationService {
         return new RegenerationRisk(true, sb.toString().trim());
     }
 
+    private static boolean isCinchoOrderType(String orderType) {
+        if (orderType == null || orderType.isBlank()) {
+            return false;
+        }
+        String t = orderType.trim().toUpperCase(Locale.ROOT);
+        return "CINCHOS".equals(t) || "CINCHOS_FOSSILES".equals(t) || "CINCHOS_MARCAS".equals(t);
+    }
+
     private List<TaskChunk> buildChunksForOrder(
             ProductionOrderEntity order,
             List<ProductionOrderItemEntity> items,
@@ -218,6 +426,10 @@ public class ProductionTaskGenerationService {
             ProductEntity product = item.getProductId() != null
                     ? productRepository.findById(item.getProductId()).orElse(null)
                     : null;
+
+            if (!isCinchoOrderType(order.getOrderType()) && CinchoProductUtils.isFossCinchoProduct(product)) {
+                continue;
+            }
 
             String colorName = null;
             if (item.getColorId() != null) {

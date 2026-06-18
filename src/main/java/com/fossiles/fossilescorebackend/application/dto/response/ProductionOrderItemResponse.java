@@ -29,6 +29,7 @@ public class ProductionOrderItemResponse {
     private BigDecimal leatherTotal;      // ft² total = consumption × quantity
     private Map<String, Integer> sizes; // Para cinchos: talla -> cantidad
     private String observations;
+    private BigDecimal unitPrice;
     private LocalDateTime createdAt;
     private Long createdBy;
     private LocalDateTime updatedAt;

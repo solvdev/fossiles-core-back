@@ -1,7 +1,9 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryLocation;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -14,7 +16,18 @@ public interface ProductInventoryLocationRepository extends JpaRepository<Produc
     
     Optional<ProductInventoryLocation> findByProductIdAndLocationId(Long productId, Long locationId);
     
+    List<ProductInventoryLocation> findAllByProductIdAndLocationId(Long productId, Long locationId);
+
     Optional<ProductInventoryLocation> findByProductIdAndLocationIdAndColorId(Long productId, Long locationId, Long colorId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT pil FROM ProductInventoryLocation pil WHERE pil.productId = :productId "
+            + "AND pil.locationId = :locationId "
+            + "AND ((:colorId IS NULL AND pil.colorId IS NULL) OR pil.colorId = :colorId)")
+    Optional<ProductInventoryLocation> findWithLockByProductIdAndLocationIdAndColorId(
+            @Param("productId") Long productId,
+            @Param("locationId") Long locationId,
+            @Param("colorId") Long colorId);
     
     List<ProductInventoryLocation> findByProductId(Long productId);
     List<ProductInventoryLocation> findByProductIdAndColorId(Long productId, Long colorId);

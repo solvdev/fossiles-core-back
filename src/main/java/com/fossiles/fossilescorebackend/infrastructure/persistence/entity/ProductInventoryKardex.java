@@ -26,6 +26,10 @@ public class ProductInventoryKardex {
     @Column(name = "location_id", nullable = false)
     private Long locationId;
 
+    /** Variante de color del movimiento; null en registros históricos o producto sin color. */
+    @Column(name = "color_id")
+    private Long colorId;
+
     @Column(name = "movement_type", nullable = false, length = 50)
     private String movementType; // PRODUCTION_ENTRY, SALE_EXIT, TRANSFER_IN, TRANSFER_OUT, ADJUSTMENT, RETURN
 

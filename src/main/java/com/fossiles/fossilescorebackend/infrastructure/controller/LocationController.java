@@ -95,6 +95,13 @@ public class LocationController {
                 .categoria(entity.getCategoria())
                 .encargadoId(entity.getEncargadoId());
         
+        builder.felEstablishmentCode(entity.getFelEstablishmentCode())
+                .felEstablishmentName(entity.getFelEstablishmentName())
+                .felAddressLine(entity.getFelAddressLine())
+                .felMunicipio(entity.getFelMunicipio())
+                .felDepartamento(entity.getFelDepartamento())
+                .posTestMode(Boolean.TRUE.equals(entity.getPosTestMode()));
+        
         if (entity.getEncargado() != null) {
             String nombreCompleto = "";
             if (entity.getEncargado().getFirstName() != null) {
@@ -121,7 +128,21 @@ public class LocationController {
                 .zona(request.getZona())
                 .categoria(request.getCategoria())
                 .encargadoId(request.getEncargadoId())
+                .felEstablishmentCode(trimToNull(request.getFelEstablishmentCode()))
+                .felEstablishmentName(trimToNull(request.getFelEstablishmentName()))
+                .felAddressLine(trimToNull(request.getFelAddressLine()))
+                .felMunicipio(trimToNull(request.getFelMunicipio()))
+                .felDepartamento(trimToNull(request.getFelDepartamento()))
+                .posTestMode(Boolean.TRUE.equals(request.getPosTestMode()))
                 .build();
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     private void updateEntity(LocationEntity entity, LocationRequest request) {
@@ -132,6 +153,24 @@ public class LocationController {
         if (request.getZona() != null) entity.setZona(request.getZona());
         if (request.getCategoria() != null) entity.setCategoria(request.getCategoria());
         if (request.getEncargadoId() != null) entity.setEncargadoId(request.getEncargadoId());
+        if (request.getFelEstablishmentCode() != null) {
+            entity.setFelEstablishmentCode(trimToNull(request.getFelEstablishmentCode()));
+        }
+        if (request.getFelEstablishmentName() != null) {
+            entity.setFelEstablishmentName(trimToNull(request.getFelEstablishmentName()));
+        }
+        if (request.getFelAddressLine() != null) {
+            entity.setFelAddressLine(trimToNull(request.getFelAddressLine()));
+        }
+        if (request.getFelMunicipio() != null) {
+            entity.setFelMunicipio(trimToNull(request.getFelMunicipio()));
+        }
+        if (request.getFelDepartamento() != null) {
+            entity.setFelDepartamento(trimToNull(request.getFelDepartamento()));
+        }
+        if (request.getPosTestMode() != null) {
+            entity.setPosTestMode(request.getPosTestMode());
+        }
     }
 
     /**

@@ -22,6 +22,8 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.On
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleReturnRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ReturnInventoryRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaxInvoiceEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaxInvoiceRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -48,6 +50,7 @@ public class OnlineSaleService {
     private final SecurityUtil securityUtil;
     private final OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
     private final OnlineSaleReturnsWarehouseLocator returnsWarehouseLocator;
+    private final TaxInvoiceRepository taxInvoiceRepository;
     private final ProductInventoryService productInventoryService;
 
     private static final Map<String, String> PAYMENT_METHOD_DISPLAY = new LinkedHashMap<>();
@@ -112,6 +115,8 @@ public class OnlineSaleService {
         // Guardar items
         if (hasItems) {
             saveItems(saved.getId(), itemReqs);
+            recalculateAmountsFromItems(saved);
+            saved = saleRepository.save(saved);
         } else if (req.getProductId() != null) {
             // Crear un item legacy
             saveSingleItemFromLegacy(saved);
@@ -141,6 +146,7 @@ public class OnlineSaleService {
             entity.setNetAmount(net);
             copyFirstItemToLegacy(entity, itemReqs.get(0));
             saveItems(id, itemReqs);
+            recalculateAmountsFromItems(entity);
         } else {
             // Actualización parcial (inline edit) — no tocar items
             if (req.getProductId() != null) {
@@ -239,8 +245,31 @@ public class OnlineSaleService {
     // ─── Resumen Diario ─────────────────────────────────────────────
 
     @Transactional(readOnly = true)
-    public OnlineSaleDailySummaryResponse getDailySummary(LocalDate date) {
-        List<OnlineSaleEntity> sales = saleRepository.findBySaleDateOrderByIdAsc(date);
+    public OnlineSaleDailySummaryResponse getDailySummary(LocalDate date) throws BusinessException {
+        return getSummaryForDateRange(date, date);
+    }
+
+    @Transactional(readOnly = true)
+    public OnlineSaleDailySummaryResponse getSummaryForDateRange(LocalDate startDate, LocalDate endDate)
+            throws BusinessException {
+        LocalDate from = startDate != null ? startDate : endDate;
+        LocalDate to = endDate != null ? endDate : startDate;
+        if (from == null || to == null) {
+            throw new BusinessException("Indique al menos una fecha para el resumen.");
+        }
+        if (from.isAfter(to)) {
+            throw new BusinessException("La fecha inicial no puede ser posterior a la fecha final.");
+        }
+        List<OnlineSaleEntity> sales = from.equals(to)
+                ? saleRepository.findBySaleDateOrderByIdAsc(from)
+                : saleRepository.findBySaleDateBetweenOrderBySaleDateDesc(from, to);
+        return buildSummaryResponse(from, to, sales);
+    }
+
+    private OnlineSaleDailySummaryResponse buildSummaryResponse(
+            LocalDate startDate,
+            LocalDate endDate,
+            List<OnlineSaleEntity> sales) {
 
         Map<String, List<OnlineSaleEntity>> bySeller = sales.stream()
                 .filter(s -> s.getSalesperson() != null)
@@ -307,7 +336,9 @@ public class OnlineSaleService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         return OnlineSaleDailySummaryResponse.builder()
-                .date(date)
+                .date(startDate)
+                .startDate(startDate)
+                .endDate(endDate)
                 .totalSalesCount(sales.size())
                 .totalAmount(totalAmt)
                 .totalNetAmount(totalNet)
@@ -385,6 +416,8 @@ public class OnlineSaleService {
                 // Guardar items
                 if (hasItems) {
                     saveImportItems(saved.getId(), items);
+                    recalculateAmountsFromItems(saved);
+                    saved = saleRepository.save(saved);
                 }
 
                 imported++;
@@ -856,6 +889,38 @@ public class OnlineSaleService {
 
     // ─── Helpers ────────────────────────────────────────────────────
 
+    /**
+     * Recalcula netAmount y totalAmount desde online_sale_item.
+     * Corrige ventas donde se agregaron líneas sin actualizar el encabezado (p. ej. merge #-OP).
+     */
+    void recalculateAmountsFromItems(OnlineSaleEntity entity) {
+        if (entity == null || entity.getId() == null) {
+            return;
+        }
+        List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(entity.getId());
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        BigDecimal net = BigDecimal.ZERO;
+        for (OnlineSaleItemEntity item : items) {
+            net = net.add(resolveItemLineTotal(item));
+        }
+        entity.setNetAmount(net);
+        BigDecimal shipping = entity.getShippingCost() != null ? entity.getShippingCost() : BigDecimal.ZERO;
+        entity.setTotalAmount(net.add(shipping));
+        entity.setSkipAmountCalculation(true);
+    }
+
+    private static BigDecimal resolveItemLineTotal(OnlineSaleItemEntity item) {
+        if (item.getSubtotal() != null) {
+            return item.getSubtotal();
+        }
+        if (item.getUnitPrice() != null && item.getQuantity() != null) {
+            return item.getUnitPrice().multiply(BigDecimal.valueOf(item.getQuantity()));
+        }
+        return BigDecimal.ZERO;
+    }
+
     private void saveItems(Long saleId, List<OnlineSaleRequest.SaleItemRequest> itemReqs) {
         for (OnlineSaleRequest.SaleItemRequest ir : itemReqs) {
             OnlineSaleItemEntity item = OnlineSaleItemEntity.builder()
@@ -1002,7 +1067,7 @@ public class OnlineSaleService {
             }
         }
 
-        return OnlineSaleResponse.builder()
+        OnlineSaleResponse.OnlineSaleResponseBuilder builder = OnlineSaleResponse.builder()
                 .id(e.getId())
                 .saleNumber(e.getSaleNumber())
                 .customerName(e.getCustomerName())
@@ -1038,7 +1103,21 @@ public class OnlineSaleService {
                 .productionOrderId(e.getProductionOrderId())
                 .createdAt(e.getCreatedAt())
                 .createdBy(e.getCreatedBy())
-                .items(itemResponses)
-                .build();
+                .items(itemResponses);
+        applyInvoiceFields(builder, e);
+        return builder.build();
+    }
+
+    private void applyInvoiceFields(OnlineSaleResponse.OnlineSaleResponseBuilder builder, OnlineSaleEntity sale) {
+        Optional<TaxInvoiceEntity> invoiceOpt = sale.getInvoiceId() != null
+                ? taxInvoiceRepository.findById(sale.getInvoiceId())
+                : taxInvoiceRepository.findBySourceTypeAndSourceId("ONLINE_SALE", sale.getId());
+        invoiceOpt.ifPresent(invoice -> builder
+                .invoiceId(invoice.getId())
+                .invoiceStatus(invoice.getStatus())
+                .invoiceFelUuid(invoice.getFelUuid())
+                .invoiceFelSerie(invoice.getFelSerie())
+                .invoiceFelNumero(invoice.getFelNumero())
+                .invoiceFelError(invoice.getFelError()));
     }
 }

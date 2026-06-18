@@ -38,6 +38,26 @@ public class LocationEntity {
     @Column(name = "encargado_id")
     private Long encargadoId;
 
+    @Column(name = "fel_establishment_code", length = 10)
+    private String felEstablishmentCode;
+
+    @Column(name = "fel_establishment_name", length = 255)
+    private String felEstablishmentName;
+
+    @Column(name = "fel_address_line", length = 500)
+    private String felAddressLine;
+
+    @Column(name = "fel_municipio", length = 255)
+    private String felMunicipio;
+
+    @Column(name = "fel_departamento", length = 255)
+    private String felDepartamento;
+
+    /** true = ventas POS no cuentan en métricas de producción (piloto por kiosko). */
+    @Column(name = "pos_test_mode", nullable = false)
+    @Builder.Default
+    private Boolean posTestMode = false;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "encargado_id", insertable = false, updatable = false)
     private UserEntity encargado;

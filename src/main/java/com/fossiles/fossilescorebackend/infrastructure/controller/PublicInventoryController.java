@@ -69,14 +69,17 @@ public class PublicInventoryController {
         }
 
         if ("OUT".equals(normalizedType)) {
+            String referenceType = request.getReferenceType() != null && !request.getReferenceType().isBlank()
+                    ? request.getReferenceType().trim()
+                    : "PUBLIC";
             return ResponseEntity.ok(
                     inventoryService.decrementMaterialInventory(
                             materialId,
                             normalizedQuantity,
                             null,
-                            "PUBLIC",
-                            null,
-                            null,
+                            referenceType,
+                            request.getReferenceId(),
+                            request.getReferenceId() != null ? referenceType + "-" + request.getReferenceId() : null,
                             request.getReason()
                     )
             );

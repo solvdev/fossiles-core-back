@@ -1,12 +1,19 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.ConfirmReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductDistributionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockPreviewResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentRequestResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductDistributionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryLocationResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestService;
+import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestService;
 import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
 import com.fossiles.fossilescorebackend.application.service.ProductInventoryService;
 import jakarta.validation.Valid;
@@ -15,6 +22,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/product-distributions")
@@ -23,6 +31,7 @@ public class ProductDistributionController {
 
     private final ProductDistributionService distributionService;
     private final ProductInventoryService inventoryService;
+    private final InternalShipmentRequestService internalShipmentRequestService;
 
     // ========== DISTRIBUTION ==========
 
@@ -105,11 +114,25 @@ public class ProductDistributionController {
         return ResponseEntity.ok(shipment);
     }
 
+    @PutMapping("/shipments/{id}/packing-items")
+    public ResponseEntity<ProductShipmentResponse> updateShipmentPackingItems(
+            @PathVariable Long id,
+            @RequestBody List<ProductShipmentRequest.PackingItemRequest> packingItems)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.updateShipmentPackingItems(id, packingItems));
+    }
+
     @DeleteMapping("/shipments/{id}")
-    public ResponseEntity<Void> deleteShipment(@PathVariable Long id) 
-            throws ResourceNotFoundException {
+    public ResponseEntity<Void> deleteShipment(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
         distributionService.deleteShipment(id);
         return ResponseEntity.noContent().build();
+    }
+
+    @PutMapping("/shipments/{id}/cancel")
+    public ResponseEntity<ProductShipmentResponse> cancelShipment(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.cancelShipment(id));
     }
 
     // ========== SHIPMENT TRANSIT & RECEIPT ==========
@@ -120,17 +143,79 @@ public class ProductDistributionController {
         return ResponseEntity.ok(distributionService.sendShipment(id));
     }
 
+    /** Revierte un envío en tránsito (SENT) a confirmado y devuelve stock a Bodega PT / Devoluciones. */
+    @PutMapping("/shipments/{id}/revert-send")
+    public ResponseEntity<ProductShipmentResponse> revertSentShipment(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.revertSentShipment(id));
+    }
+
+    @PutMapping("/shipments/{id}/confirm-draft")
+    public ResponseEntity<ProductShipmentResponse> confirmShipmentDraft(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.confirmShipmentDraft(id));
+    }
+
     @PutMapping("/shipments/{id}/confirm-receipt")
     public ResponseEntity<ProductShipmentResponse> confirmReceipt(
             @PathVariable Long id,
-            @RequestBody java.util.Map<String, Object> body)
+            @RequestBody(required = false) ConfirmReceiptRequest body)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(distributionService.confirmReceipt(id, body));
     }
 
+    @PostMapping("/shipments/standalone-internal")
+    public ResponseEntity<InternalShipmentRequestResponse> createStandaloneInternalShipment(
+            @Valid @RequestBody StandaloneInternalShipmentRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(internalShipmentRequestService.createRequestFromLegacy(request));
+    }
+
+    @GetMapping("/shipments/standalone-internal")
+    public ResponseEntity<List<ProductShipmentResponse>> listStandaloneInternalShipments() {
+        return ResponseEntity.ok(distributionService.listStandaloneInternalShipments());
+    }
+
+    @PostMapping("/shipments/standalone-kiosk")
+    public ResponseEntity<ProductShipmentResponse> createStandaloneKioskShipment(
+            @Valid @RequestBody StandaloneKioskShipmentRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(distributionService.createStandaloneKioskShipment(request));
+    }
+
+    @GetMapping("/shipments/standalone-kiosk")
+    public ResponseEntity<List<ProductShipmentResponse>> listStandaloneKioskShipments() {
+        return ResponseEntity.ok(distributionService.listStandaloneKioskShipments());
+    }
+
+    @GetMapping("/dispatch-stock-preview")
+    public ResponseEntity<DispatchStockPreviewResponse> previewDispatchStock(
+            @RequestParam Long productId,
+            @RequestParam(required = false) Long colorId,
+            @RequestParam(required = false) String size) throws BusinessException {
+        return ResponseEntity.ok(distributionService.previewDispatchStock(productId, colorId, size));
+    }
+
+    @PostMapping("/validate-dispatch-stock")
+    public ResponseEntity<Void> validateDispatchStock(
+            @Valid @RequestBody List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
+            throws BusinessException, ResourceNotFoundException {
+        distributionService.validateDispatchStock(products);
+        return ResponseEntity.ok().build();
+    }
+
     @GetMapping("/shipments/in-transit")
-    public ResponseEntity<List<ProductShipmentResponse>> getShipmentsInTransit() {
-        return ResponseEntity.ok(distributionService.getShipmentsInTransit());
+    public ResponseEntity<List<ProductShipmentResponse>> getShipmentsInTransit(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(distributionService.getShipmentsInTransit(kioskLocationId));
+    }
+
+    @GetMapping("/shipments/in-transit/count")
+    public ResponseEntity<Map<String, Long>> countShipmentsInTransit(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(Map.of("count", distributionService.countShipmentsInTransit(kioskLocationId)));
     }
 
     @GetMapping("/shipments/by-status/{status}")

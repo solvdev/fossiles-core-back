@@ -18,6 +18,8 @@ public class TaskTicketResponse {
     private Long taskId;
     private String taskCode;
     private Integer desk;
+    /** Encargado de mesa para {@link #scheduledDate} (tabla production_desk_supervisor). */
+    private String deskSupervisorName;
     private LocalDate scheduledDate;
     private String startTime;             // "HH:mm"
     private Double estimatedHours;        // Total hours for the task

@@ -70,6 +70,15 @@ public final class ProductInventorySizesJson {
     }
 
     public static String serialize(Map<String, BigDecimal> sizes) {
+        return serializeInternal(sizes, false);
+    }
+
+    /** Ajustes de inventario: incluye tallas en cero (baja de stock por talla). */
+    public static String serializeIncludingZeros(Map<String, BigDecimal> sizes) {
+        return serializeInternal(sizes, true);
+    }
+
+    private static String serializeInternal(Map<String, BigDecimal> sizes, boolean includeZeros) {
         if (sizes == null || sizes.isEmpty()) {
             return null;
         }
@@ -79,7 +88,10 @@ public final class ProductInventorySizesJson {
             if (k.isEmpty() || e.getValue() == null) {
                 continue;
             }
-            if (e.getValue().compareTo(BigDecimal.ZERO) <= 0) {
+            if (!includeZeros && e.getValue().compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            if (e.getValue().compareTo(BigDecimal.ZERO) < 0) {
                 continue;
             }
             cleaned.put(k, e.getValue());
@@ -116,6 +128,15 @@ public final class ProductInventorySizesJson {
 
     /** Normaliza claves y fusiona duplicados; descarta negativos. */
     public static Map<String, BigDecimal> normalizeIncomingMap(Map<String, BigDecimal> raw) {
+        Map<String, BigDecimal> m = normalizeAdjustmentSizeMap(raw);
+        removeZeroEntries(m);
+        return m;
+    }
+
+    /**
+     * Mapa de tallas para ajustes: conserva ceros (p. ej. conteo físico 0 con sistema &gt; 0).
+     */
+    public static Map<String, BigDecimal> normalizeAdjustmentSizeMap(Map<String, BigDecimal> raw) {
         Map<String, BigDecimal> m = new LinkedHashMap<>();
         if (raw == null) {
             return m;
@@ -130,7 +151,6 @@ public final class ProductInventorySizesJson {
             }
             m.merge(k, e.getValue(), BigDecimal::add);
         }
-        removeZeroEntries(m);
         return m;
     }
 }

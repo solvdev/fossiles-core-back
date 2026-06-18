@@ -43,6 +43,9 @@ public class ProductShipmentDetailEntity {
     @Column(name = "quantity_difference", precision = 12, scale = 3)
     private BigDecimal quantityDifference;
 
+    @Column(name = "received_line_notes", length = 500)
+    private String receivedLineNotes;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

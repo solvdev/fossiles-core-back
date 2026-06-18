@@ -7,6 +7,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.util.Map;
 
 @Data
@@ -32,5 +33,8 @@ public class ProductionOrderItemRequest {
 
     @Size(max = 500, message = "Observations must not exceed 500 characters")
     private String observations;
+
+    /** Precio unitario acordado (OPV/MARCAS). */
+    private BigDecimal unitPrice;
 }
 

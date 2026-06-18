@@ -42,6 +42,15 @@ public class KioskPromotionEntity {
     @Column(name = "active")
     private Boolean active;
 
+    @Column(name = "kiosk_location_id")
+    private Long kioskLocationId;
+
+    @Column(name = "combo_buy_qty")
+    private Integer comboBuyQty;
+
+    @Column(name = "combo_pay_qty")
+    private Integer comboPayQty;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

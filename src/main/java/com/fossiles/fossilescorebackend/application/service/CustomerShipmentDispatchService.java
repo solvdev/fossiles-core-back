@@ -7,6 +7,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +24,8 @@ public class CustomerShipmentDispatchService {
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final OnlineSaleRepository onlineSaleRepository;
     private final OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
+    private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
+    private final SecurityUtil securityUtil;
 
     @Transactional
     public Map<String, Object> dispatchDirectOnlineSale(long onlineSaleId, Map<String, String> body)
@@ -86,6 +89,7 @@ public class CustomerShipmentDispatchService {
             throw new BusinessException("Esta venta ya fue despachada. Estado actual: " + sale.getStatus());
         }
 
+        // Sin validar recepción PT completa: el despacho operativo no debe bloquearse por piezas pendientes.
         onlineSaleShipmentNumberService.assignIfMissing(sale);
         String shipmentNumber = sale.getShipmentNumber();
         sale.setStatus("ENVIADO");
@@ -96,6 +100,11 @@ public class CustomerShipmentDispatchService {
             sale.setShippingCarrier(body.get("shippingCarrier"));
         }
         onlineSaleRepository.save(sale);
+
+        productionOrderWarehouseUnitService.markUnitsShippedForOnlineSale(
+                productionOrderId,
+                onlineSaleId,
+                securityUtil.getCurrentUserId());
 
         List<Long> saleIds = productionOrderItemRepository.findDistinctOnlineSaleIdsByProductionOrderId(productionOrderId);
         boolean allDispatched = saleIds.stream().allMatch(sId -> {

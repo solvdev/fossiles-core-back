@@ -3,10 +3,14 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.dto.response.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -23,6 +27,8 @@ public class WarehouseOrderViewAssembler {
     private final ProductShipmentRepository shipmentRepository;
     private final ProductShipmentDetailRepository shipmentDetailRepository;
     private final LocationRepository locationRepository;
+    private final ProductionOrderRepository productionOrderRepository;
+    private final ProductCategoryRepository productCategoryRepository;
 
     public WarehouseOrderViewResponse toWarehouseView(ProductionOrderEntity po) {
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(po.getId());
@@ -40,6 +46,7 @@ public class WarehouseOrderViewAssembler {
                 .deliveryDate(po.getDeliveryDate())
                 .observations(po.getObservations())
                 .createdAt(po.getCreatedAt())
+                .warehouseReceiptClosedAt(po.getWarehouseReceiptClosedAt())
                 .totalItems(items.size())
                 .totalQuantity(totalQuantity)
                 .completedTasks(completedTasks)
@@ -63,6 +70,7 @@ public class WarehouseOrderViewAssembler {
                             .colorName(color != null ? color.getName() : null)
                             .quantity(item.getQuantity())
                             .warehouseReceivedQty(item.getWarehouseReceivedQty())
+                            .sizes(parseItemSizes(item.getSizesData()))
                             .observations(item.getObservations())
                             .build();
                 })
@@ -145,10 +153,15 @@ public class WarehouseOrderViewAssembler {
     public ProductShipmentResponse toShipmentResponse(ProductShipmentEntity shipment) {
         List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipment.getId());
         LocationEntity location = locationRepository.findById(shipment.getLocationId()).orElse(null);
+        ProductionOrderEntity linkedPo = shipment.getProductionOrderId() == null
+                ? null
+                : productionOrderRepository.findById(shipment.getProductionOrderId()).orElse(null);
 
         return ProductShipmentResponse.builder()
                 .id(shipment.getId())
                 .distributionId(shipment.getDistributionId())
+                .productionOrderId(shipment.getProductionOrderId())
+                .productionOrderCode(linkedPo != null ? linkedPo.getCode() : null)
                 .shipmentNumber(shipment.getShipmentNumber())
                 .locationId(shipment.getLocationId())
                 .locationCode(location != null ? location.getCode() : null)
@@ -159,24 +172,46 @@ public class WarehouseOrderViewAssembler {
                 .receivedAt(shipment.getReceivedAt())
                 .receivedBy(shipment.getReceivedBy())
                 .products(details.stream().map(detail -> {
-                    ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
+                    ProductEntity product = detail.getProductId() == null
+                            ? null
+                            : productRepository.findById(detail.getProductId()).orElse(null);
                     String colorName = null;
                     if (detail.getColorId() != null) {
                         ColorEntity color = colorRepository.findById(detail.getColorId()).orElse(null);
                         colorName = color != null ? color.getName() : null;
                     }
+                    Long categoryId = product != null ? product.getCategoryId() : null;
+                    String categoryName = categoryId == null
+                            ? null
+                            : productCategoryRepository.findById(categoryId)
+                                    .map(ProductCategoryEntity::getName)
+                                    .orElse(null);
                     return ProductShipmentDetailResponse.builder()
                             .id(detail.getId())
                             .shipmentId(detail.getShipmentId())
                             .productId(detail.getProductId())
                             .productCode(product != null ? product.getCode() : null)
                             .productName(product != null ? product.getName() : null)
+                            .productImageUrl(product != null ? product.getImageUrl() : null)
+                            .categoryId(categoryId)
+                            .categoryName(categoryName)
                             .colorId(detail.getColorId())
                             .colorName(colorName)
+                            .size(detail.getSizeLabel())
                             .quantity(detail.getQuantity())
                             .quantityReceived(detail.getQuantityReceived())
                             .build();
                 }).collect(Collectors.toList()))
                 .build();
+    }
+
+    private Map<String, Integer> parseItemSizes(String sizesData) {
+        Map<String, Integer> result = new LinkedHashMap<>();
+        ProductInventorySizesJson.parse(sizesData).forEach((k, v) -> {
+            if (v != null && v.compareTo(BigDecimal.ZERO) > 0) {
+                result.put(k, v.intValue());
+            }
+        });
+        return result.isEmpty() ? null : result;
     }
 }

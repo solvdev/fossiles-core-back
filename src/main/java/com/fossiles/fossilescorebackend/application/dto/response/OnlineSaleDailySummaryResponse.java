@@ -15,7 +15,10 @@ import java.util.Map;
 @NoArgsConstructor
 @AllArgsConstructor
 public class OnlineSaleDailySummaryResponse {
+    /** Fecha única (compatibilidad) o inicio del rango. */
     private LocalDate date;
+    private LocalDate startDate;
+    private LocalDate endDate;
     private int totalSalesCount;
     private BigDecimal totalAmount;
     private BigDecimal totalNetAmount;

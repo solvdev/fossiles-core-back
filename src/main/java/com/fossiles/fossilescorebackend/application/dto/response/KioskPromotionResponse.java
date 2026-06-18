@@ -18,6 +18,9 @@ public class KioskPromotionResponse {
     private String description;
     private String discountType;
     private BigDecimal discountValue;
+    private Integer comboBuyQty;
+    private Integer comboPayQty;
+    private Long kioskLocationId;
     private LocalDate startDate;
     private LocalDate endDate;
     private Boolean active;

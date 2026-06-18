@@ -6,8 +6,10 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.text.Normalizer;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -40,9 +42,22 @@ public class ProductionOrderCodeService {
         return getOrderCodePrefix(orderType, null);
     }
 
+    private static String normalizeForSellerMatch(String sellerName) {
+        if (sellerName == null) {
+            return "";
+        }
+        String trimmed = sellerName.trim();
+        if (trimmed.isEmpty()) {
+            return "";
+        }
+        String nfd = Normalizer.normalize(trimmed, Normalizer.Form.NFD);
+        String withoutCombiningMarks = nfd.replaceAll("\\p{M}+", "");
+        return withoutCombiningMarks.toUpperCase(Locale.ROOT);
+    }
+
     public String getOrderCodePrefix(String orderType, String sellerName) {
-        String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase();
-        String normalizedSeller = String.valueOf(sellerName == null ? "" : sellerName).trim().toUpperCase();
+        String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase(Locale.ROOT);
+        String normalizedSeller = normalizeForSellerMatch(sellerName);
         if ("NORMAL".equals(normalizedType) && normalizedSeller.contains("LUIS FELIPE")) {
             return "OPV";
         }

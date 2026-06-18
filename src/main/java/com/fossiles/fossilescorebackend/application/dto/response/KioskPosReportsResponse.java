@@ -19,6 +19,7 @@ public class KioskPosReportsResponse {
     private Integer salesCount;
     private BigDecimal totalItems;
     private BigDecimal totalAmount;
+    private BigDecimal averageTicket;
     private List<KioskSummary> kiosks;
 
     @Data

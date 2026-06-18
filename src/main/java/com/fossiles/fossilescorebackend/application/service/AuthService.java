@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.LoginResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.port.UserRepositoryPort;
 import com.fossiles.fossilescorebackend.domain.model.User;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserRefreshTokenEntity;
 import com.fossiles.fossilescorebackend.infrastructure.util.EncryptionUtil;
 import com.fossiles.fossilescorebackend.infrastructure.util.JwtUtil;
 import lombok.RequiredArgsConstructor;
@@ -27,16 +28,32 @@ public class AuthService {
     private final JwtUtil jwtUtil;
     private final EncryptionUtil encryptionUtil;
     private final PasswordEncoder passwordEncoder;
+    private final RefreshTokenService refreshTokenService;
 
     /**
      * Autentica un usuario y genera un token JWT
-     * 
-     * @param request LoginRequest con username/email y contraseña encriptada
-     * @return LoginResponse con el token JWT y datos del usuario
-     * @throws BusinessException si las credenciales son inválidas
      */
     public LoginResponse login(LoginRequest request) throws BusinessException {
-        // 1. Desencriptar la contraseña recibida del frontend
+        User user = authenticateCredentials(request);
+        return buildLoginResponse(user, "mobile");
+    }
+
+    public LoginResponse refresh(String plainRefreshToken) throws BusinessException {
+        UserRefreshTokenEntity stored = refreshTokenService.findValid(plainRefreshToken);
+        User user = userRepositoryPort.findById(stored.getUserId())
+                .orElseThrow(() -> new BusinessException("Usuario no encontrado."));
+        if (!"active".equalsIgnoreCase(user.getStatus())) {
+            throw new BusinessException("User account is not active");
+        }
+        String newRefresh = refreshTokenService.rotate(stored, stored.getDeviceLabel());
+        return buildLoginResponseWithRefresh(user, newRefresh);
+    }
+
+    public void logout(String plainRefreshToken) {
+        refreshTokenService.revokeByPlainToken(plainRefreshToken);
+    }
+
+    private User authenticateCredentials(LoginRequest request) throws BusinessException {
         String decryptedPassword;
         try {
             decryptedPassword = encryptionUtil.decrypt(request.getEncryptedPassword());
@@ -44,7 +61,6 @@ public class AuthService {
             throw new BusinessException("Error al procesar la contraseña encriptada: " + e.getMessage());
         }
 
-        // 2. Buscar usuario por username o email
         Optional<User> userOpt = userRepositoryPort.findByUsername(request.getUsernameOrEmail());
         if (userOpt.isEmpty()) {
             userOpt = userRepositoryPort.findByEmail(request.getUsernameOrEmail());
@@ -56,22 +72,28 @@ public class AuthService {
 
         User user = userOpt.get();
 
-        // 3. Verificar que el usuario esté activo
         if (!"active".equalsIgnoreCase(user.getStatus())) {
             throw new BusinessException("User account is not active");
         }
 
-        // 4. Verificar la contraseña (comparar la desencriptada con la hasheada en BD)
         if (!passwordEncoder.matches(decryptedPassword, user.getPassword())) {
             throw new BusinessException("Usuario o Contraseña Invalidos");
         }
 
-        // 5. Generar token JWT
-        String token = jwtUtil.generateToken(user.getUsername(), user.getId(), user.getEmail());
+        return user;
+    }
 
-        // 6. Construir respuesta
+    private LoginResponse buildLoginResponse(User user, String deviceLabel) {
+        String refreshToken = refreshTokenService.createAndPersist(user, deviceLabel);
+        return buildLoginResponseWithRefresh(user, refreshToken);
+    }
+
+    private LoginResponse buildLoginResponseWithRefresh(User user, String refreshToken) {
+        String token = jwtUtil.generateToken(user.getUsername(), user.getId(), user.getEmail());
         return LoginResponse.builder()
                 .token(token)
+                .refreshToken(refreshToken)
+                .expiresIn(jwtUtil.getAccessExpirationMs())
                 .type("Bearer")
                 .id(user.getId())
                 .username(user.getUsername())
@@ -88,7 +110,7 @@ public class AuthService {
         try {
             String username = jwtUtil.extractUsername(token);
             Optional<User> userOpt = userRepositoryPort.findByUsername(username);
-            
+
             if (userOpt.isEmpty()) {
                 return false;
             }
@@ -113,4 +135,3 @@ public class AuthService {
         }
     }
 }
-

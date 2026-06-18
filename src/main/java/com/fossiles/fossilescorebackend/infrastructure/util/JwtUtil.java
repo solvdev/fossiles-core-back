@@ -25,6 +25,12 @@ public class JwtUtil {
     @Value("${jwt.expiration}")
     private Long expiration;
 
+    @Value("${jwt.access-expiration:#{null}}")
+    private Long accessExpiration;
+
+    @Value("${jwt.refresh-expiration:7776000000}")
+    private Long refreshExpiration;
+
     /**
      * Genera un token JWT para un usuario
      */
@@ -38,9 +44,17 @@ public class JwtUtil {
     /**
      * Crea el token con los claims especificados
      */
+    public long getAccessExpirationMs() {
+        return accessExpiration != null && accessExpiration > 0 ? accessExpiration : expiration;
+    }
+
+    public long getRefreshExpirationMs() {
+        return refreshExpiration != null && refreshExpiration > 0 ? refreshExpiration : 7776000000L;
+    }
+
     private String createToken(Map<String, Object> claims, String subject) {
         Date now = new Date();
-        Date expiryDate = new Date(now.getTime() + expiration);
+        Date expiryDate = new Date(now.getTime() + getAccessExpirationMs());
 
         return Jwts.builder()
                 .claims(claims)

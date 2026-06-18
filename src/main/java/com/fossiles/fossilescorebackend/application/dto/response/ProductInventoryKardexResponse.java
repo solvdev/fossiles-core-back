@@ -20,6 +20,8 @@ public class ProductInventoryKardexResponse {
     private Long locationId;
     private String locationCode;
     private String locationName;
+    private Long colorId;
+    private String colorName;
     private String movementType;
     private BigDecimal quantity;
     private BigDecimal quantityBefore;

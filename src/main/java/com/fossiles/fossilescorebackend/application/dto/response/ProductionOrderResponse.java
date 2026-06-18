@@ -26,6 +26,8 @@ public class ProductionOrderResponse {
     private String customerTaxId;
     /** Correlativo envío OPV vendedor (ENVP-nnnnn). */
     private String vendorShipmentNumber;
+    private LocalDateTime vendorShipmentVoidedAt;
+    private Long vendorShipmentVoidedBy;
     private String sellerName;
     private LocalDate startDate;
     private LocalDate deliveryDate;

@@ -17,11 +17,15 @@ public class ProductShipmentDetailResponse {
     private Long productId;
     private String productCode;
     private String productName;
+    private String productImageUrl;
+    private Long categoryId;
+    private String categoryName;
     private Long colorId;
     private String colorName;
     private String size;
     private BigDecimal quantity;
     private BigDecimal quantityReceived;
     private BigDecimal quantityDifference;
+    private String receivedLineNotes;
 }
 

@@ -9,9 +9,11 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.MaterialConsumptionService;
 import com.fossiles.fossilescorebackend.application.service.ProductionTaskGenerationService;
+import com.fossiles.fossilescorebackend.application.service.ProductionTaskLifecycleService;
 import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -59,7 +61,9 @@ public class TaskController {
     private final MaterialConsumptionService materialConsumptionService;
     private final ProductionTaskGenerationService productionTaskGenerationService;
     private final TaskDeskBackfillService taskDeskBackfillService;
+    private final ProductionTaskLifecycleService productionTaskLifecycleService;
     private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
+    private final ProductionDeskSupervisorRepository productionDeskSupervisorRepository;
     private final SecurityUtil securityUtil;
 
     // ==================== CRUD ====================
@@ -544,38 +548,44 @@ public class TaskController {
 
         String newStatus = body.get("status");
         if (newStatus == null || !isValidStatus(newStatus)) {
-            throw new BusinessException("Invalid status. Must be: PENDING, IN_PROGRESS, COMPLETED, CANCELLED");
+            throw new BusinessException("Invalid status. Must be: PENDING, IN_PROGRESS, AWAITING_WAREHOUSE, COMPLETED, CANCELLED");
         }
 
-        if (!canTransitionStatus(entity.getStatus(), newStatus)) {
-            throw new BusinessException("Transición de estado no permitida: " + entity.getStatus() + " -> " + newStatus);
+        String effectiveStatus = newStatus;
+        if ("COMPLETED".equals(newStatus) && productionTaskLifecycleService.shouldDeferCompletionToWarehouse(entity)) {
+            effectiveStatus = ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE;
         }
-        if ("COMPLETED".equals(newStatus) && entity.getStartedAt() == null) {
+
+        if (!canTransitionStatus(entity.getStatus(), effectiveStatus)) {
+            throw new BusinessException("Transición de estado no permitida: " + entity.getStatus() + " -> " + effectiveStatus);
+        }
+        if ("COMPLETED".equals(effectiveStatus) && entity.getStartedAt() == null) {
             throw new BusinessException("No se puede completar una tarea que no ha sido iniciada.");
         }
 
         Integer deskToFreeAfterComplete = null;
         LocalDate backfillAnchorDate = null;
-        if ("COMPLETED".equals(newStatus)) {
+        if ("COMPLETED".equals(effectiveStatus)
+                || ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE.equals(effectiveStatus)) {
             deskToFreeAfterComplete = entity.getDesk();
             backfillAnchorDate = entity.getScheduledDate() != null
                     ? entity.getScheduledDate()
                     : ZonedDateTime.now(GUATEMALA_ZONE).toLocalDate();
         }
 
-        if ("IN_PROGRESS".equals(newStatus)) {
+        if ("IN_PROGRESS".equals(effectiveStatus)) {
             splitBlockedItemsIntoPendingTask(entity);
         }
 
-        entity.setStatus(newStatus);
+        entity.setStatus(effectiveStatus);
 
         // Time tracking
-        if ("IN_PROGRESS".equals(newStatus) && entity.getStartedAt() == null) {
+        if ("IN_PROGRESS".equals(effectiveStatus) && entity.getStartedAt() == null) {
             LocalDateTime gtNow = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDateTime();
             entity.setStartedAt(gtNow);
             entity.setStartTime(gtNow.toLocalTime().format(HOUR_MINUTE_FORMATTER));
         }
-        if ("COMPLETED".equals(newStatus) && entity.getCompletedAt() == null) {
+        if ("COMPLETED".equals(effectiveStatus) && entity.getCompletedAt() == null) {
             LocalDateTime gtNow = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDateTime();
             entity.setCompletedAt(gtNow);
             // Calculate duration
@@ -591,7 +601,13 @@ public class TaskController {
             }
             entity.setDesk(null);
         }
-        if ("PENDING".equals(newStatus)) {
+        if (ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE.equals(effectiveStatus)) {
+            if (entity.getWorkedDesk() == null && entity.getDesk() != null) {
+                entity.setWorkedDesk(entity.getDesk());
+            }
+            entity.setDesk(null);
+        }
+        if ("PENDING".equals(effectiveStatus)) {
             entity.setStartedAt(null);
             entity.setCompletedAt(null);
             entity.setActualDurationMinutes(null);
@@ -599,10 +615,12 @@ public class TaskController {
         }
 
         TaskEntity updated = taskRepository.save(entity);
-        if ("COMPLETED".equals(newStatus) && deskToFreeAfterComplete != null && backfillAnchorDate != null) {
+        if (deskToFreeAfterComplete != null && backfillAnchorDate != null
+                && ("COMPLETED".equals(effectiveStatus)
+                || ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE.equals(effectiveStatus))) {
             taskDeskBackfillService.backfillFreedDeskAfterCompletion(deskToFreeAfterComplete, backfillAnchorDate, getNumDesks());
         }
-        syncProductionOrderStatusFromTasks(updated.getProductionOrderId());
+        productionTaskLifecycleService.syncProductionOrderStatusFromTasks(updated.getProductionOrderId());
         return ResponseEntity.ok(toResponse(updated));
     }
 
@@ -946,6 +964,7 @@ public class TaskController {
 
         boolean delivered = body.get("delivered") != null && Boolean.parseBoolean(body.get("delivered").toString());
         boolean force = body.get("force") != null && Boolean.parseBoolean(body.get("force").toString());
+        int consumedLines = 0;
         if (!isTaskItemRequiresMaterials(item)) {
             item.setMaterialsDelivered(true);
             item.setMaterialsDeliveredAt(item.getMaterialsDeliveredAt() != null ? item.getMaterialsDeliveredAt() : LocalDateTime.now());
@@ -955,8 +974,15 @@ public class TaskController {
                         ? productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null)
                         : null;
                 boolean alreadyConsumedAtOrderLevel = order != null && Boolean.TRUE.equals(order.getMaterialsConsumed());
-                if (!alreadyConsumedAtOrderLevel) {
-                    materialConsumptionService.consumeMaterialsForTaskItem(entity.getId(), item.getId(), force);
+                boolean itemAlreadyConsumed = entity.getProductionOrderId() != null
+                        && materialConsumptionService.hasConsumptionForTaskItem(entity.getProductionOrderId(), item.getId());
+                if (!alreadyConsumedAtOrderLevel || !itemAlreadyConsumed) {
+                    Map<String, Object> consumptionResult = materialConsumptionService.consumeMaterialsForTaskItem(
+                            entity.getId(), item.getId(), force);
+                    Object rawCount = consumptionResult.get("materialsConsumed");
+                    if (rawCount instanceof Number) {
+                        consumedLines = ((Number) rawCount).intValue();
+                    }
                 }
             }
             item.setMaterialsDelivered(true);
@@ -974,7 +1000,9 @@ public class TaskController {
         entity.setMaterialsDelivered(areRequiredTaskItemsDelivered(entity));
         entity.setMaterialsDeliveredAt(Boolean.TRUE.equals(entity.getMaterialsDelivered()) ? LocalDateTime.now() : null);
         TaskEntity updated = taskRepository.save(entity);
-        return ResponseEntity.ok(toResponse(updated));
+        TaskResponse response = toResponse(updated);
+        response.setLastItemMaterialsConsumed(consumedLines);
+        return ResponseEntity.ok(response);
     }
 
     @PutMapping("/{id}/schedule")
@@ -1252,7 +1280,7 @@ public class TaskController {
         Long productionOrderId = entity.getProductionOrderId();
         taskItemRepository.deleteByTaskId(id);
         taskRepository.deleteById(id);
-        syncProductionOrderStatusFromTasks(productionOrderId);
+        productionTaskLifecycleService.syncProductionOrderStatusFromTasks(productionOrderId);
         return ResponseEntity.noContent().build();
     }
 
@@ -1282,6 +1310,7 @@ public class TaskController {
             List<MaterialsTaskViewResponse> responses = tasks.stream()
                     .filter(t -> !"CANCELLED".equals(t.getStatus()))
                     .map(this::toMaterialsView)
+                    .filter(this::hasMaterialsDeliveryLines)
                     .collect(Collectors.toList());
             return ResponseEntity.ok(responses);
         }
@@ -1292,6 +1321,7 @@ public class TaskController {
             List<TaskEntity> delivered = taskRepository.findTasksWithMaterialsDeliveredBetween(start, end);
             List<MaterialsTaskViewResponse> responses = delivered.stream()
                     .map(this::toMaterialsView)
+                    .filter(this::hasMaterialsDeliveryLines)
                     .collect(Collectors.toList());
             return ResponseEntity.ok(responses);
         }
@@ -1302,6 +1332,7 @@ public class TaskController {
         List<MaterialsTaskViewResponse> responses = tasks.stream()
                 .filter(this::isPendingMaterialsViewTask)
                 .map(this::toMaterialsView)
+                .filter(this::hasMaterialsDeliveryLines)
                 .collect(Collectors.toList());
 
         return ResponseEntity.ok(responses);
@@ -1321,9 +1352,16 @@ public class TaskController {
                 .filter(t -> !"CANCELLED".equals(t.getStatus()))
                 .filter(t -> includeDelivered || isPendingMaterialsViewTask(t))
                 .map(this::toMaterialsView)
+                .filter(this::hasMaterialsDeliveryLines)
                 .collect(Collectors.toList());
 
         return ResponseEntity.ok(responses);
+    }
+
+    private boolean hasMaterialsDeliveryLines(MaterialsTaskViewResponse view) {
+        return view != null
+                && view.getProducts() != null
+                && !view.getProducts().isEmpty();
     }
 
     /**
@@ -1401,23 +1439,25 @@ public class TaskController {
         if (!taskItems.isEmpty()) {
             products = taskItems.stream()
                     .map(item -> buildProductWithRecipe(task, item))
+                    .filter(p -> !Boolean.FALSE.equals(p.getRequiresMaterials()))
                     .collect(Collectors.toList());
         } else if (task.getProductId() != null) {
-            products = List.of(buildProductWithRecipe(
-                    task,
-                    TaskItemEntity.builder()
-                            .taskId(task.getId())
-                            .productId(task.getProductId())
-                            .productCode(task.getProductCode())
-                            .productName(task.getProductName())
-                            .colorId(task.getColorId())
-                            .colorName(task.getColorName())
-                            .quantity(task.getQuantity())
-                            .leatherDelivered(task.getLeatherDelivered())
-                            .leatherDeliveredAt(task.getLeatherDeliveredAt())
-                            .materialsDelivered(task.getMaterialsDelivered())
-                            .materialsDeliveredAt(task.getMaterialsDeliveredAt())
-                            .build()));
+            TaskItemEntity legacyItem = TaskItemEntity.builder()
+                    .taskId(task.getId())
+                    .productId(task.getProductId())
+                    .productCode(task.getProductCode())
+                    .productName(task.getProductName())
+                    .colorId(task.getColorId())
+                    .colorName(task.getColorName())
+                    .quantity(task.getQuantity())
+                    .leatherDelivered(task.getLeatherDelivered())
+                    .leatherDeliveredAt(task.getLeatherDeliveredAt())
+                    .materialsDelivered(task.getMaterialsDelivered())
+                    .materialsDeliveredAt(task.getMaterialsDeliveredAt())
+                    .build();
+            products = isTaskItemRequiresMaterials(legacyItem)
+                    ? List.of(buildProductWithRecipe(task, legacyItem))
+                    : List.of();
         } else {
             products = List.of();
         }
@@ -1457,7 +1497,7 @@ public class TaskController {
         String productName = item.getProductName();
         Long colorId = item.getColorId();
         String colorName = item.getColorName();
-        Integer quantity = item.getQuantity();
+        Integer quantity = resolveTaskItemRecipeQuantity(item);
 
         Map<Long, TaskItemMaterialPickEntity> picksByMaterial = new HashMap<>();
         if (item.getId() != null) {
@@ -1539,6 +1579,38 @@ public class TaskController {
         List<TaskEntity> generatedTasks = productionTaskGenerationService.generateTasks(
                 productionOrderId, forceRegenerate);
         return ResponseEntity.ok(generatedTasks.stream().map(this::toResponse).collect(Collectors.toList()));
+    }
+
+    @PostMapping("/generate/{productionOrderId}/selective")
+    @Transactional
+    public ResponseEntity<List<TaskResponse>> generateTasksSelective(
+            @PathVariable Long productionOrderId,
+            @RequestBody List<Long> selectedItemIds)
+            throws ResourceNotFoundException, BusinessException {
+
+        List<TaskEntity> generatedTasks = productionTaskGenerationService
+                .generateTasksForSelectedItems(productionOrderId, selectedItemIds);
+        return ResponseEntity.ok(generatedTasks.stream().map(this::toResponse).collect(Collectors.toList()));
+    }
+
+    @PostMapping("/generate-cincho-materials/{productionOrderId}")
+    @Transactional
+    public ResponseEntity<List<TaskResponse>> generateCinchoMaterialsTasks(
+            @PathVariable Long productionOrderId)
+            throws ResourceNotFoundException, BusinessException {
+
+        List<TaskEntity> generated = productionTaskGenerationService.generateCinchoMaterialsTasks(productionOrderId);
+        return ResponseEntity.ok(generated.stream().map(this::toResponse).collect(Collectors.toList()));
+    }
+
+    private int resolveTaskItemRecipeQuantity(TaskItemEntity item) {
+        if (item.getProductionOrderItemId() != null) {
+            return productionOrderItemRepository.findById(item.getProductionOrderItemId())
+                    .map(ProductionOrderItemQuantityHelper::effectiveQuantityForBom)
+                    .orElse(item.getQuantity() != null ? item.getQuantity() : 1);
+        }
+        int qty = item.getQuantity() != null ? item.getQuantity() : 0;
+        return qty > 0 ? qty : 1;
     }
 
     /**
@@ -1722,6 +1794,7 @@ public class TaskController {
 
     private boolean isValidStatus(String status) {
         return "PENDING".equals(status) || "IN_PROGRESS".equals(status)
+                || ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE.equals(status)
                 || "COMPLETED".equals(status) || "CANCELLED".equals(status);
     }
 
@@ -1732,7 +1805,12 @@ public class TaskController {
             return "IN_PROGRESS".equals(newStatus) || "CANCELLED".equals(newStatus);
         }
         if ("IN_PROGRESS".equals(currentStatus)) {
-            return "COMPLETED".equals(newStatus) || "CANCELLED".equals(newStatus) || "PENDING".equals(newStatus);
+            return "COMPLETED".equals(newStatus)
+                    || ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE.equals(newStatus)
+                    || "CANCELLED".equals(newStatus) || "PENDING".equals(newStatus);
+        }
+        if (ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE.equals(currentStatus)) {
+            return false;
         }
         if ("COMPLETED".equals(currentStatus)) {
             return false;
@@ -1861,6 +1939,9 @@ public class TaskController {
         if (!Boolean.TRUE.equals(entity.getDieCutReady())) return "PENDING_DIE_CUT";
         if (!hasEnteredTable(entity)) return "PENDING_TABLE_ENTRY";
         if (taskRequiresMaterials(entity) && !areRequiredTaskItemsDelivered(entity)) return "PENDING_MATERIAL_DELIVERY";
+        if (ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE.equals(entity.getStatus())) {
+            return "PENDING_WAREHOUSE_RECEIPT";
+        }
         if ("COMPLETED".equals(entity.getStatus())) return "COMPLETED";
         if ("IN_PROGRESS".equals(entity.getStatus())) return "IN_PRODUCTION";
         return "READY_TO_START";
@@ -1912,35 +1993,6 @@ public class TaskController {
         if (item == null) return false;
         if (!isTaskItemRequiresMaterials(item)) return true;
         return Boolean.TRUE.equals(item.getMaterialsDelivered());
-    }
-
-    private void syncProductionOrderStatusFromTasks(Long productionOrderId) {
-        if (productionOrderId == null) return;
-        ProductionOrderEntity order = productionOrderRepository.findById(productionOrderId).orElse(null);
-        if (order == null) return;
-
-        List<TaskEntity> tasks = taskRepository.findByProductionOrderId(productionOrderId);
-        if (tasks.isEmpty()) return;
-
-        List<TaskEntity> nonCancelled = tasks.stream()
-                .filter(t -> !"CANCELLED".equals(t.getStatus()))
-                .toList();
-
-        String nextStatus;
-        if (nonCancelled.isEmpty()) {
-            nextStatus = "PENDING";
-        } else if (nonCancelled.stream().allMatch(t -> "COMPLETED".equals(t.getStatus()))) {
-            nextStatus = "COMPLETED";
-        } else if (nonCancelled.stream().anyMatch(t -> "IN_PROGRESS".equals(t.getStatus()))) {
-            nextStatus = "IN_PROGRESS";
-        } else {
-            nextStatus = "PENDING";
-        }
-
-        if (!Objects.equals(order.getStatus(), nextStatus)) {
-            order.setStatus(nextStatus);
-            productionOrderRepository.save(order);
-        }
     }
 
     private void splitBlockedItemsIntoPendingTask(TaskEntity sourceTask) throws BusinessException {
@@ -2046,6 +2098,19 @@ public class TaskController {
 
     // ==================== TICKET BUILDER ====================
 
+    private String resolveDeskSupervisorName(Integer desk, LocalDate scheduledDate) {
+        if (desk == null) {
+            return null;
+        }
+        LocalDate asOf = scheduledDate != null ? scheduledDate : LocalDate.now(GUATEMALA_ZONE);
+        String name = productionDeskSupervisorRepository
+                .findTopByDeskAndEffectiveDateLessThanEqualOrderByEffectiveDateDesc(desk, asOf)
+                .map(ProductionDeskSupervisorEntity::getSupervisorName)
+                .map(String::trim)
+                .orElse("");
+        return name.isEmpty() ? null : name;
+    }
+
     private TaskTicketResponse buildTicket(TaskEntity task) {
         ProductionOrderEntity po = task.getProductionOrderId() != null
                 ? productionOrderRepository.findById(task.getProductionOrderId()).orElse(null)
@@ -2084,10 +2149,13 @@ public class TaskController {
                     .build());
         }
 
+        String deskSupervisorName = resolveDeskSupervisorName(task.getDesk(), task.getScheduledDate());
+
         return TaskTicketResponse.builder()
                 .taskId(task.getId())
                 .taskCode(task.getCode())
                 .desk(task.getDesk())
+                .deskSupervisorName(deskSupervisorName)
                 .scheduledDate(task.getScheduledDate())
                 .startTime(task.getStartTime())
                 .estimatedHours(task.getEstimatedHours())
@@ -2109,6 +2177,7 @@ public class TaskController {
         List<TaskResponse.TaskItemDTO> itemDTOs = itemEntities.stream()
                 .map(item -> TaskResponse.TaskItemDTO.builder()
                         .id(item.getId())
+                        .productionOrderItemId(item.getProductionOrderItemId())
                         .productId(item.getProductId())
                         .productCode(item.getProductCode())
                         .productName(item.getProductName())

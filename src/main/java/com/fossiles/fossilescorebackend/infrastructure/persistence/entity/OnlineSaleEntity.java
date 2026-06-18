@@ -155,6 +155,9 @@ public class OnlineSaleEntity {
     @Column(name = "production_order_id")
     private Long productionOrderId;
 
+    @Column(name = "invoice_id")
+    private Long invoiceId;
+
     /**
      * Flag transitorio: si es true, @PrePersist/@PreUpdate NO recalculan envío ni total.
      * Se usa al importar CSV donde los montos ya vienen pre-calculados.

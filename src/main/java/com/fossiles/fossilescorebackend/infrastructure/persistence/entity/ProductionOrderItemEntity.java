@@ -6,6 +6,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
@@ -50,6 +51,9 @@ public class ProductionOrderItemEntity {
 
     @Column(name = "observations", length = 500)
     private String observations;
+
+    @Column(name = "unit_price", precision = 12, scale = 2)
+    private BigDecimal unitPrice;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;

@@ -47,6 +47,24 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     @Query("DELETE FROM TaskEntity t WHERE t.productionOrderId = :productionOrderId")
     void deleteByProductionOrderId(@Param("productionOrderId") Long productionOrderId);
 
+    /**
+     * Cuando se reduce la cantidad de mesas activas desde una fecha efectiva, se limpian las tareas
+     * que quedaron en mesas fuera de rango para que vuelvan a \"Sin asignar\" (desk = null).
+     *
+     * @return cantidad de tareas actualizadas
+     */
+    @Modifying
+    @Transactional
+    @Query("""
+            UPDATE TaskEntity t
+            SET t.desk = NULL
+            WHERE t.scheduledDate >= :effectiveDate
+            AND t.desk IS NOT NULL
+            AND t.desk > :maxDesk
+            AND t.status IN ('PENDING', 'IN_PROGRESS')
+            """)
+    int clearDeskOutOfRangeFromDate(@Param("effectiveDate") LocalDate effectiveDate, @Param("maxDesk") int maxDesk);
+
     @Query("""
             SELECT DISTINCT t FROM TaskEntity t
             WHERE t.status <> 'CANCELLED'

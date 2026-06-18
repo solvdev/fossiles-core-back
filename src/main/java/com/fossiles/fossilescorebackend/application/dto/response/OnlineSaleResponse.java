@@ -46,6 +46,13 @@ public class OnlineSaleResponse {
     /** Lista de productos en esta venta */
     private List<SaleItemResponse> items;
 
+    private Long invoiceId;
+    private String invoiceStatus;
+    private String invoiceFelUuid;
+    private String invoiceFelSerie;
+    private String invoiceFelNumero;
+    private String invoiceFelError;
+
     // --- Campos legacy para compatibilidad con frontend existente ---
     private Long productId;
     private String productCode;

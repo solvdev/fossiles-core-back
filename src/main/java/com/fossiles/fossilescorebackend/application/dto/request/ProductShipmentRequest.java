@@ -15,10 +15,19 @@ import java.util.List;
 public class ProductShipmentRequest {
     private Long shipmentId;
 
-    @NotNull(message = "Location ID is required")
+    /** Obligatorio para CLIENTE_KIOSKO (OPCK). Opcional para INTERNA (OPI) y OPC (cinchos). */
     private Long locationId;
-    
+
+    /** Destino libre para envíos OPC sin kiosko (también se persiste en notes como DESTINO: …). */
+    private String destinationAddress;
+
     private String notes;
+
+    /** Fecha impresa en documento (YYYY-MM-DD); se persiste en notes como DOCUMENT_DATE:… */
+    private String documentDate;
+
+    /** Liberación parcial LF que origina este envío. */
+    private Long partialReleaseId;
     
     private List<ProductShipmentDetailRequest> products;
     private List<PackingItemRequest> packingItems;

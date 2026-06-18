@@ -19,13 +19,23 @@ public class ProductShipmentEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "distribution_id", nullable = false)
+    /** Nullable cuando el envío pertenece solo a una OP (OPI/OPCK). */
+    @Column(name = "distribution_id")
     private Long distributionId;
+
+    /** OP manual (INTERNA / CLIENTE_KIOSKO) sin distribución. */
+    @Column(name = "production_order_id")
+    private Long productionOrderId;
+
+    /** Liberación parcial LF que originó este envío. */
+    @Column(name = "partial_release_id")
+    private Long partialReleaseId;
 
     @Column(name = "shipment_number", nullable = false, unique = true, length = 50)
     private String shipmentNumber;
 
-    @Column(name = "location_id", nullable = false)
+    /** Nullable: envío OPI solo constancia interna (sin kiosko). */
+    @Column(name = "location_id")
     private Long locationId;
 
     @Column(name = "status", nullable = false, length = 50)
@@ -68,6 +78,10 @@ public class ProductShipmentEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "distribution_id", insertable = false, updatable = false)
     private ProductDistributionEntity distribution;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "production_order_id", insertable = false, updatable = false)
+    private ProductionOrderEntity productionOrder;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "location_id", insertable = false, updatable = false)

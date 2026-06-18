@@ -19,5 +19,11 @@ public class LocationResponse {
     private String categoria;
     private Long encargadoId;
     private String encargadoNombre;
+    private String felEstablishmentCode;
+    private String felEstablishmentName;
+    private String felAddressLine;
+    private String felMunicipio;
+    private String felDepartamento;
+    private Boolean posTestMode;
 }
 

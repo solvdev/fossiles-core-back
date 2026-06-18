@@ -30,5 +30,18 @@ public interface MaterialInventoryKardexRepository extends JpaRepository<Materia
         @Param("startDate") LocalDateTime startDate,
         @Param("endDate") LocalDateTime endDate
     );
+
+    @Query("""
+        SELECT COUNT(k) > 0 FROM MaterialInventoryKardex k
+        WHERE k.materialId = :materialId
+          AND k.referenceType = :referenceType
+          AND k.referenceId = :referenceId
+          AND k.movementType = :movementType
+        """)
+    boolean existsMovement(
+            @Param("materialId") Long materialId,
+            @Param("referenceType") String referenceType,
+            @Param("referenceId") Long referenceId,
+            @Param("movementType") String movementType);
 }
 

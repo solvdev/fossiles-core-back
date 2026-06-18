@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.CustomerRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.DeliveryRouteCatalog;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @RestController
@@ -43,6 +45,8 @@ public class CustomerController {
         if (request.getNit() != null && customerRepository.existsByNit(request.getNit())) {
             throw new BusinessException("Customer NIT already exists: " + request.getNit());
         }
+        validateLegacyCode(null, request.getLegacyCode());
+        validateRouteLocationCode(request.getRouteLocationCode());
         CustomerEntity entity = toEntity(request);
         if (entity.getStatus() == null) {
             entity.setStatus("active");
@@ -61,6 +65,8 @@ public class CustomerController {
                 && customerRepository.existsByNit(request.getNit())) {
             throw new BusinessException("Customer NIT already exists: " + request.getNit());
         }
+        validateLegacyCode(entity.getId(), request.getLegacyCode());
+        validateRouteLocationCode(request.getRouteLocationCode());
         
         updateEntity(entity, request);
         CustomerEntity updated = customerRepository.save(entity);
@@ -81,9 +87,11 @@ public class CustomerController {
                 .id(entity.getId())
                 .name(entity.getName())
                 .nit(entity.getNit())
+                .legacyCode(entity.getLegacyCode())
                 .phone(entity.getPhone())
                 .email(entity.getEmail())
                 .address(entity.getAddress())
+                .routeLocationCode(entity.getRouteLocationCode())
                 .status(entity.getStatus())
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
@@ -96,9 +104,11 @@ public class CustomerController {
         return CustomerEntity.builder()
                 .name(request.getName())
                 .nit(request.getNit())
+                .legacyCode(normalizeLegacyCode(request.getLegacyCode()))
                 .phone(request.getPhone())
                 .email(request.getEmail())
                 .address(request.getAddress())
+                .routeLocationCode(normalizeRouteCode(request.getRouteLocationCode()))
                 .status(request.getStatus())
                 .build();
     }
@@ -106,10 +116,48 @@ public class CustomerController {
     private void updateEntity(CustomerEntity entity, CustomerRequest request) {
         if (request.getName() != null) entity.setName(request.getName());
         if (request.getNit() != null) entity.setNit(request.getNit());
+        if (request.getLegacyCode() != null) {
+            entity.setLegacyCode(normalizeLegacyCode(request.getLegacyCode()));
+        }
         if (request.getPhone() != null) entity.setPhone(request.getPhone());
         if (request.getEmail() != null) entity.setEmail(request.getEmail());
         if (request.getAddress() != null) entity.setAddress(request.getAddress());
+        entity.setRouteLocationCode(normalizeRouteCode(request.getRouteLocationCode()));
         if (request.getStatus() != null) entity.setStatus(request.getStatus());
+    }
+
+    private void validateRouteLocationCode(String code) throws BusinessException {
+        if (code == null || code.isBlank()) {
+            return;
+        }
+        if (!DeliveryRouteCatalog.isValidRouteLocationCode(code)) {
+            throw new BusinessException("Código de ruta inválido: " + code.trim());
+        }
+    }
+
+    private static String normalizeRouteCode(String code) {
+        if (code == null || code.isBlank()) {
+            return null;
+        }
+        return code.trim().toUpperCase(java.util.Locale.ROOT);
+    }
+
+    private void validateLegacyCode(Long currentCustomerId, String legacyCode) throws BusinessException {
+        String normalized = normalizeLegacyCode(legacyCode);
+        if (normalized == null) {
+            return;
+        }
+        Optional<CustomerEntity> existing = customerRepository.findByLegacyCode(normalized);
+        if (existing.isPresent() && (currentCustomerId == null || !currentCustomerId.equals(existing.get().getId()))) {
+            throw new BusinessException("La clave de cliente ya existe: " + normalized);
+        }
+    }
+
+    private static String normalizeLegacyCode(String code) {
+        if (code == null || code.isBlank()) {
+            return null;
+        }
+        return code.trim().toUpperCase(java.util.Locale.ROOT);
     }
 }
 

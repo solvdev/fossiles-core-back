@@ -1,6 +1,8 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.LoginRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.LogoutRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.RefreshTokenRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.LoginResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.AuthService;
@@ -38,8 +40,22 @@ public class AuthController {
      * Endpoint para validar un token
      * GET /api/auth/validate
      */
+    @PostMapping("/refresh")
+    public ResponseEntity<LoginResponse> refresh(@Valid @RequestBody RefreshTokenRequest request)
+            throws BusinessException {
+        return ResponseEntity.ok(authService.refresh(request.getRefreshToken()));
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logout(@RequestBody(required = false) LogoutRequest request) {
+        if (request != null && request.getRefreshToken() != null) {
+            authService.logout(request.getRefreshToken());
+        }
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping("/validate")
-    public ResponseEntity<Boolean> validateToken(@RequestHeader("Authorization") String authHeader) {
+    public ResponseEntity<Boolean> validateToken(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(false);
         }

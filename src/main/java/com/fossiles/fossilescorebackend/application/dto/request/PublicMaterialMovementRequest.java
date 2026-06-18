@@ -31,4 +31,9 @@ public class PublicMaterialMovementRequest {
 
     @NotBlank(message = "Reason is required")
     private String reason;
+
+    /** Ej. SHIPMENT_PACKING para idempotencia por envío. */
+    private String referenceType;
+
+    private Long referenceId;
 }

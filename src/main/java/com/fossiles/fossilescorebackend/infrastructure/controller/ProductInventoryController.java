@@ -5,14 +5,18 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductInventory
 import com.fossiles.fossilescorebackend.application.dto.response.CriticalProductInventoryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryKardexResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryLocationResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryOutflowReportResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.ProductInventoryOutflowReportService;
 import com.fossiles.fossilescorebackend.application.service.ProductInventoryService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDate;
 import java.util.List;
 
 @RestController
@@ -21,6 +25,7 @@ import java.util.List;
 public class ProductInventoryController {
 
     private final ProductInventoryService productInventoryService;
+    private final ProductInventoryOutflowReportService outflowReportService;
 
     // ========== PRODUCT INVENTORY LOCATION ==========
 
@@ -108,6 +113,19 @@ public class ProductInventoryController {
             @PathVariable Long referenceId) {
         List<ProductInventoryKardexResponse> kardex = productInventoryService.getKardexByReference(referenceType, referenceId);
         return ResponseEntity.ok(kardex);
+    }
+
+    @GetMapping("/kardex/outflows-report")
+    public ResponseEntity<ProductInventoryOutflowReportResponse> getOutflowsReport(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false) Long locationId,
+            @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) List<String> sourceCategories,
+            @RequestParam(required = false) List<String> orderTypes) throws BusinessException {
+        ProductInventoryOutflowReportResponse report = outflowReportService.buildReport(
+                startDate, endDate, locationId, productId, sourceCategories, orderTypes);
+        return ResponseEntity.ok(report);
     }
 
     // ========== CRITICAL INVENTORY ==========

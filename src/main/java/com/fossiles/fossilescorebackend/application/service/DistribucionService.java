@@ -35,8 +35,11 @@ public class DistribucionService {
     private final ProductRepository productRepository;
     private final InventoryLocationTypeRepository inventoryLocationTypeRepository;
     private final ProductInventoryService productInventoryService;
+    private final ProductShipmentRepository productShipmentRepository;
 
     private static final String SUM_PRODUCT_CODE_PREFIX = "SUM";
+    private static final java.util.Set<String> MODERN_SHIPMENT_INVENTORY_STATUSES = java.util.Set.of(
+            "SENT", "DELIVERED", "COMPLETED", "RECEIVED");
 
     private static String normalizeEstado(String estado) {
         return estado == null ? "" : estado.trim().toUpperCase(Locale.ROOT);
@@ -248,6 +251,8 @@ public class DistribucionService {
         DistribucionEntity distribucion = distribucionRepository.findById(envio.getDistribucionId())
                 .orElseThrow(() -> new ResourceNotFoundException("Distribucion", envio.getDistribucionId()));
 
+        assertNoModernProductShipmentInventoryForKiosk(envio.getDistribucionId(), envio.getLocationId());
+
         if (!"FINALIZADA".equalsIgnoreCase(String.valueOf(distribucion.getEstado()))) {
             throw new BusinessException("La distribución debe estar finalizada antes de registrar el envío a Bodega PT.");
         }
@@ -259,9 +264,6 @@ public class DistribucionService {
         if (!"CONFIRMADO".equals(estadoEnvio) && !"PENDIENTE".equals(estadoEnvio)) {
             throw new BusinessException("Solo se puede enviar un envío en estado PENDIENTE o CONFIRMADO. Estado actual: " + estadoEnvio);
         }
-
-        LocationEntity bodegaPT = Optional.ofNullable(getOrCreateInventoryLocation("BODEGA_PT"))
-                .orElseThrow(() -> new BusinessException("No se encontró la ubicación BODEGA_PT"));
 
         List<EnvioDetalleEntity> detalles = envioDetalleRepository.findByEnvioId(envioId);
         if (detalles.isEmpty()) {
@@ -275,37 +277,43 @@ public class DistribucionService {
             if (detalle == null || isPackagingProduct(detalle.getProductId())) continue;
             BigDecimal qty = detalle.getCantidad() != null ? detalle.getCantidad() : BigDecimal.ZERO;
             if (qty.compareTo(BigDecimal.ZERO) <= 0) continue;
-            ProductInventoryLocationResponse available = productInventoryService
-                    .getInventoryByProductAndLocationAndColor(detalle.getProductId(), bodegaPT.getId(), null);
-            if (available.getQuantity().compareTo(qty) < 0) {
+
+            BigDecimal alreadyOut = productInventoryService.getConsumedQuantityForReference(
+                    "DISTRIBUTION_EXIT", envio.getId(), "DISTRIBUTION_EXIT", detalle.getProductId(), null);
+            BigDecimal stillNeeded = qty.subtract(alreadyOut);
+            if (stillNeeded.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+
+            BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
+                    detalle.getProductId(), null, null);
+            if (availableTotal.compareTo(stillNeeded) < 0) {
                 ProductEntity product = productRepository.findById(detalle.getProductId()).orElse(null);
                 String name = product != null ? product.getCode() + " - " + product.getName() : "Producto #" + detalle.getProductId();
-                shortages.add(name + ": disponible " + available.getQuantity() + ", requerido " + qty);
+                shortages.add(name + ": disponible " + availableTotal + " (Devoluciones + Bodega PT), requerido " + stillNeeded);
             }
         }
         if (!shortages.isEmpty()) {
-            throw new BusinessException("Stock insuficiente en Bodega PT para enviar:\n• " + String.join("\n• ", shortages));
+            throw new BusinessException("Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• "
+                    + String.join("\n• ", shortages));
         }
 
         for (EnvioDetalleEntity detalle : detalles) {
             if (detalle == null || isPackagingProduct(detalle.getProductId())) continue;
             BigDecimal qty = detalle.getCantidad() != null ? detalle.getCantidad() : BigDecimal.ZERO;
             if (qty.compareTo(BigDecimal.ZERO) <= 0) continue;
-            try {
-                productInventoryService.decrementInventory(
-                        detalle.getProductId(),
-                        bodegaPT.getId(),
-                        null,
-                        qty,
-                        "DISTRIBUTION_EXIT",
-                        envio.getId(),
-                        envio.getNumeroEnvio(),
-                        "Salida Bodega PT por envio " + envio.getNumeroEnvio()
-                                + " (" + distribucion.getNumeroDistribucion() + ") hacia "
-                                + (kiosk != null ? kiosk.getName() : "kiosko"));
-            } catch (ResourceNotFoundException ex) {
-                throw new BusinessException("No hay inventario registrado en Bodega PT para el producto ID " + detalle.getProductId());
-            }
+            productInventoryService.decrementFromDispatchWarehouses(
+                    detalle.getProductId(),
+                    null,
+                    null,
+                    qty,
+                    "DISTRIBUTION_EXIT",
+                    envio.getId(),
+                    envio.getNumeroEnvio(),
+                    "Salida por envio " + envio.getNumeroEnvio()
+                            + " (" + distribucion.getNumeroDistribucion() + ") hacia "
+                            + (kiosk != null ? kiosk.getName() : "kiosko"),
+                    "DISTRIBUTION_EXIT");
         }
 
         envio.setEstado("EN_TRANSITO");
@@ -322,6 +330,8 @@ public class DistribucionService {
                 .orElseThrow(() -> new ResourceNotFoundException("Envio", envioId));
         DistribucionEntity distribucion = distribucionRepository.findById(envio.getDistribucionId())
                 .orElseThrow(() -> new ResourceNotFoundException("Distribucion", envio.getDistribucionId()));
+
+        assertNoModernProductShipmentInventoryForKiosk(envio.getDistribucionId(), envio.getLocationId());
 
         String estadoEnvio = normalizeEstado(envio.getEstado());
         if (!"EN_TRANSITO".equals(estadoEnvio)) {
@@ -340,7 +350,7 @@ public class DistribucionService {
             ProductInventoryLocationResponse afterResp = productInventoryService
                     .getInventoryByProductAndLocationAndColor(detalle.getProductId(), envio.getLocationId(), null);
             BigDecimal after = afterResp.getQuantity();
-            productInventoryService.recordMovement(
+            productInventoryService.recordProductMovementIfAbsent(
                     detalle.getProductId(),
                     envio.getLocationId(),
                     null,
@@ -358,6 +368,25 @@ public class DistribucionService {
         envio.setEstado("RECIBIDO");
         envioRepository.save(envio);
         return toEnvioResponse(envioRepository.findById(envioId).orElse(envio));
+    }
+
+    private void assertNoModernProductShipmentInventoryForKiosk(Long distributionId, Long locationId)
+            throws BusinessException {
+        if (distributionId == null || locationId == null) {
+            return;
+        }
+        boolean modernActive = productShipmentRepository
+                .findByDistributionIdAndLocationId(distributionId, locationId)
+                .map(shipment -> {
+                    String status = shipment.getStatus() == null ? "" : shipment.getStatus().trim().toUpperCase(Locale.ROOT);
+                    return MODERN_SHIPMENT_INVENTORY_STATUSES.contains(status);
+                })
+                .orElse(false);
+        if (modernActive) {
+            throw new BusinessException(
+                    "Esta distribución ya tiene envío de producto terminado en Preparar envíos. "
+                            + "No use el flujo legacy de envío/recepción para mover inventario otra vez.");
+        }
     }
 
     private boolean isPackagingProduct(Long productId) {

@@ -189,8 +189,8 @@ public class OnlineSaleProductionOrderService {
                                 + "en lugar de generar OP automatica sobre toda la venta.");
             }
             if (!sourceWarehouses.isEmpty() && canFulfillFromInventory(sale, sourceWarehouses)) {
-                // Descontar inventario y marcar como producido
-                fulfillFromInventory(sale, sourceWarehouses);
+                // Descontar inventario y marcar como producido (ENVL se asigna en "Preparar envío", no aquí)
+                fulfillFromInventory(sale, sourceWarehouses, false);
                 sale.setStatus("PRODUCIDO");
                 onlineSaleRepository.save(sale);
                 fulfilled.add(new FulfilledSale(
@@ -477,6 +477,8 @@ public class OnlineSaleProductionOrderService {
         boolean inOp = Boolean.TRUE.equals(sale.getInProductionOrder());
         Long poId = sale.getProductionOrderId();
 
+        onlineSaleShipmentNumberService.assignIfMissing(sale);
+
         if (produceMarked) {
             if (!inOp || poId == null) {
                 throw new BusinessException(
@@ -512,12 +514,12 @@ public class OnlineSaleProductionOrderService {
             if (!canFulfillFromInventory(sale, sourceWarehouses)) {
                 throw new BusinessException("Sin stock suficiente en Bodega PT / Devoluciones para esta venta");
             }
-            fulfillFromInventory(sale, sourceWarehouses);
+            fulfillFromInventory(sale, sourceWarehouses, false);
         } else {
             if (!canFulfillFromInventory(sale, sourceWarehouses)) {
                 throw new BusinessException("Sin stock suficiente en Bodega PT / Devoluciones para esta venta");
             }
-            fulfillFromInventory(sale, sourceWarehouses);
+            fulfillFromInventory(sale, sourceWarehouses, false);
         }
 
         sale.setStatus("PRODUCIDO");
@@ -563,12 +565,17 @@ public class OnlineSaleProductionOrderService {
     /**
      * Descuenta el inventario para todos los items de la venta.
      * Regla: consumir primero Bodega Devoluciones (si existe) y luego Bodega PT.
+     *
+     * @param assignShipmentNumber si true, asigna ENVL-nnnnn cuando aún no existe
      */
-    private void fulfillFromInventory(OnlineSaleEntity sale, List<LocationEntity> sourceWarehouses)
-            throws BusinessException {
-        // Preparación automática: si se resuelve desde inventario PT,
-        // asignar ENVL para que bodega pueda despachar con número ya listo.
-        onlineSaleShipmentNumberService.assignIfMissing(sale);
+    private void fulfillFromInventory(
+            OnlineSaleEntity sale,
+            List<LocationEntity> sourceWarehouses,
+            boolean assignShipmentNumber
+    ) throws BusinessException {
+        if (assignShipmentNumber) {
+            onlineSaleShipmentNumberService.assignIfMissing(sale);
+        }
 
         List<OnlineSaleItemEntity> items = onlineSaleItemRepository
                 .findByOnlineSaleIdOrderByIdAsc(sale.getId());
@@ -704,7 +711,6 @@ public class OnlineSaleProductionOrderService {
             List<OnlineSaleItemEntity> items,
             List<LocationEntity> sourceWarehouses
     ) throws BusinessException {
-        onlineSaleShipmentNumberService.assignIfMissing(sale);
         for (OnlineSaleItemEntity item : items) {
             String r = normalizeFulfillmentRoute(item.getFulfillmentRoute());
             if (!ACTION_DISPATCH.equals(r) && !ACTION_PRODUCE.equals(r)) {
@@ -723,7 +729,6 @@ public class OnlineSaleProductionOrderService {
             List<OnlineSaleItemEntity> items,
             List<LocationEntity> sourceWarehouses
     ) throws BusinessException {
-        onlineSaleShipmentNumberService.assignIfMissing(sale);
         for (OnlineSaleItemEntity item : items) {
             if (!ACTION_DISPATCH.equals(normalizeFulfillmentRoute(item.getFulfillmentRoute()))) {
                 continue;

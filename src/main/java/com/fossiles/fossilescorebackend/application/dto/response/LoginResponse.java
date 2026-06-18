@@ -11,6 +11,9 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class LoginResponse {
     private String token;
+    private String refreshToken;
+    /** Access token TTL in milliseconds. */
+    private Long expiresIn;
     private String type = "Bearer";
     private Long id;
     private String username;

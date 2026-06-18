@@ -32,15 +32,52 @@ public class KioskPosSaleResponse {
     private String email;
     private String paymentMethod;
     private String status;
+    /** true = venta piloto/prueba; excluida de dashboard y reporte general admin. */
+    private Boolean testSale;
     private BigDecimal totalItems;
     private BigDecimal discountAmount;
     private BigDecimal subtotal;
     private BigDecimal totalAmount;
+    private BigDecimal amountReceived;
+    private BigDecimal changeAmount;
+    private BigDecimal cashAmount;
+    private BigDecimal cardAmount;
     private String notes;
     private String comments;
     private Long promotionId;
     private String promotionName;
     private List<Item> items;
+
+    private String felStatus;
+    private String felUuid;
+    private String felSerie;
+    private String felNumero;
+    private String felError;
+    private LocalDateTime felCertifiedAt;
+    private InvoiceInfo invoice;
+
+    private String depositSlipNumber;
+    private LocalDateTime depositRecordedAt;
+    private Long depositRecordedByUserId;
+    private String depositRecordedByName;
+    /** true = venta en efectivo/mixto sin boleta registrada aún. */
+    private Boolean pendingDeposit;
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class InvoiceInfo {
+        private Long id;
+        private String status;
+        private String internalNumber;
+        private String felUuid;
+        private String felSerie;
+        private String felNumero;
+        private String felError;
+        private LocalDateTime felCertifiedAt;
+        private Boolean hasCertifiedXml;
+    }
 
     @Data
     @Builder

@@ -1,27 +1,38 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionCloseRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSalePaymentUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCustomerProfileResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPendingDepositSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosContextResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPosManagerDashboardResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAvailabilityResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.TaxpayerLookupResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.KioskPosService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -35,15 +46,66 @@ public class KioskPosController {
 
     @GetMapping("/context")
     public ResponseEntity<KioskPosContextResponse> getContext(
-            @RequestParam(required = false) Long kioskLocationId
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) Long categoryId,
+            @RequestParam(required = false) String colorName
     ) throws BusinessException {
-        return ResponseEntity.ok(kioskPosService.getCurrentContext(kioskLocationId));
+        return ResponseEntity.ok(kioskPosService.getCurrentContext(kioskLocationId, search, categoryId, colorName));
     }
 
     @PostMapping("/sales")
-    public ResponseEntity<KioskPosSaleResponse> createSale(@RequestBody KioskPosSaleRequest request)
+    public ResponseEntity<KioskPosSaleResponse> createSale(@Valid @RequestBody KioskPosSaleRequest request)
             throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskPosService.createSale(request));
+    }
+
+    @GetMapping("/sales/{id}")
+    public ResponseEntity<KioskPosSaleResponse> getSaleById(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.getSaleById(id, kioskLocationId));
+    }
+
+    @PostMapping("/sales/{id}/void")
+    public ResponseEntity<KioskPosSaleResponse> voidSale(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long kioskLocationId,
+            @Valid @RequestBody KioskSaleVoidRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.voidSale(id, kioskLocationId, request));
+    }
+
+    @PatchMapping("/sales/{id}/payment")
+    public ResponseEntity<KioskPosSaleResponse> updateSalePayment(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestBody KioskPosSalePaymentUpdateRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.updateSalePayment(id, kioskLocationId, request));
+    }
+
+    @PutMapping("/sales/{id}/deposit-slip")
+    public ResponseEntity<KioskPosSaleResponse> registerDepositSlip(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long kioskLocationId,
+            @Valid @RequestBody KioskPosDepositSlipUpdateRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.registerDepositSlip(id, kioskLocationId, request));
+    }
+
+    @GetMapping("/deposits/pending-summary")
+    public ResponseEntity<KioskPendingDepositSummaryResponse> getPendingDepositSummary(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.getPendingDepositSummary(kioskLocationId));
+    }
+
+    @GetMapping("/taxpayers/lookup")
+    public ResponseEntity<TaxpayerLookupResponse> lookupTaxpayer(@RequestParam String taxId)
+            throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.lookupTaxpayer(taxId));
     }
 
     @GetMapping("/customers/by-tax-id")
@@ -63,9 +125,10 @@ public class KioskPosController {
 
     @GetMapping("/promotions")
     public ResponseEntity<List<KioskPromotionResponse>> getPromotions(
-            @RequestParam(required = false) Boolean activeOnly
-    ) {
-        return ResponseEntity.ok(kioskPosService.getPromotions(activeOnly));
+            @RequestParam(required = false) Boolean activeOnly,
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.getPromotions(activeOnly, kioskLocationId));
     }
 
     @PostMapping("/promotions")
@@ -80,6 +143,13 @@ public class KioskPosController {
             @RequestBody KioskPromotionRequest request
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskPosService.updatePromotion(id, request));
+    }
+
+    @GetMapping("/dashboard/manager")
+    public ResponseEntity<KioskPosManagerDashboardResponse> getManagerDashboard(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.getManagerDashboard(kioskLocationId));
     }
 
     @GetMapping("/reports/my-kiosk")
@@ -109,5 +179,31 @@ public class KioskPosController {
         return ResponseEntity.ok(
                 kioskPosService.findAvailabilityInKiosks(productId, colorId, includeCurrentKiosk, kioskLocationId)
         );
+    }
+
+    @GetMapping("/cash-session/current")
+    public ResponseEntity<KioskCashSessionResponse> getCurrentCashSession(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        KioskCashSessionResponse session = kioskPosService.getCurrentCashSession(kioskLocationId);
+        if (session == null) {
+            return ResponseEntity.noContent().build();
+        }
+        return ResponseEntity.ok(session);
+    }
+
+    @PostMapping("/cash-session/open")
+    public ResponseEntity<KioskCashSessionResponse> openCashSession(
+            @RequestBody(required = false) KioskCashSessionOpenRequest request
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.openCashSession(request));
+    }
+
+    @PostMapping("/cash-session/{id}/close")
+    public ResponseEntity<KioskCashSessionResponse> closeCashSession(
+            @PathVariable Long id,
+            @RequestBody KioskCashSessionCloseRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.closeCashSession(id, request));
     }
 }

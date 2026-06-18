@@ -30,5 +30,23 @@ public class LocationRequest {
     private String categoria;
 
     private Long encargadoId;
+
+    @Size(max = 10, message = "FEL establishment code must not exceed 10 characters")
+    private String felEstablishmentCode;
+
+    @Size(max = 255, message = "FEL establishment name must not exceed 255 characters")
+    private String felEstablishmentName;
+
+    @Size(max = 500, message = "FEL address must not exceed 500 characters")
+    private String felAddressLine;
+
+    @Size(max = 255, message = "FEL municipio must not exceed 255 characters")
+    private String felMunicipio;
+
+    @Size(max = 255, message = "FEL departamento must not exceed 255 characters")
+    private String felDepartamento;
+
+    /** Kiosko en piloto POS: ventas no suman en dashboard de producción. */
+    private Boolean posTestMode;
 }
 

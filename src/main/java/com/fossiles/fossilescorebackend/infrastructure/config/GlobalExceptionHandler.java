@@ -71,6 +71,20 @@ public class GlobalExceptionHandler {
             } else {
                 errors.put("message", "No se puede realizar esta operación porque existen registros relacionados. Elimine primero los registros asociados.");
             }
+        } else if (message != null && message.contains("location_id") && message.contains("product_shipment")) {
+            errors.put("message",
+                    "La base de datos exige kiosko en envíos, pero esta orden va solo con dirección. "
+                            + "Ejecute en PostgreSQL: ALTER TABLE product_shipment ALTER COLUMN location_id DROP NOT NULL; "
+                            + "(script: scripts/migration-product-shipment-opi-null-location.sql)");
+        } else if (message != null && message.contains("shipment_number")) {
+            errors.put("message",
+                    "Ya existe un envío con ese número en el sistema. "
+                            + "Recargue la página y vuelva a generar; el envío físico usará un correlativo distinto al ENVP del documento.");
+        } else if (message != null && message.contains("product_shipment_detail")) {
+            errors.put("message",
+                    "Hay líneas duplicadas en el envío (mismo producto/color/talla). Revise los ítems de la orden de producción.");
+        } else if (message != null && message.contains("product_shipment")) {
+            errors.put("message", "No se pudo guardar el envío por un conflicto en la base de datos. Recargue e intente de nuevo.");
         } else {
             errors.put("message", "No se puede realizar esta operación debido a restricciones de integridad de datos.");
         }

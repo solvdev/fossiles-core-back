@@ -10,5 +10,7 @@ import java.util.Optional;
 public interface CustomerRepository extends JpaRepository<CustomerEntity, Long> {
     Optional<CustomerEntity> findByNit(String nit);
     boolean existsByNit(String nit);
+    boolean existsByLegacyCode(String legacyCode);
+    Optional<CustomerEntity> findByLegacyCode(String legacyCode);
 }
 

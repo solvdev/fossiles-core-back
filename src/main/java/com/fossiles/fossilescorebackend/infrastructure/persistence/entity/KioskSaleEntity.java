@@ -71,6 +71,18 @@ public class KioskSaleEntity {
     @Column(name = "discount_amount", precision = 12, scale = 2)
     private BigDecimal discountAmount;
 
+    @Column(name = "amount_received", precision = 12, scale = 2)
+    private BigDecimal amountReceived;
+
+    @Column(name = "change_amount", precision = 12, scale = 2)
+    private BigDecimal changeAmount;
+
+    @Column(name = "cash_amount", precision = 12, scale = 2)
+    private BigDecimal cashAmount;
+
+    @Column(name = "card_amount", precision = 12, scale = 2)
+    private BigDecimal cardAmount;
+
     @Column(name = "promotion_id")
     private Long promotionId;
 
@@ -82,6 +94,44 @@ public class KioskSaleEntity {
 
     @Column(name = "comments", length = 1500)
     private String comments;
+
+    @Column(name = "fel_status", length = 30)
+    private String felStatus;
+
+    @Column(name = "fel_uuid", length = 64)
+    private String felUuid;
+
+    @Column(name = "fel_serie", length = 32)
+    private String felSerie;
+
+    @Column(name = "fel_numero", length = 32)
+    private String felNumero;
+
+    @Column(name = "fel_error", length = 4000)
+    private String felError;
+
+    @Column(name = "fel_certified_at")
+    private LocalDateTime felCertifiedAt;
+
+    @Column(name = "invoice_id")
+    private Long invoiceId;
+
+    /** Venta registrada con fel.emission.test-mode=true; no cuenta en métricas de producción. */
+    @Column(name = "test_sale", nullable = false)
+    @Builder.Default
+    private Boolean testSale = false;
+
+    @Column(name = "cash_session_id")
+    private Long cashSessionId;
+
+    @Column(name = "deposit_slip_number", length = 40)
+    private String depositSlipNumber;
+
+    @Column(name = "deposit_recorded_at")
+    private LocalDateTime depositRecordedAt;
+
+    @Column(name = "deposit_recorded_by")
+    private Long depositRecordedBy;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
@@ -116,6 +166,9 @@ public class KioskSaleEntity {
         }
         if (discountAmount == null) {
             discountAmount = BigDecimal.ZERO;
+        }
+        if (testSale == null) {
+            testSale = false;
         }
         createdAt = now;
     }

@@ -115,8 +115,17 @@ public class OnlineSaleController {
 
     @GetMapping("/daily-summary")
     public ResponseEntity<OnlineSaleDailySummaryResponse> getDailySummary(
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return ResponseEntity.ok(saleService.getDailySummary(date));
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate)
+            throws BusinessException {
+        if (startDate != null || endDate != null) {
+            LocalDate from = startDate != null ? startDate : endDate;
+            LocalDate to = endDate != null ? endDate : startDate;
+            return ResponseEntity.ok(saleService.getSummaryForDateRange(from, to));
+        }
+        LocalDate target = date != null ? date : java.time.LocalDate.now();
+        return ResponseEntity.ok(saleService.getDailySummary(target));
     }
 
     // ─── Devolver / Anular ──────────────────────────────────────────
