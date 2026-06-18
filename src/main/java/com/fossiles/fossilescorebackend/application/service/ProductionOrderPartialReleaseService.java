@@ -554,25 +554,20 @@ public class ProductionOrderPartialReleaseService {
 
             if (avail.getOrderedSizes() != null && !avail.getOrderedSizes().isEmpty()) {
                 for (Map.Entry<String, Integer> e : newSizes.entrySet()) {
-                    int pending = avail.getPendingSizes() != null
-                            ? avail.getPendingSizes().getOrDefault(e.getKey(), 0)
-                            : 0;
-                    if (e.getValue() > pending) {
+                    int ordered = avail.getOrderedSizes().getOrDefault(e.getKey(), 0);
+                    if (e.getValue() > ordered) {
                         throw new BusinessException(
                                 "En " + resolveProductCode(item) + ", talla " + e.getKey()
                                         + ": intentó liberar " + e.getValue()
-                                        + " pero solo quedan " + pending
-                                        + " pendiente(s) (ya asignados en otros parciales).");
+                                        + " pero la orden solo tiene " + ordered + ".");
                     }
                 }
             } else {
                 int newQty = line.getQuantity() != null ? line.getQuantity() : 0;
-                if (newQty > avail.getPendingTotal()) {
+                if (newQty > avail.getOrderedTotal()) {
                     throw new BusinessException(
-                            "Cantidad excede lo pendiente en " + resolveProductCode(item)
-                                    + " (pedido " + avail.getOrderedTotal()
-                                    + ", ya liberado " + avail.getAllocatedInOtherReleases()
-                                    + ", pendiente " + avail.getPendingTotal() + ").");
+                            "Cantidad excede lo pedido en " + resolveProductCode(item)
+                                    + " (pedido " + avail.getOrderedTotal() + ").");
                 }
             }
         }
