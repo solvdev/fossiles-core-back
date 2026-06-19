@@ -597,9 +597,6 @@ public class ProductDistributionService {
             throw new BusinessException("Debe incluir al menos un producto o empaque SUM- con cantidad.");
         }
         boolean confirmOnly = request.getConfirmOnly() == null || Boolean.TRUE.equals(request.getConfirmOnly());
-        if (!confirmOnly && hasProducts) {
-            assertDispatchStockAvailable(normalizedProducts);
-        }
 
         String persistedNotes = mergeDocumentDateIntoNotes(request.getNotes(), request.getDocumentDate());
         String shipmentNumber = generateShipmentNumber(location);
@@ -1186,10 +1183,10 @@ public class ProductDistributionService {
                         && !extractDestinationFromNotes(shipment.getNotes()).isBlank())
                 .orElse(false);
         boolean ptWarehouseOut = opcPtOutOnly || standaloneInternalEnvi;
-        if (opiDocumentOnly) {
+        if (opiDocumentOnly || shipmentLocationId != null) {
             return false;
         }
-        return shipmentLocationId != null || ptWarehouseOut;
+        return ptWarehouseOut;
     }
 
     private void reverseSentShipmentDispatchInventory(ProductShipmentEntity shipment) throws BusinessException {
@@ -1566,9 +1563,6 @@ public class ProductDistributionService {
         }
 
         List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
-        LocationEntity targetLocation = shipmentLocationId == null
-                ? null
-                : locationRepository.findById(shipmentLocationId).orElse(null);
         String opcDestinationLabel = opcPtOutOnly || standaloneInternalEnvi
                 ? extractDestinationFromNotes(shipment.getNotes())
                 : null;
@@ -1577,11 +1571,14 @@ public class ProductDistributionService {
             throw new BusinessException("No se puede enviar un envío sin productos.");
         }
 
-        String destinationLabel = targetLocation != null
-                ? targetLocation.getName()
-                : (opcDestinationLabel != null && !opcDestinationLabel.isBlank()
+        // Envío a kiosko: tránsito documental; la recepción en POS carga inventario del kiosko.
+        if (shipmentLocationId != null) {
+            return transitionConfirmedShipmentToSent(shipmentId, shipment);
+        }
+
+        String destinationLabel = opcDestinationLabel != null && !opcDestinationLabel.isBlank()
                 ? opcDestinationLabel
-                : "kiosko");
+                : "destino";
 
         // Pre-validar stock: Devoluciones primero, luego Bodega PT (total combinado).
         List<String> shortages = new java.util.ArrayList<>();
@@ -1636,6 +1633,12 @@ public class ProductDistributionService {
                     "SHIPMENT");
         }
 
+        return transitionConfirmedShipmentToSent(shipmentId, shipment);
+    }
+
+    private ProductShipmentResponse transitionConfirmedShipmentToSent(
+            Long shipmentId,
+            ProductShipmentEntity shipment) throws BusinessException {
         LocalDateTime sentAt = LocalDateTime.now();
         Long sentBy = securityUtil.getCurrentUserId();
         int claimed = shipmentRepository.markSentIfConfirmed(shipmentId, sentAt, sentBy);
