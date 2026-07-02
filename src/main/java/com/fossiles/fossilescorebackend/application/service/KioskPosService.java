@@ -856,11 +856,15 @@ public class KioskPosService {
                 .collect(Collectors.toList());
 
         final Set<Long> scopedKioskIds = allowedKioskIds;
+        boolean manageView = !onlyActive && admin;
         return promotions.stream()
                 .filter(p -> !onlyActive || isPromotionActiveOnDate(p, today))
-                .filter(p -> p.getKioskLocationId() == null
+                .filter(p -> manageView
+                        || p.getKioskLocationId() == null
                         || (kioskLocationId != null && Objects.equals(p.getKioskLocationId(), kioskLocationId)))
-                .filter(p -> admin || scopedKioskIds == null
+                .filter(p -> manageView
+                        || admin
+                        || scopedKioskIds == null
                         || p.getKioskLocationId() == null
                         || scopedKioskIds.contains(p.getKioskLocationId()))
                 .map(this::toPromotionResponse)

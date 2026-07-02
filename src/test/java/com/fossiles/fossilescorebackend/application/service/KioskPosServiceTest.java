@@ -645,6 +645,31 @@ class KioskPosServiceTest {
     }
 
     @Test
+    void admin_manage_view_lists_all_promotions_including_other_kiosk() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        KioskPromotionEntity promoA = promotionRepository.save(KioskPromotionEntity.builder()
+                .name("Promo kiosko A")
+                .discountType("TIERED_PERCENT")
+                .discountValue(BigDecimal.ZERO)
+                .kioskLocationId(kioskA.getId())
+                .active(true)
+                .build());
+        promoA.setTiers(new ArrayList<>(List.of(
+                KioskPromotionTierEntity.builder()
+                        .promotion(promoA)
+                        .audienceCategory("CABALLERO")
+                        .categoryId(billeterasCategory.getId())
+                        .discountValue(new BigDecimal("10"))
+                        .build())));
+        promotionRepository.save(promoA);
+
+        var rows = kioskPosService.getPromotions(false, kioskB.getId());
+
+        assertThat(rows.stream().anyMatch(row -> "Promo kiosko A".equals(row.getName()))).isTrue();
+    }
+
+    @Test
     void managerDashboard_reflects_completed_sales() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
 
