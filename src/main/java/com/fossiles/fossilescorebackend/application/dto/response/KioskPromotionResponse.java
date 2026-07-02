@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 @Data
 @Builder
@@ -25,4 +26,5 @@ public class KioskPromotionResponse {
     private LocalDate startDate;
     private LocalDate endDate;
     private Boolean active;
+    private List<KioskPromotionTierResponse> tiers;
 }

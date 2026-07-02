@@ -27,6 +27,14 @@ public final class ProductAudienceCategory {
         return null;
     }
 
+    public static String normalizeTierAudience(String value) {
+        String normalized = safeUpper(value);
+        if (DAMA.equals(normalized) || CABALLERO.equals(normalized) || UNISEX.equals(normalized)) {
+            return normalized;
+        }
+        return null;
+    }
+
     public static boolean isValidProductAudience(String value) {
         if (value == null || value.isBlank()) {
             return true;

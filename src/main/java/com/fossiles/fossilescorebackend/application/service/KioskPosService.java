@@ -7,11 +7,13 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSalePaym
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionTierRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPendingDepositSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosContextResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCustomerProfileResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionTierResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosManagerDashboardResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
@@ -23,6 +25,7 @@ import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskCashSessionEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionTierEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleSequenceEntity;
@@ -35,6 +38,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEn
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskCashSessionRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionTierRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleSequenceRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
@@ -56,6 +60,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -93,6 +98,7 @@ public class KioskPosService {
     private final KioskCashSessionRepository kioskCashSessionRepository;
     private final KioskSaleSequenceRepository kioskSaleSequenceRepository;
     private final KioskPromotionRepository kioskPromotionRepository;
+    private final KioskPromotionTierRepository kioskPromotionTierRepository;
     private final FelReceptorLookupService felReceptorLookupService;
     private final TaxInvoiceService taxInvoiceService;
     private final FelEmissionProperties felEmissionProperties;
@@ -827,6 +833,7 @@ public class KioskPosService {
         }
         validatePromotionRequest(request);
         KioskPromotionEntity entity = toPromotionEntity(request, user.getId());
+        syncPromotionTiers(entity, request);
         return toPromotionResponse(kioskPromotionRepository.save(entity));
     }
 
@@ -840,6 +847,7 @@ public class KioskPosService {
         KioskPromotionEntity entity = kioskPromotionRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("KioskPromotion", id));
         applyPromotionRequest(entity, request, user.getId());
+        syncPromotionTiers(entity, request);
         return toPromotionResponse(kioskPromotionRepository.save(entity));
     }
 
@@ -1033,6 +1041,10 @@ public class KioskPosService {
         if (promotion == null || subtotal == null || subtotal.compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;
         }
+        String type = normalizeDiscountType(promotion.getDiscountType());
+        if ("TIERED_PERCENT".equals(type)) {
+            return calculateTieredPercentDiscount(subtotal, promotion, lines);
+        }
         List<PreparedLine> eligibleLines = filterLinesByPromotionAudience(lines, promotion.getAudienceCategory());
         BigDecimal eligibleSubtotal = eligibleLines.stream()
                 .map(PreparedLine::lineTotal)
@@ -1040,7 +1052,6 @@ public class KioskPosService {
         if (eligibleSubtotal.compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;
         }
-        String type = normalizeDiscountType(promotion.getDiscountType());
         if ("COMBO".equals(type)) {
             return calculateComboDiscount(promotion, eligibleLines);
         }
@@ -1055,6 +1066,51 @@ public class KioskPosService {
                     .min(subtotal);
         }
         return value.max(BigDecimal.ZERO).min(eligibleSubtotal).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    BigDecimal calculateTieredPercentDiscount(
+            BigDecimal subtotal,
+            KioskPromotionEntity promotion,
+            List<PreparedLine> lines
+    ) {
+        Map<String, BigDecimal> tierMap = loadTierMap(promotion);
+        if (tierMap.isEmpty() || lines == null || lines.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal discount = BigDecimal.ZERO;
+        for (PreparedLine line : lines) {
+            if (line.product() == null) {
+                continue;
+            }
+            String audience = ProductAudienceCategory.normalizeProductAudience(line.product().getAudienceCategory());
+            BigDecimal pct = tierMap.getOrDefault(audience, BigDecimal.ZERO);
+            if (pct.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            discount = discount.add(line.lineTotal()
+                    .multiply(pct)
+                    .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP));
+        }
+        return discount.max(BigDecimal.ZERO).min(subtotal).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private Map<String, BigDecimal> loadTierMap(KioskPromotionEntity promotion) {
+        List<KioskPromotionTierEntity> tiers = promotion.getTiers();
+        if ((tiers == null || tiers.isEmpty()) && promotion.getId() != null) {
+            tiers = kioskPromotionTierRepository.findByPromotionIdOrderByAudienceCategoryAsc(promotion.getId());
+        }
+        Map<String, BigDecimal> map = new LinkedHashMap<>();
+        if (tiers == null) {
+            return map;
+        }
+        for (KioskPromotionTierEntity tier : tiers) {
+            String audience = ProductAudienceCategory.normalizeTierAudience(tier.getAudienceCategory());
+            if (audience == null) {
+                continue;
+            }
+            map.put(audience, tier.getDiscountValue() != null ? tier.getDiscountValue() : BigDecimal.ZERO);
+        }
+        return map;
     }
 
     private List<PreparedLine> filterLinesByPromotionAudience(List<PreparedLine> lines, String promotionAudience) {
@@ -1284,6 +1340,9 @@ public class KioskPosService {
         if ("COMBO".equals(discountType) && (discountValue == null || discountValue.compareTo(BigDecimal.ZERO) <= 0)) {
             discountValue = BigDecimal.ZERO;
         }
+        if ("TIERED_PERCENT".equals(discountType)) {
+            discountValue = BigDecimal.ZERO;
+        }
         return KioskPromotionEntity.builder()
                 .name(safeTrim(request.getName()))
                 .description(safeTrim(request.getDescription()))
@@ -1292,7 +1351,9 @@ public class KioskPosService {
                 .comboBuyQty(request.getComboBuyQty())
                 .comboPayQty(request.getComboPayQty())
                 .kioskLocationId(request.getKioskLocationId())
-                .audienceCategory(ProductAudienceCategory.normalizePromotionAudience(request.getAudienceCategory()))
+                .audienceCategory("TIERED_PERCENT".equals(discountType)
+                        ? null
+                        : ProductAudienceCategory.normalizePromotionAudience(request.getAudienceCategory()))
                 .startDate(request.getStartDate())
                 .endDate(request.getEndDate())
                 .active(request.getActive() == null || request.getActive())
@@ -1302,18 +1363,56 @@ public class KioskPosService {
     }
 
     private void applyPromotionRequest(KioskPromotionEntity entity, KioskPromotionRequest request, Long userId) {
+        String discountType = normalizeDiscountType(request.getDiscountType());
         entity.setName(safeTrim(request.getName()));
         entity.setDescription(safeTrim(request.getDescription()));
-        entity.setDiscountType(normalizeDiscountType(request.getDiscountType()));
-        entity.setDiscountValue(request.getDiscountValue());
+        entity.setDiscountType(discountType);
+        entity.setDiscountValue("TIERED_PERCENT".equals(discountType)
+                ? BigDecimal.ZERO
+                : request.getDiscountValue());
         entity.setComboBuyQty(request.getComboBuyQty());
         entity.setComboPayQty(request.getComboPayQty());
         entity.setKioskLocationId(request.getKioskLocationId());
-        entity.setAudienceCategory(ProductAudienceCategory.normalizePromotionAudience(request.getAudienceCategory()));
+        entity.setAudienceCategory("TIERED_PERCENT".equals(discountType)
+                ? null
+                : ProductAudienceCategory.normalizePromotionAudience(request.getAudienceCategory()));
         entity.setStartDate(request.getStartDate());
         entity.setEndDate(request.getEndDate());
         entity.setActive(request.getActive() == null || request.getActive());
         entity.setUpdatedBy(userId);
+    }
+
+    private void syncPromotionTiers(KioskPromotionEntity entity, KioskPromotionRequest request) {
+        if (!"TIERED_PERCENT".equals(normalizeDiscountType(entity.getDiscountType()))) {
+            if (entity.getTiers() != null) {
+                entity.getTiers().clear();
+            }
+            return;
+        }
+        entity.setDiscountValue(BigDecimal.ZERO);
+        entity.setAudienceCategory(null);
+        if (entity.getTiers() == null) {
+            entity.setTiers(new ArrayList<>());
+        }
+        entity.getTiers().clear();
+        entity.getTiers().addAll(buildTierEntities(entity, request.getTiers()));
+    }
+
+    private List<KioskPromotionTierEntity> buildTierEntities(
+            KioskPromotionEntity promotion,
+            List<KioskPromotionTierRequest> tiers
+    ) {
+        if (tiers == null || tiers.isEmpty()) {
+            return List.of();
+        }
+        return tiers.stream()
+                .filter(Objects::nonNull)
+                .map(tier -> KioskPromotionTierEntity.builder()
+                        .promotion(promotion)
+                        .audienceCategory(ProductAudienceCategory.normalizeTierAudience(tier.getAudienceCategory()))
+                        .discountValue(tier.getDiscountValue() != null ? tier.getDiscountValue() : BigDecimal.ZERO)
+                        .build())
+                .collect(Collectors.toList());
     }
 
     private UserEntity getCurrentUserOrThrow() throws BusinessException {
@@ -1611,7 +1710,24 @@ public class KioskPosService {
                 .startDate(entity.getStartDate())
                 .endDate(entity.getEndDate())
                 .active(entity.getActive())
+                .tiers(toPromotionTierResponses(entity))
                 .build();
+    }
+
+    private List<KioskPromotionTierResponse> toPromotionTierResponses(KioskPromotionEntity entity) {
+        List<KioskPromotionTierEntity> tiers = entity.getTiers();
+        if ((tiers == null || tiers.isEmpty()) && entity.getId() != null) {
+            tiers = kioskPromotionTierRepository.findByPromotionIdOrderByAudienceCategoryAsc(entity.getId());
+        }
+        if (tiers == null || tiers.isEmpty()) {
+            return List.of();
+        }
+        return tiers.stream()
+                .map(tier -> KioskPromotionTierResponse.builder()
+                        .audienceCategory(ProductAudienceCategory.normalizeTierAudience(tier.getAudienceCategory()))
+                        .discountValue(tier.getDiscountValue())
+                        .build())
+                .collect(Collectors.toList());
     }
 
     private KioskPromotionEntity resolvePromotionIfAny(Long promotionId, LocalDate saleDate, Long kioskId)
@@ -1649,6 +1765,12 @@ public class KioskPosService {
             if (buy == null || pay == null || buy <= 0 || pay <= 0 || pay >= buy) {
                 throw new BusinessException("Promoción COMBO: indique cantidades válidas (ej. lleva 2 paga 1).");
             }
+            validatePromotionDates(request);
+            return;
+        }
+        if ("TIERED_PERCENT".equals(discountType)) {
+            validateTieredPromotion(request);
+            validatePromotionDates(request);
             return;
         }
         if (request.getDiscountValue() == null || request.getDiscountValue().compareTo(BigDecimal.ZERO) <= 0) {
@@ -1657,18 +1779,56 @@ public class KioskPosService {
         if ("PERCENT".equals(discountType) && request.getDiscountValue().compareTo(new BigDecimal("100")) > 0) {
             throw new BusinessException("El descuento porcentual no puede ser mayor a 100.");
         }
-        if (request.getStartDate() != null && request.getEndDate() != null
-                && request.getEndDate().isBefore(request.getStartDate())) {
-            throw new BusinessException("La fecha fin no puede ser menor a la fecha inicio.");
-        }
+        validatePromotionDates(request);
         String audience = ProductAudienceCategory.normalizePromotionAudience(request.getAudienceCategory());
         if (request.getAudienceCategory() != null && !request.getAudienceCategory().isBlank() && audience == null) {
             throw new BusinessException("Línea de promoción inválida. Use DAMA o CABALLERO.");
         }
     }
 
+    private void validatePromotionDates(KioskPromotionRequest request) throws BusinessException {
+        if (request.getStartDate() != null && request.getEndDate() != null
+                && request.getEndDate().isBefore(request.getStartDate())) {
+            throw new BusinessException("La fecha fin no puede ser menor a la fecha inicio.");
+        }
+    }
+
+    private void validateTieredPromotion(KioskPromotionRequest request) throws BusinessException {
+        List<KioskPromotionTierRequest> tiers = request.getTiers();
+        if (tiers == null || tiers.isEmpty()) {
+            throw new BusinessException("Debe indicar al menos un porcentaje por línea.");
+        }
+        Set<String> audiences = new HashSet<>();
+        boolean hasPositive = false;
+        for (KioskPromotionTierRequest tier : tiers) {
+            if (tier == null) {
+                continue;
+            }
+            String audience = ProductAudienceCategory.normalizeTierAudience(tier.getAudienceCategory());
+            if (audience == null) {
+                throw new BusinessException("Línea de promoción inválida. Use DAMA, CABALLERO o UNISEX.");
+            }
+            if (!audiences.add(audience)) {
+                throw new BusinessException("No puede repetir la misma línea en una promoción por línea.");
+            }
+            BigDecimal value = tier.getDiscountValue() != null ? tier.getDiscountValue() : BigDecimal.ZERO;
+            if (value.compareTo(BigDecimal.ZERO) < 0 || value.compareTo(new BigDecimal("100")) > 0) {
+                throw new BusinessException("Cada porcentaje por línea debe estar entre 0 y 100.");
+            }
+            if (value.compareTo(BigDecimal.ZERO) > 0) {
+                hasPositive = true;
+            }
+        }
+        if (!hasPositive) {
+            throw new BusinessException("Debe indicar al menos un porcentaje mayor a cero.");
+        }
+    }
+
     private String normalizeDiscountType(String value) {
         String normalized = normalizeText(value);
+        if (normalized.contains("TIERED")) {
+            return "TIERED_PERCENT";
+        }
         if (normalized.contains("COMBO")) {
             return "COMBO";
         }

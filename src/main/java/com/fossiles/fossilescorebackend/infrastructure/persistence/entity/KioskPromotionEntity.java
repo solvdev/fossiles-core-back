@@ -9,6 +9,8 @@ import lombok.NoArgsConstructor;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Entity
 @Table(name = "kiosk_promotion")
@@ -66,6 +68,10 @@ public class KioskPromotionEntity {
 
     @Column(name = "updated_by")
     private Long updatedBy;
+
+    @OneToMany(mappedBy = "promotion", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    private List<KioskPromotionTierEntity> tiers = new ArrayList<>();
 
     @PrePersist
     protected void onCreate() {

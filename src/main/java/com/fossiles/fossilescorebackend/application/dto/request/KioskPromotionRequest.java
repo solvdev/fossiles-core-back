@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 @Data
 @Builder
@@ -15,7 +16,7 @@ import java.time.LocalDate;
 public class KioskPromotionRequest {
     private String name;
     private String description;
-    private String discountType; // PERCENT | FIXED | COMBO
+    private String discountType; // PERCENT | FIXED | COMBO | TIERED_PERCENT
     private BigDecimal discountValue;
     private Integer comboBuyQty;
     private Integer comboPayQty;
@@ -25,4 +26,5 @@ public class KioskPromotionRequest {
     private LocalDate startDate;
     private LocalDate endDate;
     private Boolean active;
+    private List<KioskPromotionTierRequest> tiers;
 }

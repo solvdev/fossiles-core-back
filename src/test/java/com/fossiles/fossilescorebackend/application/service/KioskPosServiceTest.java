@@ -3,12 +3,14 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionTierRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionTierEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
@@ -319,6 +321,168 @@ class KioskPosServiceTest {
     }
 
     @Test
+    void discount_tiered_percent_by_audience_line() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        ProductEntity damaProduct = productRepository.save(ProductEntity.builder()
+                .code("DAMA-001")
+                .name("Bolso Dama")
+                .salePrice(new BigDecimal("100.00"))
+                .audienceCategory("DAMA")
+                .build());
+        ProductEntity caballeroProduct = productRepository.save(ProductEntity.builder()
+                .code("CAB-001")
+                .name("Billetera Caballero")
+                .salePrice(new BigDecimal("100.00"))
+                .audienceCategory("CABALLERO")
+                .build());
+        ProductEntity unisexProduct = productRepository.save(ProductEntity.builder()
+                .code("UNI-001")
+                .name("Tarjetero Unisex")
+                .salePrice(new BigDecimal("100.00"))
+                .audienceCategory("UNISEX")
+                .build());
+
+        seedInventory(damaProduct.getId(), 5);
+        seedInventory(caballeroProduct.getId(), 5);
+        seedInventory(unisexProduct.getId(), 5);
+
+        var created = kioskPosService.createPromotion(KioskPromotionRequest.builder()
+                .name("Liquidacion por linea")
+                .discountType("TIERED_PERCENT")
+                .active(true)
+                .tiers(List.of(
+                        KioskPromotionTierRequest.builder()
+                                .audienceCategory("DAMA")
+                                .discountValue(new BigDecimal("15"))
+                                .build(),
+                        KioskPromotionTierRequest.builder()
+                                .audienceCategory("CABALLERO")
+                                .discountValue(new BigDecimal("10"))
+                                .build(),
+                        KioskPromotionTierRequest.builder()
+                                .audienceCategory("UNISEX")
+                                .discountValue(new BigDecimal("5"))
+                                .build()))
+                .build());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .promotionId(created.getId())
+                .items(List.of(
+                        item(damaProduct.getId(), negro.getId(), BigDecimal.ONE),
+                        item(caballeroProduct.getId(), negro.getId(), BigDecimal.ONE),
+                        item(unisexProduct.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getSubtotal()).isEqualByComparingTo("300.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("30.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("270.00");
+    }
+
+    @Test
+    void discount_tiered_percent_zero_tier_skips_line() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        ProductEntity damaProduct = productRepository.save(ProductEntity.builder()
+                .code("DAMA-002")
+                .name("Bolso Dama Promo")
+                .salePrice(new BigDecimal("200.00"))
+                .audienceCategory("DAMA")
+                .build());
+        ProductEntity unisexProduct = productRepository.save(ProductEntity.builder()
+                .code("UNI-002")
+                .name("Monedero Unisex Promo")
+                .salePrice(new BigDecimal("100.00"))
+                .audienceCategory("UNISEX")
+                .build());
+
+        seedInventory(damaProduct.getId(), 5);
+        seedInventory(unisexProduct.getId(), 5);
+
+        KioskPromotionEntity tieredPromo = promotionRepository.save(KioskPromotionEntity.builder()
+                .name("Solo dama")
+                .discountType("TIERED_PERCENT")
+                .discountValue(BigDecimal.ZERO)
+                .active(true)
+                .build());
+        tieredPromo.setTiers(List.of(
+                KioskPromotionTierEntity.builder()
+                        .promotion(tieredPromo)
+                        .audienceCategory("DAMA")
+                        .discountValue(new BigDecimal("10"))
+                        .build(),
+                KioskPromotionTierEntity.builder()
+                        .promotion(tieredPromo)
+                        .audienceCategory("UNISEX")
+                        .discountValue(BigDecimal.ZERO)
+                        .build()));
+        promotionRepository.save(tieredPromo);
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .promotionId(tieredPromo.getId())
+                .items(List.of(
+                        item(damaProduct.getId(), negro.getId(), BigDecimal.ONE),
+                        item(unisexProduct.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getSubtotal()).isEqualByComparingTo("300.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("20.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("280.00");
+    }
+
+    @Test
+    void discount_percent_with_audience_line_keeps_legacy_behavior() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        ProductEntity damaProduct = productRepository.save(ProductEntity.builder()
+                .code("DAMA-003")
+                .name("Bolso Dama Legacy")
+                .salePrice(new BigDecimal("100.00"))
+                .audienceCategory("DAMA")
+                .build());
+        ProductEntity caballeroProduct = productRepository.save(ProductEntity.builder()
+                .code("CAB-003")
+                .name("Billetera Caballero Legacy")
+                .salePrice(new BigDecimal("100.00"))
+                .audienceCategory("CABALLERO")
+                .build());
+
+        seedInventory(damaProduct.getId(), 5);
+        seedInventory(caballeroProduct.getId(), 5);
+
+        KioskPromotionEntity damaPromo = promotionRepository.save(KioskPromotionEntity.builder()
+                .name("10% Dama")
+                .discountType("PERCENT")
+                .discountValue(new BigDecimal("10"))
+                .audienceCategory("DAMA")
+                .active(true)
+                .build());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .promotionId(damaPromo.getId())
+                .items(List.of(
+                        item(damaProduct.getId(), negro.getId(), BigDecimal.ONE),
+                        item(caballeroProduct.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getSubtotal()).isEqualByComparingTo("200.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("10.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("190.00");
+    }
+
+    @Test
     void discount_combo_2x1() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
 
@@ -471,6 +635,22 @@ class KioskPosServiceTest {
                 .build();
 
         assertThat(KioskPosService.isPendingDeposit(sale)).isFalse();
+    }
+
+    private void seedInventory(Long productId, int quantity) {
+        inventoryRepository.save(ProductInventoryLocation.builder()
+                .productId(productId)
+                .locationId(kioskA.getId())
+                .colorId(negro.getId())
+                .quantity(new BigDecimal(quantity))
+                .build());
+
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kioskA.getId())
+                .productId(productId)
+                .colorId(negro.getId())
+                .currentStock(quantity)
+                .build());
     }
 
     private static KioskPosSaleRequest.ItemRequest item(Long productId, Long colorId, BigDecimal qty) {
