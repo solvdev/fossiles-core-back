@@ -120,7 +120,8 @@ Se abre la ventana **"Cobrar venta"**.
 
 #### Promoción
 
-- Las promociones **por línea** (audiencia + categoría) se aplican **solas** cuando el producto cumple los criterios. No hace falta seleccionarlas en cada venta.
+- Las promociones **vigentes** se aplican **solas** en caja (% , monto fijo, combo y por audiencia + categoría). No hace falta seleccionarlas en cada venta.
+- Si varias promos califican, el sistema usa la que más descuento da al cliente.
 - Los **empaques (códigos SUM-)** nunca tienen descuento, ni automático ni manual.
 - Para casos excepcionales, usa botones rápidos: **10% OFF**, **15% OFF**, **20% OFF** (solo sobre productos, no empaques).
 - O busca una promoción guardada escribiendo en el selector (ej. "Liquidación") para **forzar** una campaña concreta.

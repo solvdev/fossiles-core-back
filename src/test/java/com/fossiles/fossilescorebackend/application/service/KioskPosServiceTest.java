@@ -591,6 +591,60 @@ class KioskPosServiceTest {
     }
 
     @Test
+    void discount_auto_applies_percent_without_manual_selection() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPromotionEntity percentPromo = promotionRepository.save(KioskPromotionEntity.builder()
+                .name("10% auto")
+                .discountType("PERCENT")
+                .discountValue(new BigDecimal("10"))
+                .kioskLocationId(kioskA.getId())
+                .active(true)
+                .build());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("25.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("225.00");
+        assertThat(sale.getPromotionId()).isEqualTo(percentPromo.getId());
+        assertThat(sale.getPromotionName()).isEqualTo("10% auto");
+    }
+
+    @Test
+    void discount_auto_applies_combo_without_manual_selection() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPromotionEntity combo = promotionRepository.save(KioskPromotionEntity.builder()
+                .name("2x1 auto")
+                .discountType("COMBO")
+                .discountValue(BigDecimal.ZERO)
+                .comboBuyQty(2)
+                .comboPayQty(1)
+                .kioskLocationId(kioskA.getId())
+                .active(true)
+                .build());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .items(List.of(item(wallet.getId(), negro.getId(), new BigDecimal("2"))))
+                .build());
+
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("250.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("250.00");
+        assertThat(sale.getPromotionId()).isEqualTo(combo.getId());
+        assertThat(sale.getPromotionName()).isEqualTo("2x1 auto");
+    }
+
+    @Test
     void discount_percent_with_audience_line_keeps_legacy_behavior() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
 

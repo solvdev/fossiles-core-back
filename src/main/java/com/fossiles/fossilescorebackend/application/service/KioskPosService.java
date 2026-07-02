@@ -888,6 +888,16 @@ public class KioskPosService {
         return toPromotionResponse(kioskPromotionRepository.save(entity));
     }
 
+    public void deletePromotion(Long id) throws BusinessException, ResourceNotFoundException {
+        UserEntity user = getCurrentUserOrThrow();
+        if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
+            throw new BusinessException("Solo un administrador o logística puede eliminar promociones.");
+        }
+        KioskPromotionEntity entity = kioskPromotionRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("KioskPromotion", id));
+        kioskPromotionRepository.delete(entity);
+    }
+
     @Transactional(readOnly = true)
     public List<KioskProductAvailabilityResponse> findAvailabilityInKiosks(
             Long productId,
@@ -1213,11 +1223,54 @@ public class KioskPosService {
                     false
             );
         }
-        BigDecimal autoDiscount = calculateTieredPercentDiscount(lines, loadActiveTieredPromotions(kioskId, saleDate));
-        if (autoDiscount.compareTo(BigDecimal.ZERO) <= 0) {
+        return resolveAutoPromotionDiscount(subtotal, lines, kioskId, saleDate);
+    }
+
+    private DiscountResolution resolveAutoPromotionDiscount(
+            BigDecimal subtotal,
+            List<PreparedLine> lines,
+            Long kioskId,
+            LocalDate saleDate
+    ) {
+        List<KioskPromotionEntity> activePromotions = loadActivePromotions(kioskId, saleDate);
+        if (activePromotions.isEmpty()) {
             return new DiscountResolution(BigDecimal.ZERO, null, null, false);
         }
-        return new DiscountResolution(autoDiscount, null, "Promoción automática", true);
+
+        BigDecimal bestDiscount = BigDecimal.ZERO;
+        Long bestPromotionId = null;
+        String bestPromotionName = null;
+
+        List<KioskPromotionEntity> tieredPromotions = activePromotions.stream()
+                .filter(promotion -> "TIERED_PERCENT".equals(normalizeDiscountType(promotion.getDiscountType())))
+                .collect(Collectors.toList());
+        BigDecimal tieredDiscount = calculateTieredPercentDiscount(lines, tieredPromotions);
+        if (tieredDiscount.compareTo(bestDiscount) > 0) {
+            bestDiscount = tieredDiscount;
+            bestPromotionName = "Promoción automática";
+        }
+
+        for (KioskPromotionEntity promotion : activePromotions) {
+            if ("TIERED_PERCENT".equals(normalizeDiscountType(promotion.getDiscountType()))) {
+                continue;
+            }
+            BigDecimal discount = calculatePromotionDiscount(subtotal, promotion, lines);
+            if (discount.compareTo(bestDiscount) > 0) {
+                bestDiscount = discount;
+                bestPromotionId = promotion.getId();
+                bestPromotionName = resolvePromotionDisplayName(promotion, null);
+            }
+        }
+
+        if (bestDiscount.compareTo(BigDecimal.ZERO) <= 0) {
+            return new DiscountResolution(BigDecimal.ZERO, null, null, false);
+        }
+        return new DiscountResolution(
+                bestDiscount.setScale(2, RoundingMode.HALF_UP),
+                bestPromotionId,
+                bestPromotionName,
+                true
+        );
     }
 
     private BigDecimal resolveBestTierPercentForLine(PreparedLine line, List<KioskPromotionEntity> promotions) {
@@ -1256,10 +1309,9 @@ public class KioskPosService {
         );
     }
 
-    private List<KioskPromotionEntity> loadActiveTieredPromotions(Long kioskId, LocalDate saleDate) {
+    private List<KioskPromotionEntity> loadActivePromotions(Long kioskId, LocalDate saleDate) {
         return kioskPromotionRepository.findByActiveTrueOrderByNameAsc().stream()
                 .filter(promotion -> isPromotionActiveOnDate(promotion, saleDate))
-                .filter(promotion -> "TIERED_PERCENT".equals(normalizeDiscountType(promotion.getDiscountType())))
                 .filter(promotion -> promotion.getKioskLocationId() == null
                         || Objects.equals(promotion.getKioskLocationId(), kioskId))
                 .collect(Collectors.toList());
