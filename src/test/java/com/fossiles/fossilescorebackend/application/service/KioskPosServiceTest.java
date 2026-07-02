@@ -645,6 +645,26 @@ class KioskPosServiceTest {
     }
 
     @Test
+    void managerDashboard_reflects_completed_sales() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        var dashboard = kioskPosService.getManagerDashboard(kioskA.getId());
+
+        assertThat(dashboard.getToday().getCount()).isEqualTo(1);
+        assertThat(dashboard.getToday().getAmount()).isEqualByComparingTo(sale.getTotalAmount());
+        assertThat(dashboard.getMonthToDate().getCount()).isEqualTo(1);
+        assertThat(dashboard.getMonthToDate().getAmount()).isEqualByComparingTo(sale.getTotalAmount());
+    }
+
+    @Test
     void discount_percent_with_audience_line_keeps_legacy_behavior() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
 

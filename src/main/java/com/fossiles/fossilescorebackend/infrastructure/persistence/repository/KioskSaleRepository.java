@@ -43,31 +43,4 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             ORDER BY s.soldAt DESC
             """)
     List<KioskSaleEntity> findPendingDepositsByKioskLocationId(@Param("kioskLocationId") Long kioskLocationId);
-
-    @Query("""
-            SELECT
-                COALESCE(SUM(CASE WHEN s.saleDate = :today THEN s.totalAmount ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN s.saleDate = :today THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN s.saleDate = :todayLastYear THEN s.totalAmount ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN s.saleDate = :todayLastYear THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN s.saleDate >= :lastMonthStart AND s.saleDate <= :lastMonthEnd THEN s.totalAmount ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN s.saleDate >= :lastMonthStart AND s.saleDate <= :lastMonthEnd THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN s.saleDate >= :monthToDateStart AND s.saleDate <= :today THEN s.totalAmount ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN s.saleDate >= :monthToDateStart AND s.saleDate <= :today THEN 1 ELSE 0 END), 0)
-            FROM KioskSaleEntity s
-            WHERE s.kioskLocationId = :kioskLocationId
-              AND s.saleDate >= :rangeStart
-              AND s.saleDate <= :rangeEnd
-              AND (s.status IS NULL OR UPPER(s.status) <> 'VOID')
-            """)
-    Object[] aggregateManagerDashboardMetrics(
-            @Param("kioskLocationId") Long kioskLocationId,
-            @Param("today") LocalDate today,
-            @Param("todayLastYear") LocalDate todayLastYear,
-            @Param("lastMonthStart") LocalDate lastMonthStart,
-            @Param("lastMonthEnd") LocalDate lastMonthEnd,
-            @Param("monthToDateStart") LocalDate monthToDateStart,
-            @Param("rangeStart") LocalDate rangeStart,
-            @Param("rangeEnd") LocalDate rangeEnd
-    );
 }

@@ -751,23 +751,27 @@ public class KioskPosService {
         LocalDate rangeStart = todayLastYear.isBefore(lastMonthStart)
                 ? todayLastYear
                 : lastMonthStart;
-        LocalDate rangeEnd = today.isAfter(lastMonthEnd) ? today : lastMonthEnd;
 
-        Object[] row = kioskSaleRepository.aggregateManagerDashboardMetrics(
-                kiosk.getId(),
-                today,
+        List<KioskSaleEntity> sales = findSalesByDateRangeForKiosk(kiosk.getId(), rangeStart, today).stream()
+                .filter(KioskPosService::countsForManagerDashboard)
+                .toList();
+
+        KioskPosManagerDashboardResponse.Metric todayMetric = buildDashboardMetric(sales, today, today);
+        KioskPosManagerDashboardResponse.Metric todayLastYearMetric = buildDashboardMetric(
+                sales,
                 todayLastYear,
-                lastMonthStart,
-                lastMonthEnd,
-                monthToDateStart,
-                rangeStart,
-                rangeEnd
+                todayLastYear
         );
-
-        KioskPosManagerDashboardResponse.Metric todayMetric = toDashboardMetric(row, 0, 1);
-        KioskPosManagerDashboardResponse.Metric todayLastYearMetric = toDashboardMetric(row, 2, 3);
-        KioskPosManagerDashboardResponse.Metric lastMonthMetric = toDashboardMetric(row, 4, 5);
-        KioskPosManagerDashboardResponse.Metric monthToDateMetric = toDashboardMetric(row, 6, 7);
+        KioskPosManagerDashboardResponse.Metric lastMonthMetric = buildDashboardMetric(
+                sales,
+                lastMonthStart,
+                lastMonthEnd
+        );
+        KioskPosManagerDashboardResponse.Metric monthToDateMetric = buildDashboardMetric(
+                sales,
+                monthToDateStart,
+                today
+        );
 
         return KioskPosManagerDashboardResponse.builder()
                 .today(todayMetric)
@@ -1753,18 +1757,28 @@ public class KioskPosService {
         return sale != null && !Boolean.TRUE.equals(sale.getTestSale()) && !isVoidSale(sale);
     }
 
-    private KioskPosManagerDashboardResponse.Metric toDashboardMetric(Object[] row, int amountIndex, int countIndex) {
+    static boolean countsForManagerDashboard(KioskSaleEntity sale) {
+        if (sale == null || isVoidSale(sale)) {
+            return false;
+        }
+        String status = safeTrimStatic(sale.getStatus());
+        return status.isEmpty() || "COMPLETED".equalsIgnoreCase(status);
+    }
+
+    private KioskPosManagerDashboardResponse.Metric buildDashboardMetric(
+            List<KioskSaleEntity> sales,
+            LocalDate startDate,
+            LocalDate endDate
+    ) {
         BigDecimal amount = BigDecimal.ZERO;
         int count = 0;
-        if (row != null && row.length > countIndex) {
-            if (row[amountIndex] instanceof BigDecimal bd) {
-                amount = bd;
-            } else if (row[amountIndex] instanceof Number number) {
-                amount = BigDecimal.valueOf(number.doubleValue());
+        for (KioskSaleEntity sale : sales) {
+            LocalDate saleDate = sale.getSaleDate();
+            if (saleDate == null || saleDate.isBefore(startDate) || saleDate.isAfter(endDate)) {
+                continue;
             }
-            if (row[countIndex] instanceof Number number) {
-                count = number.intValue();
-            }
+            count += 1;
+            amount = amount.add(sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO);
         }
         return KioskPosManagerDashboardResponse.Metric.builder()
                 .amount(amount.setScale(2, RoundingMode.HALF_UP))
