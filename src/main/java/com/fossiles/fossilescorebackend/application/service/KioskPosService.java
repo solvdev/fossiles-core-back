@@ -21,6 +21,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAva
 import com.fossiles.fossilescorebackend.application.dto.response.TaxpayerLookupResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskCashSessionEntity;
@@ -112,7 +113,7 @@ public class KioskPosService {
             String colorName
     ) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
@@ -246,7 +247,7 @@ public class KioskPosService {
         }
 
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
         KioskCashSessionEntity openSession = requireOpenCashSession(kiosk.getId());
@@ -439,7 +440,7 @@ public class KioskPosService {
             com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleInvoiceContactRequest request
     ) throws BusinessException, ResourceNotFoundException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
@@ -485,7 +486,7 @@ public class KioskPosService {
     public KioskPosSaleResponse getSaleById(Long saleId, Long kioskLocationId)
             throws BusinessException, ResourceNotFoundException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
@@ -506,7 +507,7 @@ public class KioskPosService {
             throw new BusinessException("Debes indicar la forma de pago.");
         }
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
@@ -560,7 +561,7 @@ public class KioskPosService {
             throw new BusinessException("Debes indicar el motivo de anulación.");
         }
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
@@ -645,7 +646,7 @@ public class KioskPosService {
             throw new BusinessException("Debes indicar el número de boleta de depósito.");
         }
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
@@ -668,7 +669,7 @@ public class KioskPosService {
     @Transactional(readOnly = true)
     public KioskPendingDepositSummaryResponse getPendingDepositSummary(Long kioskLocationId) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
@@ -692,7 +693,7 @@ public class KioskPosService {
             Long kioskLocationId
     ) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
         List<KioskSaleEntity> sales = findSalesByDateRangeForKiosk(kiosk.getId(), startDate, endDate);
@@ -702,7 +703,7 @@ public class KioskPosService {
     @Transactional(readOnly = true)
     public KioskPosManagerDashboardResponse getManagerDashboard(Long kioskLocationId) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
@@ -748,7 +749,7 @@ public class KioskPosService {
             Long kioskLocationId
     ) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
         List<KioskSaleEntity> sales = findSalesByDateRangeForKiosk(kiosk.getId(), startDate, endDate);
@@ -758,8 +759,8 @@ public class KioskPosService {
     @Transactional(readOnly = true)
     public KioskPosReportsResponse getGeneralReport(LocalDate startDate, LocalDate endDate) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        if (!isAdminUser(user)) {
-            throw new BusinessException("Solo administradores pueden ver el reporte general de kioskos.");
+        if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
+            throw new BusinessException("Solo administradores o logística pueden ver el reporte general de kioskos.");
         }
         List<KioskSaleEntity> sales = findSalesByDateRange(startDate, endDate).stream()
                 .filter(KioskPosService::countsForProductionMetrics)
@@ -794,7 +795,7 @@ public class KioskPosService {
     @Transactional(readOnly = true)
     public List<KioskPromotionResponse> getPromotions(Boolean activeOnly, Long kioskLocationId) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         Set<Long> allowedKioskIds = null;
         if (!admin) {
             List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, false);
@@ -828,8 +829,8 @@ public class KioskPosService {
 
     public KioskPromotionResponse createPromotion(KioskPromotionRequest request) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        if (!isAdminUser(user)) {
-            throw new BusinessException("Solo un administrador puede crear promociones.");
+        if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
+            throw new BusinessException("Solo un administrador o logística puede crear promociones.");
         }
         validatePromotionRequest(request);
         KioskPromotionEntity entity = toPromotionEntity(request, user.getId());
@@ -840,8 +841,8 @@ public class KioskPosService {
     public KioskPromotionResponse updatePromotion(Long id, KioskPromotionRequest request)
             throws BusinessException, ResourceNotFoundException {
         UserEntity user = getCurrentUserOrThrow();
-        if (!isAdminUser(user)) {
-            throw new BusinessException("Solo un administrador puede editar promociones.");
+        if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
+            throw new BusinessException("Solo un administrador o logística puede editar promociones.");
         }
         validatePromotionRequest(request);
         KioskPromotionEntity entity = kioskPromotionRepository.findById(id)
@@ -863,7 +864,7 @@ public class KioskPosService {
         }
 
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity currentKiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
@@ -1463,16 +1464,6 @@ public class KioskPosService {
                 .orElseThrow(() -> new BusinessException("No tienes acceso al kiosko seleccionado."));
     }
 
-    private boolean isAdminUser(UserEntity user) {
-        if (user == null || user.getRoles() == null) {
-            return false;
-        }
-        return user.getRoles().stream()
-                .filter(Objects::nonNull)
-                .map(role -> normalizeText(role.getName()))
-                .anyMatch(roleName -> roleName.contains("ADMIN"));
-    }
-
     private boolean isKioskLocation(LocationEntity location) {
         String categoria = normalizeText(location != null ? location.getCategoria() : null);
         String name = normalizeText(location != null ? location.getName() : null);
@@ -1893,7 +1884,7 @@ public class KioskPosService {
     @Transactional(readOnly = true)
     public KioskCashSessionResponse getCurrentCashSession(Long kioskLocationId) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
         return kioskCashSessionRepository
@@ -1904,7 +1895,7 @@ public class KioskPosService {
 
     public KioskCashSessionResponse openCashSession(KioskCashSessionOpenRequest request) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request != null ? request.getKioskLocationId() : null);
 
@@ -1935,7 +1926,7 @@ public class KioskPosService {
             throw new BusinessException("La caja ya está cerrada.");
         }
 
-        boolean admin = isAdminUser(user);
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         resolveTargetKiosk(availableKiosks, session.getKioskLocationId());
 

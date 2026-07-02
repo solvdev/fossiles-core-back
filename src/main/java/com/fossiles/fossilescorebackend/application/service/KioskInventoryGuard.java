@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.PermissionEntity;
@@ -81,15 +82,11 @@ public class KioskInventoryGuard {
         if (user == null || user.getRoles() == null) {
             return false;
         }
+        if (KioskAccessHelper.hasAllKiosksAccess(user)) {
+            return true;
+        }
         for (RoleEntity role : user.getRoles()) {
-            if (role == null || role.getName() == null) {
-                continue;
-            }
-            String roleName = role.getName().toUpperCase(Locale.ROOT);
-            if (roleName.contains("ADMIN")) {
-                return true;
-            }
-            if (role.getPermissions() == null) {
+            if (role == null || role.getPermissions() == null) {
                 continue;
             }
             for (PermissionEntity permission : role.getPermissions()) {
