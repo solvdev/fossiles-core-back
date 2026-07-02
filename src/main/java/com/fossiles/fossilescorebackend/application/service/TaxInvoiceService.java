@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ManualTaxInvoiceRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.UpdateTaxInvoiceFelMetadataRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.FelCertificationResult;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceAttemptResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceCertifiedXmlDownload;
@@ -10,13 +11,16 @@ import com.fossiles.fossilescorebackend.application.dto.response.TaxpayerLookupR
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.model.TaxInvoiceDocument;
+import com.fossiles.fossilescorebackend.infrastructure.config.FelCredentials;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationInternalNumberSequenceEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaxInvoiceEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaxInvoiceLineEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationInternalNumberSequenceRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaxInvoiceRepository;
@@ -32,8 +36,8 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
+import com.fossiles.fossilescorebackend.infrastructure.util.FelEmissionDateResolver;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -49,11 +53,13 @@ public class TaxInvoiceService {
     private static final Set<String> NON_INVOICEABLE_ONLINE_STATUSES = Set.of(
             "ANULADA", "CANCELADO", "DEVOLUCION"
     );
+    private static final Set<String> VALID_DOCUMENT_TYPES = Set.of("FACT", "FCAM");
 
     private final TaxInvoiceRepository taxInvoiceRepository;
     private final KioskSaleRepository kioskSaleRepository;
     private final OnlineSaleRepository onlineSaleRepository;
     private final LocationRepository locationRepository;
+    private final LocationInternalNumberSequenceRepository locationInternalNumberSequenceRepository;
     private final OnlineSaleService onlineSaleService;
     private final KioskSaleInvoiceMapper kioskSaleInvoiceMapper;
     private final OnlineSaleInvoiceMapper onlineSaleInvoiceMapper;
@@ -65,6 +71,7 @@ public class TaxInvoiceService {
     private final FelReceptorLookupService receptorLookupService;
     private final SecurityUtil securityUtil;
     private final TaxInvoiceAttemptService taxInvoiceAttemptService;
+    private final TaxInvoiceAccessGuard taxInvoiceAccessGuard;
 
     @Transactional
     public TaxInvoiceResponse issueFromKioskSale(KioskSaleEntity sale, boolean requestInvoice)
@@ -138,23 +145,20 @@ public class TaxInvoiceService {
             return toResponse(invoice);
         }
 
-        validateEmitterConfig();
-        ZonedDateTime originalEmission = invoice.getFelCertifiedAt() != null
-                ? invoice.getFelCertifiedAt().atZone(ZoneId.of("America/Guatemala"))
-                : invoice.getIssuedAt() != null
-                ? invoice.getIssuedAt().atZone(ZoneId.of("America/Guatemala"))
-                : ZonedDateTime.now(ZoneId.of("America/Guatemala"));
+        FelCredentials credentials = properties.resolveCredentials(resolveSandboxMode(invoice));
+        validateEmitterConfig(credentials);
+        String originalEmission = FelEmissionDateResolver.resolveAnnulmentEmissionDateTime(invoice);
 
         String transactionId = "VOID-" + invoice.getId() + "-" + System.currentTimeMillis();
         String unsignedXml = anulacionXmlBuilder.buildUnsignedAnulacionXml(
                 invoice.getFelUuid(),
-                properties.getNitEmisor(),
+                credentials.nitEmisor(),
                 invoice.getCustomerTaxId(),
                 originalEmission,
                 trimmedReason
         );
-        String signedXml = signerService.signXml(unsignedXml, transactionId, true);
-        FelCertificationResult result = certificationService.certifyAnnulmentSignedXml(signedXml, transactionId);
+        String signedXml = signerService.signXml(unsignedXml, transactionId, true, credentials);
+        FelCertificationResult result = certificationService.certifyAnnulmentSignedXml(signedXml, transactionId, credentials);
 
         if (!"CERTIFIED".equals(result.getStatus())) {
             String msg = result.getErrorMessage() != null ? result.getErrorMessage() : "Anulación FEL rechazada.";
@@ -174,7 +178,7 @@ public class TaxInvoiceService {
 
     private void markInvoiceVoidLocal(TaxInvoiceEntity invoice, String reason, String voidUuid) {
         invoice.setStatus("VOID");
-        invoice.setVoidedAt(LocalDateTime.now());
+        invoice.setVoidedAt(GuatemalaDateTime.now());
         invoice.setVoidReason(reason);
         invoice.setFelVoidUuid(voidUuid);
     }
@@ -248,6 +252,57 @@ public class TaxInvoiceService {
         return getById(invoiceId);
     }
 
+    /**
+     * Corrige manualmente UUID, serie, número y fecha de emisión FEL cuando la venta quedó en prueba
+     * pero la factura real se emitió en SAT. Solo admin, logística y contabilidad.
+     */
+    @Transactional
+    public TaxInvoiceResponse updateFelMetadata(Long invoiceId, UpdateTaxInvoiceFelMetadataRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        taxInvoiceAccessGuard.assertCanEditFelMetadata();
+        TaxInvoiceEntity invoice = taxInvoiceRepository.findById(invoiceId)
+                .orElseThrow(() -> new ResourceNotFoundException("TaxInvoice", invoiceId));
+        if ("VOID".equalsIgnoreCase(safe(invoice.getStatus()))) {
+            throw new BusinessException("No se puede editar una factura anulada.");
+        }
+
+        String uuid = trimToNull(request.getFelUuid());
+        String serie = trimToNull(request.getFelSerie());
+        String numero = trimToNull(request.getFelNumero());
+        if (uuid == null || serie == null || numero == null) {
+            throw new BusinessException("UUID, serie y número FEL son obligatorios.");
+        }
+        if (request.getFelCertifiedDate() == null) {
+            throw new BusinessException("La fecha de emisión FEL es obligatoria.");
+        }
+        validateFelUuidFormat(uuid);
+
+        LocalDateTime certifiedAt = request.getFelCertifiedDate().atTime(12, 0);
+        String previousSummary = summarizeFel(invoice);
+
+        invoice.setFelUuid(uuid);
+        invoice.setFelSerie(serie);
+        invoice.setFelNumero(numero);
+        invoice.setFelCertifiedAt(certifiedAt);
+        invoice.setIssuedAt(certifiedAt);
+        invoice.setFelError(null);
+        invoice.setStatus("CERTIFIED");
+
+        String userNote = trimToNull(request.getCorrectionNotes());
+        String auditLine = "[Corrección FEL manual "
+                + GuatemalaDateTime.now()
+                + " por usuario "
+                + securityUtil.getCurrentUserId()
+                + "] "
+                + (userNote != null ? userNote : "Datos FEL actualizados")
+                + (previousSummary != null ? " | Anterior: " + previousSummary : "");
+        appendInvoiceNote(invoice, auditLine);
+
+        TaxInvoiceEntity saved = taxInvoiceRepository.save(invoice);
+        syncSourceFelFields(saved);
+        return toResponse(saved);
+    }
+
     private TaxInvoiceDocument rebuildDocumentForRetry(TaxInvoiceEntity invoice)
             throws BusinessException, ResourceNotFoundException {
         if ("ONLINE_SALE".equals(invoice.getSourceType()) && invoice.getSourceId() != null) {
@@ -271,6 +326,10 @@ public class TaxInvoiceService {
     }
 
     private void syncInvoiceFromDocument(TaxInvoiceEntity invoice, TaxInvoiceDocument document) {
+        // El número de control interno y el tipo de documento ya quedaron fijados al crear el
+        // borrador; un reintento debe certificar el mismo documento, no generar uno nuevo.
+        document.setInternalNumber(invoice.getInternalNumber());
+        document.setDocumentType(invoice.getDocumentType());
         invoice.setCustomerTaxId(normalizeTaxId(document.getCustomerTaxId()));
         invoice.setCustomerName(document.getCustomerName());
         invoice.setAddress(document.getAddress());
@@ -334,6 +393,16 @@ public class TaxInvoiceService {
                 .content(invoice.getFelCertifiedXml().getBytes(java.nio.charset.StandardCharsets.UTF_8))
                 .contentType("application/xml")
                 .build();
+    }
+
+    @Transactional(readOnly = true)
+    public String getInternalNumber(Long invoiceId) {
+        if (invoiceId == null) {
+            return null;
+        }
+        return taxInvoiceRepository.findById(invoiceId)
+                .map(TaxInvoiceEntity::getInternalNumber)
+                .orElse(null);
     }
 
     @Transactional(readOnly = true)
@@ -458,7 +527,8 @@ public class TaxInvoiceService {
 
         return TaxInvoiceDocument.builder()
                 .transactionId("MAN-" + System.currentTimeMillis())
-                .issuedAt(LocalDateTime.now())
+                .issuedAt(GuatemalaDateTime.now())
+                .documentType(resolveDocumentType(request.getDocumentType()))
                 .customerTaxId(taxId)
                 .customerName(customerName)
                 .address(trimToNull(request.getAddress()))
@@ -494,10 +564,12 @@ public class TaxInvoiceService {
             Long createdBy
     ) {
         BigDecimal taxAmount = sumTax(document);
+        String documentType = resolveDocumentType(document.getDocumentType());
+        document.setDocumentType(documentType);
         TaxInvoiceEntity invoice = TaxInvoiceEntity.builder()
                 .sourceType(sourceType)
                 .sourceId(sourceId)
-                .documentType("FACT")
+                .documentType(documentType)
                 .status("DRAFT")
                 .customerTaxId(normalizeTaxId(document.getCustomerTaxId()))
                 .customerName(document.getCustomerName())
@@ -509,7 +581,7 @@ public class TaxInvoiceService {
                 .taxAmount(taxAmount)
                 .totalAmount(document.getTotalAmount())
                 .felTransactionId(document.getTransactionId())
-                .issuedAt(document.getIssuedAt() != null ? document.getIssuedAt() : LocalDateTime.now())
+                .issuedAt(document.getIssuedAt() != null ? document.getIssuedAt() : GuatemalaDateTime.now())
                 .createdBy(createdBy)
                 .lines(new ArrayList<>())
                 .build();
@@ -532,8 +604,41 @@ public class TaxInvoiceService {
         }
 
         TaxInvoiceEntity saved = taxInvoiceRepository.save(invoice);
-        saved.setInternalNumber(String.format("TINV-%06d", saved.getId()));
+        String internalNumber = generateInternalNumber(saved.getId(), document.getLocationInternalSeriesCode());
+        saved.setInternalNumber(internalNumber);
+        document.setInternalNumber(internalNumber);
         return taxInvoiceRepository.save(saved);
+    }
+
+    private String resolveDocumentType(String requested) {
+        String normalized = trimToNull(requested);
+        if (normalized == null) {
+            return "FACT";
+        }
+        normalized = normalized.toUpperCase(Locale.ROOT);
+        return VALID_DOCUMENT_TYPES.contains(normalized) ? normalized : "FACT";
+    }
+
+    /**
+     * Número de control interno = "{código de serie de la ubicación}-{correlativo}", ej. "A1-241".
+     * El correlativo avanza por serie solo cuando se emite una factura (nunca por cada venta).
+     * Si la ubicación aún no tiene código de serie asignado, se usa un identificador genérico
+     * basado en el id de la factura para no bloquear la emisión.
+     */
+    private String generateInternalNumber(Long invoiceId, String locationSeriesCode) {
+        if (locationSeriesCode == null || locationSeriesCode.isBlank()) {
+            return String.format("TINV-%06d", invoiceId);
+        }
+        LocationInternalNumberSequenceEntity sequence = locationInternalNumberSequenceRepository
+                .findWithLockBySeriesCode(locationSeriesCode)
+                .orElseGet(() -> LocationInternalNumberSequenceEntity.builder()
+                        .seriesCode(locationSeriesCode)
+                        .lastNumber(0)
+                        .build());
+        int next = (sequence.getLastNumber() != null ? sequence.getLastNumber() : 0) + 1;
+        sequence.setLastNumber(next);
+        locationInternalNumberSequenceRepository.save(sequence);
+        return locationSeriesCode + "-" + next;
     }
 
     private void certify(TaxInvoiceEntity invoice, TaxInvoiceDocument document, boolean retry)
@@ -552,10 +657,11 @@ public class TaxInvoiceService {
         invoice.setFelTransactionId(transactionId);
 
         try {
-            validateEmitterConfig();
-            String unsignedXml = factXmlBuilder.buildUnsignedXml(document);
-            String signedXml = signerService.signXml(unsignedXml, transactionId);
-            FelCertificationResult result = certificationService.certifySignedXml(signedXml, transactionId);
+            FelCredentials credentials = properties.resolveCredentials(resolveSandboxMode(invoice));
+            validateEmitterConfig(credentials);
+            String unsignedXml = factXmlBuilder.buildUnsignedXml(document, credentials);
+            String signedXml = signerService.signXml(unsignedXml, transactionId, credentials);
+            FelCertificationResult result = certificationService.certifySignedXml(signedXml, transactionId, credentials);
             applyResult(invoice, result);
 
             if (!"CERTIFIED".equals(result.getStatus())) {
@@ -611,6 +717,15 @@ public class TaxInvoiceService {
                 syncKioskSaleFelFields(sale, invoice);
                 kioskSaleRepository.save(sale);
             });
+            return;
+        }
+        if ("ONLINE_SALE".equals(invoice.getSourceType()) && invoice.getSourceId() != null) {
+            onlineSaleRepository.findById(invoice.getSourceId()).ifPresent(sale -> {
+                if (sale.getInvoiceId() == null) {
+                    sale.setInvoiceId(invoice.getId());
+                    onlineSaleRepository.save(sale);
+                }
+            });
         }
     }
 
@@ -638,7 +753,7 @@ public class TaxInvoiceService {
             invoice.setFelSerie(result.getSerie());
             invoice.setFelNumero(result.getNumero());
             invoice.setFelError(null);
-            invoice.setFelCertifiedAt(LocalDateTime.now());
+            invoice.setFelCertifiedAt(GuatemalaDateTime.now());
             if (result.getCertifiedXml() != null && !result.getCertifiedXml().isBlank()) {
                 invoice.setFelCertifiedXml(result.getCertifiedXml());
             }
@@ -669,8 +784,14 @@ public class TaxInvoiceService {
         if (document == null) {
             return;
         }
+        String defaultCode = firstNonBlank(properties.getCodigoEstablecimiento(), "1");
+        locationRepository.findFirstByFelEstablishmentCode(defaultCode)
+                .ifPresent(location -> applyLocationEmitter(document, location));
         if (isBlank(document.getEmitterEstablishmentCode())) {
-            document.setEmitterEstablishmentCode(properties.getCodigoEstablecimiento());
+            document.setEmitterEstablishmentCode(defaultCode);
+        }
+        if (isBlank(document.getEmitterCommercialName())) {
+            document.setEmitterCommercialName(properties.getNombreComercial());
         }
         if (isBlank(document.getEmitterAddressLine())) {
             document.setEmitterAddressLine(properties.getDireccion());
@@ -687,6 +808,9 @@ public class TaxInvoiceService {
         if (location.getFelEstablishmentCode() != null && !location.getFelEstablishmentCode().isBlank()) {
             document.setEmitterEstablishmentCode(location.getFelEstablishmentCode().trim());
         }
+        if (location.getFelEstablishmentName() != null && !location.getFelEstablishmentName().isBlank()) {
+            document.setEmitterCommercialName(location.getFelEstablishmentName().trim());
+        }
         if (location.getFelAddressLine() != null && !location.getFelAddressLine().isBlank()) {
             document.setEmitterAddressLine(location.getFelAddressLine().trim());
         }
@@ -697,6 +821,9 @@ public class TaxInvoiceService {
         String departamento = firstNonBlank(location.getFelDepartamento(), location.getDepartamento());
         if (!departamento.isBlank()) {
             document.setEmitterDepartamento(departamento.toUpperCase(Locale.ROOT));
+        }
+        if (location.getInternalSeriesCode() != null && !location.getInternalSeriesCode().isBlank()) {
+            document.setLocationInternalSeriesCode(location.getInternalSeriesCode().trim().toUpperCase(Locale.ROOT));
         }
     }
 
@@ -714,15 +841,39 @@ public class TaxInvoiceService {
         if (document.getTotalAmount() == null || document.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("El total de la factura debe ser mayor a cero.");
         }
+        if ("FCAM".equalsIgnoreCase(safe(document.getDocumentType()))) {
+            throw new BusinessException(
+                    "Factura Cambiaria (FCAM) requiere el complemento de Abonos exigido por SAT, "
+                            + "que aún no está implementado. Emite como Factura (FACT) por ahora.");
+        }
     }
 
-    private void validateEmitterConfig() throws BusinessException {
-        if (isBlank(properties.getNitEmisor())
-                || isBlank(properties.getNombreEmisor())
-                || isBlank(properties.getDireccion())) {
+    private void validateEmitterConfig(FelCredentials credentials) throws BusinessException {
+        if (isBlank(credentials.nitEmisor())
+                || isBlank(credentials.nombreEmisor())
+                || isBlank(credentials.direccion())) {
             throw new BusinessException(
                     "Configuración FEL incompleta (nit-emisor, nombre-emisor, dirección). Revise fel.emission.*");
         }
+    }
+
+    /**
+     * Decide si una factura debe certificarse contra el ambiente sandbox (implementación) o
+     * producción de INFILE. El apagador global {@code fel.emission.test-mode} fuerza sandbox
+     * para todo; si no está activo, para ventas de kiosko se respeta el flag por ubicación
+     * (locations.pos_test_mode, ya reflejado en KioskSaleEntity.testSale). Ventas online y
+     * facturas manuales usan siempre CUEROGLAM central, por lo que solo dependen del apagador global.
+     */
+    private boolean resolveSandboxMode(TaxInvoiceEntity invoice) {
+        if (properties.isTestMode()) {
+            return true;
+        }
+        if ("KIOSK_SALE".equals(invoice.getSourceType()) && invoice.getSourceId() != null) {
+            return kioskSaleRepository.findById(invoice.getSourceId())
+                    .map(sale -> Boolean.TRUE.equals(sale.getTestSale()))
+                    .orElse(false);
+        }
+        return false;
     }
 
     private TaxInvoiceDocument toDocument(TaxInvoiceEntity invoice) {
@@ -740,6 +891,8 @@ public class TaxInvoiceService {
         return TaxInvoiceDocument.builder()
                 .transactionId(invoice.getFelTransactionId())
                 .issuedAt(invoice.getIssuedAt())
+                .documentType(invoice.getDocumentType())
+                .internalNumber(invoice.getInternalNumber())
                 .customerTaxId(invoice.getCustomerTaxId())
                 .customerName(invoice.getCustomerName())
                 .address(invoice.getAddress())
@@ -833,6 +986,35 @@ public class TaxInvoiceService {
 
     private static boolean hasCertifiedXml(TaxInvoiceEntity invoice) {
         return invoice.getFelCertifiedXml() != null && !invoice.getFelCertifiedXml().isBlank();
+    }
+
+    private static void validateFelUuidFormat(String uuid) throws BusinessException {
+        String normalized = uuid.trim();
+        if (normalized.length() < 30 || normalized.length() > 64) {
+            throw new BusinessException("El UUID FEL no tiene un formato válido.");
+        }
+    }
+
+    private static String summarizeFel(TaxInvoiceEntity invoice) {
+        if (invoice == null) {
+            return null;
+        }
+        String serie = trimToNull(invoice.getFelSerie());
+        String numero = trimToNull(invoice.getFelNumero());
+        String uuid = trimToNull(invoice.getFelUuid());
+        if (serie == null && numero == null && uuid == null) {
+            return null;
+        }
+        return (serie != null ? serie : "—") + "-" + (numero != null ? numero : "—")
+                + (uuid != null ? " UUID=" + uuid : "");
+    }
+
+    private static void appendInvoiceNote(TaxInvoiceEntity invoice, String line) {
+        if (line == null || line.isBlank()) {
+            return;
+        }
+        String existing = invoice.getNotes() == null ? "" : invoice.getNotes().trim();
+        invoice.setNotes(existing.isEmpty() ? line.trim() : existing + "\n" + line.trim());
     }
 
     private static String safe(String value) {

@@ -30,8 +30,10 @@ server.port=8080
 # ============================================
 # JWT CONFIGURATION
 # ============================================
-jwt.secret=MySecretKeyForJWTTokenGenerationAndValidationMustBeAtLeast256BitsLongForHS512Algorithm
+jwt.secret=TU_JWT_SECRET_MINIMO_256_BITS
 jwt.expiration=86400000
+jwt.access-expiration=3600000
+jwt.refresh-expiration=7776000000
 
 # ============================================
 # ENCRYPTION CONFIGURATION (AES)
@@ -70,8 +72,66 @@ app.s3.enabled=true
 # app.s3.region=us-east-2
 # app.s3.enabled=true
 
+# ============================================
+# FEL — Consulta NIT receptores (POS / facturación)
+# ============================================
+fel.receptor.url=https://consultareceptores.feel.com.gt/rest/action
+fel.receptor.emisor-codigo=${FEL_EMISOR_CODIGO:}
+fel.receptor.emisor-clave=${FEL_EMISOR_CLAVE:}
+fel.receptor.enabled=true
 
+# FEL — Emisión DTE (POS: generar XML, firmar y certificar FACT)
+#
+# fel.emission.test-mode es un apagador de EMERGENCIA: si es true, TODAS las ventas certifican
+# con las credenciales fel.emission.sandbox.* sin importar el flag por kiosko. En false (normal
+# una vez que hay kioskos productivos), cada venta certifica con:
+#   - fel.emission.* (producción)  si locations.pos_test_mode = false
+#   - fel.emission.sandbox.*       si locations.pos_test_mode = true (piloto, sin validez fiscal)
+# Ese flag se activa/desactiva por kiosko en Catálogos → Ubicaciones → "Modo piloto POS", sin
+# reiniciar el servidor. Ventas online y facturación manual usan siempre fel.emission.* (producción),
+# salvo que el apagador global test-mode esté activo.
+fel.emission.enabled=true
+fel.emission.test-mode=false
+fel.emission.required=false
+fel.emission.sign-url=https://signer-emisores.feel.com.gt/sign_solicitud_firmas/firma_xml
+fel.emission.certify-url=https://certificador.feel.com.gt/fel/certificacion/v2/dte/
 
+# Credenciales de PRODUCCIÓN INFILE (kioskos con pos_test_mode=false):
+fel.emission.sign-key=${FEL_SIGN_KEY:}
+fel.emission.sign-alias=${FEL_SIGN_ALIAS:}
+fel.emission.cert-usuario=${FEL_CERT_USUARIO:}
+fel.emission.cert-llave=${FEL_CERT_LLAVE:}
+fel.emission.nit-emisor=${FEL_NIT_EMISOR:}
+fel.emission.nombre-emisor=${FEL_NOMBRE_EMISOR:CUEROGLAM, SOCIEDAD ANÓNIMA}
+fel.emission.nombre-comercial=${FEL_NOMBRE_COMERCIAL:CUEROGLAM}
+fel.emission.correo-emisor=${FEL_CORREO_EMISOR:}
+fel.emission.afiliacion-iva=GEN
+# Fallback si la ubicación no tiene fel_establishment_code; cada kiosko lo define en BD/UI:
+fel.emission.codigo-establecimiento=1
+fel.emission.direccion=${FEL_DIRECCION_EMISOR:DIAGONAL 29 00-22 17 CALZADA LA PAZ Guatemala, GUATEMALA}
+fel.emission.codigo-postal=0
+fel.emission.municipio=Guatemala
+fel.emission.departamento=GUATEMALA
+fel.emission.pais=GT
+fel.emission.document-type=FACT
+fel.emission.moneda=GTQ
+fel.emission.frases[0].tipo=1
+fel.emission.frases[0].escenario=1
+fel.emission.frases[1].tipo=4
+fel.emission.frases[1].escenario=1
+# NO usar frase tipo 2 escenario 1 con afiliación GEN (error SAT 2614).
 
-
+# Credenciales SANDBOX/implementación INFILE (kioskos con pos_test_mode=true, aún piloto).
+# Si se dejan en blanco, el backend autocompleta las credenciales demo públicas de INFILE.
+fel.emission.sandbox.sign-key=
+fel.emission.sandbox.sign-alias=
+fel.emission.sandbox.cert-usuario=
+fel.emission.sandbox.cert-llave=
+fel.emission.sandbox.nit-emisor=
+fel.emission.sandbox.nombre-emisor=
+fel.emission.sandbox.nombre-comercial=
+fel.emission.sandbox.afiliacion-iva=GEN
+fel.emission.sandbox.direccion=
+fel.emission.sandbox.municipio=Guatemala
+fel.emission.sandbox.departamento=GUATEMALA
 

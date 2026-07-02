@@ -22,6 +22,9 @@ public class InternalShipmentRequestCreateRequest {
     @NotBlank(message = "El nombre del colaborador es obligatorio")
     private String recipientName;
 
+    /** Empleado de planilla vinculado a la solicitud (opcional para DEFECTOS). */
+    private Long employeeId;
+
     private String recipientPhone;
 
     private String recipientTaxId;

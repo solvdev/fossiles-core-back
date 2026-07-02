@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ManualTaxInvoiceRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.UpdateTaxInvoiceFelMetadataRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceAttemptResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceCertifiedXmlDownload;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceResponse;
@@ -15,6 +16,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -94,5 +96,13 @@ public class TaxInvoiceController {
     public ResponseEntity<TaxInvoiceResponse> retry(@PathVariable Long id)
             throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(taxInvoiceService.retry(id));
+    }
+
+    @PatchMapping("/{id}/fel-metadata")
+    public ResponseEntity<TaxInvoiceResponse> updateFelMetadata(
+            @PathVariable Long id,
+            @Valid @RequestBody UpdateTaxInvoiceFelMetadataRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(taxInvoiceService.updateFelMetadata(id, request));
     }
 }

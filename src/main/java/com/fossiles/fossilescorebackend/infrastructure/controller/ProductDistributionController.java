@@ -10,6 +10,8 @@ import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmen
 import com.fossiles.fossilescorebackend.application.dto.response.ProductDistributionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryLocationResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ShipmentReceiptInventoryAuditResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ShipmentReceiptRepairResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestService;
@@ -162,6 +164,22 @@ public class ProductDistributionController {
             @RequestBody(required = false) ConfirmReceiptRequest body)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(distributionService.confirmReceipt(id, body));
+    }
+
+    /** Sincroniza inventario kiosco con todas las líneas del envío entregado (productos, tallas, empaques SUM-). */
+    @PutMapping("/shipments/{id}/repair-receipt-inventory")
+    public ResponseEntity<ShipmentReceiptRepairResponse> repairDeliveredShipmentReceiptInventory(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "false") boolean force)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.repairDeliveredShipmentReceiptInventory(id, force));
+    }
+
+    @GetMapping("/shipments/{id}/receipt-inventory-audit")
+    public ResponseEntity<ShipmentReceiptInventoryAuditResponse> auditDeliveredShipmentReceiptInventory(
+            @PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.auditDeliveredShipmentReceiptInventory(id));
     }
 
     @PostMapping("/shipments/standalone-internal")

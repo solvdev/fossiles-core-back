@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.entity;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -116,7 +117,7 @@ public class TaxInvoiceEntity {
 
     @PrePersist
     protected void onCreate() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = GuatemalaDateTime.now();
         if (createdAt == null) {
             createdAt = now;
         }
@@ -146,6 +147,6 @@ public class TaxInvoiceEntity {
 
     @PreUpdate
     protected void onUpdate() {
-        updatedAt = LocalDateTime.now();
+        updatedAt = GuatemalaDateTime.now();
     }
 }

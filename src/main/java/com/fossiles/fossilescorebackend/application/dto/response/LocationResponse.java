@@ -25,5 +25,7 @@ public class LocationResponse {
     private String felMunicipio;
     private String felDepartamento;
     private Boolean posTestMode;
+    /** Código de serie de control interno (ej. A45, B). */
+    private String internalSeriesCode;
 }
 

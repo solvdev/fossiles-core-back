@@ -53,6 +53,10 @@ public class LocationEntity {
     @Column(name = "fel_departamento", length = 255)
     private String felDepartamento;
 
+    /** Código de serie de control interno (ej. "A1", "B"), independiente de la serie FEL. */
+    @Column(name = "internal_series_code", length = 10)
+    private String internalSeriesCode;
+
     /** true = ventas POS no cuentan en métricas de producción (piloto por kiosko). */
     @Column(name = "pos_test_mode", nullable = false)
     @Builder.Default

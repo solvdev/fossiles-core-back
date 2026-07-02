@@ -24,6 +24,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ReturnInventoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaxInvoiceEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaxInvoiceRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -556,7 +557,7 @@ public class OnlineSaleService {
                         .size(item.getSize())
                         .quantity(item.getQuantity())
                         .unitPrice(item.getUnitPrice())
-                        .returnDate(LocalDate.now())
+                        .returnDate(GuatemalaDateTime.today())
                         .returnReason(reason)
                         .itemCondition(condition)
                         .createdBy(securityUtil.getCurrentUserId())
@@ -586,7 +587,7 @@ public class OnlineSaleService {
                     .size(sale.getSize())
                     .quantity(sale.getQuantity())
                     .unitPrice(sale.getUnitPrice())
-                    .returnDate(LocalDate.now())
+                    .returnDate(GuatemalaDateTime.today())
                     .returnReason(reason)
                     .itemCondition(condition)
                     .createdBy(securityUtil.getCurrentUserId())
@@ -727,7 +728,7 @@ public class OnlineSaleService {
         exchange.setStatus("PENDIENTE");
         exchange.setInProductionOrder(false);
         exchange.setProductionOrderId(null);
-        exchange.setSaleDate(LocalDate.now());
+        exchange.setSaleDate(GuatemalaDateTime.today());
 
         exchange.setCustomerName(original.getCustomerName());
         exchange.setAddress(original.getAddress());
@@ -857,7 +858,7 @@ public class OnlineSaleService {
                 .map(it -> it.getSubtotal() != null ? it.getSubtotal() : BigDecimal.ZERO)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        LocalDate returnDate = header.getCreatedAt() != null ? header.getCreatedAt().toLocalDate() : LocalDate.now();
+        LocalDate returnDate = header.getCreatedAt() != null ? header.getCreatedAt().toLocalDate() : GuatemalaDateTime.today();
         return OnlineSaleReturnPrintResponse.builder()
                 .returnId(header.getId())
                 .onlineSaleId(sale.getId())
@@ -1015,7 +1016,7 @@ public class OnlineSaleService {
         // totalAmount NO se setea desde el request; se calcula automáticamente: net + envío
         if (req.getShippingCarrier() != null) entity.setShippingCarrier(req.getShippingCarrier());
         if (req.getSaleDate() != null) entity.setSaleDate(req.getSaleDate());
-        else if (entity.getSaleDate() == null) entity.setSaleDate(LocalDate.now());
+        else if (entity.getSaleDate() == null) entity.setSaleDate(GuatemalaDateTime.today());
         if (req.getSocialNetwork() != null) entity.setSocialNetwork(req.getSocialNetwork());
         if (req.getEmail() != null) entity.setEmail(req.getEmail());
         if (req.getGuideNumber() != null) entity.setGuideNumber(req.getGuideNumber());
@@ -1118,6 +1119,7 @@ public class OnlineSaleService {
                 .invoiceFelUuid(invoice.getFelUuid())
                 .invoiceFelSerie(invoice.getFelSerie())
                 .invoiceFelNumero(invoice.getFelNumero())
-                .invoiceFelError(invoice.getFelError()));
+                .invoiceFelError(invoice.getFelError())
+                .invoiceFelCertifiedAt(invoice.getFelCertifiedAt()));
     }
 }

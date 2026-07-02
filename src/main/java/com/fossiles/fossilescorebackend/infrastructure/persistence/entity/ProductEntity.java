@@ -29,6 +29,14 @@ public class ProductEntity {
     @Column(name = "category_id")
     private Long categoryId;
 
+    /** DAMA, CABALLERO o UNISEX — línea de producto para POS y promociones. */
+    @Column(name = "audience_category", length = 20)
+    private String audienceCategory;
+
+    /** CASUAL o REVERSIBLE — tipo de cincho FOSS; null si no aplica. */
+    @Column(name = "cincho_type", length = 20)
+    private String cinchoType;
+
     @Column(name = "prd_time", columnDefinition = "NUMERIC(10,2)")
     private Double prdTime;
 

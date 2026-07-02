@@ -25,11 +25,13 @@ public class FelAnulacionXmlBuilder {
             String felUuid,
             String nitEmisor,
             String receptorId,
-            ZonedDateTime originalEmission,
+            String fechaEmisionDocumentoAnular,
             String reason
     ) {
         ZonedDateTime now = ZonedDateTime.now(GUATEMALA);
-        String fechaOriginal = formatFelDateTime(originalEmission != null ? originalEmission : now);
+        String fechaOriginal = fechaEmisionDocumentoAnular != null && !fechaEmisionDocumentoAnular.isBlank()
+                ? fechaEmisionDocumentoAnular.trim()
+                : formatFelDateTime(now);
         String fechaAnulacion = formatFelDateTime(now);
         String uuid = normalizeUuid(felUuid);
         String nit = normalizeNitEmisor(firstNonBlank(nitEmisor, properties.getNitEmisor()));

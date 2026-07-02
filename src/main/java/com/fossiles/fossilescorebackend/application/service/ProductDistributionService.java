@@ -9,12 +9,16 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentR
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockPreviewResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockShortageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductDistributionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryLocationResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentDetailResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ShipmentReceiptInventoryAuditResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ShipmentReceiptRepairResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
@@ -30,6 +34,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -76,6 +81,8 @@ public class ProductDistributionService {
     private final UserRepository userRepository;
     private final ColorRepository colorRepository;
     private final ProductCategoryRepository productCategoryRepository;
+    private final MaterialRepository materialRepository;
+    private final KioscoStockRepository kioscoStockRepository;
     private final SecurityUtil securityUtil;
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final ProductionOrderPartialReleaseRepository partialReleaseRepository;
@@ -217,7 +224,9 @@ public class ProductDistributionService {
         boolean isCincho = isCinchoOrderType(orderType);
         Long reqLocationId = request.getLocationId();
 
-        if (("CLIENTE_KIOSKO".equals(orderType) || "NORMAL".equals(orderType)) && reqLocationId == null) {
+        if (("CLIENTE_KIOSKO".equals(orderType) || "NORMAL".equals(orderType))
+                && reqLocationId == null
+                && !isLuisFelipeVendorOrder(order)) {
             throw new BusinessException("CLIENTE_KIOSKO (OPCK) y NORMAL (OPK) requieren kiosko destino.");
         }
 
@@ -550,6 +559,16 @@ public class ProductDistributionService {
         assertDispatchStockAvailable(normalized);
     }
 
+    public List<DispatchStockShortageResponse> computeDispatchStockShortages(
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
+            throws BusinessException, ResourceNotFoundException {
+        List<ProductShipmentRequest.ProductShipmentDetailRequest> normalized = normalizeShipmentProducts(products);
+        if (normalized.isEmpty()) {
+            throw new BusinessException("Debe incluir al menos un producto con cantidad.");
+        }
+        return collectDispatchStockShortages(normalized);
+    }
+
     /**
      * @deprecated Usar solicitud interna ({@link InternalShipmentRequestService}) y aprobación Contabilidad.
      */
@@ -674,8 +693,15 @@ public class ProductDistributionService {
 
     private void assertDispatchStockAvailable(
             List<ProductShipmentRequest.ProductShipmentDetailRequest> products) throws BusinessException {
-        List<String> shortages = new ArrayList<>();
-        List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
+        List<DispatchStockShortageResponse> shortages = collectDispatchStockShortages(products);
+        if (!shortages.isEmpty()) {
+            throw new BusinessException(formatDispatchStockShortageMessage(shortages));
+        }
+    }
+
+    private List<DispatchStockShortageResponse> collectDispatchStockShortages(
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> products) throws BusinessException {
+        List<DispatchStockShortageResponse> shortages = new ArrayList<>();
         for (ProductShipmentRequest.ProductShipmentDetailRequest detail : products) {
             BigDecimal stillNeeded = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
             if (stillNeeded.compareTo(BigDecimal.ZERO) <= 0) {
@@ -689,17 +715,43 @@ public class ProductDistributionService {
                     detail.getProductId(), detail.getColorId(), sizeLabel);
             if (availableTotal.compareTo(stillNeeded) < 0) {
                 ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
-                String productName = product != null ? product.getCode() + " - " + product.getName() : "Producto";
-                String stockBreakdown = buildDispatchStockBreakdown(
-                        detail.getProductId(), detail.getColorId(), sizeLabel, dispatchWarehouses);
-                shortages.add(productName + ": disponible " + availableTotal
-                        + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido " + stillNeeded);
+                String productCode = product != null ? product.getCode() : null;
+                String productName = product != null ? product.getName() : "Producto";
+                BigDecimal shortageQty = stillNeeded.subtract(availableTotal);
+                shortages.add(DispatchStockShortageResponse.builder()
+                        .productId(detail.getProductId())
+                        .productCode(productCode)
+                        .productName(productName)
+                        .colorId(detail.getColorId())
+                        .size(sizeLabel)
+                        .requiredQuantity(stillNeeded)
+                        .availableQuantity(availableTotal)
+                        .shortageQuantity(shortageQty)
+                        .build());
             }
         }
-        if (!shortages.isEmpty()) {
-            throw new BusinessException("Stock insuficiente en Devoluciones / Bodega PT:\n• "
-                    + String.join("\n• ", shortages));
+        return shortages;
+    }
+
+    private String formatDispatchStockShortageMessage(List<DispatchStockShortageResponse> shortages)
+            throws BusinessException {
+        List<String> lines = new ArrayList<>();
+        List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
+        for (DispatchStockShortageResponse shortage : shortages) {
+            ProductEntity product = productRepository.findById(shortage.getProductId()).orElse(null);
+            String productName = product != null
+                    ? product.getCode() + " - " + product.getName()
+                    : "Producto";
+            String stockBreakdown = buildDispatchStockBreakdown(
+                    shortage.getProductId(),
+                    shortage.getColorId(),
+                    shortage.getSize(),
+                    dispatchWarehouses);
+            lines.add(productName + ": disponible " + shortage.getAvailableQuantity()
+                    + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido "
+                    + shortage.getRequiredQuantity());
         }
+        return "Stock insuficiente en Devoluciones / Bodega PT:\n• " + String.join("\n• ", lines);
     }
 
     private String buildStandaloneInternalShipmentNotes(StandaloneInternalShipmentRequest request, String recipient) {
@@ -918,7 +970,7 @@ public class ProductDistributionService {
     }
 
     private List<ProductShipmentRequest.ProductShipmentDetailRequest> buildShipmentProductsFromOrderItems(
-            Long productionOrderId) throws ResourceNotFoundException {
+            Long productionOrderId) throws ResourceNotFoundException, BusinessException {
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
         List<ProductShipmentRequest.ProductShipmentDetailRequest> lines = new ArrayList<>();
         for (ProductionOrderItemEntity item : items) {
@@ -1435,6 +1487,9 @@ public class ProductDistributionService {
             for (ProductShipmentEntity shipment : shipments) {
                 List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipment.getId());
                 for (ProductShipmentDetailEntity detail : details) {
+                    if (isPackagingProduct(detail.getProductId())) {
+                        continue;
+                    }
                     String key = detail.getProductId() + ":" + detail.getColorId();
                     aggregatedProducts.merge(key, detail.getQuantity(), BigDecimal::add);
                     keyToProductId.put(key, detail.getProductId());
@@ -1519,7 +1574,11 @@ public class ProductDistributionService {
     // ========== PREPARE & SEND SHIPMENTS ===========
 
     /**
-     * Marca un envío como SENT (en tránsito)
+     * Marca un envío como SENT (en tránsito).
+     * <p>
+     * Los empaques SUM- ({@code packing_items}) no rebajan inventario PT ni materiales al enviar.
+     * La salida de materiales SUM- ocurre en entrega de materiales (kardex / consumo BOM).
+     * Al recibir el envío en kiosko, los empaques cargan stock kiosco vía {@link #confirmReceipt}.
      */
     public ProductShipmentResponse sendShipment(Long shipmentId) throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
@@ -1746,64 +1805,14 @@ public class ProductDistributionService {
             detail.setReceivedLineNotes(lineNotes);
             shipmentDetailRepository.save(detail);
 
-            if (isPackagingProduct(detail.getProductId())) {
-                continue;
-            }
-
             if (qtyReceived.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
 
-            if (productInventoryService.hasProductKardexMovement(
-                    "SHIPMENT", shipment.getId(), "TRANSFER_IN",
-                    detail.getProductId(), shipment.getLocationId(), detail.getColorId())) {
-                continue;
-            }
-
-            String sizeKey = detail.getSizeLabel() != null ? detail.getSizeLabel().trim() : "";
-            String sizeKeyForInventory = sizeKey.isEmpty() ? null : sizeKey;
-
-            BigDecimal before = productInventoryService
-                    .getInventoryByProductAndLocationAndColor(detail.getProductId(), shipment.getLocationId(), detail.getColorId())
-                    .getQuantity();
-            productInventoryService.incrementInventory(
-                    detail.getProductId(),
-                    shipment.getLocationId(),
-                    detail.getColorId(),
-                    qtyReceived,
-                    null,
-                    "SHIPMENT",
-                    shipment.getId(),
-                    shipment.getShipmentNumber(),
-                    "Recepcion de envio en kiosko",
-                    sizeKeyForInventory);
-            kioscoInventoryService.registrarEntradaDesdeIntegracion(
-                    shipment.getLocationId(),
-                    detail.getProductId(),
-                    detail.getColorId(),
-                    qtyReceived,
-                    shipment.getId(),
-                    securityUtil.getCurrentUserId()
-            );
-            BigDecimal after = productInventoryService
-                    .getInventoryByProductAndLocationAndColor(detail.getProductId(), shipment.getLocationId(), detail.getColorId())
-                    .getQuantity();
-
-            productInventoryService.recordProductMovementIfAbsent(
-                    detail.getProductId(),
-                    shipment.getLocationId(),
-                    detail.getColorId(),
-                    "TRANSFER_IN",
-                    qtyReceived,
-                    before,
-                    after,
-                    null,
-                    "SHIPMENT",
-                    shipment.getId(),
-                    shipment.getShipmentNumber(),
-                    "Recepcion de envio en kiosko"
-            );
+            applyReceiptInventoryForDetail(shipment, detail, qtyReceived, shipmentReceiptLineReference(shipment, detail));
         }
+
+        applyReceiptPackingItemsToKioskStock(shipment, details);
 
         shipment.setStatus("DELIVERED");
         shipment.setReceivedAt(LocalDateTime.now());
@@ -1826,6 +1835,523 @@ public class ProductDistributionService {
         }
 
         return toShipmentResponse(shipmentRepository.findById(shipmentId).orElse(shipment));
+    }
+
+    /**
+     * Repara inventario de kiosko para un envío DELIVERED: carga todas las líneas del documento
+     * (productos, tallas y empaques SUM-) que aún no estén registradas en stock kiosco.
+     */
+    @Transactional
+    public ShipmentReceiptRepairResponse repairDeliveredShipmentReceiptInventory(Long shipmentId, boolean force)
+            throws ResourceNotFoundException, BusinessException {
+        ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Shipment", shipmentId));
+        String currentStatus = shipment.getStatus() == null ? "" : shipment.getStatus().trim().toUpperCase();
+        if (!"DELIVERED".equals(currentStatus)) {
+            throw new BusinessException("Solo se puede reparar inventario de envíos ya entregados (DELIVERED).");
+        }
+        if (shipment.getLocationId() == null) {
+            throw new BusinessException("El envío no tiene kiosko destino.");
+        }
+
+        List<String> warnings = new ArrayList<>();
+        List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipmentId);
+        int repaired = 0;
+        for (ProductShipmentDetailEntity detail : details) {
+            if (detail == null || detail.getProductId() == null) {
+                continue;
+            }
+            BigDecimal qtyExpected = resolveShipmentLineQuantity(detail);
+            if (qtyExpected.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            if (repairShipmentProductLineIfMissing(shipment, detail, qtyExpected, force)) {
+                repaired++;
+            }
+        }
+        repaired += repairDeliveredShipmentPackingInventory(shipment, details, force, warnings);
+        if (repaired == 0 && warnings.isEmpty()) {
+            List<ProductShipmentResponse.PackingItemResponse> packingItems =
+                    parsePackingItems(shipment.getPackingItems());
+            if (packingItems.isEmpty()) {
+                warnings.add("El envío no tiene empaques SUM- registrados (packing_items vacío). "
+                        + "Revise el documento o cargue empaques manualmente en inventario kiosco.");
+            }
+        }
+        return ShipmentReceiptRepairResponse.builder()
+                .repairedLines(repaired)
+                .warnings(warnings)
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public ShipmentReceiptInventoryAuditResponse auditDeliveredShipmentReceiptInventory(Long shipmentId)
+            throws ResourceNotFoundException, BusinessException {
+        ProductShipmentEntity shipment = shipmentRepository.findById(shipmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Shipment", shipmentId));
+        if (shipment.getLocationId() == null) {
+            throw new BusinessException("El envío no tiene kiosko destino.");
+        }
+        List<ShipmentReceiptInventoryAuditResponse.AuditLine> lines = new ArrayList<>();
+        List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipmentId);
+        for (ProductShipmentDetailEntity detail : details) {
+            if (detail == null || detail.getProductId() == null) {
+                continue;
+            }
+            BigDecimal qtyExpected = resolveShipmentLineQuantity(detail);
+            if (qtyExpected.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
+            String lineRef = shipmentReceiptLineReference(shipment, detail);
+            lines.add(ShipmentReceiptInventoryAuditResponse.AuditLine.builder()
+                    .lineType("PRODUCT")
+                    .productId(detail.getProductId())
+                    .productCode(product != null ? product.getCode() : null)
+                    .productName(product != null ? product.getName() : null)
+                    .qtyExpected(qtyExpected)
+                    .kioscoStockQty(resolveKioscoStockQty(
+                            shipment.getLocationId(), detail.getProductId(), detail.getColorId()))
+                    .movementApplied(kioscoInventoryService.hasShipmentReceiptLineApplied(
+                            shipment.getLocationId(), shipment.getId(), lineRef))
+                    .lineRef(lineRef)
+                    .build());
+        }
+        for (ProductShipmentResponse.PackingItemResponse item : parsePackingItems(shipment.getPackingItems())) {
+            if (item == null || item.getMaterialId() == null || item.getQuantity() == null) {
+                continue;
+            }
+            if (item.getQuantity().compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            MaterialEntity material = materialRepository.findById(item.getMaterialId()).orElse(null);
+            Optional<ProductEntity> productOpt = resolvePackagingProductFromMaterial(item.getMaterialId());
+            ProductEntity product = productOpt.orElse(null);
+            String lineRef = shipmentPackingLineReference(shipment, item.getMaterialId());
+            lines.add(ShipmentReceiptInventoryAuditResponse.AuditLine.builder()
+                    .lineType("PACKING")
+                    .productId(product != null ? product.getId() : null)
+                    .productCode(product != null ? product.getCode() : null)
+                    .productName(product != null ? product.getName() : null)
+                    .materialId(item.getMaterialId())
+                    .materialSku(material != null ? material.getSku() : null)
+                    .qtyExpected(item.getQuantity())
+                    .kioscoStockQty(product != null
+                            ? resolveKioscoStockQty(shipment.getLocationId(), product.getId(), null)
+                            : 0)
+                    .movementApplied(kioscoInventoryService.hasShipmentReceiptLineApplied(
+                            shipment.getLocationId(), shipment.getId(), lineRef))
+                    .lineRef(lineRef)
+                    .build());
+        }
+        return ShipmentReceiptInventoryAuditResponse.builder()
+                .shipmentId(shipmentId)
+                .shipmentNumber(shipment.getShipmentNumber())
+                .locationId(shipment.getLocationId())
+                .lines(lines)
+                .build();
+    }
+
+    private int resolveKioscoStockQty(Long locationId, Long productId, Long colorId) {
+        if (locationId == null || productId == null) {
+            return 0;
+        }
+        return kioscoStockRepository.findByLocationIdAndProductIdAndColorId(locationId, productId, colorId)
+                .map(s -> s.getCurrentStock() != null ? s.getCurrentStock() : 0)
+                .orElse(0);
+    }
+
+    private BigDecimal resolveShipmentLineQuantity(ProductShipmentDetailEntity detail) {
+        if (detail.getQuantityReceived() != null) {
+            return detail.getQuantityReceived();
+        }
+        return detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
+    }
+
+    private boolean repairShipmentProductLineIfMissing(
+            ProductShipmentEntity shipment,
+            ProductShipmentDetailEntity detail,
+            BigDecimal qtyExpected,
+            boolean force) throws ResourceNotFoundException, BusinessException {
+        String lineRef = shipmentReceiptLineReference(shipment, detail);
+        boolean movementApplied = kioscoInventoryService.hasShipmentReceiptLineApplied(
+                shipment.getLocationId(), shipment.getId(), lineRef);
+        if (movementApplied) {
+            if (!force) {
+                return false;
+            }
+            int currentStock = resolveKioscoStockQty(
+                    shipment.getLocationId(), detail.getProductId(), detail.getColorId());
+            if (currentStock >= qtyExpected.intValue()) {
+                return false;
+            }
+            BigDecimal missing = qtyExpected.subtract(BigDecimal.valueOf(currentStock));
+            applyKioscoReceiptLineOnly(shipment, detail, missing, lineRef);
+            return true;
+        }
+        boolean kardexApplied = productInventoryService.hasProductKardexMovement(
+                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
+                detail.getProductId(), shipment.getLocationId(), detail.getColorId(), lineRef);
+        if (kardexApplied) {
+            applyKioscoReceiptLineOnly(shipment, detail, qtyExpected, lineRef);
+            return true;
+        }
+        applyReceiptInventoryForDetail(shipment, detail, qtyExpected, lineRef);
+        return true;
+    }
+
+    private void applyKioscoReceiptLineOnly(
+            ProductShipmentEntity shipment,
+            ProductShipmentDetailEntity detail,
+            BigDecimal qtyExpected,
+            String lineRef) throws BusinessException, ResourceNotFoundException {
+        String sizeKey = detail.getSizeLabel() != null ? detail.getSizeLabel().trim() : "";
+        String sizeKeyForInventory = sizeKey.isEmpty() ? null : sizeKey;
+        kioscoInventoryService.registrarEntradaDesdeIntegracion(
+                shipment.getLocationId(),
+                detail.getProductId(),
+                detail.getColorId(),
+                qtyExpected,
+                shipment.getId(),
+                securityUtil.getCurrentUserId(),
+                sizeKeyForInventory,
+                lineRef);
+    }
+
+    private void applyReceiptInventoryForDetail(
+            ProductShipmentEntity shipment,
+            ProductShipmentDetailEntity detail,
+            BigDecimal qtyReceived) throws ResourceNotFoundException, BusinessException {
+        applyReceiptInventoryForDetail(
+                shipment, detail, qtyReceived, shipmentReceiptLineReference(shipment, detail));
+    }
+
+    private void applyReceiptInventoryForDetail(
+            ProductShipmentEntity shipment,
+            ProductShipmentDetailEntity detail,
+            BigDecimal qtyReceived,
+            String lineRef) throws ResourceNotFoundException, BusinessException {
+        if (kioscoInventoryService.hasShipmentReceiptLineApplied(
+                shipment.getLocationId(), shipment.getId(), lineRef)
+                && productInventoryService.hasProductKardexMovement(
+                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
+                detail.getProductId(), shipment.getLocationId(), detail.getColorId(), lineRef)) {
+            return;
+        }
+        if (productInventoryService.hasProductKardexMovement(
+                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
+                detail.getProductId(), shipment.getLocationId(), detail.getColorId(), lineRef)) {
+            applyKioscoReceiptLineOnly(shipment, detail, qtyReceived, lineRef);
+            return;
+        }
+
+        String sizeKey = detail.getSizeLabel() != null ? detail.getSizeLabel().trim() : "";
+        String sizeKeyForInventory = sizeKey.isEmpty() ? null : sizeKey;
+
+        BigDecimal before = productInventoryService
+                .getInventoryByProductAndLocationAndColor(
+                        detail.getProductId(), shipment.getLocationId(), detail.getColorId())
+                .getQuantity();
+        productInventoryService.incrementInventory(
+                detail.getProductId(),
+                shipment.getLocationId(),
+                detail.getColorId(),
+                qtyReceived,
+                null,
+                "SHIPMENT",
+                shipment.getId(),
+                shipment.getShipmentNumber(),
+                "Recepcion de envio en kiosko",
+                sizeKeyForInventory);
+        kioscoInventoryService.registrarEntradaDesdeIntegracion(
+                shipment.getLocationId(),
+                detail.getProductId(),
+                detail.getColorId(),
+                qtyReceived,
+                shipment.getId(),
+                securityUtil.getCurrentUserId(),
+                sizeKeyForInventory,
+                lineRef);
+        BigDecimal after = productInventoryService
+                .getInventoryByProductAndLocationAndColor(
+                        detail.getProductId(), shipment.getLocationId(), detail.getColorId())
+                .getQuantity();
+
+        productInventoryService.recordProductMovementIfAbsent(
+                detail.getProductId(),
+                shipment.getLocationId(),
+                detail.getColorId(),
+                "TRANSFER_IN",
+                qtyReceived,
+                before,
+                after,
+                null,
+                "SHIPMENT",
+                shipment.getId(),
+                lineRef,
+                "Recepcion de envio en kiosko"
+        );
+    }
+
+    private void applyReceiptPackingItemsToKioskStock(
+            ProductShipmentEntity shipment,
+            List<ProductShipmentDetailEntity> details) throws ResourceNotFoundException, BusinessException {
+        Set<Long> receivedProductIds = new HashSet<>();
+        if (details != null) {
+            for (ProductShipmentDetailEntity detail : details) {
+                if (detail == null || detail.getProductId() == null) {
+                    continue;
+                }
+                BigDecimal qtyReceived = detail.getQuantityReceived() != null
+                        ? detail.getQuantityReceived()
+                        : (detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO);
+                if (qtyReceived.compareTo(BigDecimal.ZERO) > 0) {
+                    receivedProductIds.add(detail.getProductId());
+                }
+            }
+        }
+
+        for (ProductShipmentResponse.PackingItemResponse item : parsePackingItems(shipment.getPackingItems())) {
+            if (item == null || item.getMaterialId() == null || item.getQuantity() == null) {
+                continue;
+            }
+            if (item.getQuantity().compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            ProductEntity product = ensurePackagingProductFromMaterial(item.getMaterialId())
+                    .orElseThrow(() -> new BusinessException(
+                            "No se pudo registrar el empaque SUM- en catálogo kiosko (materialId="
+                                    + item.getMaterialId()
+                                    + "). Verifique que el material tenga SKU SUM- válido."));
+            if (receivedProductIds.contains(product.getId())) {
+                continue;
+            }
+            applyReceiptInventoryForPackagingProduct(shipment, product, item.getQuantity(), item.getMaterialId());
+        }
+    }
+
+    private int repairDeliveredShipmentPackingInventory(
+            ProductShipmentEntity shipment,
+            List<ProductShipmentDetailEntity> details,
+            boolean force,
+            List<String> warnings) throws ResourceNotFoundException, BusinessException {
+        List<ProductShipmentResponse.PackingItemResponse> packingItems = parsePackingItems(shipment.getPackingItems());
+        if (packingItems.isEmpty()) {
+            return 0;
+        }
+
+        Set<Long> receivedProductIds = new HashSet<>();
+        if (details != null) {
+            for (ProductShipmentDetailEntity detail : details) {
+                if (detail == null || detail.getProductId() == null) {
+                    continue;
+                }
+                BigDecimal qtyExpected = resolveShipmentLineQuantity(detail);
+                if (qtyExpected.compareTo(BigDecimal.ZERO) <= 0) {
+                    continue;
+                }
+                String lineRef = shipmentReceiptLineReference(shipment, detail);
+                if (kioscoInventoryService.hasShipmentReceiptLineApplied(
+                        shipment.getLocationId(), shipment.getId(), lineRef)) {
+                    receivedProductIds.add(detail.getProductId());
+                }
+            }
+        }
+
+        int repaired = 0;
+        for (ProductShipmentResponse.PackingItemResponse item : packingItems) {
+            if (item == null || item.getMaterialId() == null || item.getQuantity() == null) {
+                continue;
+            }
+            if (item.getQuantity().compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            MaterialEntity material = materialRepository.findById(item.getMaterialId()).orElse(null);
+            String materialSku = material != null && material.getSku() != null
+                    ? material.getSku().trim() : ("material#" + item.getMaterialId());
+            Optional<ProductEntity> productOpt = ensurePackagingProductFromMaterial(item.getMaterialId());
+            if (productOpt.isEmpty()) {
+                warnings.add("Empaque SUM- " + materialSku
+                        + ": material inválido o SKU sin prefijo SUM-; no se cargó al kiosko.");
+                continue;
+            }
+            ProductEntity product = productOpt.get();
+            if (receivedProductIds.contains(product.getId())) {
+                continue;
+            }
+            String lineRef = shipmentPackingLineReference(shipment, item.getMaterialId());
+            boolean movementApplied = kioscoInventoryService.hasShipmentReceiptLineApplied(
+                    shipment.getLocationId(), shipment.getId(), lineRef);
+            if (movementApplied) {
+                if (!force) {
+                    int currentStock = resolveKioscoStockQty(
+                            shipment.getLocationId(), product.getId(), null);
+                    if (currentStock < item.getQuantity().intValue()) {
+                        warnings.add("Empaque SUM- " + materialSku
+                                + ": movimiento registrado pero stock kiosco (" + currentStock
+                                + ") es menor al esperado (" + item.getQuantity().intValue()
+                                + "). Use sincronización forzada si tiene permiso de administrador.");
+                    }
+                    continue;
+                }
+                int currentStock = resolveKioscoStockQty(
+                        shipment.getLocationId(), product.getId(), null);
+                if (currentStock >= item.getQuantity().intValue()) {
+                    continue;
+                }
+                BigDecimal missing = item.getQuantity().subtract(BigDecimal.valueOf(currentStock));
+                applyReceiptInventoryForPackagingProduct(shipment, product, missing, item.getMaterialId());
+                repaired++;
+                continue;
+            }
+            applyReceiptInventoryForPackagingProduct(shipment, product, item.getQuantity(), item.getMaterialId());
+            repaired++;
+        }
+        return repaired;
+    }
+
+    private void applyReceiptInventoryForPackagingProduct(
+            ProductShipmentEntity shipment,
+            ProductEntity product,
+            BigDecimal qtyReceived,
+            Long materialId) throws ResourceNotFoundException, BusinessException {
+        String lineRef = shipmentPackingLineReference(shipment, materialId);
+        if (kioscoInventoryService.hasShipmentReceiptLineApplied(
+                shipment.getLocationId(), shipment.getId(), lineRef)
+                && productInventoryService.hasProductKardexMovement(
+                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
+                product.getId(), shipment.getLocationId(), null, lineRef)) {
+            return;
+        }
+        if (productInventoryService.hasProductKardexMovement(
+                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
+                product.getId(), shipment.getLocationId(), null, lineRef)) {
+            kioscoInventoryService.registrarEntradaDesdeIntegracion(
+                    shipment.getLocationId(),
+                    product.getId(),
+                    null,
+                    qtyReceived,
+                    shipment.getId(),
+                    securityUtil.getCurrentUserId(),
+                    null,
+                    lineRef);
+            return;
+        }
+
+        BigDecimal before = productInventoryService
+                .getInventoryByProductAndLocationAndColor(
+                        product.getId(), shipment.getLocationId(), null)
+                .getQuantity();
+        productInventoryService.incrementInventory(
+                product.getId(),
+                shipment.getLocationId(),
+                null,
+                qtyReceived,
+                null,
+                "SHIPMENT",
+                shipment.getId(),
+                shipment.getShipmentNumber(),
+                "Recepcion de empaque SUM- en kiosko",
+                null);
+        kioscoInventoryService.registrarEntradaDesdeIntegracion(
+                shipment.getLocationId(),
+                product.getId(),
+                null,
+                qtyReceived,
+                shipment.getId(),
+                securityUtil.getCurrentUserId(),
+                null,
+                lineRef);
+        BigDecimal after = productInventoryService
+                .getInventoryByProductAndLocationAndColor(
+                        product.getId(), shipment.getLocationId(), null)
+                .getQuantity();
+        productInventoryService.recordProductMovementIfAbsent(
+                product.getId(),
+                shipment.getLocationId(),
+                null,
+                "TRANSFER_IN",
+                qtyReceived,
+                before,
+                after,
+                null,
+                "SHIPMENT",
+                shipment.getId(),
+                lineRef,
+                "Recepcion de empaque SUM- en kiosko");
+    }
+
+    private Optional<ProductEntity> resolvePackagingProductFromMaterial(Long materialId) {
+        if (materialId == null) {
+            return Optional.empty();
+        }
+        MaterialEntity material = materialRepository.findById(materialId).orElse(null);
+        if (material == null || material.getSku() == null || material.getSku().isBlank()) {
+            return Optional.empty();
+        }
+        String sku = material.getSku().trim();
+        Optional<ProductEntity> product = productRepository.findByCode(sku);
+        if (product.isEmpty()) {
+            product = productRepository.findByCode(sku.toUpperCase(Locale.ROOT));
+        }
+        return product;
+    }
+
+    /**
+     * El stock kiosko y POS usan filas de producto con código SUM-.
+     * Los empaques viven como materiales; si no hay producto homólogo, se crea uno ligero
+     * (precio 0 — el encargado lo configura después en catálogo o inventario kiosko).
+     */
+    private Optional<ProductEntity> ensurePackagingProductFromMaterial(Long materialId) {
+        Optional<ProductEntity> existing = resolvePackagingProductFromMaterial(materialId);
+        if (existing.isPresent()) {
+            return existing;
+        }
+        if (materialId == null) {
+            return Optional.empty();
+        }
+        MaterialEntity material = materialRepository.findById(materialId).orElse(null);
+        if (material == null || material.getSku() == null || material.getSku().isBlank()) {
+            return Optional.empty();
+        }
+        String sku = material.getSku().trim();
+        if (!ProductCinchoType.isPackagingProductCode(sku)) {
+            return Optional.empty();
+        }
+        String name = material.getName() != null && !material.getName().isBlank()
+                ? material.getName().trim()
+                : sku;
+        Long userId = securityUtil.getCurrentUserId();
+        try {
+            ProductEntity created = ProductEntity.builder()
+                    .code(sku)
+                    .name(name)
+                    .status("ACTIVE")
+                    .salePrice(BigDecimal.ZERO)
+                    .discountedPrice(BigDecimal.ZERO)
+                    .sellerPrice(BigDecimal.ZERO)
+                    .requiresMaterials(false)
+                    .createdBy(userId)
+                    .updatedBy(userId)
+                    .build();
+            return Optional.of(productRepository.save(created));
+        } catch (DataIntegrityViolationException ex) {
+            return resolvePackagingProductFromMaterial(materialId);
+        }
+    }
+
+    private String shipmentPackingLineReference(ProductShipmentEntity shipment, Long materialId) {
+        String number = shipment.getShipmentNumber() != null ? shipment.getShipmentNumber().trim() : "ENV";
+        return number + "#P" + materialId;
+    }
+
+    private String shipmentReceiptLineReference(ProductShipmentEntity shipment, ProductShipmentDetailEntity detail) {
+        String number = shipment.getShipmentNumber() != null ? shipment.getShipmentNumber().trim() : "ENV";
+        return number + "#L" + detail.getId();
+    }
+
+    private String receiptProductColorKey(Long productId, Long colorId) {
+        return productId + ":" + (colorId != null ? colorId : "null");
     }
 
     /**
@@ -2172,7 +2698,8 @@ public class ProductDistributionService {
     }
 
     private List<ProductShipmentRequest.ProductShipmentDetailRequest> normalizeShipmentProducts(
-            List<ProductShipmentRequest.ProductShipmentDetailRequest> products) throws ResourceNotFoundException {
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
+            throws ResourceNotFoundException, BusinessException {
         Map<String, BigDecimal> groupedQuantities = new java.util.LinkedHashMap<>();
         Map<String, Long> keyToProductId = new HashMap<>();
         Map<String, Long> keyToColorId = new HashMap<>();
@@ -2188,7 +2715,6 @@ public class ProductDistributionService {
                 if (!productRepository.existsById(productRequest.getProductId())) {
                     throw new ResourceNotFoundException("Product", productRequest.getProductId());
                 }
-
                 String normalizedSize = normalizeSize(productRequest.getSize());
                 String key = productRequest.getProductId() + ":" +
                         (productRequest.getColorId() == null ? "null" : productRequest.getColorId()) + ":" +

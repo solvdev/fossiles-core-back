@@ -8,8 +8,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Credenciales demo INFILE (manual consumo web service) cuando {@code fel.emission.test-mode=true}.
- * En implementación la serie del DTE suele ser {@code ** PRUEBAS **} — sin validez fiscal.
+ * Credenciales demo INFILE (manual consumo web service) para el bloque {@code fel.emission.sandbox.*}
+ * cuando no se configuran explícitamente. En implementación la serie del DTE suele ser
+ * {@code ** PRUEBAS **} — sin validez fiscal. Se aplican siempre (no solo con test-mode global),
+ * ya que un kiosko individual puede seguir en modo piloto aunque el resto ya esté en producción.
  */
 @Component
 @RequiredArgsConstructor
@@ -18,41 +20,39 @@ public class FelEmissionTestDefaultsApplier {
     private final FelEmissionProperties properties;
 
     @PostConstruct
-    void applyDemoDefaultsWhenTestMode() {
-        if (!properties.isTestMode()) {
-            return;
+    void applySandboxDefaults() {
+        FelEmissionProperties.Sandbox sandbox = properties.getSandbox();
+        if (isBlank(sandbox.getSignKey())) {
+            sandbox.setSignKey("6456d06325f89acb30fbb2e7e7bec3c9");
         }
-        if (isBlank(properties.getSignKey())) {
-            properties.setSignKey("6456d06325f89acb30fbb2e7e7bec3c9");
+        if (isBlank(sandbox.getSignAlias())) {
+            sandbox.setSignAlias("DEMO_FEL");
         }
-        if (isBlank(properties.getSignAlias())) {
-            properties.setSignAlias("DEMO_FEL");
+        if (isBlank(sandbox.getCertUsuario())) {
+            sandbox.setCertUsuario("DEMO_FEL");
         }
-        if (isBlank(properties.getCertUsuario())) {
-            properties.setCertUsuario("DEMO_FEL");
+        if (isBlank(sandbox.getCertLlave())) {
+            sandbox.setCertLlave("E5DC9FFBA5F3653E27DF2FC1DCAC824D");
         }
-        if (isBlank(properties.getCertLlave())) {
-            properties.setCertLlave("E5DC9FFBA5F3653E27DF2FC1DCAC824D");
+        if (isBlank(sandbox.getNitEmisor())) {
+            sandbox.setNitEmisor("123456789");
         }
-        if (isBlank(properties.getNitEmisor())) {
-            properties.setNitEmisor("123456789");
+        if (isBlank(sandbox.getNombreEmisor())) {
+            sandbox.setNombreEmisor("PRUEBA, SOCIEDAD ANONIMA");
         }
-        if (isBlank(properties.getNombreEmisor())) {
-            properties.setNombreEmisor("PRUEBA, SOCIEDAD ANONIMA");
+        if (isBlank(sandbox.getNombreComercial())) {
+            sandbox.setNombreComercial("PRUEBA");
         }
-        if (isBlank(properties.getNombreComercial())) {
-            properties.setNombreComercial("PRUEBA");
+        if (isBlank(sandbox.getDireccion())) {
+            sandbox.setDireccion("DIAGONAL 29 00-22 17 CALZADA LA PAZ Guatemala, GUATEMALA");
         }
-        if (isBlank(properties.getDireccion())) {
-            properties.setDireccion("DIAGONAL 29 00-22 17 CALZADA LA PAZ Guatemala, GUATEMALA");
-        }
-        if (properties.getFrases() == null || properties.getFrases().isEmpty()) {
+        if (sandbox.getFrases() == null || sandbox.getFrases().isEmpty()) {
             List<FelEmissionProperties.Frase> frases = new ArrayList<>();
             FelEmissionProperties.Frase f1 = new FelEmissionProperties.Frase();
             f1.setTipo(1);
             f1.setEscenario(1);
             frases.add(f1);
-            properties.setFrases(frases);
+            sandbox.setFrases(frases);
         }
     }
 

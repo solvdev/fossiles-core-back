@@ -3,28 +3,44 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentRequestCreateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockShortageResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentEligibilityResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentRequestResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.EmployeeEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.InternalShipmentRequestEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.InternalShipmentRequestLineEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.EmployeeRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.InternalShipmentRequestRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.YearMonth;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -35,7 +51,14 @@ public class InternalShipmentRequestService {
     private final ProductShipmentRepository shipmentRepository;
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
+    private final EmployeeRepository employeeRepository;
     private final ProductDistributionService productDistributionService;
+    private final ProductionOrderRepository productionOrderRepository;
+    private final ProductionOrderItemRepository productionOrderItemRepository;
+    private final ProductionOrderCodeService productionOrderCodeService;
+    private final OpiVendorShipmentNumberService opiVendorShipmentNumberService;
+    private final SmartMaterialRequestService smartMaterialRequestService;
+    private final ObjectMapper objectMapper;
     private final SecurityUtil securityUtil;
     private final InternalShipmentRequestAccessGuard accessGuard;
 
@@ -98,7 +121,23 @@ public class InternalShipmentRequestService {
             throw new BusinessException("Solo se pueden aprobar solicitudes pendientes.");
         }
         List<ProductShipmentRequest.ProductShipmentDetailRequest> products = toProductLines(entity);
-        productDistributionService.validateDispatchStock(products);
+        try {
+            productDistributionService.validateDispatchStock(products);
+        } catch (BusinessException ex) {
+            if (entity.getProductionOrderId() != null) {
+                ProductionOrderEntity linkedOpi = productionOrderRepository.findById(entity.getProductionOrderId())
+                        .orElse(null);
+                String opiRef = linkedOpi != null && linkedOpi.getCode() != null
+                        ? linkedOpi.getCode()
+                        : "OPI #" + entity.getProductionOrderId();
+                throw new BusinessException(
+                        "Aún no hay stock suficiente en Devoluciones / Bodega PT. "
+                                + "Complete la orden " + opiRef
+                                + " e ingrese el producto terminado antes de autorizar.\n"
+                                + ex.getMessage());
+            }
+            throw ex;
+        }
 
         ProductShipmentResponse shipment = productDistributionService.dispatchStandaloneInternal(
                 entity.getRecipientName(),
@@ -146,16 +185,65 @@ public class InternalShipmentRequestService {
         return productDistributionService.listAllInternalEnviShipments();
     }
 
+    @Transactional(readOnly = true)
+    public InternalShipmentEligibilityResponse getEmployeePlanillaEligibility(Long employeeId, String month)
+            throws ResourceNotFoundException {
+        employeeRepository.findById(employeeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Employee", employeeId));
+        YearMonth ym = parseMonth(month);
+        LocalDateTime from = ym.atDay(1).atStartOfDay();
+        LocalDateTime to = ym.plusMonths(1).atDay(1).atStartOfDay();
+        var existing = requestRepository.findActivePlanillaRequestsForEmployeeInMonth(employeeId, from, to);
+        if (existing.isEmpty()) {
+            return InternalShipmentEligibilityResponse.builder()
+                    .employeeId(employeeId)
+                    .month(ym.toString())
+                    .eligible(true)
+                    .message("Puede crear solicitud planilla para este mes.")
+                    .build();
+        }
+        InternalShipmentRequestEntity first = existing.get(0);
+        return InternalShipmentEligibilityResponse.builder()
+                .employeeId(employeeId)
+                .month(ym.toString())
+                .eligible(false)
+                .message("Ya tiene solicitud planilla "
+                        + first.getStatus().toLowerCase(Locale.ROOT)
+                        + " en " + ym.getMonth().name().toLowerCase(Locale.ROOT)
+                        + " " + ym.getYear() + ".")
+                .existingRequestId(first.getId())
+                .existingRequestStatus(first.getStatus())
+                .build();
+    }
+
     private InternalShipmentRequestResponse createRequestInternal(InternalShipmentRequestCreateRequest request)
             throws BusinessException, ResourceNotFoundException {
+        String requestType = ProductDistributionService.normalizeInternalRequestType(request.getRequestType());
         String recipient = request.getRecipientName() == null ? "" : request.getRecipientName().trim();
-        if (recipient.isBlank()) {
+        Long employeeId = request.getEmployeeId();
+        String recipientPhone = trimToNull(request.getRecipientPhone());
+        String recipientTaxId = trimToNull(request.getRecipientTaxId());
+
+        if ("PLANILLA".equals(requestType)) {
+            if (employeeId == null) {
+                throw new BusinessException("Debe seleccionar un empleado de planilla.");
+            }
+            EmployeeEntity employee = employeeRepository.findById(employeeId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Employee", employeeId));
+            recipient = formatEmployeeName(employee);
+            if (recipientPhone == null) {
+                recipientPhone = trimToNull(employee.getPhone());
+            }
+            if (recipientTaxId == null) {
+                recipientTaxId = trimToNull(employee.getDpi());
+            }
+            YearMonth month = resolveRequestMonth(request.getDocumentDate());
+            assertPlanillaMonthlyLimit(employeeId, month, null);
+        } else if (recipient.isBlank()) {
             throw new BusinessException("El nombre del colaborador es obligatorio.");
         }
-        String requestType = ProductDistributionService.normalizeInternalRequestType(request.getRequestType());
         ProductDistributionService.validateDefectosDiscount(
                 requestType, request.getDiscountPercent(), request.getDiscountAmount());
-        productDistributionService.validateDispatchStock(request.getProducts());
 
         java.math.BigDecimal discountPercent = null;
         java.math.BigDecimal discountAmount = null;
@@ -172,9 +260,10 @@ public class InternalShipmentRequestService {
         InternalShipmentRequestEntity entity = InternalShipmentRequestEntity.builder()
                 .status("PENDIENTE")
                 .requestType(requestType)
+                .employeeId(employeeId)
                 .recipientName(recipient)
-                .recipientPhone(trimToNull(request.getRecipientPhone()))
-                .recipientTaxId(trimToNull(request.getRecipientTaxId()))
+                .recipientPhone(recipientPhone)
+                .recipientTaxId(recipientTaxId)
                 .notes(trimToNull(request.getNotes()))
                 .documentDate(trimToNull(request.getDocumentDate()))
                 .discountPercent(discountPercent)
@@ -204,7 +293,87 @@ public class InternalShipmentRequestService {
             throw new BusinessException("Debe incluir al menos un producto con cantidad.");
         }
         InternalShipmentRequestEntity saved = requestRepository.save(entity);
+
+        List<DispatchStockShortageResponse> shortages =
+                productDistributionService.computeDispatchStockShortages(request.getProducts());
+        if (!shortages.isEmpty()) {
+            Long productionOrderId = createOpiForShortages(saved, shortages);
+            saved.setProductionOrderId(productionOrderId);
+            saved = requestRepository.save(saved);
+        }
+
         return toResponse(saved);
+    }
+
+    private Long createOpiForShortages(
+            InternalShipmentRequestEntity request,
+            List<DispatchStockShortageResponse> shortages) throws BusinessException {
+        if (shortages == null || shortages.isEmpty()) {
+            return null;
+        }
+        String orderCode = productionOrderCodeService.generateNextCode("INTERNA");
+        String recipient = request.getRecipientName() == null ? "Colaborador" : request.getRecipientName().trim();
+        String requestTypeLabel = "PLANILLA".equalsIgnoreCase(safe(request.getRequestType()))
+                ? "Planilla"
+                : "Defectos";
+        ProductionOrderEntity order = ProductionOrderEntity.builder()
+                .code(orderCode)
+                .orderType("INTERNA")
+                .customerName(recipient)
+                .startDate(LocalDate.now())
+                .deliveryDate(LocalDate.now())
+                .observations("OPI generada por faltante de stock PT/Devoluciones. "
+                        + "Solicitud ENVI #" + request.getId() + " (" + requestTypeLabel + "). "
+                        + "Colaborador: " + recipient + ".")
+                .status("PENDING")
+                .createdBy(securityUtil.getCurrentUserId())
+                .build();
+        opiVendorShipmentNumberService.assignIfMissing(order);
+        ProductionOrderEntity savedOrder = productionOrderRepository.save(order);
+
+        for (DispatchStockShortageResponse shortage : shortages) {
+            int qty = shortage.getShortageQuantity() == null
+                    ? 0
+                    : shortage.getShortageQuantity().intValue();
+            if (qty <= 0) {
+                continue;
+            }
+            String sizeLabel = shortage.getSize();
+            String sizesData = buildProductionItemSizesData(sizeLabel, qty);
+            ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
+                    .productionOrderId(savedOrder.getId())
+                    .productId(shortage.getProductId())
+                    .colorId(shortage.getColorId())
+                    .quantity(qty)
+                    .warehouseReceivedQty(0)
+                    .sizesData(sizesData)
+                    .observations("Faltante solicitud ENVI #" + request.getId())
+                    .createdBy(securityUtil.getCurrentUserId())
+                    .build();
+            productionOrderItemRepository.save(item);
+            try {
+                smartMaterialRequestService.checkAndGenerateRequestsForProductionOrder(
+                        savedOrder.getId(),
+                        shortage.getProductId(),
+                        BigDecimal.valueOf(qty));
+            } catch (Exception ignored) {
+                // No bloquear la OPI si falla la solicitud automática de materiales.
+            }
+        }
+        return savedOrder.getId();
+    }
+
+    private String buildProductionItemSizesData(String sizeLabel, int quantity) {
+        if (sizeLabel == null || sizeLabel.isBlank() || quantity <= 0) {
+            return null;
+        }
+        try {
+            Map<String, Integer> sizes = new LinkedHashMap<>();
+            sizes.put(sizeLabel.trim().toUpperCase(Locale.ROOT), quantity);
+            return objectMapper.writeValueAsString(sizes);
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private List<ProductShipmentRequest.ProductShipmentDetailRequest> toProductLines(
@@ -226,6 +395,12 @@ public class InternalShipmentRequestService {
                     .map(ProductShipmentEntity::getShipmentNumber)
                     .orElse(null);
         }
+        String productionOrderCode = null;
+        if (entity.getProductionOrderId() != null) {
+            productionOrderCode = productionOrderRepository.findById(entity.getProductionOrderId())
+                    .map(ProductionOrderEntity::getCode)
+                    .orElse(null);
+        }
         List<InternalShipmentRequestResponse.LineResponse> lines = entity.getLines() == null
                 ? List.of()
                 : entity.getLines().stream()
@@ -235,6 +410,7 @@ public class InternalShipmentRequestService {
                 .id(entity.getId())
                 .status(entity.getStatus())
                 .requestType(entity.getRequestType())
+                .employeeId(entity.getEmployeeId())
                 .recipientName(entity.getRecipientName())
                 .recipientPhone(entity.getRecipientPhone())
                 .recipientTaxId(entity.getRecipientTaxId())
@@ -249,6 +425,8 @@ public class InternalShipmentRequestService {
                 .rejectionReason(entity.getRejectionReason())
                 .productShipmentId(entity.getProductShipmentId())
                 .shipmentNumber(shipmentNumber)
+                .productionOrderId(entity.getProductionOrderId())
+                .productionOrderCode(productionOrderCode)
                 .lines(lines)
                 .build();
     }
@@ -266,7 +444,50 @@ public class InternalShipmentRequestService {
                 .colorName(color != null ? color.getName() : null)
                 .size(line.getSize())
                 .quantity(line.getQuantity())
+                .catalogPrice(product != null ? product.getSalePrice() : null)
                 .build();
+    }
+
+    private void assertPlanillaMonthlyLimit(Long employeeId, YearMonth month, Long excludeRequestId)
+            throws BusinessException {
+        LocalDateTime from = month.atDay(1).atStartOfDay();
+        LocalDateTime to = month.plusMonths(1).atDay(1).atStartOfDay();
+        var existing = requestRepository.findActivePlanillaRequestsForEmployeeInMonth(employeeId, from, to);
+        for (InternalShipmentRequestEntity row : existing) {
+            if (excludeRequestId != null && excludeRequestId.equals(row.getId())) {
+                continue;
+            }
+            throw new BusinessException(
+                    "El empleado ya tiene una solicitud planilla "
+                            + row.getStatus().toLowerCase(Locale.ROOT)
+                            + " en " + month.getMonth().name().toLowerCase(Locale.ROOT)
+                            + " " + month.getYear() + ".");
+        }
+    }
+
+    private YearMonth resolveRequestMonth(String documentDate) {
+        if (documentDate != null && !documentDate.isBlank()) {
+            try {
+                return YearMonth.from(LocalDate.parse(documentDate.trim()));
+            } catch (Exception ignored) {
+                // fall through
+            }
+        }
+        return YearMonth.now();
+    }
+
+    private YearMonth parseMonth(String month) {
+        if (month == null || month.isBlank()) {
+            return YearMonth.now();
+        }
+        return YearMonth.parse(month.trim(), DateTimeFormatter.ofPattern("yyyy-MM"));
+    }
+
+    private static String formatEmployeeName(EmployeeEntity employee) {
+        String first = employee.getFirstName() == null ? "" : employee.getFirstName().trim();
+        String last = employee.getLastName() == null ? "" : employee.getLastName().trim();
+        String full = (first + " " + last).trim();
+        return full.isEmpty() ? "Empleado #" + employee.getId() : full;
     }
 
     private static String trimToNull(String value) {

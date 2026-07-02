@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -48,7 +49,10 @@ public class KioskPosContextResponse {
         private String colorName;
         private Long categoryId;
         private String categoryName;
+        private String audienceCategory;
         private BigDecimal quantity;
         private BigDecimal suggestedUnitPrice;
+        /** Cinchos y variantes por talla: talla → cantidad disponible en kiosko. */
+        private Map<String, BigDecimal> sizes;
     }
 }

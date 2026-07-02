@@ -100,7 +100,8 @@ public class LocationController {
                 .felAddressLine(entity.getFelAddressLine())
                 .felMunicipio(entity.getFelMunicipio())
                 .felDepartamento(entity.getFelDepartamento())
-                .posTestMode(Boolean.TRUE.equals(entity.getPosTestMode()));
+                .posTestMode(Boolean.TRUE.equals(entity.getPosTestMode()))
+                .internalSeriesCode(entity.getInternalSeriesCode());
         
         if (entity.getEncargado() != null) {
             String nombreCompleto = "";
@@ -134,6 +135,7 @@ public class LocationController {
                 .felMunicipio(trimToNull(request.getFelMunicipio()))
                 .felDepartamento(trimToNull(request.getFelDepartamento()))
                 .posTestMode(Boolean.TRUE.equals(request.getPosTestMode()))
+                .internalSeriesCode(trimToNull(request.getInternalSeriesCode()))
                 .build();
     }
 
@@ -170,6 +172,9 @@ public class LocationController {
         }
         if (request.getPosTestMode() != null) {
             entity.setPosTestMode(request.getPosTestMode());
+        }
+        if (request.getInternalSeriesCode() != null) {
+            entity.setInternalSeriesCode(trimToNull(request.getInternalSeriesCode()));
         }
     }
 

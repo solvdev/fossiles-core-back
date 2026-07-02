@@ -13,7 +13,10 @@ import java.util.List;
 public class FelEmissionProperties {
 
     private boolean enabled = false;
-    /** Ambiente INFILE implementación / sandbox (credenciales demo si faltan). */
+    /**
+     * Apagador de emergencia: si es true, TODAS las ventas certifican con las credenciales
+     * sandbox ({@link #sandbox}) sin importar el flag por kiosko (locations.pos_test_mode).
+     */
     private boolean testMode = false;
     /** Si true, la venta POS falla cuando no se puede certificar el DTE. */
     private boolean required = true;
@@ -23,6 +26,7 @@ public class FelEmissionProperties {
     /** Endpoint INFILE anulación v2 (alineado a certificación v2). */
     private String annulUrl = "https://certificador.feel.com.gt/fel/anulacion/v2/dte/";
 
+    /** Credenciales de PRODUCCIÓN (usadas salvo que el kiosko esté en modo piloto). */
     private String signKey = "";
     private String signAlias = "";
 
@@ -46,9 +50,52 @@ public class FelEmissionProperties {
     /** Frases FEL (tipo / escenario). Vacío si no aplica al emisor. */
     private List<Frase> frases = new ArrayList<>();
 
+    /**
+     * Credenciales SANDBOX (implementación INFILE), usadas para kioskos con
+     * {@code pos_test_mode=true} o cuando {@link #testMode} fuerza sandbox global.
+     */
+    private Sandbox sandbox = new Sandbox();
+
     @Data
     public static class Frase {
         private int tipo = 1;
         private int escenario = 1;
+    }
+
+    @Data
+    public static class Sandbox {
+        private String signKey = "";
+        private String signAlias = "";
+        private String certUsuario = "";
+        private String certLlave = "";
+        private String nitEmisor = "";
+        private String nombreEmisor = "";
+        private String nombreComercial = "";
+        private String correoEmisor = "";
+        private String afiliacionIva = "GEN";
+        private String direccion = "";
+        private String municipio = "Guatemala";
+        private String departamento = "GUATEMALA";
+        private List<Frase> frases = new ArrayList<>();
+    }
+
+    /**
+     * Resuelve el set de credenciales a usar para una operación puntual.
+     *
+     * @param useSandbox true para credenciales de implementación/pruebas, false para producción.
+     */
+    public FelCredentials resolveCredentials(boolean useSandbox) {
+        if (useSandbox) {
+            return new FelCredentials(
+                    sandbox.signKey, sandbox.signAlias, sandbox.certUsuario, sandbox.certLlave,
+                    sandbox.nitEmisor, sandbox.nombreEmisor, sandbox.nombreComercial, sandbox.correoEmisor,
+                    sandbox.direccion, sandbox.municipio, sandbox.departamento, sandbox.afiliacionIva,
+                    sandbox.frases);
+        }
+        return new FelCredentials(
+                signKey, signAlias, certUsuario, certLlave,
+                nitEmisor, nombreEmisor, nombreComercial, correoEmisor,
+                direccion, municipio, departamento, afiliacionIva,
+                frases);
     }
 }

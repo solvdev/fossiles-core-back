@@ -20,6 +20,8 @@ public class KioskPromotionRequest {
     private Integer comboBuyQty;
     private Integer comboPayQty;
     private Long kioskLocationId;
+    /** DAMA o CABALLERO; vacío = todas las líneas */
+    private String audienceCategory;
     private LocalDate startDate;
     private LocalDate endDate;
     private Boolean active;

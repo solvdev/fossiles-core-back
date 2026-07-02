@@ -7,6 +7,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReports
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
@@ -15,6 +16,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.RoleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
@@ -66,6 +68,9 @@ class KioskPosServiceTest {
 
     @Autowired
     private ProductInventoryLocationRepository inventoryRepository;
+
+    @Autowired
+    private KioscoStockRepository kioscoStockRepository;
 
     @Autowired
     private KioskPromotionRepository promotionRepository;
@@ -140,6 +145,20 @@ class KioskPosServiceTest {
                 .quantity(new BigDecimal("3"))
                 .build());
 
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kioskA.getId())
+                .productId(wallet.getId())
+                .colorId(negro.getId())
+                .currentStock(5)
+                .build());
+
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kioskB.getId())
+                .productId(wallet.getId())
+                .colorId(negro.getId())
+                .currentStock(3)
+                .build());
+
         when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
         kioskPosService.openCashSession(KioskCashSessionOpenRequest.builder()
                 .kioskLocationId(kioskA.getId())
@@ -181,6 +200,81 @@ class KioskPosServiceTest {
     }
 
     @Test
+    void createSale_requiresCardDataForTarjeta() {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        assertThatThrownBy(() -> kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("número de autorización");
+    }
+
+    @Test
+    void createSale_rejectsInvalidCardLast4() {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        assertThatThrownBy(() -> kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("12")
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("últimos 4 dígitos");
+    }
+
+    @Test
+    void createSale_doesNotInvoiceWithoutRequestOrNit() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("9876")
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getCardAuthNumber()).isEqualTo("123456");
+        assertThat(sale.getCardLast4()).isEqualTo("9876");
+        assertThat(sale.getInvoice()).isNull();
+    }
+
+    @Test
+    void createSale_assignsLocationInternalNumberOnlyWhenInvoiced() throws Exception {
+        kioskA.setInternalSeriesCode("A1");
+        locationRepository.save(kioskA);
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosSaleResponse firstSale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("250.00"))
+                .customerTaxId("CF")
+                .email("cliente@example.com")
+                .requestInvoice(true)
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+        KioskPosSaleResponse secondSale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("250.00"))
+                .customerTaxId("CF")
+                .email("cliente2@example.com")
+                .requestInvoice(true)
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(firstSale.getInvoice()).isNotNull();
+        assertThat(firstSale.getInvoice().getInternalNumber()).isEqualTo("A1-1");
+        assertThat(secondSale.getInvoice().getInternalNumber()).isEqualTo("A1-2");
+    }
+
+    @Test
     void discount_percent_and_fixed() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
 
@@ -194,6 +288,8 @@ class KioskPosServiceTest {
         KioskPosSaleResponse percentSale = kioskPosService.createSale(KioskPosSaleRequest.builder()
                 .kioskLocationId(kioskA.getId())
                 .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
                 .promotionId(percentPromo.getId())
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
@@ -212,6 +308,8 @@ class KioskPosServiceTest {
         KioskPosSaleResponse fixedSale = kioskPosService.createSale(KioskPosSaleRequest.builder()
                 .kioskLocationId(kioskA.getId())
                 .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
                 .promotionId(fixedPromo.getId())
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
@@ -236,6 +334,8 @@ class KioskPosServiceTest {
         KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
                 .kioskLocationId(kioskA.getId())
                 .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
                 .promotionId(combo.getId())
                 .items(List.of(item(wallet.getId(), negro.getId(), new BigDecimal("2"))))
                 .build());
@@ -275,6 +375,8 @@ class KioskPosServiceTest {
         kioskPosService.createSale(KioskPosSaleRequest.builder()
                 .kioskLocationId(kioskA.getId())
                 .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 

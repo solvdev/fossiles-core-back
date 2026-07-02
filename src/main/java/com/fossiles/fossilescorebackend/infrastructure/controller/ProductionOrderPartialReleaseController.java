@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 import com.fossiles.fossilescorebackend.application.dto.request.OpcShipmentGenerateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.PartialReleaseUpsertRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.PartialReleaseResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.PartialReleaseSearchItemResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -11,6 +12,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 /**
  * Operaciones sobre una liberación parcial ya creada (por id de liberación).
@@ -22,6 +25,15 @@ import org.springframework.web.bind.annotation.*;
 public class ProductionOrderPartialReleaseController {
 
     private final ProductionOrderPartialReleaseService partialReleaseService;
+
+    @GetMapping("/search")
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<PartialReleaseSearchItemResponse>> search(
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) Integer limit
+    ) {
+        return ResponseEntity.ok(partialReleaseService.searchForPrepare(q, limit));
+    }
 
     @PutMapping("/{releaseId}")
     @Transactional(rollbackFor = Exception.class)

@@ -157,7 +157,8 @@ public class MaterialConsumptionService {
     }
 
     /**
-     * Garantiza que la OP de cinchos gestionada puede crearse: stock según BOM y cantidades efectivas.
+     * Valida stock de materiales al iniciar una OP de cinchos gestionada.
+     * Las hebillas no bloquean el flujo OPC (se surten aparte).
      */
     public void assertManagedCinchoOrderMaterialsAvailable(Long productionOrderId)
             throws ResourceNotFoundException, BusinessException {
@@ -166,11 +167,38 @@ public class MaterialConsumptionService {
         List<ProductionOrderItemEntity> items = productionOrderItemRepository
                 .findByProductionOrderId(productionOrderId);
         Map<String, Object> result = buildMaterialAvailabilityResult(items);
-        if (!Boolean.TRUE.equals(result.get("allAvailable"))) {
-            String msg = String.valueOf(result.getOrDefault(
-                    "shortageMessage", "Material insuficiente para crear la orden."));
-            throw new BusinessException(msg);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> materials = (List<Map<String, Object>>) result.get("materials");
+        List<String> blockingShortages = new ArrayList<>();
+        if (materials != null) {
+            for (Map<String, Object> m : materials) {
+                if (Boolean.TRUE.equals(m.get("sufficient"))) {
+                    continue;
+                }
+                String materialName = String.valueOf(m.getOrDefault("materialName", ""));
+                Long materialId = m.get("materialId") instanceof Number n ? n.longValue() : null;
+                MaterialEntity mat = materialId != null ? materialRepository.findById(materialId).orElse(null) : null;
+                if (isBuckleMaterial(mat, materialName)) {
+                    continue;
+                }
+                blockingShortages.add(
+                        materialName + ": necesita " + m.get("required") + ", disponible " + m.get("available"));
+            }
         }
+        if (!blockingShortages.isEmpty()) {
+            throw new BusinessException("Material insuficiente:\n• " + String.join("\n• ", blockingShortages));
+        }
+    }
+
+    private static boolean isBuckleMaterial(MaterialEntity mat, String fallbackName) {
+        String name = mat != null && mat.getName() != null ? mat.getName() : fallbackName;
+        String sku = mat != null && mat.getSku() != null ? mat.getSku() : "";
+        String nameNorm = name.toUpperCase(Locale.ROOT);
+        String skuNorm = sku.toUpperCase(Locale.ROOT);
+        if (nameNorm.contains("HEBILLA")) {
+            return true;
+        }
+        return skuNorm.startsWith("HEB") || skuNorm.startsWith("AJUS");
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountDocumentSettlementRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountEntryRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountEntryVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.*;
@@ -79,6 +80,14 @@ public class CustomerAccountController {
             @RequestParam(required = false) String orderKind)
             throws ResourceNotFoundException {
         return ResponseEntity.ok(customerAccountService.getReceivableDocuments(customerId, orderKind));
+    }
+
+    @PostMapping("/customers/{customerId}/entries/document-settlement")
+    public ResponseEntity<CustomerAccountDocumentSettlementResponse> createDocumentSettlement(
+            @PathVariable Long customerId,
+            @Valid @RequestBody CustomerAccountDocumentSettlementRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(customerAccountService.createDocumentSettlement(customerId, request));
     }
 
     @PostMapping("/customers/{customerId}/entries")

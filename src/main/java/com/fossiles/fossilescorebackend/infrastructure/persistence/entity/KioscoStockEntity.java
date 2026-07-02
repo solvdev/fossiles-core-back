@@ -47,6 +47,10 @@ public class KioscoStockEntity {
     @Builder.Default
     private Integer currentStock = 0;
 
+    /** JSON talla → cantidad; alineado con product_inventory_location.sizes_data */
+    @Column(name = "sizes_data", columnDefinition = "TEXT")
+    private String sizesData;
+
     @Column(name = "minimum_stock", nullable = false)
     @Builder.Default
     private Integer minimumStock = 0;

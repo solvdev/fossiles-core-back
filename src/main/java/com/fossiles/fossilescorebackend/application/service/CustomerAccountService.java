@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.application.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountDocumentSettlementRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountEntryRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountEntryVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.*;
@@ -36,6 +37,7 @@ public class CustomerAccountService {
     private static final String TYPE_OPENING_BALANCE = "OPENING_BALANCE";
     private static final String TYPE_RETURN = "RETURN";
     private static final String CONCEPT_DISCHARGE = "11";
+    private static final String CONCEPT_CREDIT_NOTE = "2";
     private static final String OPV_PACKING_TAG = "__OPV_PACKING__:";
     private static final String OPV_SHIPPING_TAG = "__OPV_SHIPPING__:";
 
@@ -278,7 +280,7 @@ public class CustomerAccountService {
                     running = running.add(debit);
                     totalCharges = totalCharges.add(debit);
                 } else if (isCreditType(entry.getEntryType())) {
-                    credit = entry.getAmount();
+                    credit = resolveAppliedCreditAmount(entry);
                     running = running.subtract(credit);
                     if (TYPE_PAYMENT.equalsIgnoreCase(entry.getEntryType())) {
                         totalPayments = totalPayments.add(credit);
@@ -366,7 +368,8 @@ public class CustomerAccountService {
 
         if (chargeTarget != null) {
             BigDecimal balanceDue = computeChargeBalanceDue(chargeTarget);
-            if (netAmount.compareTo(balanceDue) > 0) {
+            BigDecimal appliedCredit = resolveAppliedCreditAmount(entryType, request, netAmount);
+            if (appliedCredit.compareTo(balanceDue) > 0) {
                 throw new BusinessException("El monto excede el saldo pendiente del documento (Q "
                         + balanceDue.setScale(2, RoundingMode.HALF_UP) + ").");
             }
@@ -413,6 +416,140 @@ public class CustomerAccountService {
                 .build());
 
         return toEntryResponse(saved);
+    }
+
+    /**
+     * Aplica descuento comercial y/o descarga parcial a un documento en una sola transacción.
+     */
+    public CustomerAccountDocumentSettlementResponse createDocumentSettlement(
+            Long customerId,
+            CustomerAccountDocumentSettlementRequest request) throws ResourceNotFoundException, BusinessException {
+        loadCustomer(customerId);
+        if (request.getAppliedToEntryId() == null) {
+            throw new BusinessException("Debe seleccionar un documento con saldo pendiente.");
+        }
+
+        CustomerAccountEntryEntity charge = entryRepository.findById(request.getAppliedToEntryId())
+                .orElseThrow(() -> new BusinessException("Cargo vinculado no encontrado."));
+        if (!customerId.equals(charge.getCustomerId())) {
+            throw new BusinessException("El cargo no pertenece a este cliente.");
+        }
+        if (!TYPE_CHARGE.equalsIgnoreCase(charge.getEntryType()) || !STATUS_ACTIVE.equalsIgnoreCase(charge.getStatus())) {
+            throw new BusinessException("Solo se puede liquidar un cargo activo.");
+        }
+
+        BigDecimal initialBalance = computeChargeBalanceDue(charge);
+        if (initialBalance.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("El documento no tiene saldo pendiente.");
+        }
+
+        BigDecimal commercialDiscount = resolveCommercialDiscount(request, initialBalance);
+        BigDecimal paymentGross = request.getPaymentGross() != null
+                ? request.getPaymentGross().setScale(2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+        if (paymentGross.compareTo(BigDecimal.ZERO) < 0) {
+            throw new BusinessException("El monto de descarga no puede ser negativo.");
+        }
+
+        BigDecimal totalApplied = commercialDiscount.add(paymentGross);
+        if (totalApplied.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("Indique un descuento comercial y/o un monto de descarga.");
+        }
+        if (totalApplied.compareTo(initialBalance) > 0) {
+            throw new BusinessException("Descuento + descarga exceden el saldo pendiente (Q "
+                    + initialBalance.setScale(2, RoundingMode.HALF_UP) + ").");
+        }
+
+        if (paymentGross.compareTo(BigDecimal.ZERO) > 0) {
+            if (trimToNull(request.getReceiptNumber()) == null) {
+                throw new BusinessException("El número de recibo es obligatorio cuando hay descarga.");
+            }
+            if (request.getCollectionDate() == null) {
+                throw new BusinessException("La fecha de cobro es obligatoria cuando hay descarga.");
+            }
+        }
+
+        List<CustomerAccountEntryResponse> createdEntries = new ArrayList<>();
+        String userNote = trimToNull(request.getNotes());
+        String invoiceNumber = firstNonBlank(request.getInvoiceNumber(), charge.getInvoiceNumber(), charge.getVendorShipmentNumber());
+        String documentNumber = firstNonBlank(request.getDocumentNumber(), charge.getDocumentNumber());
+
+        if (commercialDiscount.compareTo(BigDecimal.ZERO) > 0) {
+            CustomerAccountEntryRequest creditReq = new CustomerAccountEntryRequest();
+            creditReq.setEntryType(TYPE_CREDIT_NOTE);
+            creditReq.setMovementConceptCode(CONCEPT_CREDIT_NOTE);
+            creditReq.setEntryDate(request.getEntryDate());
+            creditReq.setAmount(commercialDiscount);
+            creditReq.setGrossCollectedAmount(commercialDiscount);
+            creditReq.setAppliedToEntryId(charge.getId());
+            creditReq.setInvoiceNumber(invoiceNumber);
+            creditReq.setDocumentNumber(documentNumber);
+            creditReq.setVendorShipmentNumber(firstNonBlank(request.getVendorShipmentNumber(), charge.getVendorShipmentNumber()));
+            creditReq.setProductionOrderId(firstNonNull(request.getProductionOrderId(), charge.getProductionOrderId()));
+            creditReq.setPartialReleaseId(firstNonNull(request.getPartialReleaseId(), charge.getPartialReleaseId()));
+            creditReq.setProductShipmentId(firstNonNull(request.getProductShipmentId(), charge.getProductShipmentId()));
+            creditReq.setDescription(userNote != null ? userNote : "Descuento comercial documento");
+            createdEntries.add(createEntry(customerId, creditReq));
+        }
+
+        BigDecimal paymentNet = BigDecimal.ZERO;
+        BigDecimal paymentDiscountAtCollection = BigDecimal.ZERO;
+        if (paymentGross.compareTo(BigDecimal.ZERO) > 0) {
+            CustomerAccountEntryRequest paymentReq = new CustomerAccountEntryRequest();
+            paymentReq.setEntryType(TYPE_PAYMENT);
+            paymentReq.setMovementConceptCode(CONCEPT_DISCHARGE);
+            paymentReq.setEntryDate(request.getEntryDate());
+            paymentReq.setGrossCollectedAmount(paymentGross);
+            paymentReq.setPaymentDiscountAmount(request.getPaymentDiscountAmount());
+            paymentReq.setPaymentDiscountPercent(request.getPaymentDiscountPercent());
+            paymentReq.setReceiptNumber(trimToNull(request.getReceiptNumber()));
+            paymentReq.setReference(trimToNull(request.getReceiptNumber()));
+            paymentReq.setCollectionDate(request.getCollectionDate());
+            paymentReq.setPaymentMethod(trimToNull(request.getPaymentMethod()) != null
+                    ? request.getPaymentMethod()
+                    : "EFECTIVO");
+            paymentReq.setAppliedToEntryId(charge.getId());
+            paymentReq.setInvoiceNumber(invoiceNumber);
+            paymentReq.setDocumentNumber(documentNumber);
+            paymentReq.setVendorShipmentNumber(firstNonBlank(request.getVendorShipmentNumber(), charge.getVendorShipmentNumber()));
+            paymentReq.setProductionOrderId(firstNonNull(request.getProductionOrderId(), charge.getProductionOrderId()));
+            paymentReq.setPartialReleaseId(firstNonNull(request.getPartialReleaseId(), charge.getPartialReleaseId()));
+            paymentReq.setProductShipmentId(firstNonNull(request.getProductShipmentId(), charge.getProductShipmentId()));
+            paymentReq.setReturnVoucherNumber(trimToNull(request.getReturnVoucherNumber()));
+            paymentReq.setReturnDate(request.getReturnDate());
+            paymentReq.setDescription(userNote != null ? userNote : "Descarga parcial documento");
+            paymentNet = resolveNetAmount(TYPE_PAYMENT, paymentReq);
+            paymentReq.setAmount(paymentNet);
+            paymentDiscountAtCollection = paymentReq.getPaymentDiscountAmount() != null
+                    ? paymentReq.getPaymentDiscountAmount()
+                    : BigDecimal.ZERO;
+            createdEntries.add(createEntry(customerId, paymentReq));
+        }
+
+        BigDecimal finalBalance = computeChargeBalanceDue(charge);
+        return CustomerAccountDocumentSettlementResponse.builder()
+                .appliedToEntryId(charge.getId())
+                .initialBalance(initialBalance.setScale(2, RoundingMode.HALF_UP))
+                .commercialDiscount(commercialDiscount.setScale(2, RoundingMode.HALF_UP))
+                .balanceAfterDiscount(initialBalance.subtract(commercialDiscount).max(BigDecimal.ZERO)
+                        .setScale(2, RoundingMode.HALF_UP))
+                .paymentGross(paymentGross.setScale(2, RoundingMode.HALF_UP))
+                .paymentNet(paymentNet.setScale(2, RoundingMode.HALF_UP))
+                .paymentDiscountAtCollection(paymentDiscountAtCollection.setScale(2, RoundingMode.HALF_UP))
+                .finalBalance(finalBalance.setScale(2, RoundingMode.HALF_UP))
+                .entries(createdEntries)
+                .build();
+    }
+
+    private BigDecimal resolveCommercialDiscount(CustomerAccountDocumentSettlementRequest request, BigDecimal balance) {
+        if (request.getDiscountAmount() != null && request.getDiscountAmount().compareTo(BigDecimal.ZERO) > 0) {
+            return request.getDiscountAmount().setScale(2, RoundingMode.HALF_UP);
+        }
+        if (request.getDiscountPercent() != null && request.getDiscountPercent().compareTo(BigDecimal.ZERO) > 0) {
+            return balance.multiply(request.getDiscountPercent())
+                    .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+        }
+        return BigDecimal.ZERO;
     }
 
     public CustomerAccountEntryResponse voidEntry(Long entryId, CustomerAccountEntryVoidRequest request)
@@ -608,7 +745,7 @@ public class CustomerAccountService {
         BigDecimal applied = entries.stream()
                 .filter(e -> charge.getId().equals(e.getAppliedToEntryId()))
                 .filter(e -> isCreditType(e.getEntryType()))
-                .map(CustomerAccountEntryEntity::getAmount)
+                .map(this::resolveAppliedCreditAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         return charge.getAmount().subtract(applied).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
     }
@@ -683,7 +820,7 @@ public class CustomerAccountService {
             String entryType,
             String conceptCode,
             CustomerAccountEntryRequest request) throws BusinessException {
-        if (!TYPE_PAYMENT.equals(entryType) && !TYPE_RETURN.equals(entryType)) {
+        if (!TYPE_PAYMENT.equals(entryType) && !TYPE_RETURN.equals(entryType) && !TYPE_CREDIT_NOTE.equals(entryType)) {
             return null;
         }
         Long appliedId = request.getAppliedToEntryId();
@@ -813,7 +950,7 @@ public class CustomerAccountService {
             if (isDebitType(entry.getEntryType())) {
                 delta = entry.getAmount();
             } else if (isCreditType(entry.getEntryType()) && entry.getAppliedToEntryId() != null) {
-                delta = entry.getAmount().negate();
+                delta = resolveAppliedCreditAmount(entry).negate();
             } else if (isCreditType(entry.getEntryType()) && entry.getAppliedToEntryId() == null) {
                 continue;
             }
@@ -946,7 +1083,7 @@ public class CustomerAccountService {
             if (isDebitType(entry.getEntryType())) {
                 balance = balance.add(entry.getAmount());
             } else if (isCreditType(entry.getEntryType())) {
-                balance = balance.subtract(entry.getAmount());
+                balance = balance.subtract(resolveAppliedCreditAmount(entry));
             }
         }
         return balance.setScale(2, RoundingMode.HALF_UP);
@@ -1006,6 +1143,39 @@ public class CustomerAccountService {
         return TYPE_PAYMENT.equalsIgnoreCase(entryType)
                 || TYPE_CREDIT_NOTE.equalsIgnoreCase(entryType)
                 || TYPE_RETURN.equalsIgnoreCase(entryType);
+    }
+
+    /**
+     * Monto que reduce el saldo del documento: bruto cobrado (incluye descuento al cobrar).
+     * El efectivo neto queda en {@link CustomerAccountEntryEntity#getAmount()}.
+     */
+    private BigDecimal resolveAppliedCreditAmount(CustomerAccountEntryEntity entry) {
+        if (entry == null || !isCreditType(entry.getEntryType())) {
+            return BigDecimal.ZERO;
+        }
+        if (entry.getGrossCollectedAmount() != null && entry.getGrossCollectedAmount().compareTo(BigDecimal.ZERO) > 0) {
+            return entry.getGrossCollectedAmount().setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal amount = entry.getAmount() != null ? entry.getAmount() : BigDecimal.ZERO;
+        BigDecimal discount = entry.getPaymentDiscountAmount() != null ? entry.getPaymentDiscountAmount() : BigDecimal.ZERO;
+        if (discount.compareTo(BigDecimal.ZERO) > 0) {
+            return amount.add(discount).setScale(2, RoundingMode.HALF_UP);
+        }
+        return amount.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal resolveAppliedCreditAmount(String entryType, CustomerAccountEntryRequest request, BigDecimal netAmount) {
+        if (!isCreditType(entryType)) {
+            return netAmount != null ? netAmount : BigDecimal.ZERO;
+        }
+        if (request.getGrossCollectedAmount() != null && request.getGrossCollectedAmount().compareTo(BigDecimal.ZERO) > 0) {
+            return request.getGrossCollectedAmount().setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal discount = request.getPaymentDiscountAmount() != null ? request.getPaymentDiscountAmount() : BigDecimal.ZERO;
+        if (discount.compareTo(BigDecimal.ZERO) > 0 && netAmount != null) {
+            return netAmount.add(discount).setScale(2, RoundingMode.HALF_UP);
+        }
+        return netAmount != null ? netAmount.setScale(2, RoundingMode.HALF_UP) : BigDecimal.ZERO;
     }
 
     private static String normalizeEntryType(String raw) throws BusinessException {

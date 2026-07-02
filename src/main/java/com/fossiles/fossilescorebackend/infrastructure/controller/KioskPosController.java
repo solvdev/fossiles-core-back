@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionCloseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleInvoiceContactRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSalePaymentUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
@@ -84,6 +85,15 @@ public class KioskPosController {
             @RequestBody KioskPosSalePaymentUpdateRequest request
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskPosService.updateSalePayment(id, kioskLocationId, request));
+    }
+
+    @PatchMapping("/sales/{id}/invoice-contact")
+    public ResponseEntity<KioskPosSaleResponse> updateSaleInvoiceContact(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestBody KioskPosSaleInvoiceContactRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.updateSaleInvoiceContact(id, kioskLocationId, request));
     }
 
     @PutMapping("/sales/{id}/deposit-slip")

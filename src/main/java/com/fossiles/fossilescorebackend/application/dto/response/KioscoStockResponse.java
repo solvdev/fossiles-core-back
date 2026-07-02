@@ -5,7 +5,9 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Map;
 
 @Data
 @Builder
@@ -22,6 +24,8 @@ public class KioscoStockResponse {
     private Long colorId;
     private String colorName;
     private Integer currentStock;
+    /** Desglose por talla cuando aplica (cinchos, etc.). */
+    private Map<String, BigDecimal> sizes;
     private Integer minimumStock;
     private boolean lowStock;
     private LocalDateTime lastUpdatedAt;

@@ -6,6 +6,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
@@ -56,7 +58,7 @@ public class KioskCashSessionEntity {
     @PrePersist
     protected void onCreate() {
         if (openedAt == null) {
-            openedAt = LocalDateTime.now();
+            openedAt = GuatemalaDateTime.now();
         }
         if (openingAmount == null) {
             openingAmount = new BigDecimal("300");

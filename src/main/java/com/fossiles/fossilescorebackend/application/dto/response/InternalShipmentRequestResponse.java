@@ -18,6 +18,7 @@ public class InternalShipmentRequestResponse {
     private String status;
     private String requestType;
     private String recipientName;
+    private Long employeeId;
     private String recipientPhone;
     private String recipientTaxId;
     private String notes;
@@ -31,6 +32,8 @@ public class InternalShipmentRequestResponse {
     private String rejectionReason;
     private Long productShipmentId;
     private String shipmentNumber;
+    private Long productionOrderId;
+    private String productionOrderCode;
     private List<LineResponse> lines;
 
     @Data
@@ -47,5 +50,6 @@ public class InternalShipmentRequestResponse {
         private String colorName;
         private String size;
         private BigDecimal quantity;
+        private BigDecimal catalogPrice;
     }
 }

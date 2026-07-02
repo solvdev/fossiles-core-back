@@ -3,7 +3,8 @@
 --
 -- Flujo esperado:
 --   CONFIRMED -> sendShipment -> SENT (salida PT/Devoluciones)
---   confirmReceipt -> DELIVERED (entrada kiosco + kardex TRANSFER_IN)
+--   confirmReceipt -> DELIVERED (entrada kiosco con sizes_data en kiosco_stock + kardex TRANSFER_IN)
+--   Recepciones previas sin tallas en kiosco_stock: PUT .../shipments/{id}/repair-receipt-inventory
 
 -- =============================================================================
 -- 1) Envios DELIVERED sin kardex TRANSFER_IN (posible inventario no registrado)
@@ -95,3 +96,32 @@ GROUP BY pd.id, pd.distribution_number
 HAVING count(*) FILTER (WHERE ps.status = 'SENT') > 0
     OR count(*) FILTER (WHERE ps.status = 'DELIVERED') > 0
 ORDER BY pd.distribution_number DESC;
+
+-- =============================================================================
+-- 5) Reparar inventario de envio DELIVERED (tallas faltantes en kiosko)
+--    API: PUT /api/product-distributions/shipments/{shipmentId}/repair-receipt-inventory
+--    Opcional force=true para re-aplicar cuando hay movimiento pero stock kiosco < esperado
+--    Ejecutar por cada envio DELIVERED con cinchos de varias tallas ya recibidos.
+-- =============================================================================
+
+-- =============================================================================
+-- 6) Empaques SUM- en envios DELIVERED: esperado vs stock kiosco vs movimiento
+--    API: GET /api/product-distributions/shipments/{shipmentId}/receipt-inventory-audit
+--    Cada material SUM- debe tener producto catalogo con mismo codigo (SKU) y sale_price > 0.
+-- =============================================================================
+-- Ejemplo (ajustar shipment_id):
+-- SELECT ps.id, ps.shipment_number, ps.packing_items
+-- FROM product_shipment ps
+-- WHERE ps.id = :shipment_id AND ps.status = 'DELIVERED';
+
+-- Comparar empaques: material SKU vs product.code, stock kiosco y movimiento #P{materialId}
+-- SELECT m.id AS material_id, m.sku,
+--        p.id AS product_id, p.code AS product_code,
+--        ks.quantity AS kiosco_stock
+-- FROM product_shipment ps
+-- CROSS JOIN LATERAL jsonb_array_elements(ps.packing_items::jsonb) AS pi
+-- JOIN material m ON m.id = (pi->>'materialId')::bigint
+-- LEFT JOIN product p ON upper(trim(p.code)) = upper(trim(m.sku))
+-- LEFT JOIN kiosco_stock ks ON ks.location_id = ps.location_id
+--     AND ks.product_id = p.id AND ks.color_id IS NULL
+-- WHERE ps.id = :shipment_id;

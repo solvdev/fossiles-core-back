@@ -9,5 +9,6 @@ public enum KioscoMovementType {
     TRASLADO_ENTRADA,
     MERMA,
     AJUSTE,
-    ANULACION
+    ANULACION,
+    CAMBIO
 }

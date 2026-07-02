@@ -1943,6 +1943,26 @@ public class InventoryService {
                         transfer.getQuantity(),
                         transfer.getUpdatedBy()
                 );
+            } else if (kioskInventoryGuard.isKioskLocation(toLocation)) {
+                kioscoInventoryService.registrarEntradaPorTransferenciaInventario(
+                        transfer.getToLocationId(),
+                        transfer.getFromLocationId(),
+                        transfer.getProductId(),
+                        colorId,
+                        transfer.getQuantity(),
+                        transfer.getId(),
+                        transfer.getUpdatedBy()
+                );
+            } else if (kioskInventoryGuard.isKioskLocation(fromLocation)) {
+                kioscoInventoryService.registrarSalidaPorTransferenciaInventario(
+                        transfer.getFromLocationId(),
+                        transfer.getToLocationId(),
+                        transfer.getProductId(),
+                        colorId,
+                        transfer.getQuantity(),
+                        transfer.getId(),
+                        transfer.getUpdatedBy()
+                );
             }
         }
 

@@ -48,5 +48,9 @@ public class LocationRequest {
 
     /** Kiosko en piloto POS: ventas no suman en dashboard de producción. */
     private Boolean posTestMode;
+
+    /** Código de serie de control interno (ej. A45, B). Prefijo de tax_invoice.internal_number. */
+    @Size(max = 10, message = "Internal series code must not exceed 10 characters")
+    private String internalSeriesCode;
 }
 

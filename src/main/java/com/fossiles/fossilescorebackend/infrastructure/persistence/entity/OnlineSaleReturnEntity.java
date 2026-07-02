@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.entity;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -41,7 +42,7 @@ public class OnlineSaleReturnEntity {
 
     @PrePersist
     protected void onCreate() {
-        createdAt = LocalDateTime.now();
+        createdAt = GuatemalaDateTime.now();
         if (itemCondition == null || itemCondition.isBlank()) itemCondition = "BUENO";
     }
 }

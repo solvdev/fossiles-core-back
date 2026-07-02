@@ -19,6 +19,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAva
 import com.fossiles.fossilescorebackend.application.dto.response.TaxpayerLookupResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskCashSessionEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
@@ -43,7 +44,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
-import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -53,7 +54,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -62,7 +63,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
@@ -75,7 +78,7 @@ public class KioskPosService {
     private static final String CASH_SESSION_OPEN = "OPEN";
     private static final String CASH_SESSION_CLOSED = "CLOSED";
     private static final String SALE_STATUS_VOID = "VOID";
-    private static final ZoneId GUATEMALA_ZONE = ZoneId.of("America/Guatemala");
+    private static final Pattern CARD_LAST4_PATTERN = Pattern.compile("^\\d{4}$");
 
     private final SecurityUtil securityUtil;
     private final UserRepository userRepository;
@@ -109,8 +112,16 @@ public class KioskPosService {
 
         List<KioscoStockEntity> kioscoStockRows = kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAsc(kiosk.getId());
+        List<ProductInventoryLocation> legacyRowsAtKiosk = productInventoryLocationRepository
+                .findByLocationId(kiosk.getId());
+        Map<String, ProductInventoryLocation> legacyByKey = legacyRowsAtKiosk.stream()
+                .collect(Collectors.toMap(
+                        row -> inventoryKey(row.getProductId(), row.getColorId()),
+                        row -> row,
+                        (a, b) -> a));
+
         List<ProductInventoryLocation> legacyRows = kioscoStockRows.isEmpty()
-                ? productInventoryLocationRepository.findByLocationId(kiosk.getId())
+                ? legacyRowsAtKiosk
                 : List.of();
 
         Set<Long> productIds = (kioscoStockRows.isEmpty() ? legacyRows.stream().map(ProductInventoryLocation::getProductId)
@@ -135,9 +146,6 @@ public class KioskPosService {
                 ? legacyRows.stream()
                 .map(row -> {
                     ProductEntity product = productsById.get(row.getProductId());
-                    if (product != null && CinchoProductUtils.isFossCinchoProduct(product)) {
-                        return null;
-                    }
                     ProductCategoryEntity category = product != null && product.getCategoryId() != null
                             ? categoriesById.get(product.getCategoryId())
                             : null;
@@ -150,10 +158,12 @@ public class KioskPosService {
                             .colorName(row.getColor() != null ? row.getColor().getName() : "")
                             .categoryId(category != null ? category.getId() : null)
                             .categoryName(category != null ? category.getName() : "")
+                            .audienceCategory(product != null
+                                    ? ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory())
+                                    : ProductAudienceCategory.UNISEX)
                             .quantity(row.getQuantity() != null ? row.getQuantity() : BigDecimal.ZERO)
-                            .suggestedUnitPrice(product != null && product.getSalePrice() != null
-                                    ? product.getSalePrice()
-                                    : BigDecimal.ZERO)
+                            .suggestedUnitPrice(resolvePosUnitPrice(product))
+                            .sizes(positiveSizesMap(row.getSizesData()))
                             .build();
                 })
                 .filter(Objects::nonNull)
@@ -161,12 +171,11 @@ public class KioskPosService {
                 : kioscoStockRows.stream()
                 .map(row -> {
                     ProductEntity product = productsById.get(row.getProductId());
-                    if (product != null && CinchoProductUtils.isFossCinchoProduct(product)) {
-                        return null;
-                    }
                     ProductCategoryEntity category = product != null && product.getCategoryId() != null
                             ? categoriesById.get(product.getCategoryId())
                             : null;
+                    ProductInventoryLocation legacy = legacyByKey.get(
+                            inventoryKey(row.getProductId(), row.getColorId()));
                     return KioskPosContextResponse.InventoryItem.builder()
                             .productId(row.getProductId())
                             .productCode(product != null ? product.getCode() : "")
@@ -176,14 +185,18 @@ public class KioskPosService {
                             .colorName(row.getColor() != null ? row.getColor().getName() : "")
                             .categoryId(category != null ? category.getId() : null)
                             .categoryName(category != null ? category.getName() : "")
+                            .audienceCategory(product != null
+                                    ? ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory())
+                                    : ProductAudienceCategory.UNISEX)
                             .quantity(BigDecimal.valueOf(row.getCurrentStock() != null ? row.getCurrentStock() : 0))
-                            .suggestedUnitPrice(product != null && product.getSalePrice() != null
-                                    ? product.getSalePrice()
-                                    : BigDecimal.ZERO)
+                            .suggestedUnitPrice(resolvePosUnitPrice(product))
+                            .sizes(resolveKioscoSizes(row, legacy))
                             .build();
                 })
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
+
+        appendMissingPackagingCatalogItems(rawInventory, productsById, categoriesById);
 
         List<KioskPosContextResponse.InventoryItem> inventory = rawInventory.stream()
                 .filter(item -> categoryId == null || Objects.equals(item.getCategoryId(), categoryId))
@@ -231,8 +244,9 @@ public class KioskPosService {
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
         KioskCashSessionEntity openSession = requireOpenCashSession(kiosk.getId());
-        LocalDate saleDate = request.getSaleDate() != null ? request.getSaleDate() : LocalDate.now();
+        LocalDate saleDate = request.getSaleDate() != null ? request.getSaleDate() : GuatemalaDateTime.today();
         String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod());
+        validateCardFields(normalizedPaymentMethod, request.getCardAmount(), request.getCardAuthNumber(), request.getCardLast4());
 
         String normalizedTaxId = normalizeTaxId(request.getCustomerTaxId());
         if (normalizedTaxId != null && !"CF".equals(normalizedTaxId) && !isValidGuatemalaNit(normalizedTaxId)) {
@@ -259,9 +273,6 @@ public class KioskPosService {
 
             ProductEntity product = productRepository.findById(itemRequest.getProductId())
                     .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
-            if (CinchoProductUtils.isFossCinchoProduct(product)) {
-                throw new BusinessException("Los cinchos FOSS no se venden por este POS.");
-            }
 
             ColorEntity color = null;
             if (itemRequest.getColorId() != null) {
@@ -269,12 +280,30 @@ public class KioskPosService {
                         .orElseThrow(() -> new ResourceNotFoundException("Color", itemRequest.getColorId()));
             }
 
-            BigDecimal unitPrice = product.getSalePrice() != null ? product.getSalePrice() : BigDecimal.ZERO;
+            String sizeLabel = ProductInventorySizesJson.normalizeKey(itemRequest.getSize());
+            Optional<KioscoStockEntity> kioscoRowOpt = kioscoStockRepository
+                    .findByLocationIdAndProductIdAndColorId(
+                            itemRequest.getProductId(), kiosk.getId(), itemRequest.getColorId());
+            Optional<ProductInventoryLocation> invRowOpt = productInventoryLocationRepository
+                    .findByProductIdAndLocationIdAndColorId(
+                            itemRequest.getProductId(), kiosk.getId(), itemRequest.getColorId());
+            boolean requiresSize = kioscoRowOpt
+                    .map(row -> ProductInventorySizesJson.hasNonEmptyBreakdown(row.getSizesData()))
+                    .orElse(false)
+                    || invRowOpt
+                            .map(row -> ProductInventorySizesJson.hasNonEmptyBreakdown(row.getSizesData()))
+                            .orElse(false);
+            if (requiresSize && sizeLabel.isEmpty()) {
+                throw new BusinessException("Debe seleccionar talla para " + product.getName() + ".");
+            }
+
+            BigDecimal unitPrice = resolvePosUnitPrice(product);
             BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
 
             preparedLines.add(new PreparedLine(
                     product,
                     color,
+                    sizeLabel.isEmpty() ? null : sizeLabel,
                     quantity,
                     unitPrice,
                     lineTotal
@@ -284,6 +313,13 @@ public class KioskPosService {
         }
 
         BigDecimal discountAmount = calculatePromotionDiscount(subtotal, promotion, preparedLines);
+        if (discountAmount.compareTo(BigDecimal.ZERO) <= 0 && request.getManualDiscountPercent() != null) {
+            BigDecimal pct = request.getManualDiscountPercent().max(BigDecimal.ZERO).min(new BigDecimal("100"));
+            if (pct.compareTo(BigDecimal.ZERO) > 0) {
+                discountAmount = subtotal.multiply(pct)
+                        .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
+            }
+        }
         BigDecimal totalAmount = subtotal.subtract(discountAmount).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
 
         PaymentSnapshot payment = resolvePaymentSnapshot(
@@ -301,11 +337,12 @@ public class KioskPosService {
                 .kioskLocationId(kiosk.getId())
                 .soldByUserId(user.getId())
                 .saleDate(saleDate)
+                .soldAt(GuatemalaDateTime.now())
                 .customerTaxId(normalizedTaxId)
                 .customerName(safeTrim(request.getCustomerName()))
                 .address(safeTrim(request.getAddress()))
                 .phone(safeTrim(request.getPhone()))
-                .email(safeTrim(request.getEmail()))
+                .email(normalizeFelReceptorEmail(safeTrim(request.getEmail())))
                 .paymentMethod(normalizedPaymentMethod)
                 .status("COMPLETED")
                 .notes(safeTrim(request.getNotes()))
@@ -317,8 +354,10 @@ public class KioskPosService {
                 .changeAmount(payment.changeAmount())
                 .cashAmount(payment.cashAmount())
                 .cardAmount(payment.cardAmount())
+                .cardAuthNumber(safeTrim(request.getCardAuthNumber()))
+                .cardLast4(safeTrim(request.getCardLast4()))
                 .promotionId(promotion != null ? promotion.getId() : null)
-                .promotionName(promotion != null ? promotion.getName() : null)
+                .promotionName(resolvePromotionDisplayName(promotion, request.getManualDiscountPercent()))
                 .totalItems(totalItems)
                 .testSale(isPosTestSale(kiosk))
                 .cashSessionId(openSession.getId())
@@ -327,11 +366,15 @@ public class KioskPosService {
                 .build();
 
         for (PreparedLine line : preparedLines) {
+            String displayName = line.product().getName();
+            if (line.size() != null && !line.size().isBlank()) {
+                displayName = displayName + " T." + line.size();
+            }
             KioskSaleItemEntity saleItem = KioskSaleItemEntity.builder()
                     .kioskSale(sale)
                     .productId(line.product().getId())
                     .productCode(line.product().getCode())
-                    .productName(line.product().getName())
+                    .productName(displayName)
                     .colorId(line.color() != null ? line.color().getId() : null)
                     .colorName(line.color() != null ? line.color().getName() : "")
                     .quantity(line.quantity())
@@ -344,34 +387,92 @@ public class KioskPosService {
         KioskSaleEntity saved = kioskSaleRepository.save(sale);
 
         for (Map.Entry<String, BigDecimal> entry : aggregatedQty.entrySet()) {
-            String[] parts = entry.getKey().split(":");
-            Long productId = Long.parseLong(parts[0]);
-            Long colorId = "null".equals(parts[1]) ? null : Long.parseLong(parts[1]);
+            ParsedInventoryKey parsed = parseInventoryKey(entry.getKey());
             BigDecimal qty = entry.getValue();
-            productInventoryService.decrementInventory(
-                    productId,
-                    kiosk.getId(),
-                    colorId,
-                    qty,
-                    "KIOSK_SALE",
-                    saved.getId(),
-                    saved.getSaleNumber(),
-                    "Venta POS en kiosko " + kiosk.getName()
-            );
+            boolean hasLegacyRow = productInventoryLocationRepository
+                    .findByProductIdAndLocationIdAndColorId(parsed.productId(), kiosk.getId(), parsed.colorId())
+                    .isPresent();
+            if (hasLegacyRow) {
+                productInventoryService.decrementInventory(
+                        parsed.productId(),
+                        kiosk.getId(),
+                        parsed.colorId(),
+                        qty,
+                        "KIOSK_SALE",
+                        saved.getId(),
+                        saved.getSaleNumber(),
+                        "Venta POS en kiosko " + kiosk.getName(),
+                        parsed.size()
+                );
+            }
             kioscoInventoryService.registrarVentaDesdeIntegracion(
                     kiosk.getId(),
-                    productId,
-                    colorId,
+                    parsed.productId(),
+                    parsed.colorId(),
                     qty,
                     saved.getId(),
-                    user.getId()
+                    user.getId(),
+                    parsed.size()
             );
         }
 
-        taxInvoiceService.issueFromKioskSale(saved, Boolean.TRUE.equals(request.getRequestInvoice()));
-        saved = kioskSaleRepository.findById(saved.getId()).orElse(saved);
+        boolean shouldEmitFel = KioskSaleInvoiceMapper.shouldEmitForPos(
+                normalizedTaxId, Boolean.TRUE.equals(request.getRequestInvoice()));
+        String saleEmail = normalizeFelReceptorEmail(safeTrim(request.getEmail()));
+        if (shouldEmitFel && saleEmail != null && !saleEmail.isBlank()) {
+            taxInvoiceService.issueFromKioskSale(saved, true);
+            saved = kioskSaleRepository.findById(saved.getId()).orElse(saved);
+        }
 
         return toSaleResponse(saved, kiosk, user);
+    }
+
+    public KioskPosSaleResponse updateSaleInvoiceContact(
+            Long saleId,
+            Long kioskLocationId,
+            com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleInvoiceContactRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        UserEntity user = getCurrentUserOrThrow();
+        boolean admin = isAdminUser(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+        LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
+
+        KioskSaleEntity sale = kioskSaleRepository.findById(saleId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioskSale", saleId));
+        if (!Objects.equals(sale.getKioskLocationId(), kiosk.getId())) {
+            throw new BusinessException("No tienes acceso a esta venta.");
+        }
+        if (request != null) {
+            if (request.getEmail() != null) {
+                sale.setEmail(normalizeFelReceptorEmail(safeTrim(request.getEmail())));
+            }
+            if (request.getPhone() != null) {
+                sale.setPhone(safeTrim(request.getPhone()));
+            }
+        }
+        KioskSaleEntity saved = kioskSaleRepository.save(sale);
+        return toSaleResponse(saved, kiosk, user);
+    }
+
+    private static String resolvePromotionDisplayName(KioskPromotionEntity promotion, BigDecimal manualDiscountPercent) {
+        if (promotion != null && promotion.getName() != null && !promotion.getName().isBlank()) {
+            return promotion.getName();
+        }
+        if (manualDiscountPercent != null && manualDiscountPercent.compareTo(BigDecimal.ZERO) > 0) {
+            return "Descuento " + manualDiscountPercent.stripTrailingZeros().toPlainString() + "%";
+        }
+        return null;
+    }
+
+    private static String normalizeFelReceptorEmail(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String joined = java.util.Arrays.stream(raw.split("[;,]"))
+                .map(String::trim)
+                .filter(part -> !part.isEmpty())
+                .collect(java.util.stream.Collectors.joining(";"));
+        return joined.isBlank() ? null : joined;
     }
 
     @Transactional(readOnly = true)
@@ -425,6 +526,7 @@ public class KioskPosService {
         }
 
         String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod());
+        validateCardFields(normalizedPaymentMethod, request.getCardAmount(), request.getCardAuthNumber(), request.getCardLast4());
         BigDecimal totalAmount = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
         PaymentSnapshot payment = resolvePaymentSnapshot(
                 normalizedPaymentMethod,
@@ -439,6 +541,9 @@ public class KioskPosService {
         sale.setChangeAmount(payment.changeAmount());
         sale.setCashAmount(payment.cashAmount());
         sale.setCardAmount(payment.cardAmount());
+        boolean hasCardData = "TARJETA".equals(normalizedPaymentMethod) || "MIXTO".equals(normalizedPaymentMethod);
+        sale.setCardAuthNumber(hasCardData ? safeTrim(request.getCardAuthNumber()) : "");
+        sale.setCardLast4(hasCardData ? safeTrim(request.getCardLast4()) : "");
         KioskSaleEntity saved = kioskSaleRepository.save(sale);
         return toSaleResponse(saved, kiosk, user);
     }
@@ -463,10 +568,14 @@ public class KioskPosService {
         }
 
         if (sale.getCashSessionId() != null) {
-            KioskCashSessionEntity session = kioskCashSessionRepository.findById(sale.getCashSessionId())
+            KioskCashSessionEntity openSession = kioskCashSessionRepository
+                    .findFirstByKioskLocationIdAndStatusOrderByOpenedAtDesc(kiosk.getId(), CASH_SESSION_OPEN)
                     .orElse(null);
-            if (session != null && !CASH_SESSION_OPEN.equalsIgnoreCase(safeTrim(session.getStatus()))) {
-                throw new BusinessException("Solo puedes anular ventas de la caja abierta actual.");
+            if (openSession == null) {
+                throw new BusinessException("Debes tener caja abierta para anular ventas.");
+            }
+            if (!Objects.equals(sale.getCashSessionId(), openSession.getId())) {
+                throw new BusinessException("Solo puedes anular ventas registradas en la caja abierta actual.");
             }
         }
 
@@ -485,17 +594,24 @@ public class KioskPosService {
                 if (item.getProductId() == null || item.getQuantity() == null) {
                     continue;
                 }
-                productInventoryService.incrementInventory(
-                        item.getProductId(),
-                        kiosk.getId(),
-                        item.getColorId(),
-                        item.getQuantity(),
-                        null,
-                        "KIOSK_SALE_VOID",
-                        sale.getId(),
-                        sale.getSaleNumber(),
-                        "Anulacion venta POS"
-                );
+                String sizeKey = extractSizeFromSaleItemName(item.getProductName());
+                boolean hasLegacyRow = productInventoryLocationRepository
+                        .findByProductIdAndLocationIdAndColorId(item.getProductId(), kiosk.getId(), item.getColorId())
+                        .isPresent();
+                if (hasLegacyRow) {
+                    productInventoryService.incrementInventory(
+                            item.getProductId(),
+                            kiosk.getId(),
+                            item.getColorId(),
+                            item.getQuantity(),
+                            null,
+                            "KIOSK_SALE_VOID",
+                            sale.getId(),
+                            sale.getSaleNumber(),
+                            "Anulacion venta POS",
+                            sizeKey
+                    );
+                }
                 kioscoInventoryService.anularFacturaDesdeIntegracion(
                         sale.getId(),
                         kiosk.getId(),
@@ -503,7 +619,8 @@ public class KioskPosService {
                         item.getColorId(),
                         item.getQuantity(),
                         request.getReason(),
-                        user.getId()
+                        user.getId(),
+                        sizeKey
                 );
         }
 
@@ -536,7 +653,7 @@ public class KioskPosService {
         }
 
         sale.setDepositSlipNumber(safeTrim(request.getDepositSlipNumber()));
-        sale.setDepositRecordedAt(LocalDateTime.now());
+        sale.setDepositRecordedAt(GuatemalaDateTime.now());
         sale.setDepositRecordedBy(user.getId());
         KioskSaleEntity saved = kioskSaleRepository.save(sale);
         return toSaleResponse(saved, kiosk, user);
@@ -583,7 +700,7 @@ public class KioskPosService {
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
-        LocalDate today = LocalDate.now(GUATEMALA_ZONE);
+        LocalDate today = GuatemalaDateTime.today();
         LocalDate todayLastYear = today.minusYears(1);
         LocalDate lastMonthStart = today.minusMonths(1).withDayOfMonth(1);
         LocalDate lastMonthEnd = today.withDayOfMonth(1).minusDays(1);
@@ -684,7 +801,7 @@ public class KioskPosService {
         }
 
         boolean onlyActive = activeOnly == null || activeOnly;
-        LocalDate today = LocalDate.now();
+        LocalDate today = GuatemalaDateTime.today();
         List<KioskPromotionEntity> promotions = onlyActive
                 ? kioskPromotionRepository.findByActiveTrueOrderByNameAsc()
                 : kioskPromotionRepository.findAll().stream()
@@ -782,7 +899,7 @@ public class KioskPosService {
             if (item == null || item.getProductId() == null) {
                 continue;
             }
-            String key = inventoryKey(item.getProductId(), item.getColorId());
+            String key = inventoryKey(item.getProductId(), item.getColorId(), item.getSize());
             BigDecimal qty = item.getQuantity() != null ? item.getQuantity() : BigDecimal.ZERO;
             aggregated.merge(key, qty, BigDecimal::add);
         }
@@ -793,30 +910,119 @@ public class KioskPosService {
             throws BusinessException {
         List<String> sortedKeys = aggregatedQty.keySet().stream().sorted().toList();
         Map<String, ProductInventoryLocation> locked = new LinkedHashMap<>();
+        boolean kioscoModuleActive = !kioscoStockRepository
+                .findByLocationIdOrderByProductIdAscColorIdAsc(kioskId).isEmpty();
+
         for (String key : sortedKeys) {
-            String[] parts = key.split(":");
-            Long productId = Long.parseLong(parts[0]);
-            Long colorId = "null".equals(parts[1]) ? null : Long.parseLong(parts[1]);
+            ParsedInventoryKey parsed = parseInventoryKey(key);
             BigDecimal requested = aggregatedQty.get(key);
+            ProductEntity product = productRepository.findById(parsed.productId()).orElse(null);
+            String label = product != null ? product.getName() : "Producto";
 
-            ProductInventoryLocation row = productInventoryLocationRepository
-                    .findWithLockByProductIdAndLocationIdAndColorId(productId, kioskId, colorId)
-                    .orElseThrow(() -> new BusinessException(
-                            "Stock insuficiente: no hay inventario para el producto solicitado en este kiosko."));
-
-            BigDecimal available = row.getQuantity() != null ? row.getQuantity() : BigDecimal.ZERO;
-            if (requested.compareTo(available) > 0) {
-                ProductEntity product = productRepository.findById(productId).orElse(null);
-                String label = product != null ? product.getName() : "Producto";
-                throw new BusinessException(String.format(
-                        "Stock insuficiente para %s. Disponible: %s, solicitado: %s.",
-                        label,
-                        available.stripTrailingZeros().toPlainString(),
-                        requested.stripTrailingZeros().toPlainString()));
+            if (kioscoModuleActive) {
+                KioscoStockEntity kioscoRow = kioscoStockRepository
+                        .findForUpdate(kioskId, parsed.productId(), parsed.colorId())
+                        .orElse(null);
+                if (kioscoRow == null) {
+                    throw buildInsufficientStockException(label, parsed.size(), BigDecimal.ZERO, requested);
+                }
+                validateKioscoStock(kioscoRow, parsed, requested, label);
+            } else {
+                ProductInventoryLocation row = productInventoryLocationRepository
+                        .findWithLockByProductIdAndLocationIdAndColorId(
+                                parsed.productId(), kioskId, parsed.colorId())
+                        .orElseThrow(() -> new BusinessException(
+                                "Stock insuficiente: no hay inventario para el producto solicitado en este kiosko."));
+                validateLegacyStock(row, parsed, requested, label);
+                locked.put(key, row);
+                continue;
             }
-            locked.put(key, row);
+
+            productInventoryLocationRepository
+                    .findWithLockByProductIdAndLocationIdAndColorId(
+                            parsed.productId(), kioskId, parsed.colorId())
+                    .ifPresent(row -> locked.put(key, row));
         }
         return locked;
+    }
+
+    private void validateKioscoStock(
+            KioscoStockEntity row,
+            ParsedInventoryKey parsed,
+            BigDecimal requested,
+            String label
+    ) throws BusinessException {
+        Map<String, BigDecimal> sizesMap = ProductInventorySizesJson.parse(row.getSizesData());
+        BigDecimal available;
+        if (!sizesMap.isEmpty()) {
+            String sizeKey = ProductInventorySizesJson.normalizeKey(parsed.size());
+            if (sizeKey.isEmpty()) {
+                throw new BusinessException("Debe seleccionar talla para " + label + ".");
+            }
+            available = sizesMap.getOrDefault(sizeKey, BigDecimal.ZERO);
+        } else {
+            available = BigDecimal.valueOf(row.getCurrentStock() != null ? row.getCurrentStock() : 0);
+        }
+        if (requested.compareTo(available) > 0) {
+            throw buildInsufficientStockException(label, parsed.size(), available, requested);
+        }
+    }
+
+    private void validateLegacyStock(
+            ProductInventoryLocation row,
+            ParsedInventoryKey parsed,
+            BigDecimal requested,
+            String label
+    ) throws BusinessException {
+        Map<String, BigDecimal> sizesMap = ProductInventorySizesJson.parse(row.getSizesData());
+        BigDecimal available;
+        if (!sizesMap.isEmpty()) {
+            String sizeKey = ProductInventorySizesJson.normalizeKey(parsed.size());
+            if (sizeKey.isEmpty()) {
+                throw new BusinessException("Debe seleccionar talla para " + label + ".");
+            }
+            available = sizesMap.getOrDefault(sizeKey, BigDecimal.ZERO);
+        } else {
+            available = row.getQuantity() != null ? row.getQuantity() : BigDecimal.ZERO;
+        }
+        if (requested.compareTo(available) > 0) {
+            throw buildInsufficientStockException(label, parsed.size(), available, requested);
+        }
+    }
+
+    private BusinessException buildInsufficientStockException(
+            String label,
+            String size,
+            BigDecimal available,
+            BigDecimal requested
+    ) {
+        String sizeHint = size != null && !size.isBlank() ? " (talla " + size + ")" : "";
+        return new BusinessException(String.format(
+                "Stock insuficiente para %s%s. Disponible: %s, solicitado: %s.",
+                label,
+                sizeHint,
+                available.stripTrailingZeros().toPlainString(),
+                requested.stripTrailingZeros().toPlainString()));
+    }
+
+    private Map<String, BigDecimal> resolveKioscoSizes(KioscoStockEntity kioscoRow, ProductInventoryLocation legacy) {
+        Map<String, BigDecimal> fromKiosco = positiveSizesMap(kioscoRow.getSizesData());
+        if (fromKiosco != null) {
+            return fromKiosco;
+        }
+        return legacy != null ? positiveSizesMap(legacy.getSizesData()) : null;
+    }
+
+    private String extractSizeFromSaleItemName(String productName) {
+        if (productName == null) {
+            return null;
+        }
+        int idx = productName.lastIndexOf(" T.");
+        if (idx < 0) {
+            return null;
+        }
+        String size = productName.substring(idx + 3).trim();
+        return size.isEmpty() ? null : size;
     }
 
     BigDecimal calculatePromotionDiscount(
@@ -827,21 +1033,39 @@ public class KioskPosService {
         if (promotion == null || subtotal == null || subtotal.compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;
         }
+        List<PreparedLine> eligibleLines = filterLinesByPromotionAudience(lines, promotion.getAudienceCategory());
+        BigDecimal eligibleSubtotal = eligibleLines.stream()
+                .map(PreparedLine::lineTotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (eligibleSubtotal.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
         String type = normalizeDiscountType(promotion.getDiscountType());
         if ("COMBO".equals(type)) {
-            return calculateComboDiscount(promotion, lines);
+            return calculateComboDiscount(promotion, eligibleLines);
         }
         BigDecimal value = promotion.getDiscountValue() != null ? promotion.getDiscountValue() : BigDecimal.ZERO;
         if (value.compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;
         }
         if ("PERCENT".equals(type)) {
-            return subtotal.multiply(value)
+            return eligibleSubtotal.multiply(value)
                     .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP)
                     .max(BigDecimal.ZERO)
                     .min(subtotal);
         }
-        return value.max(BigDecimal.ZERO).min(subtotal).setScale(2, RoundingMode.HALF_UP);
+        return value.max(BigDecimal.ZERO).min(eligibleSubtotal).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private List<PreparedLine> filterLinesByPromotionAudience(List<PreparedLine> lines, String promotionAudience) {
+        if (lines == null || lines.isEmpty()) {
+            return List.of();
+        }
+        return lines.stream()
+                .filter(line -> line.product() != null
+                        && ProductAudienceCategory.productMatchesPromotion(
+                                line.product().getAudienceCategory(), promotionAudience))
+                .toList();
     }
 
     BigDecimal calculateComboDiscount(KioskPromotionEntity promotion, List<PreparedLine> lines) {
@@ -920,8 +1144,128 @@ public class KioskPosService {
         return String.format("POS-%s-%04d", saleDate.format(SALE_NUMBER_DATE), next);
     }
 
+    private void validateCardFields(
+            String paymentMethod, BigDecimal cardAmount, String cardAuthNumber, String cardLast4
+    ) throws BusinessException {
+        boolean requiresCardData = "TARJETA".equals(paymentMethod)
+                || ("MIXTO".equals(paymentMethod) && cardAmount != null && cardAmount.compareTo(BigDecimal.ZERO) > 0);
+        if (!requiresCardData) {
+            return;
+        }
+        if (safeTrim(cardAuthNumber).isBlank()) {
+            throw new BusinessException("Debes indicar el número de autorización de la tarjeta.");
+        }
+        if (!CARD_LAST4_PATTERN.matcher(safeTrim(cardLast4)).matches()) {
+            throw new BusinessException("Los últimos 4 dígitos de la tarjeta deben ser 4 números.");
+        }
+    }
+
     private String inventoryKey(Long productId, Long colorId) {
         return productId + ":" + (colorId != null ? colorId : "null");
+    }
+
+    private static final String PACKAGING_PRODUCT_CODE_PREFIX = "SUM";
+
+    private BigDecimal resolvePosUnitPrice(ProductEntity product) {
+        if (product == null) {
+            return BigDecimal.ZERO;
+        }
+        if (product.getSalePrice() != null && product.getSalePrice().compareTo(BigDecimal.ZERO) > 0) {
+            return product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
+        }
+        if (product.getDiscountedPrice() != null && product.getDiscountedPrice().compareTo(BigDecimal.ZERO) > 0) {
+            return product.getDiscountedPrice().setScale(2, RoundingMode.HALF_UP);
+        }
+        if (product.getSellerPrice() != null && product.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
+            return product.getSellerPrice().setScale(2, RoundingMode.HALF_UP);
+        }
+        return BigDecimal.ZERO;
+    }
+
+    private boolean isPackagingProduct(ProductEntity product) {
+        if (product == null || product.getCode() == null) {
+            return false;
+        }
+        return product.getCode().trim().toUpperCase(Locale.ROOT).startsWith(PACKAGING_PRODUCT_CODE_PREFIX);
+    }
+
+    private boolean isInactiveProduct(ProductEntity product) {
+        String status = safeTrim(product.getStatus());
+        return status != null && "INACTIVE".equalsIgnoreCase(status);
+    }
+
+    private void appendMissingPackagingCatalogItems(
+            List<KioskPosContextResponse.InventoryItem> rawInventory,
+            Map<Long, ProductEntity> productsById,
+            Map<Long, ProductCategoryEntity> categoriesById) {
+        Set<String> existingKeys = rawInventory.stream()
+                .map(item -> inventoryKey(item.getProductId(), item.getColorId()))
+                .collect(Collectors.toSet());
+
+        for (ProductEntity product : productRepository.findByCodeStartingWithIgnoreCaseOrderByCodeAsc("SUM")) {
+            if (!isPackagingProduct(product) || isInactiveProduct(product)) {
+                continue;
+            }
+            String key = inventoryKey(product.getId(), null);
+            if (existingKeys.contains(key)) {
+                continue;
+            }
+            productsById.putIfAbsent(product.getId(), product);
+            ProductCategoryEntity category = null;
+            if (product.getCategoryId() != null) {
+                category = categoriesById.computeIfAbsent(
+                        product.getCategoryId(),
+                        id -> productCategoryRepository.findById(id).orElse(null));
+            }
+            rawInventory.add(KioskPosContextResponse.InventoryItem.builder()
+                    .productId(product.getId())
+                    .productCode(product.getCode())
+                    .productName(product.getName())
+                    .productImageUrl(safeTrim(product.getImageUrl()))
+                    .colorId(null)
+                    .colorName("")
+                    .categoryId(category != null ? category.getId() : null)
+                    .categoryName(category != null ? category.getName() : "")
+                    .audienceCategory(ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory()))
+                    .quantity(BigDecimal.ZERO)
+                    .suggestedUnitPrice(resolvePosUnitPrice(product))
+                    .sizes(null)
+                    .build());
+            existingKeys.add(key);
+        }
+    }
+
+    private String inventoryKey(Long productId, Long colorId, String size) {
+        String base = inventoryKey(productId, colorId);
+        String normalized = ProductInventorySizesJson.normalizeKey(size);
+        if (!normalized.isEmpty()) {
+            return base + ":" + normalized;
+        }
+        return base;
+    }
+
+    private Map<String, BigDecimal> positiveSizesMap(String sizesDataJson) {
+        Map<String, BigDecimal> parsed = ProductInventorySizesJson.parse(sizesDataJson);
+        parsed.entrySet().removeIf(e -> e.getValue() == null || e.getValue().compareTo(BigDecimal.ZERO) <= 0);
+        return parsed.isEmpty() ? null : parsed;
+    }
+
+    private record ParsedInventoryKey(Long productId, Long colorId, String size) {}
+
+    private ParsedInventoryKey parseInventoryKey(String key) {
+        int first = key.indexOf(':');
+        if (first < 0) {
+            throw new IllegalArgumentException("Clave de inventario inválida: " + key);
+        }
+        int second = key.indexOf(':', first + 1);
+        Long productId = Long.parseLong(key.substring(0, first));
+        String colorPart = second < 0 ? key.substring(first + 1) : key.substring(first + 1, second);
+        Long colorId = "null".equals(colorPart) ? null : Long.parseLong(colorPart);
+        String size = second < 0 ? null : key.substring(second + 1);
+        if (size != null && size.isBlank()) {
+            size = null;
+        }
+        return new ParsedInventoryKey(productId, colorId, size);
     }
 
     private boolean isPromotionActiveOnDate(KioskPromotionEntity promotion, LocalDate date) {
@@ -948,6 +1292,7 @@ public class KioskPosService {
                 .comboBuyQty(request.getComboBuyQty())
                 .comboPayQty(request.getComboPayQty())
                 .kioskLocationId(request.getKioskLocationId())
+                .audienceCategory(ProductAudienceCategory.normalizePromotionAudience(request.getAudienceCategory()))
                 .startDate(request.getStartDate())
                 .endDate(request.getEndDate())
                 .active(request.getActive() == null || request.getActive())
@@ -964,6 +1309,7 @@ public class KioskPosService {
         entity.setComboBuyQty(request.getComboBuyQty());
         entity.setComboPayQty(request.getComboPayQty());
         entity.setKioskLocationId(request.getKioskLocationId());
+        entity.setAudienceCategory(ProductAudienceCategory.normalizePromotionAudience(request.getAudienceCategory()));
         entity.setStartDate(request.getStartDate());
         entity.setEndDate(request.getEndDate());
         entity.setActive(request.getActive() == null || request.getActive());
@@ -1202,6 +1548,7 @@ public class KioskPosService {
                 .email(sale.getEmail())
                 .paymentMethod(sale.getPaymentMethod())
                 .status(sale.getStatus())
+                .cashSessionId(sale.getCashSessionId())
                 .testSale(Boolean.TRUE.equals(sale.getTestSale()))
                 .totalItems(sale.getTotalItems())
                 .discountAmount(sale.getDiscountAmount())
@@ -1211,6 +1558,8 @@ public class KioskPosService {
                 .changeAmount(sale.getChangeAmount())
                 .cashAmount(sale.getCashAmount())
                 .cardAmount(sale.getCardAmount())
+                .cardAuthNumber(sale.getCardAuthNumber())
+                .cardLast4(sale.getCardLast4())
                 .notes(sale.getNotes())
                 .comments(sale.getComments())
                 .promotionId(sale.getPromotionId())
@@ -1238,6 +1587,7 @@ public class KioskPosService {
         return KioskPosSaleResponse.InvoiceInfo.builder()
                 .id(sale.getInvoiceId())
                 .status(sale.getFelStatus())
+                .internalNumber(taxInvoiceService.getInternalNumber(sale.getInvoiceId()))
                 .felUuid(sale.getFelUuid())
                 .felSerie(sale.getFelSerie())
                 .felNumero(sale.getFelNumero())
@@ -1257,6 +1607,7 @@ public class KioskPosService {
                 .comboBuyQty(entity.getComboBuyQty())
                 .comboPayQty(entity.getComboPayQty())
                 .kioskLocationId(entity.getKioskLocationId())
+                .audienceCategory(ProductAudienceCategory.normalizePromotionAudience(entity.getAudienceCategory()))
                 .startDate(entity.getStartDate())
                 .endDate(entity.getEndDate())
                 .active(entity.getActive())
@@ -1309,6 +1660,10 @@ public class KioskPosService {
         if (request.getStartDate() != null && request.getEndDate() != null
                 && request.getEndDate().isBefore(request.getStartDate())) {
             throw new BusinessException("La fecha fin no puede ser menor a la fecha inicio.");
+        }
+        String audience = ProductAudienceCategory.normalizePromotionAudience(request.getAudienceCategory());
+        if (request.getAudienceCategory() != null && !request.getAudienceCategory().isBlank() && audience == null) {
+            throw new BusinessException("Línea de promoción inválida. Use DAMA o CABALLERO.");
         }
     }
 
@@ -1402,6 +1757,7 @@ public class KioskPosService {
         KioskCashSessionEntity session = KioskCashSessionEntity.builder()
                 .kioskLocationId(kiosk.getId())
                 .openedByUserId(user.getId())
+                .openedAt(GuatemalaDateTime.now())
                 .openingAmount(CASH_OPENING_AMOUNT)
                 .status(CASH_SESSION_OPEN)
                 .build();
@@ -1432,7 +1788,7 @@ public class KioskPosService {
         BigDecimal countedCash = request.getCountedCash().setScale(2, RoundingMode.HALF_UP);
         BigDecimal variance = countedCash.subtract(expectedCash).setScale(2, RoundingMode.HALF_UP);
 
-        session.setClosedAt(LocalDateTime.now());
+        session.setClosedAt(GuatemalaDateTime.now());
         session.setClosedByUserId(user.getId());
         session.setCountedCash(countedCash);
         session.setExpectedCash(expectedCash);
@@ -1614,6 +1970,7 @@ public class KioskPosService {
     record PreparedLine(
             ProductEntity product,
             ColorEntity color,
+            String size,
             BigDecimal quantity,
             BigDecimal unitPrice,
             BigDecimal lineTotal

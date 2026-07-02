@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.model.TaxInvoiceDocument;
+import com.fossiles.fossilescorebackend.infrastructure.config.FelCredentials;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelIvaCalculator;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelXmlEscaper;
@@ -12,8 +13,10 @@ import java.math.RoundingMode;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
@@ -25,8 +28,7 @@ public class FelFactXmlBuilder {
 
     private final FelEmissionProperties properties;
 
-    public String buildUnsignedXml(TaxInvoiceDocument document) {
-        FelEmissionProperties cfg = properties;
+    public String buildUnsignedXml(TaxInvoiceDocument document, FelCredentials credentials) {
         ZonedDateTime emission = document.getIssuedAt() != null
                 ? document.getIssuedAt().atZone(GUATEMALA)
                 : ZonedDateTime.now(GUATEMALA);
@@ -34,6 +36,7 @@ public class FelFactXmlBuilder {
 
         String receptorId = normalizeReceptorId(document.getCustomerTaxId());
         String receptorName = normalizeReceptorName(receptorId, document.getCustomerName());
+        String receptorEmail = normalizeReceptorEmail(document.getEmail());
 
         List<TaxInvoiceDocument.Line> documentLines = document.getLines() == null
                 ? List.of()
@@ -49,9 +52,7 @@ public class FelFactXmlBuilder {
             subtotal = linesRawSum.setScale(2, RoundingMode.HALF_UP);
             totalAmount = subtotal;
         }
-        BigDecimal discountRatio = subtotal.compareTo(BigDecimal.ZERO) > 0
-                ? totalAmount.divide(subtotal, 8, RoundingMode.HALF_UP)
-                : BigDecimal.ONE;
+        BigDecimal discountRatio = resolveDiscountRatio(subtotal, totalAmount, linesRawSum);
 
         StringBuilder itemsXml = new StringBuilder();
         BigDecimal totalIva = BigDecimal.ZERO;
@@ -106,13 +107,16 @@ public class FelFactXmlBuilder {
             ));
         }
 
-        String frasesXml = buildFrasesXml(cfg);
+        String frasesXml = buildFrasesXml(credentials.frases());
+        String adendaXml = buildAdendaXml(document.getInternalNumber());
         BigDecimal granTotal = granTotalFromLines.setScale(2, RoundingMode.HALF_UP);
 
-        String establishmentCode = firstNonBlank(document.getEmitterEstablishmentCode(), cfg.getCodigoEstablecimiento());
-        String addressLine = firstNonBlank(document.getEmitterAddressLine(), cfg.getDireccion());
-        String municipio = firstNonBlank(document.getEmitterMunicipio(), cfg.getMunicipio());
-        String departamento = firstNonBlank(document.getEmitterDepartamento(), cfg.getDepartamento());
+        String documentType = firstNonBlank(document.getDocumentType(), properties.getDocumentType());
+        String establishmentCode = firstNonBlank(document.getEmitterEstablishmentCode(), properties.getCodigoEstablecimiento());
+        String commercialName = firstNonBlank(document.getEmitterCommercialName(), credentials.nombreComercial());
+        String addressLine = firstNonBlank(document.getEmitterAddressLine(), credentials.direccion());
+        String municipio = firstNonBlank(document.getEmitterMunicipio(), credentials.municipio());
+        String departamento = firstNonBlank(document.getEmitterDepartamento(), credentials.departamento());
 
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -130,7 +134,7 @@ public class FelFactXmlBuilder {
                             <dte:Pais>%s</dte:Pais>
                           </dte:DireccionEmisor>
                         </dte:Emisor>
-                        <dte:Receptor CorreoReceptor="" IDReceptor="%s" NombreReceptor="%s">
+                        <dte:Receptor CorreoReceptor="%s" IDReceptor="%s" NombreReceptor="%s">
                           <dte:DireccionReceptor>
                             <dte:Direccion>Ciudad</dte:Direccion>
                             <dte:CodigoPostal>0</dte:CodigoPostal>
@@ -152,37 +156,54 @@ public class FelFactXmlBuilder {
                       </dte:DatosEmision>
                     </dte:DTE>
                   </dte:SAT>
+                  %s
                 </dte:GTDocumento>
                 """.formatted(
-                cfg.getMoneda(),
+                properties.getMoneda(),
                 fechaHora,
-                cfg.getDocumentType(),
-                cfg.getAfiliacionIva(),
+                documentType,
+                credentials.afiliacionIva(),
                 FelXmlEscaper.escape(establishmentCode),
-                FelXmlEscaper.escape(safe(cfg.getCorreoEmisor())),
-                FelXmlEscaper.escape(cfg.getNitEmisor()),
-                FelXmlEscaper.escape(safe(cfg.getNombreComercial())),
-                FelXmlEscaper.escape(safe(cfg.getNombreEmisor())),
+                FelXmlEscaper.escape(safe(credentials.correoEmisor())),
+                FelXmlEscaper.escape(credentials.nitEmisor()),
+                FelXmlEscaper.escape(commercialName),
+                FelXmlEscaper.escape(safe(credentials.nombreEmisor())),
                 FelXmlEscaper.escape(addressLine),
-                FelXmlEscaper.escape(safe(cfg.getCodigoPostal())),
+                FelXmlEscaper.escape(safe(properties.getCodigoPostal())),
                 FelXmlEscaper.escape(municipio),
                 FelXmlEscaper.escape(departamento),
-                FelXmlEscaper.escape(safe(cfg.getPais())),
+                FelXmlEscaper.escape(safe(properties.getPais())),
+                FelXmlEscaper.escape(receptorEmail),
                 FelXmlEscaper.escape(receptorId),
                 FelXmlEscaper.escape(receptorName),
                 frasesXml,
                 itemsXml,
                 fmt(totalIva.setScale(2, RoundingMode.HALF_UP)),
-                fmt(granTotal)
+                fmt(granTotal),
+                adendaXml
         );
     }
 
-    private String buildFrasesXml(FelEmissionProperties cfg) {
-        if (cfg.getFrases() == null || cfg.getFrases().isEmpty()) {
+    /**
+     * Adenda: información no tributaria (no forma parte de "DatosCertificados", no la valida
+     * la SAT). Se usa para reflejar el número de control interno propio en la factura, tal como
+     * indica la Guía de requisitos de la representación gráfica del DTE.
+     */
+    private String buildAdendaXml(String internalNumber) {
+        if (internalNumber == null || internalNumber.isBlank()) {
+            return "";
+        }
+        return "<dte:Adenda><NumeroControlInterno>"
+                + FelXmlEscaper.escape(internalNumber.trim())
+                + "</NumeroControlInterno></dte:Adenda>";
+    }
+
+    private String buildFrasesXml(List<FelEmissionProperties.Frase> frases) {
+        if (frases == null || frases.isEmpty()) {
             return "";
         }
         StringBuilder sb = new StringBuilder("<dte:Frases>");
-        for (FelEmissionProperties.Frase frase : cfg.getFrases()) {
+        for (FelEmissionProperties.Frase frase : frases) {
             sb.append("<dte:Frase CodigoEscenario=\"")
                     .append(frase.getEscenario())
                     .append("\" TipoFrase=\"")
@@ -209,6 +230,17 @@ public class FelFactXmlBuilder {
         return name.isBlank() ? "CONSUMIDOR FINAL" : name;
     }
 
+    /** Varios correos separados por ';' sin espacios (requisito FEL / INFILE). */
+    static String normalizeReceptorEmail(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        return Arrays.stream(raw.split("[;,]"))
+                .map(String::trim)
+                .filter(part -> !part.isEmpty())
+                .collect(Collectors.joining(";"));
+    }
+
     private static String fmt(BigDecimal value) {
         return nz(value).setScale(2, RoundingMode.HALF_UP).toPlainString();
     }
@@ -226,5 +258,23 @@ public class FelFactXmlBuilder {
             return preferred.trim();
         }
         return fallback == null ? "" : fallback.trim();
+    }
+
+    /**
+     * Aplica el descuento una sola vez: si las líneas ya suman el total cobrado (mapper POS antiguo),
+     * no vuelve a prorratear.
+     */
+    static BigDecimal resolveDiscountRatio(BigDecimal subtotal, BigDecimal totalAmount, BigDecimal linesRawSum) {
+        BigDecimal sub = nz(subtotal);
+        BigDecimal total = nz(totalAmount);
+        BigDecimal lines = nz(linesRawSum);
+        if (sub.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ONE;
+        }
+        if (lines.subtract(total).abs().compareTo(new BigDecimal("0.05")) <= 0
+                && total.compareTo(sub) < 0) {
+            return BigDecimal.ONE;
+        }
+        return total.divide(sub, 8, RoundingMode.HALF_UP);
     }
 }

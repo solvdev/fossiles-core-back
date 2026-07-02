@@ -37,6 +37,9 @@ public class InternalShipmentRequestEntity {
     @Column(name = "recipient_tax_id", length = 50)
     private String recipientTaxId;
 
+    @Column(name = "employee_id")
+    private Long employeeId;
+
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;
 
@@ -68,6 +71,10 @@ public class InternalShipmentRequestEntity {
 
     @Column(name = "product_shipment_id")
     private Long productShipmentId;
+
+    /** OPI generada automáticamente cuando no hay stock PT/Devoluciones. */
+    @Column(name = "production_order_id")
+    private Long productionOrderId;
 
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;

@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.entity;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -47,8 +48,9 @@ public class OnlineSaleEntity {
 
     /**
      * Forma de pago:
+     * TARJETA_PAGADO (página web, siempre pagado),
      * TRANSFERENCIA_PENDIENTE, TRANSFERENCIA_LISTA,
-     * VISALINK_PAGADO, VISALINK_PENDIENTE,
+     * VISALINK_PAGADO, VISALINK_PENDIENTE (ventas por chat),
      * DEPOSITO_LISTO, DEPOSITO_PENDIENTE,
      * CONTRA_ENTREGA
      */
@@ -179,8 +181,8 @@ public class OnlineSaleEntity {
 
     @PrePersist
     protected void onCreate() {
-        createdAt = LocalDateTime.now();
-        updatedAt = LocalDateTime.now();
+        createdAt = GuatemalaDateTime.now();
+        updatedAt = createdAt;
         if (status == null) status = "PENDIENTE";
         if (packaging == null) packaging = false;
         if (inProductionOrder == null) inProductionOrder = false;
@@ -189,7 +191,7 @@ public class OnlineSaleEntity {
 
     @PreUpdate
     protected void onUpdate() {
-        updatedAt = LocalDateTime.now();
+        updatedAt = GuatemalaDateTime.now();
         if (!skipAmountCalculation) calculateShippingAndNet();
     }
 
@@ -216,6 +218,7 @@ public class OnlineSaleEntity {
     /**
      * Devuelve true si la forma de pago indica que ya está pagado
      * (contra entrega se considera "listo" porque se cobra al entregar).
+     * Tarjeta web (TARJETA_PAGADO) siempre cuenta como pagada.
      */
     public boolean isPaid() {
         if (paymentMethod == null) return false;
@@ -223,6 +226,7 @@ public class OnlineSaleEntity {
                 || paymentMethod.equals("CONTRA_ENTREGA_DEPOSITO")
                 || paymentMethod.equals("TRANSFERENCIA_LISTA")
                 || paymentMethod.equals("VISALINK_PAGADO")
+                || paymentMethod.equals("TARJETA_PAGADO")
                 || paymentMethod.equals("DEPOSITO_LISTO");
     }
 }

@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryAjusteRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryCambioRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryAnularFacturaRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryDevolucionClienteRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryDevolucionDepositoRequest;
@@ -8,24 +9,36 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryE
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryMermaRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryTrasladoRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryVentaRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioscoNotificationRecipientRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountItemUpsertRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountReviewRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoConsolidatedReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoInventoryInitializeResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoKardexReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoNotificationRecipientResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountSessionSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.KioscoInventoryCountService;
 import com.fossiles.fossilescorebackend.application.service.KioscoInventoryService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.List;
 
 @RestController
@@ -34,6 +47,7 @@ import java.util.List;
 public class KioscoInventoryController {
 
     private final KioscoInventoryService kioscoInventoryService;
+    private final KioscoInventoryCountService kioscoInventoryCountService;
 
     @PostMapping("/{locationId}/entrada")
     public ResponseEntity<KioscoStockResponse> registrarEntrada(
@@ -183,6 +197,119 @@ public class KioscoInventoryController {
     @GetMapping("/reporte/consolidado")
     public ResponseEntity<KioscoConsolidatedReportResponse> getConsolidado() {
         return ResponseEntity.ok(kioscoInventoryService.getConsolidatedReport());
+    }
+
+    @GetMapping("/{locationId}/reporte/kardex")
+    public ResponseEntity<KioscoKardexReportResponse> getKardex(
+            @PathVariable Long locationId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryService.getKardexReport(locationId, from, to));
+    }
+
+    @GetMapping("/{locationId}/reporte/kardex/movimientos")
+    public ResponseEntity<List<KioscoMovementResponse>> getKardexMovimientos(
+            @PathVariable Long locationId,
+            @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) Long colorId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryService.getKardexMovements(
+                locationId, productId, colorId, from, to));
+    }
+
+    @PostMapping("/{locationId}/cambio")
+    public ResponseEntity<KioscoInventoryService.CambioResult> registrarCambio(
+            @PathVariable Long locationId,
+            @Valid @RequestBody KioscoInventoryCambioRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryService.registrarCambio(
+                locationId,
+                request.getReturnedProductId(),
+                request.getReturnedColorId(),
+                request.getGivenProductId(),
+                request.getGivenColorId(),
+                request.getQuantity(),
+                request.getReferenceId(),
+                request.getReason(),
+                request.getUserId()
+        ));
+    }
+
+    @PostMapping("/{locationId}/conteo-fisico")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> startConteoFisico(
+            @PathVariable Long locationId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryCountService.startOrGetSession(locationId, from, to));
+    }
+
+    @GetMapping("/conteo-fisico/{countId}")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> getConteoFisico(
+            @PathVariable Long countId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryCountService.getReport(countId));
+    }
+
+    @PutMapping("/conteo-fisico/{countId}/items")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> saveConteoFisicoItems(
+            @PathVariable Long countId,
+            @RequestBody List<KioscoPhysicalCountItemUpsertRequest> items
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryCountService.upsertItems(countId, items));
+    }
+
+    @PostMapping("/conteo-fisico/{countId}/revisar")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> revisarConteoFisico(
+            @PathVariable Long countId,
+            @RequestBody(required = false) KioscoPhysicalCountReviewRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        String notes = request != null ? request.getNotes() : null;
+        return ResponseEntity.ok(kioscoInventoryCountService.markReviewed(countId, notes));
+    }
+
+    @GetMapping("/{locationId}/conteo-fisico/historial")
+    public ResponseEntity<List<KioscoPhysicalCountSessionSummaryResponse>> getConteoFisicoHistorial(
+            @PathVariable Long locationId
+    ) {
+        return ResponseEntity.ok(kioscoInventoryCountService.listSessions(locationId));
+    }
+
+    @PostMapping("/conteo-fisico/{countId}/cerrar")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> cerrarConteoFisico(
+            @PathVariable Long countId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryCountService.cerrarConteo(countId));
+    }
+
+    @GetMapping("/conteo-fisico/alertas")
+    public ResponseEntity<List<KioscoPhysicalCountSessionSummaryResponse>> getConteoFisicoAlertas(
+            @RequestParam(required = false) Long locationId
+    ) {
+        return ResponseEntity.ok(kioscoInventoryCountService.listAlerts(locationId));
+    }
+
+    @GetMapping("/notificacion-destinatarios")
+    public ResponseEntity<List<KioscoNotificationRecipientResponse>> getNotificationRecipients() {
+        return ResponseEntity.ok(kioscoInventoryCountService.listNotificationRecipients());
+    }
+
+    @PostMapping("/notificacion-destinatarios")
+    public ResponseEntity<KioscoNotificationRecipientResponse> addNotificationRecipient(
+            @Valid @RequestBody KioscoNotificationRecipientRequest request
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioscoInventoryCountService.addNotificationRecipient(request));
+    }
+
+    @DeleteMapping("/notificacion-destinatarios/{recipientId}")
+    public ResponseEntity<Void> removeNotificationRecipient(
+            @PathVariable Long recipientId
+    ) throws ResourceNotFoundException {
+        kioscoInventoryCountService.removeNotificationRecipient(recipientId);
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/initialize")

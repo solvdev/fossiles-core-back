@@ -17,6 +17,8 @@ public class ProductResponse {
     private String code;
     private String name;
     private Long categoryId;
+    private String audienceCategory;
+    private String cinchoType;
     private Double prdTime;
     private BigDecimal salePrice;
     private BigDecimal discountedPrice;

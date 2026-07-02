@@ -52,6 +52,7 @@ public class OnlineSaleResponse {
     private String invoiceFelSerie;
     private String invoiceFelNumero;
     private String invoiceFelError;
+    private LocalDateTime invoiceFelCertifiedAt;
 
     // --- Campos legacy para compatibilidad con frontend existente ---
     private Long productId;

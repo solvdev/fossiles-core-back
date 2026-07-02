@@ -12,6 +12,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
+
 @Entity
 @Table(name = "kiosk_sale")
 @Data
@@ -83,6 +85,12 @@ public class KioskSaleEntity {
     @Column(name = "card_amount", precision = 12, scale = 2)
     private BigDecimal cardAmount;
 
+    @Column(name = "card_auth_number", length = 40)
+    private String cardAuthNumber;
+
+    @Column(name = "card_last4", length = 4)
+    private String cardLast4;
+
     @Column(name = "promotion_id")
     private Long promotionId;
 
@@ -145,7 +153,7 @@ public class KioskSaleEntity {
 
     @PrePersist
     protected void onCreate() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = GuatemalaDateTime.now();
         if (soldAt == null) {
             soldAt = now;
         }

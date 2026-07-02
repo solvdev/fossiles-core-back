@@ -52,7 +52,6 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             WHERE s.kioskLocationId = :kioskLocationId
               AND s.saleDate >= :rangeStart
               AND s.saleDate <= :rangeEnd
-              AND (s.testSale = false OR s.testSale IS NULL)
               AND (s.status IS NULL OR UPPER(s.status) <> 'VOID')
             """)
     Object[] aggregateManagerDashboardMetrics(

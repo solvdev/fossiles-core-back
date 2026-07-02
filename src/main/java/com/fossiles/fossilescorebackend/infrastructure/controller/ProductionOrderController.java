@@ -276,12 +276,6 @@ public class ProductionOrderController {
             e.printStackTrace();
         }
 
-        if (isManagedCinchoOrderType(effectiveOrderType)
-                && request.getItems() != null
-                && !request.getItems().isEmpty()) {
-            materialConsumptionService.assertManagedCinchoOrderMaterialsAvailable(saved.getId());
-        }
-
         return ResponseEntity.created(URI.create("/api/production-orders/" + saved.getId()))
                 .body(toResponse(saved));
     }

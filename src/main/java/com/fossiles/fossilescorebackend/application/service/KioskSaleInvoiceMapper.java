@@ -17,16 +17,11 @@ public class KioskSaleInvoiceMapper {
     public TaxInvoiceDocument fromSale(KioskSaleEntity sale) {
         BigDecimal subtotal = nz(sale.getSubtotal());
         BigDecimal totalAmount = nz(sale.getTotalAmount());
-        BigDecimal discountRatio = subtotal.compareTo(BigDecimal.ZERO) > 0
-                ? totalAmount.divide(subtotal, 8, RoundingMode.HALF_UP)
-                : BigDecimal.ONE;
 
         List<TaxInvoiceDocument.Line> lines = new ArrayList<>();
         List<KioskSaleItemEntity> saleLines = sale.getItems() == null ? List.of() : sale.getItems();
         for (KioskSaleItemEntity line : saleLines) {
-            BigDecimal lineTotal = nz(line.getLineTotal())
-                    .multiply(discountRatio)
-                    .setScale(2, RoundingMode.HALF_UP);
+            BigDecimal lineTotal = nz(line.getLineTotal()).setScale(2, RoundingMode.HALF_UP);
             if (lineTotal.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }

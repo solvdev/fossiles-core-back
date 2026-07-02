@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.entity;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -99,7 +100,7 @@ public class TaxInvoiceAttemptEntity {
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) {
-            createdAt = LocalDateTime.now();
+            createdAt = GuatemalaDateTime.now();
         }
         if (subtotal == null) {
             subtotal = BigDecimal.ZERO;

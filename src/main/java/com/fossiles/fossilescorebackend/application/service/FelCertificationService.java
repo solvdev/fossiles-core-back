@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.dto.response.FelCertificationResult;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.infrastructure.config.FelCredentials;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -28,34 +29,36 @@ public class FelCertificationService {
     private final ObjectMapper objectMapper;
     private final RestClient restClient = RestClient.create();
 
-    public FelCertificationResult certifySignedXml(String signedXml, String transactionId) throws BusinessException {
-        return postCertification(signedXml, transactionId, properties.getCertifyUrl());
+    public FelCertificationResult certifySignedXml(String signedXml, String transactionId, FelCredentials credentials)
+            throws BusinessException {
+        return postCertification(signedXml, transactionId, properties.getCertifyUrl(), credentials);
     }
 
-    public FelCertificationResult certifyAnnulmentSignedXml(String signedXml, String transactionId) throws BusinessException {
+    public FelCertificationResult certifyAnnulmentSignedXml(
+            String signedXml, String transactionId, FelCredentials credentials) throws BusinessException {
         String annulUrl = properties.getAnnulUrl();
         if (isBlank(annulUrl)) {
             throw new BusinessException("Falta URL de anulación FEL (fel.emission.annul-url).");
         }
-        return postCertification(signedXml, transactionId, annulUrl.trim());
+        return postCertification(signedXml, transactionId, annulUrl.trim(), credentials);
     }
 
-    private FelCertificationResult postCertification(String signedXml, String transactionId, String url)
-            throws BusinessException {
-        validateCertConfig();
+    private FelCertificationResult postCertification(
+            String signedXml, String transactionId, String url, FelCredentials credentials) throws BusinessException {
+        validateCertConfig(credentials);
 
         String xmlBase64 = Base64.getEncoder().encodeToString(signedXml.getBytes(StandardCharsets.UTF_8));
         Map<String, String> body = new LinkedHashMap<>();
-        body.put("nit_emisor", properties.getNitEmisor().trim());
-        body.put("correo_copia", safe(properties.getCorreoEmisor()));
+        body.put("nit_emisor", credentials.nitEmisor().trim());
+        body.put("correo_copia", safe(credentials.correoEmisor()));
         body.put("xml_dte", xmlBase64);
 
         try {
             String responseBody = restClient.post()
                     .uri(url)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .header("Usuario", properties.getCertUsuario().trim())
-                    .header("Llave", properties.getCertLlave().trim())
+                    .header("Usuario", credentials.certUsuario().trim())
+                    .header("Llave", credentials.certLlave().trim())
                     .header("Identificador", transactionId)
                     .body(body)
                     .retrieve()
@@ -118,11 +121,11 @@ public class FelCertificationService {
         return String.join(" | ", parts);
     }
 
-    private void validateCertConfig() throws BusinessException {
-        if (isBlank(properties.getCertUsuario()) || isBlank(properties.getCertLlave())) {
+    private void validateCertConfig(FelCredentials credentials) throws BusinessException {
+        if (isBlank(credentials.certUsuario()) || isBlank(credentials.certLlave())) {
             throw new BusinessException("Faltan credenciales de certificación FEL (fel.emission.cert-usuario / cert-llave).");
         }
-        if (isBlank(properties.getNitEmisor())) {
+        if (isBlank(credentials.nitEmisor())) {
             throw new BusinessException("Falta NIT emisor FEL (fel.emission.nit-emisor).");
         }
     }

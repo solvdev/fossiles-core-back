@@ -28,9 +28,15 @@ public class KioskPosSaleRequest {
     private BigDecimal amountReceived;
     private BigDecimal cashAmount;
     private BigDecimal cardAmount;
+    /** Número de autorización de la transacción con tarjeta. */
+    private String cardAuthNumber;
+    /** Últimos 4 dígitos de la tarjeta. */
+    private String cardLast4;
     private String notes;
     private String comments;
     private Long promotionId;
+    /** Descuento porcentual rápido (10, 15, etc.) cuando no hay promoción de catálogo. */
+    private BigDecimal manualDiscountPercent;
     private LocalDate saleDate;
     /** Si el cliente es CF, indica si desea factura electrónica. */
     private Boolean requestInvoice;
@@ -47,6 +53,8 @@ public class KioskPosSaleRequest {
         @NotNull(message = "El producto es obligatorio.")
         private Long productId;
         private Long colorId;
+        /** Talla para cinchos (sizes_data en inventario del kiosko). */
+        private String size;
 
         @NotNull(message = "La cantidad es obligatoria.")
         @Positive(message = "La cantidad debe ser mayor a cero.")

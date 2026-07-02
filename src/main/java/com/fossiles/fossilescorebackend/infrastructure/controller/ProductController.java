@@ -5,6 +5,8 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.BomEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.BomRepository;
@@ -50,6 +52,12 @@ public class ProductController {
         if (productRepository.existsByCode(request.getCode())) {
             throw new BusinessException("Product code already exists: " + request.getCode());
         }
+        if (!ProductAudienceCategory.isValidProductAudience(request.getAudienceCategory())) {
+            throw new BusinessException("Línea de producto inválida. Use DAMA, CABALLERO o UNISEX.");
+        }
+        if (!ProductCinchoType.isValidCinchoType(request.getCinchoType())) {
+            throw new BusinessException("Tipo de cincho inválido. Use CASUAL, REVERSIBLE o déjelo vacío.");
+        }
         ProductEntity entity = toEntity(request);
         if (entity.getStatus() == null) {
             entity.setStatus("A");
@@ -57,6 +65,7 @@ public class ProductController {
         if (entity.getRequiresMaterials() == null) {
             entity.setRequiresMaterials(true);
         }
+        entity.setAudienceCategory(normalizeProductAudience(request.getAudienceCategory()));
         ProductEntity saved = productRepository.save(entity);
         return ResponseEntity.created(URI.create("/api/products/" + saved.getId())).body(toResponse(saved));
     }
@@ -70,6 +79,12 @@ public class ProductController {
         if (!entity.getCode().equals(request.getCode()) 
                 && productRepository.existsByCode(request.getCode())) {
             throw new BusinessException("Product code already exists: " + request.getCode());
+        }
+        if (!ProductAudienceCategory.isValidProductAudience(request.getAudienceCategory())) {
+            throw new BusinessException("Línea de producto inválida. Use DAMA, CABALLERO o UNISEX.");
+        }
+        if (!ProductCinchoType.isValidCinchoType(request.getCinchoType())) {
+            throw new BusinessException("Tipo de cincho inválido. Use CASUAL, REVERSIBLE o déjelo vacío.");
         }
         
         updateEntity(entity, request);
@@ -214,6 +229,8 @@ public class ProductController {
                 .code(entity.getCode())
                 .name(entity.getName())
                 .categoryId(entity.getCategoryId())
+                .audienceCategory(ProductAudienceCategory.normalizeProductAudience(entity.getAudienceCategory()))
+                .cinchoType(ProductCinchoType.normalizeCinchoType(entity.getCinchoType()))
                 .prdTime(entity.getPrdTime())
                 .salePrice(entity.getSalePrice())
                 .discountedPrice(entity.getDiscountedPrice())
@@ -239,6 +256,8 @@ public class ProductController {
                 .code(request.getCode())
                 .name(request.getName())
                 .categoryId(request.getCategoryId())
+                .audienceCategory(normalizeProductAudience(request.getAudienceCategory()))
+                .cinchoType(ProductCinchoType.normalizeCinchoType(request.getCinchoType()))
                 .prdTime(roundedPrdTime)
                 .salePrice(request.getSalePrice())
                 .discountedPrice(request.getDiscountedPrice())
@@ -254,6 +273,13 @@ public class ProductController {
         if (request.getCode() != null) entity.setCode(request.getCode());
         if (request.getName() != null) entity.setName(request.getName());
         if (request.getCategoryId() != null) entity.setCategoryId(request.getCategoryId());
+        if (request.getAudienceCategory() != null) {
+            entity.setAudienceCategory(normalizeProductAudience(request.getAudienceCategory()));
+        }
+        if (request.getCinchoType() != null) {
+            entity.setCinchoType(ProductCinchoType.normalizeCinchoType(
+                    request.getCinchoType().isBlank() ? null : request.getCinchoType()));
+        }
         if (request.getPrdTime() != null) {
             // Redondear a 2 decimales
             double roundedTime = Math.round(request.getPrdTime() * 100.0) / 100.0;
@@ -266,6 +292,10 @@ public class ProductController {
         if (request.getLeatherConsumption() != null) entity.setLeatherConsumption(request.getLeatherConsumption());
         if (request.getRequiresMaterials() != null) entity.setRequiresMaterials(request.getRequiresMaterials());
         if (request.getStatus() != null) entity.setStatus(request.getStatus());
+    }
+
+    private String normalizeProductAudience(String value) {
+        return ProductAudienceCategory.normalizeProductAudience(value);
     }
 }
 

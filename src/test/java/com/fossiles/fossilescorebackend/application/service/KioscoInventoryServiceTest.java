@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoKardexReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -12,7 +13,10 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Co
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.InventoryTransferRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductInventoryKardexRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,7 +30,9 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,6 +67,12 @@ class KioscoInventoryServiceTest {
     private ProductInventoryService productInventoryService;
     @Mock
     private KioskInventoryGuard kioskInventoryGuard;
+    @Mock
+    private ProductShipmentRepository productShipmentRepository;
+    @Mock
+    private ProductInventoryKardexRepository productInventoryKardexRepository;
+    @Mock
+    private InventoryTransferRepository inventoryTransferRepository;
 
     @InjectMocks
     private KioscoInventoryService service;
@@ -117,7 +129,21 @@ class KioscoInventoryServiceTest {
         assertThat(response.getCurrentStock()).isEqualTo(8);
         verify(productInventoryService).incrementInventory(
                 eq(productId), eq(locationId), eq(colorId), eq(new BigDecimal("3")),
-                eq(null), eq("KIOSCO_INVENTORY"), eq(null), eq(null), any());
+                eq(null), eq("KIOSCO_INVENTORY"), eq(null), eq(null), any(), eq(null));
+    }
+
+    @Test
+    void entradaDesdeIntegracion_conTalla_actualizaSizesData() throws Exception {
+        KioscoStockEntity stock = stockEntity(0, 0);
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId)).thenReturn(Optional.of(stock));
+
+        KioscoStockResponse response = service.registrarEntradaDesdeIntegracion(
+                locationId, productId, colorId, new BigDecimal("4"), 200L, userId, "32");
+
+        assertThat(response.getCurrentStock()).isEqualTo(4);
+        assertThat(response.getSizes()).containsKey("32");
+        assertThat(response.getSizes().get("32")).isEqualByComparingTo(new BigDecimal("4"));
+        verify(productInventoryService, never()).incrementInventory(anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -156,7 +182,7 @@ class KioscoInventoryServiceTest {
         assertThat(response.getCurrentStock()).isEqualTo(7);
         verify(productInventoryService).decrementInventory(
                 eq(productId), eq(locationId), eq(colorId), eq(new BigDecimal("3")),
-                eq("KIOSCO_INVENTORY"), eq(null), eq(null), any());
+                eq("KIOSCO_INVENTORY"), eq(null), eq(null), any(), eq(null));
     }
 
     @Test
@@ -379,6 +405,68 @@ class KioscoInventoryServiceTest {
         KioscoMovementEntity m = captor.getValue();
         assertThat(m.getStockBefore() - m.getQuantity()).isEqualTo(m.getStockAfter());
         verify(kioscoMovementRepository, never()).deleteById(anyLong());
+    }
+
+    @Test
+    void kardex_clasificaMovimientosPorCategoria_yCuadraInventarioFinal() throws Exception {
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(locationId))
+                .thenReturn(List.of(stockEntity(0, 0)));
+
+        LocalDate from = LocalDate.of(2026, 6, 1);
+        LocalDate to = LocalDate.of(2026, 6, 30);
+
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBefore(eq(locationId), any(LocalDateTime.class)))
+                .thenReturn(List.of(movement(KioscoMovementType.ENTRADA, 0, 20)));
+
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBetween(eq(locationId), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(List.of(
+                        movement(KioscoMovementType.AJUSTE, 20, 25),
+                        movement(KioscoMovementType.AJUSTE, 25, 22),
+                        movement(KioscoMovementType.DEVOLUCION_CLIENTE, 22, 24),
+                        movement(KioscoMovementType.ENTRADA, 24, 34),
+                        movement(KioscoMovementType.TRASLADO_ENTRADA, 34, 38),
+                        movement(KioscoMovementType.VENTA, 38, 32),
+                        movement(KioscoMovementType.ANULACION, 32, 38),
+                        movement(KioscoMovementType.DEVOLUCION_DEPOSITO, 38, 37),
+                        movement(KioscoMovementType.TRASLADO_SALIDA, 37, 35),
+                        movement(KioscoMovementType.MERMA, 35, 34)
+                ));
+
+        KioscoKardexReportResponse report = service.getKardexReport(locationId, from, to);
+
+        assertThat(report.getRows()).hasSize(1);
+        KioscoKardexReportResponse.KioscoKardexRow row = report.getRows().get(0);
+        assertThat(row.getInventarioInicial()).isEqualTo(20);
+        assertThat(row.getComprasAjustes()).isEqualTo(7);
+        assertThat(row.getAnulacionCompras()).isEqualTo(3);
+        assertThat(row.getEntradas()).isEqualTo(14);
+        assertThat(row.getVentas()).isEqualTo(6);
+        assertThat(row.getAnulacionVenta()).isEqualTo(6);
+        assertThat(row.getSalida()).isEqualTo(4);
+        assertThat(row.getInventarioFinal()).isEqualTo(34);
+
+        assertThat(report.getTotals().getInventarioFinal()).isEqualTo(34);
+    }
+
+    @Test
+    void kardex_falla_siRangoDeFechasInvertido() {
+        assertThatThrownBy(() -> service.getKardexReport(locationId, LocalDate.of(2026, 6, 30), LocalDate.of(2026, 6, 1)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("posterior");
+    }
+
+    private KioscoMovementEntity movement(KioscoMovementType type, int stockBefore, int stockAfter) {
+        return KioscoMovementEntity.builder()
+                .id(2000L)
+                .kioscoStockId(100L)
+                .movementType(type)
+                .quantity(Math.abs(stockAfter - stockBefore))
+                .stockBefore(stockBefore)
+                .stockAfter(stockAfter)
+                .affectsStock(true)
+                .userId(userId)
+                .createdAt(LocalDateTime.now())
+                .build();
     }
 
     private KioscoStockEntity stockEntity(int current, int minimum) {

@@ -21,6 +21,7 @@ public class KioskPromotionResponse {
     private Integer comboBuyQty;
     private Integer comboPayQty;
     private Long kioskLocationId;
+    private String audienceCategory;
     private LocalDate startDate;
     private LocalDate endDate;
     private Boolean active;

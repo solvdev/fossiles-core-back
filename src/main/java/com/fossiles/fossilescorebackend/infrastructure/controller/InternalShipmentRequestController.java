@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentRequestCreateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentRequestRejectRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentEligibilityResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentRequestResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -64,5 +65,13 @@ public class InternalShipmentRequestController {
             @Valid @RequestBody InternalShipmentRequestRejectRequest request)
             throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(internalShipmentRequestService.reject(id, request.getReason()));
+    }
+
+    @GetMapping("/employees/{employeeId}/internal-shipment-eligibility")
+    public ResponseEntity<InternalShipmentEligibilityResponse> getEmployeePlanillaEligibility(
+            @PathVariable Long employeeId,
+            @RequestParam(required = false) String month)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(internalShipmentRequestService.getEmployeePlanillaEligibility(employeeId, month));
     }
 }

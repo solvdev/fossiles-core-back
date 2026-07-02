@@ -4,12 +4,12 @@ import com.fossiles.fossilescorebackend.application.model.TaxInvoiceDocument;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -76,7 +76,7 @@ public class OnlineSaleInvoiceMapper {
                 .transactionId(buildTransactionId(sale))
                 .issuedAt(sale.getSaleDate() != null
                         ? sale.getSaleDate().atStartOfDay()
-                        : LocalDateTime.now())
+                        : GuatemalaDateTime.now())
                 .customerTaxId(sale.getInvoiceTaxId())
                 .customerName(sale.getCustomerName())
                 .address(sale.getAddress())

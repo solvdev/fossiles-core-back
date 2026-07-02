@@ -22,6 +22,9 @@ public class ManualTaxInvoiceRequest {
     @NotBlank(message = "El NIT o CF es obligatorio.")
     private String customerTaxId;
 
+    /** FACT (factura) o FCAM (factura cambiaria). Por defecto FACT. */
+    private String documentType;
+
     private String customerName;
     private String address;
     private String phone;

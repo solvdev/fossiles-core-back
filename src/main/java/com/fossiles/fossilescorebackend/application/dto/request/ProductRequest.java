@@ -23,6 +23,14 @@ public class ProductRequest {
     @NotNull(message = "Category ID is required")
     private Long categoryId;
 
+    /** DAMA, CABALLERO o UNISEX */
+    @Size(max = 20, message = "Audience category must not exceed 20 characters")
+    private String audienceCategory;
+
+    /** CASUAL o REVERSIBLE para productos cincho FOSS */
+    @Size(max = 20, message = "Cincho type must not exceed 20 characters")
+    private String cinchoType;
+
     private Double prdTime;
 
     private BigDecimal salePrice;

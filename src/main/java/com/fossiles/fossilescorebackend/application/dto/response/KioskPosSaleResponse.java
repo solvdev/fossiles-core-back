@@ -32,6 +32,7 @@ public class KioskPosSaleResponse {
     private String email;
     private String paymentMethod;
     private String status;
+    private Long cashSessionId;
     /** true = venta piloto/prueba; excluida de dashboard y reporte general admin. */
     private Boolean testSale;
     private BigDecimal totalItems;
@@ -42,6 +43,8 @@ public class KioskPosSaleResponse {
     private BigDecimal changeAmount;
     private BigDecimal cashAmount;
     private BigDecimal cardAmount;
+    private String cardAuthNumber;
+    private String cardLast4;
     private String notes;
     private String comments;
     private Long promotionId;

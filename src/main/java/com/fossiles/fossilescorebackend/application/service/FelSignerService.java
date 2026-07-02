@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.infrastructure.config.FelCredentials;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
@@ -23,19 +24,20 @@ public class FelSignerService {
     private final ObjectMapper objectMapper;
     private final RestClient restClient = RestClient.create();
 
-    public String signXml(String unsignedXml, String internalCode) throws BusinessException {
-        return signXml(unsignedXml, internalCode, false);
+    public String signXml(String unsignedXml, String internalCode, FelCredentials credentials) throws BusinessException {
+        return signXml(unsignedXml, internalCode, false, credentials);
     }
 
-    public String signXml(String unsignedXml, String internalCode, boolean annulment) throws BusinessException {
-        validateSignConfig();
+    public String signXml(String unsignedXml, String internalCode, boolean annulment, FelCredentials credentials)
+            throws BusinessException {
+        validateSignConfig(credentials);
         String payloadBase64 = Base64.getEncoder().encodeToString(unsignedXml.getBytes(StandardCharsets.UTF_8));
 
         Map<String, String> body = new LinkedHashMap<>();
-        body.put("llave", properties.getSignKey().trim());
+        body.put("llave", credentials.signKey().trim());
         body.put("archivo", payloadBase64);
         body.put("codigo", internalCode);
-        body.put("alias", properties.getSignAlias().trim());
+        body.put("alias", credentials.signAlias().trim());
         body.put("es_anulacion", annulment ? "S" : "N");
 
         try {
@@ -83,8 +85,8 @@ public class FelSignerService {
         }
     }
 
-    private void validateSignConfig() throws BusinessException {
-        if (isBlank(properties.getSignKey()) || isBlank(properties.getSignAlias())) {
+    private void validateSignConfig(FelCredentials credentials) throws BusinessException {
+        if (isBlank(credentials.signKey()) || isBlank(credentials.signAlias())) {
             throw new BusinessException("Faltan credenciales de firma FEL (fel.emission.sign-key / sign-alias).");
         }
     }

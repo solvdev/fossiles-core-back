@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentR
 import com.fossiles.fossilescorebackend.application.dto.response.PartialReleaseLineResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.PartialReleaseListResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.PartialReleaseResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.PartialReleaseSearchItemResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -85,6 +86,60 @@ public class ProductionOrderPartialReleaseService {
                 .productionOrderCode(order.getCode())
                 .releases(releaseResponses)
                 .orderItemAvailability(buildAvailabilityRows(orderItems, releases, null))
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public List<PartialReleaseSearchItemResponse> searchForPrepare(String query, Integer limit) {
+        String normalized = query == null ? "" : query.trim();
+        int safeLimit = limit == null ? 150 : Math.min(Math.max(limit, 1), 300);
+        List<ProductionOrderPartialReleaseEntity> rows = releaseRepository.searchForPrepare(normalized, safeLimit);
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+
+        LinkedHashMap<Long, ProductionOrderPartialReleaseEntity> unique = new LinkedHashMap<>();
+        rows.forEach((row) -> {
+            if (row != null && row.getId() != null) {
+                unique.putIfAbsent(row.getId(), row);
+            }
+        });
+
+        Set<Long> orderIds = unique.values().stream()
+                .map(ProductionOrderPartialReleaseEntity::getProductionOrderId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, ProductionOrderEntity> ordersById = productionOrderRepository.findAllById(orderIds).stream()
+                .collect(Collectors.toMap(ProductionOrderEntity::getId, o -> o, (a, b) -> a));
+
+        return unique.values().stream()
+                .map((release) -> toSearchItem(release, ordersById.get(release.getProductionOrderId())))
+                .collect(Collectors.toList());
+    }
+
+    private PartialReleaseSearchItemResponse toSearchItem(
+            ProductionOrderPartialReleaseEntity release,
+            ProductionOrderEntity order
+    ) {
+        Optional<ProductShipmentEntity> shipment = shipmentRepository.findByPartialReleaseId(release.getId()).stream()
+                .filter(s -> !"CANCELLED".equalsIgnoreCase(String.valueOf(s.getStatus())))
+                .findFirst();
+        List<ProductionOrderPartialReleaseLineEntity> lines = loadLines(release.getId());
+
+        return PartialReleaseSearchItemResponse.builder()
+                .id(release.getId())
+                .productionOrderId(release.getProductionOrderId())
+                .orderCode(order != null ? order.getCode() : "")
+                .customerName(order != null ? order.getCustomerName() : "")
+                .orderType(order != null ? order.getOrderType() : "")
+                .sequence(release.getSequenceNum())
+                .label(release.getLabel())
+                .status(release.getStatus())
+                .shipmentId(shipment.map(ProductShipmentEntity::getId).orElse(null))
+                .shipmentNumber(shipment.map(ProductShipmentEntity::getShipmentNumber).orElse(null))
+                .shipmentStatus(shipment.map(s -> s.getStatus() == null ? null : s.getStatus().trim().toUpperCase())
+                        .orElse(null))
+                .totalUnits(computeReleaseTotalUnits(lines))
                 .build();
     }
 

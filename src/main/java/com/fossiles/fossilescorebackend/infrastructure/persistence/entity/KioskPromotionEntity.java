@@ -45,6 +45,10 @@ public class KioskPromotionEntity {
     @Column(name = "kiosk_location_id")
     private Long kioskLocationId;
 
+    /** DAMA o CABALLERO; null = aplica a todo el carrito. */
+    @Column(name = "audience_category", length = 20)
+    private String audienceCategory;
+
     @Column(name = "combo_buy_qty")
     private Integer comboBuyQty;
 
