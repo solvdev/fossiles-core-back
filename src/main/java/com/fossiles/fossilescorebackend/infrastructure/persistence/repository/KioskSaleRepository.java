@@ -8,10 +8,16 @@ import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long> {
     long countBySaleDate(LocalDate saleDate);
+
+    Optional<KioskSaleEntity> findByKioskLocationIdAndSaleNumberIgnoreCase(
+            Long kioskLocationId,
+            String saleNumber
+    );
     List<KioskSaleEntity> findByKioskLocationIdOrderBySoldAtDesc(Long kioskLocationId);
     List<KioskSaleEntity> findByKioskLocationIdAndSaleDateBetweenOrderBySoldAtDesc(
             Long kioskLocationId,

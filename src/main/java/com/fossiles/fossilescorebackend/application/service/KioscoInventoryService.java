@@ -111,6 +111,18 @@ public class KioscoInventoryService {
             Long referenceId,
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarDevolucionDeposito(locationId, productId, colorId, quantity, referenceId, userId, null);
+    }
+
+    public KioscoStockResponse registrarDevolucionDeposito(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey
+    ) throws BusinessException, ResourceNotFoundException {
         return applyStockMovement(
                 locationId,
                 productId,
@@ -124,7 +136,7 @@ public class KioscoInventoryService {
                 -quantity,
                 true,
                 null,
-                null,
+                sizeKey,
                 true
         );
     }
@@ -137,6 +149,20 @@ public class KioscoInventoryService {
             Long originalInvoiceId,
             Boolean apto,
             Long userId
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarDevolucionCliente(
+                locationId, productId, colorId, quantity, originalInvoiceId, apto, userId, null);
+    }
+
+    public KioscoStockResponse registrarDevolucionCliente(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long originalInvoiceId,
+            Boolean apto,
+            Long userId,
+            String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
         if (apto == null) {
             throw new BusinessException("Debes indicar si el producto es apto para reventa.");
@@ -156,7 +182,7 @@ public class KioscoInventoryService {
                     quantity,
                     true,
                     null,
-                    null,
+                    sizeKey,
                     true
             );
         }

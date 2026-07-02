@@ -2,6 +2,9 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionCloseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeCompleteRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangePreviewRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskSimpleReturnRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleInvoiceContactRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSalePaymentUpdateRequest;
@@ -10,6 +13,9 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidReq
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCustomerProfileResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskExchangeCompleteResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskExchangePreviewResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskExchangeSlipResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPendingDepositSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosContextResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionResponse;
@@ -20,6 +26,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAva
 import com.fossiles.fossilescorebackend.application.dto.response.TaxpayerLookupResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.KioskExchangeService;
 import com.fossiles.fossilescorebackend.application.service.KioskPosService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +51,7 @@ import java.util.List;
 public class KioskPosController {
 
     private final KioskPosService kioskPosService;
+    private final KioskExchangeService kioskExchangeService;
 
     @GetMapping("/context")
     public ResponseEntity<KioskPosContextResponse> getContext(
@@ -215,5 +223,64 @@ public class KioskPosController {
             @RequestBody KioskCashSessionCloseRequest request
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskPosService.closeCashSession(id, request));
+    }
+
+    @GetMapping("/exchanges")
+    public ResponseEntity<List<KioskExchangeSlipResponse>> listExchanges(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskExchangeService.listExchanges(kioskLocationId));
+    }
+
+    @GetMapping("/exchanges/pending-reintegros")
+    public ResponseEntity<List<KioskExchangeSlipResponse>> listPendingReintegros(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskExchangeService.listPendingReintegros(kioskLocationId));
+    }
+
+    @GetMapping("/exchanges/{id}")
+    public ResponseEntity<KioskExchangeSlipResponse> getExchangeById(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskExchangeService.getExchangeById(id, kioskLocationId));
+    }
+
+    @PostMapping("/exchanges/preview")
+    public ResponseEntity<KioskExchangePreviewResponse> previewExchange(
+            @Valid @RequestBody KioskExchangePreviewRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskExchangeService.previewExchange(request));
+    }
+
+    @PostMapping("/exchanges")
+    public ResponseEntity<KioskExchangeCompleteResponse> completeExchange(
+            @Valid @RequestBody KioskExchangeCompleteRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskExchangeService.completeExchange(request));
+    }
+
+    @PostMapping("/returns")
+    public ResponseEntity<KioskExchangeSlipResponse> completeSimpleReturn(
+            @Valid @RequestBody KioskSimpleReturnRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskExchangeService.completeSimpleReturn(request));
+    }
+
+    @PostMapping("/exchanges/{id}/reintegrate")
+    public ResponseEntity<KioskExchangeSlipResponse> reintegrateExchange(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskExchangeService.reintegrate(id, kioskLocationId));
+    }
+
+    @GetMapping("/sales/lookup")
+    public ResponseEntity<KioskPosSaleResponse> lookupSale(
+            @RequestParam String query,
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskExchangeService.lookupSale(kioskLocationId, query));
     }
 }

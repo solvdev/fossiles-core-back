@@ -37,6 +37,10 @@ public class KioskPosSaleRequest {
     private Long promotionId;
     /** Descuento porcentual rápido (10, 15, etc.) cuando no hay promoción de catálogo. */
     private BigDecimal manualDiscountPercent;
+    /** Crédito fijo por boleta de cambio (valor del producto devuelto). */
+    private BigDecimal exchangeCreditAmount;
+    /** Número de boleta de cambio para referencia en la venta POS. */
+    private String exchangeSlipNumber;
     private LocalDate saleDate;
     /** Si el cliente es CF, indica si desea factura electrónica. */
     private Boolean requestInvoice;

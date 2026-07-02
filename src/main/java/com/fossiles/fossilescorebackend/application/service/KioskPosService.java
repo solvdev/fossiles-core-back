@@ -260,7 +260,11 @@ public class KioskPosService {
             throw new BusinessException("El NIT ingresado no es válido para Guatemala.");
         }
 
-        KioskPromotionEntity promotion = resolvePromotionIfAny(request.getPromotionId(), saleDate, kiosk.getId());
+        boolean exchangeSale = request.getExchangeCreditAmount() != null
+                && request.getExchangeCreditAmount().compareTo(BigDecimal.ZERO) > 0;
+        KioskPromotionEntity promotion = exchangeSale
+                ? null
+                : resolvePromotionIfAny(request.getPromotionId(), saleDate, kiosk.getId());
 
         Map<String, BigDecimal> aggregatedQty = aggregateItemQuantities(request.getItems());
         Map<String, ProductInventoryLocation> lockedInventory = lockAndValidateStock(kiosk.getId(), aggregatedQty);
@@ -319,12 +323,17 @@ public class KioskPosService {
             totalItems = totalItems.add(quantity);
         }
 
-        BigDecimal discountAmount = calculatePromotionDiscount(subtotal, promotion, preparedLines);
-        if (discountAmount.compareTo(BigDecimal.ZERO) <= 0 && request.getManualDiscountPercent() != null) {
-            BigDecimal pct = request.getManualDiscountPercent().max(BigDecimal.ZERO).min(new BigDecimal("100"));
-            if (pct.compareTo(BigDecimal.ZERO) > 0) {
-                discountAmount = subtotal.multiply(pct)
-                        .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
+        BigDecimal discountAmount = BigDecimal.ZERO;
+        if (exchangeSale) {
+            discountAmount = request.getExchangeCreditAmount().min(subtotal).setScale(2, RoundingMode.HALF_UP);
+        } else {
+            discountAmount = calculatePromotionDiscount(subtotal, promotion, preparedLines);
+            if (discountAmount.compareTo(BigDecimal.ZERO) <= 0 && request.getManualDiscountPercent() != null) {
+                BigDecimal pct = request.getManualDiscountPercent().max(BigDecimal.ZERO).min(new BigDecimal("100"));
+                if (pct.compareTo(BigDecimal.ZERO) > 0) {
+                    discountAmount = subtotal.multiply(pct)
+                            .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
+                }
             }
         }
         BigDecimal totalAmount = subtotal.subtract(discountAmount).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
@@ -364,7 +373,9 @@ public class KioskPosService {
                 .cardAuthNumber(safeTrim(request.getCardAuthNumber()))
                 .cardLast4(safeTrim(request.getCardLast4()))
                 .promotionId(promotion != null ? promotion.getId() : null)
-                .promotionName(resolvePromotionDisplayName(promotion, request.getManualDiscountPercent()))
+                .promotionName(exchangeSale
+                        ? buildExchangePromotionName(request.getExchangeSlipNumber())
+                        : resolvePromotionDisplayName(promotion, request.getManualDiscountPercent()))
                 .totalItems(totalItems)
                 .testSale(isPosTestSale(kiosk))
                 .cashSessionId(openSession.getId())
@@ -459,6 +470,26 @@ public class KioskPosService {
         }
         KioskSaleEntity saved = kioskSaleRepository.save(sale);
         return toSaleResponse(saved, kiosk, user);
+    }
+
+    public KioskPosSaleResponse createExchangeSale(KioskPosSaleRequest request, String slipNumber)
+            throws BusinessException, ResourceNotFoundException {
+        if (request == null) {
+            throw new BusinessException("Debes indicar los datos de la venta de cambio.");
+        }
+        if (request.getExchangeCreditAmount() == null
+                || request.getExchangeCreditAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("El crédito de la boleta de cambio es obligatorio.");
+        }
+        request.setPromotionId(null);
+        request.setManualDiscountPercent(null);
+        request.setExchangeSlipNumber(slipNumber);
+        return createSale(request);
+    }
+
+    private static String buildExchangePromotionName(String slipNumber) {
+        String ref = slipNumber != null ? slipNumber.trim() : "";
+        return ref.isBlank() ? "Boleta de cambio" : "Boleta de cambio " + ref;
     }
 
     private static String resolvePromotionDisplayName(KioskPromotionEntity promotion, BigDecimal manualDiscountPercent) {

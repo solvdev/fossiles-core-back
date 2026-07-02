@@ -9,4 +9,6 @@ import java.util.List;
 @Repository
 public interface KioskSaleItemRepository extends JpaRepository<KioskSaleItemEntity, Long> {
     List<KioskSaleItemEntity> findByKioskSaleIdOrderByIdAsc(Long kioskSaleId);
+
+    java.util.Optional<KioskSaleItemEntity> findByIdAndKioskSale_Id(Long id, Long kioskSaleId);
 }
