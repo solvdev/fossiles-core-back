@@ -176,12 +176,13 @@ class KioskExchangeServiceTest {
                         .givenColorId(negro.getId())
                         .returnedQuantity(BigDecimal.ONE)
                         .givenQuantity(BigDecimal.ONE)
+                        .physicalSlipNumber("BC-TEST-001")
                         .paymentMethod("EFECTIVO")
                         .amountReceived(new BigDecimal("100.00"))
                         .reason("Cambio de talla")
                         .build());
 
-        assertThat(result.getSlip().getSlipNumber()).startsWith("BC-KIOSK_X-");
+        assertThat(result.getSlip().getSlipNumber()).isEqualTo("BC-TEST-001");
         assertThat(result.getSlip().getStatus()).isEqualTo("COMPLETED");
         assertThat(result.getSale().getTotalAmount()).isEqualByComparingTo("70.00");
         assertThat(result.getSale().getDiscountAmount()).isEqualByComparingTo("180.00");
@@ -221,12 +222,38 @@ class KioskExchangeServiceTest {
                         .originalSaleItemId(saleItem.getId())
                         .returnedQuantity(BigDecimal.ONE)
                         .apto(true)
+                        .physicalSlipNumber("BD-TEST-001")
                         .reason("No le gusto")
                         .build());
+
+        assertThat(slip.getSlipNumber()).isEqualTo("BD-TEST-001");
 
         assertThat(slip.getSlipType()).isEqualTo("RETURN");
         assertThat(slip.getStatus()).isEqualTo("PENDING_REINTEGRO");
         assertThat(currentStock(originalProduct.getId())).isEqualTo(5);
+    }
+
+    @Test
+    void completeExchange_zeroDifference_createsPendingAuthorizationWithoutSale() throws Exception {
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0);
+
+        KioskExchangeCompleteResponse result = kioskExchangeService.completeExchange(
+                KioskExchangeCompleteRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(originalSale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(originalProduct.getId())
+                        .givenColorId(negro.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .physicalSlipNumber("BC-ZERO-001")
+                        .reason("Cambio sin diferencia")
+                        .build());
+
+        assertThat(result.getSlip().getStatus()).isEqualTo("PENDING_AUTHORIZATION");
+        assertThat(result.getSlip().getDifferenceAmount()).isEqualByComparingTo("0.00");
+        assertThat(result.getSale()).isNull();
+        assertThat(currentStock(originalProduct.getId())).isEqualTo(4);
     }
 
     private int currentStock(Long productId) {

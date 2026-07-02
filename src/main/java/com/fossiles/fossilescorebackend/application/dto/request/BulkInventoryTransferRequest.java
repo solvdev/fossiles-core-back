@@ -27,6 +27,8 @@ public class BulkInventoryTransferRequest {
 
     private String reason;
 
+    private String physicalSlipNumber;
+
     @Data
     @Builder
     @NoArgsConstructor

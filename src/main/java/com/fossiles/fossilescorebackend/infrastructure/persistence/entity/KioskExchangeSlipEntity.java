@@ -83,8 +83,20 @@ public class KioskExchangeSlipEntity {
     @Column(name = "return_movement_id")
     private Long returnMovementId;
 
+    @Column(name = "given_movement_id")
+    private Long givenMovementId;
+
     @Column(name = "reintegro_movement_id")
     private Long reintegroMovementId;
+
+    @Column(name = "authorized_by")
+    private Long authorizedBy;
+
+    @Column(name = "authorized_at")
+    private LocalDateTime authorizedAt;
+
+    @Column(name = "rejection_reason", length = 1000)
+    private String rejectionReason;
 
     @Column(name = "apto")
     private Boolean apto;

@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionCloseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeRejectRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeCompleteRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangePreviewRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSimpleReturnRequest;
@@ -256,6 +257,13 @@ public class KioskPosController {
         return ResponseEntity.ok(kioskExchangeService.listPendingReintegros(kioskLocationId));
     }
 
+    @GetMapping("/exchanges/pending-authorizations")
+    public ResponseEntity<List<KioskExchangeSlipResponse>> listPendingAuthorizations(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskExchangeService.listPendingAuthorizations(kioskLocationId));
+    }
+
     @GetMapping("/exchanges/{id}")
     public ResponseEntity<KioskExchangeSlipResponse> getExchangeById(
             @PathVariable Long id,
@@ -291,6 +299,23 @@ public class KioskPosController {
             @RequestParam(required = false) Long kioskLocationId
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskExchangeService.reintegrate(id, kioskLocationId));
+    }
+
+    @PostMapping("/exchanges/{id}/authorize")
+    public ResponseEntity<KioskExchangeSlipResponse> authorizeExchange(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskExchangeService.authorizeExchange(id, kioskLocationId));
+    }
+
+    @PostMapping("/exchanges/{id}/reject")
+    public ResponseEntity<KioskExchangeSlipResponse> rejectExchange(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long kioskLocationId,
+            @Valid @RequestBody KioskExchangeRejectRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskExchangeService.rejectExchange(id, kioskLocationId, request));
     }
 
     @GetMapping("/sales/lookup")

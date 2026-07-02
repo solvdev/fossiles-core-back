@@ -31,6 +31,7 @@ public class KioscoMovementResponse {
     private String referenceType;
     /** Número legible del documento (ej. ENVI-00123, TRF-45). */
     private String referenceNumber;
+    private String physicalSlipNumber;
     private String reason;
     private Boolean affectsStock;
     private Long userId;

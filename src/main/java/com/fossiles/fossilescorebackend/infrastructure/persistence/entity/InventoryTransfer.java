@@ -41,6 +41,9 @@ public class InventoryTransfer {
     @Column(name = "reason", length = 500)
     private String reason;
 
+    @Column(name = "physical_slip_number", length = 60)
+    private String physicalSlipNumber;
+
     @Column(name = "status", length = 50, nullable = false)
     @Builder.Default
     private String status = "PENDING"; // PENDING, COMPLETED, CANCELLED

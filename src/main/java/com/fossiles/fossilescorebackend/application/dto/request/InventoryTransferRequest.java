@@ -29,5 +29,7 @@ public class InventoryTransferRequest {
     private BigDecimal quantity;
 
     private String reason;
+
+    private String physicalSlipNumber;
 }
 

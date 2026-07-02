@@ -106,4 +106,13 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             @Param("transferId") Long transferId,
             @Param("movementType") KioscoMovementType movementType
     );
+
+    boolean existsByPhysicalSlipNumber(String physicalSlipNumber);
+
+    List<KioscoMovementEntity> findByReferenceIdAndMovementType(
+            Long referenceId,
+            KioscoMovementType movementType
+    );
+
+    List<KioscoMovementEntity> findByPhysicalSlipNumber(String physicalSlipNumber);
 }

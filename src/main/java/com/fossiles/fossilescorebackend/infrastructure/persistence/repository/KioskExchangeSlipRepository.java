@@ -21,4 +21,8 @@ public interface KioskExchangeSlipRepository extends JpaRepository<KioskExchange
     );
 
     List<KioskExchangeSlipEntity> findByStatusOrderByCreatedAtDesc(String status);
+
+    boolean existsBySlipNumber(String slipNumber);
+
+    Optional<KioskExchangeSlipEntity> findBySlipNumber(String slipNumber);
 }

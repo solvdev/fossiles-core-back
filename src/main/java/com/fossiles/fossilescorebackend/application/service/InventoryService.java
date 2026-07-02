@@ -1615,6 +1615,11 @@ public class InventoryService {
             throw new BusinessException("No se puede transferir a la misma ubicación");
         }
 
+        String physicalSlipNumber = normalizeInventoryPhysicalSlipNumber(request.getPhysicalSlipNumber());
+        if (physicalSlipNumber == null) {
+            throw new BusinessException("Debes indicar el número de boleta de traslado física.");
+        }
+
         // Validar que se especifique material o producto, pero no ambos
         if (request.getMaterialId() == null && request.getProductId() == null) {
             throw new BusinessException("Debe especificar un material o un producto");
@@ -1668,6 +1673,7 @@ public class InventoryService {
                 .colorId(request.getColorId()) // Incluir colorId para productos con variantes
                 .quantity(request.getQuantity())
                 .reason(request.getReason())
+                .physicalSlipNumber(physicalSlipNumber)
                 .status("PENDING")
                 .createdBy(currentUserId)
                 .updatedBy(currentUserId)
@@ -1706,6 +1712,11 @@ public class InventoryService {
             throw new BusinessException("No se puede transferir a la misma ubicación");
         }
 
+        String bulkPhysicalSlip = normalizeInventoryPhysicalSlipNumber(request.getPhysicalSlipNumber());
+        if (bulkPhysicalSlip == null) {
+            throw new BusinessException("Debes indicar el número de boleta de traslado física.");
+        }
+
         List<InventoryTransferResponse> responses = new java.util.ArrayList<>();
 
         for (BulkInventoryTransferRequest.InventoryTransferItemRequest item : request.getItems()) {
@@ -1726,6 +1737,7 @@ public class InventoryService {
                     .colorId(item.getColorId())
                     .quantity(item.getQuantity())
                     .reason(request.getReason())
+                    .physicalSlipNumber(bulkPhysicalSlip)
                     .build();
 
             // Crear transferencia individual
@@ -2053,6 +2065,7 @@ public class InventoryService {
                 .colorName(color != null ? color.getName() : null)
                 .quantity(entity.getQuantity())
                 .reason(entity.getReason())
+                .physicalSlipNumber(entity.getPhysicalSlipNumber())
                 .status(entity.getStatus())
                 .transferDate(entity.getTransferDate())
                 .completedAt(entity.getCompletedAt())
@@ -2411,6 +2424,14 @@ public class InventoryService {
                 .updatedBy(entity.getUpdatedBy())
                 .updatedByName(updatedByUser != null ? updatedByUser.getUsername() : null)
                 .build();
+    }
+
+    private static String normalizeInventoryPhysicalSlipNumber(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 }
 

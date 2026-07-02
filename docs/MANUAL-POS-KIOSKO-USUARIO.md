@@ -332,7 +332,7 @@ Elige **Operación** y completa los campos. Luego **"Registrar movimiento"**.
 | **Cambio de producto** | Cliente devuelve uno y recibe otro |
 | **Devolución a depósito** | Producto regresa al depósito/bodega |
 | **Devolución de cliente** | Cliente devuelve producto; indicas si está apto para reventa |
-| **Traslado entre kioskos** | Mueves unidades de un kiosko a otro |
+| **Traslado entre kioskos** | Mueves unidades de un kiosko a otro — **obligatorio** número de boleta física de traslado |
 | **Merma** | Pérdida, daño, robo — baja stock con motivo |
 | **Ajuste por conteo físico** | Tras contar, indicas la **cantidad real** y el sistema corrige |
 | **Anulación de factura** | Reversa stock por anulación; indicas si el producto salió del kiosko |
@@ -426,6 +426,29 @@ Son bolsas/cajas de regalo. Se venden como producto aparte si hay stock.
 
 ---
 
+# Boletas físicas y autorización de cambios
+
+Para trazabilidad y auditoría, el sistema exige el **número de la boleta física pre-impresa** (no se genera automáticamente):
+
+| Operación | Dónde se captura |
+|-----------|------------------|
+| **Traslado** (inventario kiosko o bodega) | Formulario de traslado |
+| **Devolución simple** | Asistente de devolución |
+| **Boleta de cambio** | Resumen antes de confirmar |
+
+### Cambio sin diferencia de precio
+
+Si el producto nuevo cuesta **igual** que el devuelto (diferencia Q 0.00):
+
+1. **No hay cobro ni facturación.**
+2. La cajera envía **solicitud de cambio** con boleta física y motivo.
+3. **Logística** autoriza en *Devoluciones / Reintegros → Autorizaciones pendientes*.
+4. Al autorizar, el sistema mueve inventario (ingreso + egreso) vinculado a la boleta física.
+
+Permisos de logística: `KIOSCOS.CAMBIOS.AUTORIZAR.VER` y `KIOSCOS.CAMBIOS.AUTORIZAR.APROBAR`.
+
+---
+
 # Glosario rápido
 
 | Palabra | Significado |
@@ -437,6 +460,7 @@ Son bolsas/cajas de regalo. Se venden como producto aparte si hay stock.
 | **Kardex** | Historial de entradas y salidas de inventario |
 | **Merma** | Pérdida de producto (daño, extravío) |
 | **Boleta de depósito** | Comprobante del banco al depositar efectivo |
+| **Boleta física** | Número del comprobante impreso usado en traslados, devoluciones y cambios |
 | **Turno / sesión de caja** | Desde que abres caja hasta que la cierras |
 
 ---

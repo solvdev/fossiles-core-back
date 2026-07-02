@@ -30,4 +30,5 @@ public class KioskExchangeCompleteRequest extends KioskExchangePreviewRequest {
     private Boolean requestInvoice;
     private String reason;
     private String observations;
+    private String physicalSlipNumber;
 }

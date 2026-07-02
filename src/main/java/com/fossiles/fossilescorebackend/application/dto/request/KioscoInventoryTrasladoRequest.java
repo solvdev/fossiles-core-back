@@ -29,4 +29,6 @@ public class KioscoInventoryTrasladoRequest {
     private Integer quantity;
 
     private Long userId;
+
+    private String physicalSlipNumber;
 }

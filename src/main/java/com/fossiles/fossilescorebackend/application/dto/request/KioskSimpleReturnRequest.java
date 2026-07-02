@@ -30,4 +30,5 @@ public class KioskSimpleReturnRequest {
 
     private String reason;
     private String observations;
+    private String physicalSlipNumber;
 }

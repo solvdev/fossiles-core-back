@@ -52,4 +52,10 @@ public class KioskExchangeSlipResponse {
     private LocalDateTime reintegratedAt;
     private Long reintegratedByUserId;
     private String reintegratedByName;
+    private Long authorizedByUserId;
+    private String authorizedByName;
+    private LocalDateTime authorizedAt;
+    private String rejectionReason;
+    private Long returnMovementId;
+    private Long givenMovementId;
 }

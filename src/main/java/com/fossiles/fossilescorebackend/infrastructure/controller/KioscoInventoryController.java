@@ -120,7 +120,8 @@ public class KioscoInventoryController {
                 request.getProductId(),
                 request.getColorId(),
                 request.getQuantity(),
-                request.getUserId()
+                request.getUserId(),
+                request.getPhysicalSlipNumber()
         ));
     }
 

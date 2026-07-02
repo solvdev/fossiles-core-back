@@ -30,6 +30,7 @@ public class InventoryTransferResponse {
     private String colorName;
     private BigDecimal quantity;
     private String reason;
+    private String physicalSlipNumber;
     private String status;
     private LocalDateTime transferDate;
     private LocalDateTime completedAt;

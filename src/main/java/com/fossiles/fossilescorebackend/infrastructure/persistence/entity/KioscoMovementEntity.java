@@ -50,6 +50,9 @@ public class KioscoMovementEntity {
     @Column(name = "reference_id")
     private Long referenceId;
 
+    @Column(name = "physical_slip_number", length = 60)
+    private String physicalSlipNumber;
+
     @Column(name = "reason")
     private String reason;
 

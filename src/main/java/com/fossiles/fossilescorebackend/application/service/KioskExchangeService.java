@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeRejectRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeCompleteRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangePreviewRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
@@ -13,7 +14,8 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipEntity;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipSequenceEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
@@ -21,7 +23,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipRepository;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipSequenceRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
@@ -51,9 +53,11 @@ public class KioskExchangeService {
     private static final String SLIP_TYPE_RETURN = "RETURN";
     private static final String STATUS_COMPLETED = "COMPLETED";
     private static final String STATUS_PENDING_REINTEGRO = "PENDING_REINTEGRO";
+    private static final String STATUS_PENDING_AUTHORIZATION = "PENDING_AUTHORIZATION";
+    private static final String STATUS_REJECTED = "REJECTED";
 
     private final KioskExchangeSlipRepository exchangeSlipRepository;
-    private final KioskExchangeSlipSequenceRepository exchangeSlipSequenceRepository;
+    private final KioscoMovementRepository kioscoMovementRepository;
     private final KioskSaleRepository kioskSaleRepository;
     private final KioskSaleItemRepository kioskSaleItemRepository;
     private final ProductRepository productRepository;
@@ -62,6 +66,7 @@ public class KioskExchangeService {
     private final UserRepository userRepository;
     private final KioscoInventoryService kioscoInventoryService;
     private final KioskPosService kioskPosService;
+    private final KioskExchangeAuthorizationGuard exchangeAuthorizationGuard;
     private final SecurityUtil securityUtil;
 
     @Transactional(readOnly = true)
@@ -96,6 +101,85 @@ public class KioskExchangeService {
     }
 
     @Transactional(readOnly = true)
+    public List<KioskExchangeSlipResponse> listPendingAuthorizations(Long kioskLocationId) throws BusinessException {
+        exchangeAuthorizationGuard.assertCanViewPendingAuthorizations();
+        AccessContext ctx = resolveAccessContext(kioskLocationId, true);
+        List<KioskExchangeSlipEntity> slips = exchangeSlipRepository.findByStatusOrderByCreatedAtDesc(STATUS_PENDING_AUTHORIZATION);
+        return slips.stream()
+                .filter(slip -> SLIP_TYPE_EXCHANGE.equalsIgnoreCase(safeTrim(slip.getSlipType())))
+                .filter(slip -> ctx.availableKiosks().stream()
+                        .anyMatch(k -> Objects.equals(k.getId(), slip.getKioskLocationId())))
+                .filter(slip -> kioskLocationId == null || Objects.equals(slip.getKioskLocationId(), kioskLocationId))
+                .map(slip -> toSlipResponse(slip, ctx))
+                .collect(Collectors.toList());
+    }
+
+    @Transactional
+    public KioskExchangeSlipResponse authorizeExchange(Long slipId, Long kioskLocationId)
+            throws BusinessException, ResourceNotFoundException {
+        exchangeAuthorizationGuard.assertCanApproveOrReject();
+        AccessContext ctx = resolveAccessContext(kioskLocationId, kioskLocationId == null);
+        KioskExchangeSlipEntity slip = findAccessibleSlip(slipId, ctx);
+        if (!SLIP_TYPE_EXCHANGE.equalsIgnoreCase(safeTrim(slip.getSlipType()))) {
+            throw new BusinessException("Solo se pueden autorizar boletas de cambio.");
+        }
+        if (!STATUS_PENDING_AUTHORIZATION.equalsIgnoreCase(safeTrim(slip.getStatus()))) {
+            throw new BusinessException("Esta solicitud no está pendiente de autorización.");
+        }
+
+        int quantity = slip.getReturnedQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
+        String cambioReason = buildExchangeMovementReason(slip);
+
+        KioscoInventoryService.CambioResult cambio = kioscoInventoryService.registrarCambio(
+                slip.getKioskLocationId(),
+                slip.getReturnedProductId(),
+                slip.getReturnedColorId(),
+                slip.getGivenProductId(),
+                slip.getGivenColorId(),
+                quantity,
+                slip.getId(),
+                cambioReason,
+                ctx.user().getId(),
+                slip.getSlipNumber(),
+                slip.getReturnedSize(),
+                slip.getGivenSize()
+        );
+
+        slip.setReturnMovementId(cambio.getReturnedMovementId());
+        slip.setGivenMovementId(cambio.getGivenMovementId());
+        slip.setStatus(STATUS_COMPLETED);
+        slip.setAuthorizedBy(ctx.user().getId());
+        slip.setAuthorizedAt(GuatemalaDateTime.now());
+        slip.setCompletedAt(slip.getAuthorizedAt());
+        slip = exchangeSlipRepository.save(slip);
+        return toSlipResponse(slip, ctx);
+    }
+
+    @Transactional
+    public KioskExchangeSlipResponse rejectExchange(Long slipId, Long kioskLocationId, KioskExchangeRejectRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        exchangeAuthorizationGuard.assertCanApproveOrReject();
+        if (request == null || safeTrim(request.getReason()).isEmpty()) {
+            throw new BusinessException("Debes indicar el motivo del rechazo.");
+        }
+        AccessContext ctx = resolveAccessContext(kioskLocationId, kioskLocationId == null);
+        KioskExchangeSlipEntity slip = findAccessibleSlip(slipId, ctx);
+        if (!SLIP_TYPE_EXCHANGE.equalsIgnoreCase(safeTrim(slip.getSlipType()))) {
+            throw new BusinessException("Solo se pueden rechazar boletas de cambio.");
+        }
+        if (!STATUS_PENDING_AUTHORIZATION.equalsIgnoreCase(safeTrim(slip.getStatus()))) {
+            throw new BusinessException("Esta solicitud no está pendiente de autorización.");
+        }
+
+        slip.setStatus(STATUS_REJECTED);
+        slip.setRejectionReason(safeTrim(request.getReason()));
+        slip.setAuthorizedBy(ctx.user().getId());
+        slip.setAuthorizedAt(GuatemalaDateTime.now());
+        slip = exchangeSlipRepository.save(slip);
+        return toSlipResponse(slip, ctx);
+    }
+
+    @Transactional(readOnly = true)
     public KioskExchangeSlipResponse getExchangeById(Long id, Long kioskLocationId)
             throws BusinessException, ResourceNotFoundException {
         AccessContext ctx = resolveAccessContext(kioskLocationId, kioskLocationId == null);
@@ -127,9 +211,15 @@ public class KioskExchangeService {
             throws BusinessException, ResourceNotFoundException {
         ExchangeContext exchange = buildExchangeContext(request, true);
         KioskExchangePreviewResponse preview = exchange.preview();
+        String slipNumber = requireAvailablePhysicalSlipNumber(request.getPhysicalSlipNumber());
+
+        if (preview.getDifferenceAmount() == null
+                || preview.getDifferenceAmount().compareTo(BigDecimal.ZERO) == 0) {
+            return submitZeroDifferenceExchange(request, exchange, preview, slipNumber);
+        }
+
         UserEntity user = exchange.access().user();
         LocationEntity kiosk = exchange.access().kiosk();
-        String slipNumber = generateSlipNumber(kiosk);
 
         kioscoInventoryService.registrarDevolucionCliente(
                 kiosk.getId(),
@@ -139,7 +229,8 @@ public class KioskExchangeService {
                 preview.getOriginalSaleId(),
                 true,
                 user.getId(),
-                preview.getReturned().getSize()
+                preview.getReturned().getSize(),
+                slipNumber
         );
 
         KioskPosSaleRequest saleRequest = KioskPosSaleRequest.builder()
@@ -169,10 +260,69 @@ public class KioskExchangeService {
 
         KioskPosSaleResponse sale = kioskPosService.createExchangeSale(saleRequest, slipNumber);
 
-        KioskExchangeSlipEntity slip = KioskExchangeSlipEntity.builder()
+        KioskExchangeSlipEntity slip = buildExchangeSlipEntity(
+                slipNumber,
+                preview,
+                request,
+                kiosk.getId(),
+                user.getId(),
+                sale.getId(),
+                STATUS_COMPLETED,
+                GuatemalaDateTime.now()
+        );
+        linkExchangeMovementIds(slip, slipNumber);
+        slip = exchangeSlipRepository.save(slip);
+
+        return KioskExchangeCompleteResponse.builder()
+                .slip(toSlipResponse(slip, exchange.access()))
+                .sale(sale)
+                .build();
+    }
+
+    private KioskExchangeCompleteResponse submitZeroDifferenceExchange(
+            KioskExchangeCompleteRequest request,
+            ExchangeContext exchange,
+            KioskExchangePreviewResponse preview,
+            String slipNumber
+    ) throws BusinessException {
+        if (safeTrim(request.getReason()).isEmpty()) {
+            throw new BusinessException("Indica el motivo del cambio.");
+        }
+        UserEntity user = exchange.access().user();
+        LocationEntity kiosk = exchange.access().kiosk();
+
+        KioskExchangeSlipEntity slip = buildExchangeSlipEntity(
+                slipNumber,
+                preview,
+                request,
+                kiosk.getId(),
+                user.getId(),
+                null,
+                STATUS_PENDING_AUTHORIZATION,
+                null
+        );
+        slip = exchangeSlipRepository.save(slip);
+
+        return KioskExchangeCompleteResponse.builder()
+                .slip(toSlipResponse(slip, exchange.access()))
+                .sale(null)
+                .build();
+    }
+
+    private KioskExchangeSlipEntity buildExchangeSlipEntity(
+            String slipNumber,
+            KioskExchangePreviewResponse preview,
+            KioskExchangeCompleteRequest request,
+            Long kioskLocationId,
+            Long createdBy,
+            Long newSaleId,
+            String status,
+            LocalDateTime completedAt
+    ) {
+        return KioskExchangeSlipEntity.builder()
                 .slipNumber(slipNumber)
                 .slipType(SLIP_TYPE_EXCHANGE)
-                .kioskLocationId(kiosk.getId())
+                .kioskLocationId(kioskLocationId)
                 .originalSaleId(preview.getOriginalSaleId())
                 .originalSaleItemId(preview.getOriginalSaleItemId())
                 .returnedProductId(preview.getReturned().getProductId())
@@ -186,20 +336,34 @@ public class KioskExchangeService {
                 .givenQuantity(preview.getGiven().getQuantity())
                 .givenAmount(preview.getGivenAmount())
                 .differenceAmount(preview.getDifferenceAmount())
-                .newSaleId(sale.getId())
+                .newSaleId(newSaleId)
                 .apto(true)
-                .status(STATUS_COMPLETED)
+                .status(status)
                 .reason(safeTrim(request.getReason()))
                 .observations(safeTrim(request.getObservations()))
-                .createdBy(user.getId())
-                .completedAt(GuatemalaDateTime.now())
+                .createdBy(createdBy)
+                .completedAt(completedAt)
                 .build();
-        slip = exchangeSlipRepository.save(slip);
+    }
 
-        return KioskExchangeCompleteResponse.builder()
-                .slip(toSlipResponse(slip, exchange.access()))
-                .sale(sale)
-                .build();
+    private void linkExchangeMovementIds(KioskExchangeSlipEntity slip, String slipNumber) {
+        List<KioscoMovementEntity> movements = kioscoMovementRepository.findByPhysicalSlipNumber(slipNumber);
+        for (KioscoMovementEntity movement : movements) {
+            if (movement.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE) {
+                slip.setReturnMovementId(movement.getId());
+            } else if (movement.getMovementType() == KioscoMovementType.VENTA) {
+                slip.setGivenMovementId(movement.getId());
+            }
+        }
+    }
+
+    private String buildExchangeMovementReason(KioskExchangeSlipEntity slip) {
+        String slipNumber = safeTrim(slip.getSlipNumber());
+        String reason = safeTrim(slip.getReason());
+        if (reason.isBlank()) {
+            return "Boleta de cambio " + slipNumber;
+        }
+        return "Boleta de cambio " + slipNumber + " · " + reason;
     }
 
     @Transactional
@@ -222,7 +386,7 @@ public class KioskExchangeService {
         BigDecimal returnedQty = normalizeQuantity(request.getReturnedQuantity(), item.getQuantity());
         BigDecimal returnedAmount = item.getUnitPrice().multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
         String returnedSize = extractSizeFromProductName(item.getProductName());
-        String slipNumber = generateSlipNumber(ctx.kiosk());
+        String slipNumber = requireAvailablePhysicalSlipNumber(request.getPhysicalSlipNumber());
 
         kioscoInventoryService.registrarDevolucionCliente(
                 ctx.kiosk().getId(),
@@ -232,7 +396,8 @@ public class KioskExchangeService {
                 sale.getId(),
                 request.getApto(),
                 ctx.user().getId(),
-                returnedSize
+                returnedSize,
+                slipNumber
         );
 
         String status = Boolean.TRUE.equals(request.getApto()) ? STATUS_PENDING_REINTEGRO : STATUS_COMPLETED;
@@ -370,23 +535,21 @@ public class KioskExchangeService {
         return qty.setScale(3, RoundingMode.HALF_UP);
     }
 
-    private String generateSlipNumber(LocationEntity kiosk) {
-        int year = GuatemalaDateTime.today().getYear();
-        KioskExchangeSlipSequenceEntity sequence = exchangeSlipSequenceRepository
-                .findWithLockByKioskAndYear(kiosk.getId(), year)
-                .orElseGet(() -> KioskExchangeSlipSequenceEntity.builder()
-                        .kioskLocationId(kiosk.getId())
-                        .sequenceYear(year)
-                        .lastNumber(0)
-                        .build());
-        int next = (sequence.getLastNumber() == null ? 0 : sequence.getLastNumber()) + 1;
-        sequence.setLastNumber(next);
-        exchangeSlipSequenceRepository.save(sequence);
-        String kioskCode = safeTrim(kiosk.getCode());
-        if (kioskCode.isBlank()) {
-            kioskCode = "K" + kiosk.getId();
+    private String requireAvailablePhysicalSlipNumber(String raw) throws BusinessException {
+        String normalized = safeTrim(raw);
+        if (normalized.isEmpty()) {
+            throw new BusinessException("Debes indicar el número de boleta física.");
         }
-        return String.format(Locale.ROOT, "BC-%s-%d-%d", kioskCode, year, next);
+        if (normalized.length() > 60) {
+            throw new BusinessException("El número de boleta física no puede superar 60 caracteres.");
+        }
+        if (exchangeSlipRepository.existsBySlipNumber(normalized)) {
+            throw new BusinessException("El número de boleta física ya fue registrado.");
+        }
+        if (kioscoMovementRepository.existsByPhysicalSlipNumber(normalized)) {
+            throw new BusinessException("El número de boleta física ya fue registrado en inventario kiosko.");
+        }
+        return normalized;
     }
 
     private KioskExchangeSlipResponse toSlipResponse(KioskExchangeSlipEntity slip, AccessContext ctx) {
@@ -415,6 +578,9 @@ public class KioskExchangeService {
         UserEntity createdBy = slip.getCreatedBy() != null ? userRepository.findById(slip.getCreatedBy()).orElse(null) : null;
         UserEntity reintegratedBy = slip.getReintegratedBy() != null
                 ? userRepository.findById(slip.getReintegratedBy()).orElse(null)
+                : null;
+        UserEntity authorizedBy = slip.getAuthorizedBy() != null
+                ? userRepository.findById(slip.getAuthorizedBy()).orElse(null)
                 : null;
 
         return KioskExchangeSlipResponse.builder()
@@ -457,6 +623,12 @@ public class KioskExchangeService {
                 .reintegratedAt(slip.getReintegratedAt())
                 .reintegratedByUserId(slip.getReintegratedBy())
                 .reintegratedByName(formatUserName(reintegratedBy))
+                .authorizedByUserId(slip.getAuthorizedBy())
+                .authorizedByName(formatUserName(authorizedBy))
+                .authorizedAt(slip.getAuthorizedAt())
+                .rejectionReason(slip.getRejectionReason())
+                .returnMovementId(slip.getReturnMovementId())
+                .givenMovementId(slip.getGivenMovementId())
                 .build();
     }
 
