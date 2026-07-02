@@ -13,5 +13,7 @@ import java.math.BigDecimal;
 @AllArgsConstructor
 public class KioskPromotionTierResponse {
     private String audienceCategory;
+    private Long categoryId;
+    private String categoryName;
     private BigDecimal discountValue;
 }

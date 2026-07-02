@@ -99,8 +99,9 @@ Toca un chip otra vez para **quitar** el filtro.
 
 - Cambia la **cantidad** con el cuadro numérico.
 - **Quitar** elimina la línea.
-- Ves **Subtotal**, **Descuento** (si hay promoción) y **Total**.
-- **"¿Hay promoción? Aplicar descuento"** abre la pantalla de cobro para elegir descuento.
+- Ves **Subtotal**, **Descuento** (si hay promoción vigente o automática) y **Total**.
+- Si hay promoción automática que aplica a los productos del carrito, verás **"Descuento automático aplicado"** sin tener que elegir nada.
+- **"¿Hay promoción? Aplicar descuento"** abre la pantalla de cobro para elegir un descuento manual (10/15/20% u otra promoción).
 - **"Cobrar Q…"** — botón principal para cobrar.
 - **"Cancelar venta"** — vacía el carrito.
 
@@ -119,11 +120,13 @@ Se abre la ventana **"Cobrar venta"**.
 
 #### Promoción
 
-- Botones rápidos: **10% OFF**, **15% OFF**, **20% OFF**.
-- O busca una promoción guardada escribiendo en el selector (ej. "Liquidación").
+- Las promociones **por línea** (audiencia + categoría) se aplican **solas** cuando el producto cumple los criterios. No hace falta seleccionarlas en cada venta.
+- Los **empaques (códigos SUM-)** nunca tienen descuento, ni automático ni manual.
+- Para casos excepcionales, usa botones rápidos: **10% OFF**, **15% OFF**, **20% OFF** (solo sobre productos, no empaques).
+- O busca una promoción guardada escribiendo en el selector (ej. "Liquidación") para **forzar** una campaña concreta.
 - Verás **"Descuento aplicado: -Q…"** antes de confirmar.
 
-**Promoción "Por línea":** si el admin creó una campaña con distintos % para Dama, Caballero y Unisex, el sistema calcula solo — no tienes que hacer cuentas. Cada producto usa su línea.
+**Promoción "Por línea":** el administrador define tiers con **audiencia + categoría + %** (ej. Caballero · Billeteras · 15%). El sistema calcula el descuento por producto según su línea y categoría.
 
 #### Forma de pago
 
@@ -261,7 +264,7 @@ Aquí se **crean** las campañas de descuento. La cajera las **aplica al cobrar*
 | Tipo | Significado | Ejemplo |
 |------|-------------|---------|
 | **Porcentaje (%)** | Descuento % a todo o a una línea | 15% en productos Dama |
-| **Porcentaje por línea** | Un solo nombre de promo, pero % distinto para Dama, Caballero y Unisex | Dama 15%, Caballero 10%, Unisex 5% |
+| **Porcentaje por línea** | Tiers con audiencia + categoría + % | Caballero · Billeteras · 15%; Dama · Bolsos dama · 10% |
 | **Monto fijo (Q)** | Resta un monto en quetzales | Q50 de descuento |
 | **Combo (2x1)** | Lleva X unidades, paga Y | Lleva 2, paga 1 |
 
@@ -270,7 +273,7 @@ Aquí se **crean** las campañas de descuento. La cajera las **aplica al cobrar*
 - **Nombre** — cómo la verá la cajera (ej. "Liquidación marzo").
 - **Kiosko** — vacío = aplica a todos; o elige uno solo.
 - **Línea** — (solo en % simple) todas, Dama o Caballero.
-- **% por línea** — (solo en "Porcentaje por línea") llena al menos uno: Dama, Caballero, Unisex.
+- **Tiers** — (solo en "Porcentaje por línea") agrega filas con audiencia, categoría y %. Al menos una fila con % mayor a cero.
 - **Inicio / Fin** — fechas de vigencia (opcional).
 - **Crear promoción**.
 
@@ -403,7 +406,7 @@ Sin stock en ese color (o talla). Revisa Inventario o consulta otro kiosko.
 `CF` para la mayoría de ventas al público.
 
 **¿Cuándo uso promoción "Por línea"?**  
-Cuando una campaña tiene distintos descuentos para productos de dama, caballero y unisex en la **misma venta**. El cajero elige una sola promo y el sistema reparte el % correcto.
+Cuando una campaña tiene distintos descuentos según **audiencia y categoría** del producto. El sistema las aplica automáticamente; el cajero solo elige manualmente si quiere **forzar** otra promo o usar 10/15/20%.
 
 **¿Qué es "depósito pendiente"?**  
 Vendiste en efectivo y aún no registraste la boleta del depósito bancario.
@@ -413,6 +416,9 @@ No desde aquí si ya cerraste caja. Anulaciones son del turno actual con caja ab
 
 **¿Qué es modo piloto?**  
 Algunos kioskos en prueba: las ventas se ven localmente pero **no cuentan** en reportes generales de la empresa.
+
+**¿Los empaques SUM- tienen descuento?**  
+No. Los empaques nunca reciben descuento (ni promoción automática ni botones 10/15/20%).
 
 **¿Los empaques SUM-?**  
 Son bolsas/cajas de regalo. Se venden como producto aparte si hay stock.

@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeCom
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangePreviewRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSimpleReturnRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotionEstimateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleInvoiceContactRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSalePaymentUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
@@ -20,6 +21,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPendingDep
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosContextResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosManagerDashboardResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromotionEstimateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAvailabilityResponse;
@@ -147,6 +149,13 @@ public class KioskPosController {
             @RequestParam(required = false) Long kioskLocationId
     ) throws BusinessException {
         return ResponseEntity.ok(kioskPosService.getPromotions(activeOnly, kioskLocationId));
+    }
+
+    @PostMapping("/promotions/estimate")
+    public ResponseEntity<KioskPosPromotionEstimateResponse> estimatePromotionDiscount(
+            @Valid @RequestBody KioskPosPromotionEstimateRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.estimatePromotionDiscount(request));
     }
 
     @PostMapping("/promotions")

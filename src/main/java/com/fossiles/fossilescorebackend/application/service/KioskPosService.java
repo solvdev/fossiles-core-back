@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionCloseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotionEstimateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSalePaymentUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
@@ -15,6 +16,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskCustomerPr
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionTierResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosManagerDashboardResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromotionEstimateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAvailabilityResponse;
@@ -262,9 +264,13 @@ public class KioskPosService {
 
         boolean exchangeSale = request.getExchangeCreditAmount() != null
                 && request.getExchangeCreditAmount().compareTo(BigDecimal.ZERO) > 0;
-        KioskPromotionEntity promotion = exchangeSale
-                ? null
-                : resolvePromotionIfAny(request.getPromotionId(), saleDate, kiosk.getId());
+        KioskPromotionEntity promotion = null;
+        if (!exchangeSale
+                && (request.getManualDiscountPercent() == null
+                || request.getManualDiscountPercent().compareTo(BigDecimal.ZERO) <= 0)
+                && request.getPromotionId() != null) {
+            promotion = resolvePromotionIfAny(request.getPromotionId(), saleDate, kiosk.getId());
+        }
 
         Map<String, BigDecimal> aggregatedQty = aggregateItemQuantities(request.getItems());
         Map<String, ProductInventoryLocation> lockedInventory = lockAndValidateStock(kiosk.getId(), aggregatedQty);
@@ -323,19 +329,16 @@ public class KioskPosService {
             totalItems = totalItems.add(quantity);
         }
 
-        BigDecimal discountAmount = BigDecimal.ZERO;
-        if (exchangeSale) {
-            discountAmount = request.getExchangeCreditAmount().min(subtotal).setScale(2, RoundingMode.HALF_UP);
-        } else {
-            discountAmount = calculatePromotionDiscount(subtotal, promotion, preparedLines);
-            if (discountAmount.compareTo(BigDecimal.ZERO) <= 0 && request.getManualDiscountPercent() != null) {
-                BigDecimal pct = request.getManualDiscountPercent().max(BigDecimal.ZERO).min(new BigDecimal("100"));
-                if (pct.compareTo(BigDecimal.ZERO) > 0) {
-                    discountAmount = subtotal.multiply(pct)
-                            .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
-                }
-            }
-        }
+        DiscountResolution discountResolution = resolveSaleDiscount(
+                subtotal,
+                preparedLines,
+                exchangeSale,
+                request,
+                promotion,
+                kiosk.getId(),
+                saleDate
+        );
+        BigDecimal discountAmount = discountResolution.discountAmount();
         BigDecimal totalAmount = subtotal.subtract(discountAmount).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
 
         PaymentSnapshot payment = resolvePaymentSnapshot(
@@ -372,10 +375,12 @@ public class KioskPosService {
                 .cardAmount(payment.cardAmount())
                 .cardAuthNumber(safeTrim(request.getCardAuthNumber()))
                 .cardLast4(safeTrim(request.getCardLast4()))
-                .promotionId(promotion != null ? promotion.getId() : null)
+                .promotionId(exchangeSale
+                        ? null
+                        : (promotion != null ? promotion.getId() : discountResolution.promotionId()))
                 .promotionName(exchangeSale
                         ? buildExchangePromotionName(request.getExchangeSlipNumber())
-                        : resolvePromotionDisplayName(promotion, request.getManualDiscountPercent()))
+                        : discountResolution.promotionName())
                 .totalItems(totalItems)
                 .testSale(isPosTestSale(kiosk))
                 .cashSessionId(openSession.getId())
@@ -1065,6 +1070,56 @@ public class KioskPosService {
         return size.isEmpty() ? null : size;
     }
 
+    @Transactional(readOnly = true)
+    public KioskPosPromotionEstimateResponse estimatePromotionDiscount(
+            KioskPosPromotionEstimateRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        if (request == null || request.getItems() == null || request.getItems().isEmpty()) {
+            throw new BusinessException("Debes indicar al menos un producto para estimar el descuento.");
+        }
+        UserEntity user = getCurrentUserOrThrow();
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+        LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
+        LocalDate saleDate = GuatemalaDateTime.today();
+
+        List<PreparedLine> preparedLines = buildPreparedLinesForEstimate(kiosk.getId(), request.getItems());
+        BigDecimal subtotal = preparedLines.stream()
+                .map(PreparedLine::lineTotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        KioskPromotionEntity promotion = null;
+        if ((request.getManualDiscountPercent() == null
+                || request.getManualDiscountPercent().compareTo(BigDecimal.ZERO) <= 0)
+                && request.getPromotionId() != null) {
+            promotion = resolvePromotionIfAny(request.getPromotionId(), saleDate, kiosk.getId());
+        }
+
+        KioskPosSaleRequest saleRequest = KioskPosSaleRequest.builder()
+                .manualDiscountPercent(request.getManualDiscountPercent())
+                .build();
+        DiscountResolution resolution = resolveSaleDiscount(
+                subtotal,
+                preparedLines,
+                false,
+                saleRequest,
+                promotion,
+                kiosk.getId(),
+                saleDate
+        );
+
+        return KioskPosPromotionEstimateResponse.builder()
+                .subtotal(subtotal.setScale(2, RoundingMode.HALF_UP))
+                .discountAmount(resolution.discountAmount())
+                .totalAmount(subtotal.subtract(resolution.discountAmount()).max(BigDecimal.ZERO)
+                        .setScale(2, RoundingMode.HALF_UP))
+                .autoApplied(resolution.autoApplied())
+                .promotionId(promotion != null ? promotion.getId() : resolution.promotionId())
+                .promotionName(resolution.promotionName())
+                .manualDiscountPercent(request.getManualDiscountPercent())
+                .build();
+    }
+
     BigDecimal calculatePromotionDiscount(
             BigDecimal subtotal,
             KioskPromotionEntity promotion,
@@ -1075,7 +1130,7 @@ public class KioskPosService {
         }
         String type = normalizeDiscountType(promotion.getDiscountType());
         if ("TIERED_PERCENT".equals(type)) {
-            return calculateTieredPercentDiscount(subtotal, promotion, lines);
+            return calculateTieredPercentDiscount(lines, List.of(promotion));
         }
         List<PreparedLine> eligibleLines = filterLinesByPromotionAudience(lines, promotion.getAudienceCategory());
         BigDecimal eligibleSubtotal = eligibleLines.stream()
@@ -1100,22 +1155,16 @@ public class KioskPosService {
         return value.max(BigDecimal.ZERO).min(eligibleSubtotal).setScale(2, RoundingMode.HALF_UP);
     }
 
-    BigDecimal calculateTieredPercentDiscount(
-            BigDecimal subtotal,
-            KioskPromotionEntity promotion,
-            List<PreparedLine> lines
-    ) {
-        Map<String, BigDecimal> tierMap = loadTierMap(promotion);
-        if (tierMap.isEmpty() || lines == null || lines.isEmpty()) {
+    BigDecimal calculateTieredPercentDiscount(List<PreparedLine> lines, List<KioskPromotionEntity> promotions) {
+        if (lines == null || lines.isEmpty() || promotions == null || promotions.isEmpty()) {
             return BigDecimal.ZERO;
         }
         BigDecimal discount = BigDecimal.ZERO;
         for (PreparedLine line : lines) {
-            if (line.product() == null) {
+            if (!isDiscountEligibleProduct(line.product())) {
                 continue;
             }
-            String audience = ProductAudienceCategory.normalizeProductAudience(line.product().getAudienceCategory());
-            BigDecimal pct = tierMap.getOrDefault(audience, BigDecimal.ZERO);
+            BigDecimal pct = resolveBestTierPercentForLine(line, promotions);
             if (pct.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
@@ -1123,26 +1172,159 @@ public class KioskPosService {
                     .multiply(pct)
                     .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP));
         }
-        return discount.max(BigDecimal.ZERO).min(subtotal).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal maxDiscount = lines.stream()
+                .map(PreparedLine::lineTotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return discount.max(BigDecimal.ZERO).min(maxDiscount).setScale(2, RoundingMode.HALF_UP);
     }
 
-    private Map<String, BigDecimal> loadTierMap(KioskPromotionEntity promotion) {
+    private DiscountResolution resolveSaleDiscount(
+            BigDecimal subtotal,
+            List<PreparedLine> lines,
+            boolean exchangeSale,
+            KioskPosSaleRequest request,
+            KioskPromotionEntity selectedPromotion,
+            Long kioskId,
+            LocalDate saleDate
+    ) {
+        if (exchangeSale) {
+            BigDecimal discount = request.getExchangeCreditAmount().min(subtotal).setScale(2, RoundingMode.HALF_UP);
+            return new DiscountResolution(discount, null, buildExchangePromotionName(request.getExchangeSlipNumber()), false);
+        }
+        if (request.getManualDiscountPercent() != null
+                && request.getManualDiscountPercent().compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal pct = request.getManualDiscountPercent().max(BigDecimal.ZERO).min(new BigDecimal("100"));
+            BigDecimal eligibleSubtotal = eligibleDiscountSubtotal(lines);
+            BigDecimal discount = eligibleSubtotal.multiply(pct)
+                    .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
+            return new DiscountResolution(
+                    discount,
+                    null,
+                    resolvePromotionDisplayName(null, pct),
+                    false
+            );
+        }
+        if (selectedPromotion != null) {
+            BigDecimal discount = calculatePromotionDiscount(subtotal, selectedPromotion, lines);
+            return new DiscountResolution(
+                    discount,
+                    selectedPromotion.getId(),
+                    resolvePromotionDisplayName(selectedPromotion, null),
+                    false
+            );
+        }
+        BigDecimal autoDiscount = calculateTieredPercentDiscount(lines, loadActiveTieredPromotions(kioskId, saleDate));
+        if (autoDiscount.compareTo(BigDecimal.ZERO) <= 0) {
+            return new DiscountResolution(BigDecimal.ZERO, null, null, false);
+        }
+        return new DiscountResolution(autoDiscount, null, "Promoción automática", true);
+    }
+
+    private BigDecimal resolveBestTierPercentForLine(PreparedLine line, List<KioskPromotionEntity> promotions) {
+        BigDecimal best = BigDecimal.ZERO;
+        for (KioskPromotionEntity promotion : promotions) {
+            if (!"TIERED_PERCENT".equals(normalizeDiscountType(promotion.getDiscountType()))) {
+                continue;
+            }
+            for (KioskPromotionTierEntity tier : loadTierEntities(promotion)) {
+                if (!tierMatchesLine(line, tier)) {
+                    continue;
+                }
+                BigDecimal value = tier.getDiscountValue() != null ? tier.getDiscountValue() : BigDecimal.ZERO;
+                if (value.compareTo(best) > 0) {
+                    best = value;
+                }
+            }
+        }
+        return best;
+    }
+
+    private boolean tierMatchesLine(PreparedLine line, KioskPromotionTierEntity tier) {
+        ProductEntity product = line.product();
+        if (product == null || tier == null || tier.getCategoryId() == null) {
+            return false;
+        }
+        if (!isDiscountEligibleProduct(product)) {
+            return false;
+        }
+        if (!Objects.equals(product.getCategoryId(), tier.getCategoryId())) {
+            return false;
+        }
+        return ProductAudienceCategory.productMatchesPromotion(
+                product.getAudienceCategory(),
+                tier.getAudienceCategory()
+        );
+    }
+
+    private List<KioskPromotionEntity> loadActiveTieredPromotions(Long kioskId, LocalDate saleDate) {
+        return kioskPromotionRepository.findByActiveTrueOrderByNameAsc().stream()
+                .filter(promotion -> isPromotionActiveOnDate(promotion, saleDate))
+                .filter(promotion -> "TIERED_PERCENT".equals(normalizeDiscountType(promotion.getDiscountType())))
+                .filter(promotion -> promotion.getKioskLocationId() == null
+                        || Objects.equals(promotion.getKioskLocationId(), kioskId))
+                .collect(Collectors.toList());
+    }
+
+    private List<KioskPromotionTierEntity> loadTierEntities(KioskPromotionEntity promotion) {
         List<KioskPromotionTierEntity> tiers = promotion.getTiers();
         if ((tiers == null || tiers.isEmpty()) && promotion.getId() != null) {
             tiers = kioskPromotionTierRepository.findByPromotionIdOrderByAudienceCategoryAsc(promotion.getId());
         }
-        Map<String, BigDecimal> map = new LinkedHashMap<>();
-        if (tiers == null) {
-            return map;
+        return tiers != null ? tiers : List.of();
+    }
+
+    private BigDecimal eligibleDiscountSubtotal(List<PreparedLine> lines) {
+        return filterDiscountEligibleLines(lines).stream()
+                .map(PreparedLine::lineTotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private List<PreparedLine> filterDiscountEligibleLines(List<PreparedLine> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return List.of();
         }
-        for (KioskPromotionTierEntity tier : tiers) {
-            String audience = ProductAudienceCategory.normalizeTierAudience(tier.getAudienceCategory());
-            if (audience == null) {
-                continue;
+        return lines.stream()
+                .filter(line -> line.product() != null && isDiscountEligibleProduct(line.product()))
+                .toList();
+    }
+
+    private boolean isDiscountEligibleProduct(ProductEntity product) {
+        return product != null && !isPackagingProduct(product);
+    }
+
+    private List<PreparedLine> buildPreparedLinesForEstimate(
+            Long kioskId,
+            List<KioskPosPromotionEstimateRequest.ItemRequest> items
+    ) throws BusinessException, ResourceNotFoundException {
+        List<PreparedLine> preparedLines = new ArrayList<>();
+        for (KioskPosPromotionEstimateRequest.ItemRequest itemRequest : items) {
+            if (itemRequest == null || itemRequest.getProductId() == null) {
+                throw new BusinessException("Todos los renglones deben tener producto.");
             }
-            map.put(audience, tier.getDiscountValue() != null ? tier.getDiscountValue() : BigDecimal.ZERO);
+            BigDecimal quantity = itemRequest.getQuantity();
+            if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BusinessException("La cantidad debe ser mayor a cero para todos los productos.");
+            }
+            ProductEntity product = productRepository.findById(itemRequest.getProductId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
+            ColorEntity color = null;
+            if (itemRequest.getColorId() != null) {
+                color = colorRepository.findById(itemRequest.getColorId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Color", itemRequest.getColorId()));
+            }
+            String sizeLabel = ProductInventorySizesJson.normalizeKey(itemRequest.getSize());
+            BigDecimal unitPrice = resolvePosUnitPrice(product);
+            BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+            preparedLines.add(new PreparedLine(
+                    product,
+                    color,
+                    sizeLabel.isEmpty() ? null : sizeLabel,
+                    quantity,
+                    unitPrice,
+                    lineTotal
+            ));
         }
-        return map;
+        return preparedLines;
     }
 
     private List<PreparedLine> filterLinesByPromotionAudience(List<PreparedLine> lines, String promotionAudience) {
@@ -1150,9 +1332,9 @@ public class KioskPosService {
             return List.of();
         }
         return lines.stream()
-                .filter(line -> line.product() != null
-                        && ProductAudienceCategory.productMatchesPromotion(
-                                line.product().getAudienceCategory(), promotionAudience))
+                .filter(line -> line.product() != null && isDiscountEligibleProduct(line.product()))
+                .filter(line -> ProductAudienceCategory.productMatchesPromotion(
+                        line.product().getAudienceCategory(), promotionAudience))
                 .toList();
     }
 
@@ -1442,6 +1624,7 @@ public class KioskPosService {
                 .map(tier -> KioskPromotionTierEntity.builder()
                         .promotion(promotion)
                         .audienceCategory(ProductAudienceCategory.normalizeTierAudience(tier.getAudienceCategory()))
+                        .categoryId(tier.getCategoryId())
                         .discountValue(tier.getDiscountValue() != null ? tier.getDiscountValue() : BigDecimal.ZERO)
                         .build())
                 .collect(Collectors.toList());
@@ -1744,9 +1927,13 @@ public class KioskPosService {
         if (tiers == null || tiers.isEmpty()) {
             return List.of();
         }
+        Map<Long, String> categoryNames = productCategoryRepository.findAll().stream()
+                .collect(Collectors.toMap(ProductCategoryEntity::getId, ProductCategoryEntity::getName, (a, b) -> a));
         return tiers.stream()
                 .map(tier -> KioskPromotionTierResponse.builder()
                         .audienceCategory(ProductAudienceCategory.normalizeTierAudience(tier.getAudienceCategory()))
+                        .categoryId(tier.getCategoryId())
+                        .categoryName(categoryNames.get(tier.getCategoryId()))
                         .discountValue(tier.getDiscountValue())
                         .build())
                 .collect(Collectors.toList());
@@ -1818,9 +2005,9 @@ public class KioskPosService {
     private void validateTieredPromotion(KioskPromotionRequest request) throws BusinessException {
         List<KioskPromotionTierRequest> tiers = request.getTiers();
         if (tiers == null || tiers.isEmpty()) {
-            throw new BusinessException("Debe indicar al menos un porcentaje por línea.");
+            throw new BusinessException("Debe indicar al menos un porcentaje por línea y categoría.");
         }
-        Set<String> audiences = new HashSet<>();
+        Set<String> tierKeys = new HashSet<>();
         boolean hasPositive = false;
         for (KioskPromotionTierRequest tier : tiers) {
             if (tier == null) {
@@ -1830,8 +2017,15 @@ public class KioskPosService {
             if (audience == null) {
                 throw new BusinessException("Línea de promoción inválida. Use DAMA, CABALLERO o UNISEX.");
             }
-            if (!audiences.add(audience)) {
-                throw new BusinessException("No puede repetir la misma línea en una promoción por línea.");
+            if (tier.getCategoryId() == null) {
+                throw new BusinessException("Debe indicar la categoría de producto para cada tier.");
+            }
+            if (!productCategoryRepository.existsById(tier.getCategoryId())) {
+                throw new BusinessException("La categoría seleccionada no existe.");
+            }
+            String tierKey = audience + ":" + tier.getCategoryId();
+            if (!tierKeys.add(tierKey)) {
+                throw new BusinessException("No puede repetir la misma audiencia y categoría en una promoción.");
             }
             BigDecimal value = tier.getDiscountValue() != null ? tier.getDiscountValue() : BigDecimal.ZERO;
             if (value.compareTo(BigDecimal.ZERO) < 0 || value.compareTo(new BigDecimal("100")) > 0) {
@@ -2148,6 +2342,13 @@ public class KioskPosService {
     private String safeTrim(String value) {
         return value == null ? "" : value.trim();
     }
+
+    record DiscountResolution(
+            BigDecimal discountAmount,
+            Long promotionId,
+            String promotionName,
+            boolean autoApplied
+    ) {}
 
     record PreparedLine(
             ProductEntity product,

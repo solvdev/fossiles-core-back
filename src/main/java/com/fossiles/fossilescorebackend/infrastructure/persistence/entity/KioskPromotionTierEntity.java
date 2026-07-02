@@ -11,7 +11,7 @@ import java.math.BigDecimal;
 @Entity
 @Table(
         name = "kiosk_promotion_tier",
-        uniqueConstraints = @UniqueConstraint(columnNames = {"promotion_id", "audience_category"})
+        uniqueConstraints = @UniqueConstraint(columnNames = {"promotion_id", "audience_category", "category_id"})
 )
 @Data
 @Builder
@@ -28,6 +28,9 @@ public class KioskPromotionTierEntity {
 
     @Column(name = "audience_category", length = 20, nullable = false)
     private String audienceCategory;
+
+    @Column(name = "category_id", nullable = false)
+    private Long categoryId;
 
     @Column(name = "discount_value", precision = 12, scale = 2, nullable = false)
     private BigDecimal discountValue;
