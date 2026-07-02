@@ -1,0 +1,62 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Build JAR (bootJar, sin tests)
+        run: ./gradlew clean bootJar -x test
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.BACK_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Detener servicio antes de transferir
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
+            "sudo systemctl stop fossiles-core-backend.service"
+
+      - name: Transferir JAR (rsync)
+        run: |
+          rsync -avz -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            build/libs/fossiles-core-backend.jar \
+            ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }}:/backs/fossiles-core-backend.jar
+
+      - name: Iniciar servicio
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
+            "sudo systemctl start fossiles-core-backend.service"
+
+      - name: Verificar estado del servicio
+        run: |
+          sleep 15
+          STATUS=$(ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
+            "systemctl is-active fossiles-core-backend.service || true")
+          echo "Estado: $STATUS"
+          if [ "$STATUS" != "active" ]; then
+            echo "::error::El servicio no quedó activo, mostrando ultimos logs"
+            ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
+              "sudo journalctl -u fossiles-core-backend.service -n 50 --no-pager"
+            exit 1
+          fi
