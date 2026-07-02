@@ -207,7 +207,7 @@ class KioskExchangeServiceTest {
                         .givenQuantity(BigDecimal.ONE)
                         .build()))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("completadas");
+                .hasMessageContaining("anulada");
     }
 
     @Test
