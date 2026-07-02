@@ -23,7 +23,9 @@ jobs:
           cache: gradle
 
       - name: Build JAR (bootJar, sin tests)
-        run: ./gradlew clean bootJar -x test
+        run: |
+          chmod +x ./gradlew
+          ./gradlew clean bootJar -x test
 
       - name: Setup SSH key
         run: |
