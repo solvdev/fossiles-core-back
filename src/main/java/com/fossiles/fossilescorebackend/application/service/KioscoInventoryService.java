@@ -111,7 +111,7 @@ public class KioscoInventoryService {
             Long referenceId,
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
-        return registrarDevolucionDeposito(locationId, productId, colorId, quantity, referenceId, userId, null);
+        return registrarDevolucionDeposito(locationId, productId, colorId, quantity, referenceId, userId, null, null, null);
     }
 
     public KioscoStockResponse registrarDevolucionDeposito(
@@ -121,8 +121,11 @@ public class KioscoInventoryService {
             Integer quantity,
             Long referenceId,
             Long userId,
-            String sizeKey
+            String sizeKey,
+            String physicalSlipNumber,
+            String reason
     ) throws BusinessException, ResourceNotFoundException {
+        String trimmedReason = safeTrim(reason);
         return applyStockMovement(
                 locationId,
                 productId,
@@ -135,9 +138,10 @@ public class KioscoInventoryService {
                 KioscoMovementType.DEVOLUCION_DEPOSITO,
                 -quantity,
                 true,
-                null,
+                trimmedReason.isEmpty() ? null : trimmedReason,
                 sizeKey,
-                true
+                true,
+                physicalSlipNumber
         );
     }
 

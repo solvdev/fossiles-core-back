@@ -401,7 +401,7 @@ public class KioskExchangeService {
                 slipNumber
         );
 
-        String status = Boolean.TRUE.equals(request.getApto()) ? STATUS_PENDING_REINTEGRO : STATUS_COMPLETED;
+        String status = STATUS_COMPLETED;
         KioskExchangeSlipEntity slip = KioskExchangeSlipEntity.builder()
                 .slipNumber(slipNumber)
                 .slipType(SLIP_TYPE_RETURN)
@@ -419,7 +419,7 @@ public class KioskExchangeService {
                 .reason(safeTrim(request.getReason()))
                 .observations(safeTrim(request.getObservations()))
                 .createdBy(ctx.user().getId())
-                .completedAt(STATUS_COMPLETED.equals(status) ? GuatemalaDateTime.now() : null)
+                .completedAt(GuatemalaDateTime.now())
                 .build();
         slip = exchangeSlipRepository.save(slip);
         return toSlipResponse(slip, ctx);

@@ -90,7 +90,10 @@ public class KioscoInventoryController {
                 request.getColorId(),
                 request.getQuantity(),
                 request.getReferenceId(),
-                request.getUserId()
+                request.getUserId(),
+                request.getSizeKey(),
+                request.getPhysicalSlipNumber(),
+                request.getReason()
         ));
     }
 

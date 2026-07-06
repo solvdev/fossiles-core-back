@@ -22,6 +22,15 @@ public class KioscoInventoryDevolucionDepositoRequest {
     @Min(value = 1, message = "La cantidad debe ser mayor a cero.")
     private Integer quantity;
 
+    /** Talla cuando el producto maneja inventario por talla (cinchos FOSS). */
+    private String sizeKey;
+
+    /** Número de boleta física de respaldo. */
+    private String physicalSlipNumber;
+
+    /** Motivo u observación del movimiento. */
+    private String reason;
+
     private Long referenceId;
 
     private Long userId;
