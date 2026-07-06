@@ -44,9 +44,13 @@ public class KioscoPhysicalCountItemEntity {
     @Column(name = "color_id")
     private Long colorId;
 
-    /** JSON ubicacion → cantidad; mismo patron que KioscoStockEntity.sizesData. */
+    /** JSON ubicacion → cantidad; claves V1..V7, E, BO. */
     @Column(name = "counts_data", columnDefinition = "TEXT")
     private String countsData;
+
+    /** JSON talla → cantidad fisica (cinchos); mismo patron que KioscoStockEntity.sizesData. */
+    @Column(name = "size_counts_data", columnDefinition = "TEXT")
+    private String sizeCountsData;
 
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;

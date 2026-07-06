@@ -114,7 +114,9 @@ public class KioscoInventoryCountService {
             if (req.getProductId() == null) {
                 throw new BusinessException("productId es obligatorio en cada conteo.");
             }
-            Map<String, BigDecimal> normalized = normalizeCounts(req.getCounts());
+            Map<String, BigDecimal> normalized = req.getCounts() != null
+                    ? normalizeCounts(req.getCounts())
+                    : null;
             KioscoPhysicalCountItemEntity item = itemRepository
                     .findByCountIdAndProductIdAndColorId(countId, req.getProductId(), req.getColorId())
                     .orElseGet(() -> KioscoPhysicalCountItemEntity.builder()
@@ -122,7 +124,16 @@ public class KioscoInventoryCountService {
                             .productId(req.getProductId())
                             .colorId(req.getColorId())
                             .build());
-            item.setCountsData(ProductInventorySizesJson.serializeIncludingZeros(normalized));
+            if (normalized != null) {
+                item.setCountsData(ProductInventorySizesJson.serializeIncludingZeros(normalized));
+            }
+            if (req.getPhysicalSizes() != null) {
+                item.setSizeCountsData(ProductInventorySizesJson.serializeIncludingZeros(
+                        normalizePhysicalSizes(req.getPhysicalSizes())));
+            }
+            if (normalized == null && req.getPhysicalSizes() == null) {
+                continue;
+            }
             item.setUpdatedBy(userId);
             itemRepository.save(item);
         }
@@ -276,10 +287,12 @@ public class KioscoInventoryCountService {
             Map<String, BigDecimal> countedValues = item != null
                     ? ProductInventorySizesJson.parse(item.getCountsData())
                     : Map.of();
+            Map<String, Integer> physicalSizes = toSystemSizesMap(item != null ? item.getSizeCountsData() : null);
 
             KioscoStockEntity stock = stockByKey.get(itemKey(kardexRow.getProductId(), kardexRow.getColorId()));
             Map<String, Integer> systemSizes = toSystemSizesMap(stock != null ? stock.getSizesData() : null);
             String sizesSummary = formatSizesSummary(systemSizes);
+            String physicalSizesSummary = formatSizesSummary(physicalSizes);
 
             Map<String, Integer> counts = new LinkedHashMap<>();
             int total = 0;
@@ -301,7 +314,9 @@ public class KioscoInventoryCountService {
                     .cinchoType(product != null ? ProductCinchoType.normalizeCinchoType(product.getCinchoType()) : null)
                     .packaging(ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()))
                     .systemSizes(systemSizes.isEmpty() ? null : systemSizes)
+                    .physicalSizes(physicalSizes.isEmpty() ? null : physicalSizes)
                     .sizesSummary(sizesSummary)
+                    .physicalSizesSummary(physicalSizesSummary)
                     .inventarioInicial(kardexRow.getInventarioInicial())
                     .comprasAjustes(kardexRow.getComprasAjustes())
                     .anulacionCompras(kardexRow.getAnulacionCompras())
@@ -405,6 +420,28 @@ public class KioscoInventoryCountService {
             int value = entry.getValue() != null ? entry.getValue() : 0;
             if (value < 0) {
                 throw new BusinessException("El conteo de " + key + " no puede ser negativo.");
+            }
+            normalized.put(key, BigDecimal.valueOf(value));
+        }
+        return normalized;
+    }
+
+    private Map<String, BigDecimal> normalizePhysicalSizes(Map<String, Integer> raw) throws BusinessException {
+        Map<String, BigDecimal> normalized = new LinkedHashMap<>();
+        if (raw == null) {
+            return normalized;
+        }
+        for (Map.Entry<String, Integer> entry : raw.entrySet()) {
+            String key = ProductInventorySizesJson.normalizeKey(entry.getKey());
+            if (key.isEmpty()) {
+                continue;
+            }
+            if (COUNT_LOCATION_KEYS.contains(key)) {
+                throw new BusinessException("La talla '" + key + "' coincide con una ubicacion de conteo; use otro valor.");
+            }
+            int value = entry.getValue() != null ? entry.getValue() : 0;
+            if (value < 0) {
+                throw new BusinessException("El conteo de talla " + key + " no puede ser negativo.");
             }
             normalized.put(key, BigDecimal.valueOf(value));
         }

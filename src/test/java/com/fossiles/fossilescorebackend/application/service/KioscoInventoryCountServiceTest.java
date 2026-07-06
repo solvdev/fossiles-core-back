@@ -198,6 +198,64 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
+    void upsertItems_guardaDesglosePorTalla() throws Exception {
+        KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
+                .id(countId)
+                .locationId(locationId)
+                .periodFrom(from)
+                .periodTo(to)
+                .status(KioscoPhysicalCountStatus.DRAFT)
+                .generatedBy(userId)
+                .build();
+        when(countRepository.findById(countId)).thenReturn(Optional.of(count));
+        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(kardexRow(10)));
+
+        AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
+        when(itemRepository.findByCountIdAndProductIdAndColorId(countId, productId, colorId)).thenReturn(Optional.empty());
+        when(itemRepository.save(any(KioscoPhysicalCountItemEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountItemEntity item = inv.getArgument(0);
+            if (item.getId() == null) {
+                item.setId(900L);
+            }
+            savedItemRef.set(item);
+            return item;
+        });
+        when(itemRepository.findByCountId(countId)).thenAnswer(inv -> {
+            KioscoPhysicalCountItemEntity saved = savedItemRef.get();
+            return saved != null ? List.of(saved) : List.of();
+        });
+
+        KioscoPhysicalCountItemUpsertRequest request = KioscoPhysicalCountItemUpsertRequest.builder()
+                .productId(productId)
+                .colorId(colorId)
+                .counts(java.util.Map.of("BO", 5))
+                .physicalSizes(java.util.Map.of("28", 2, "30", 3))
+                .build();
+
+        KioscoPhysicalCountReportResponse report = service.upsertItems(countId, List.of(request));
+
+        KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow row = report.getCategories().get(0).getRows().get(0);
+        assertThat(row.getPhysicalSizes()).containsEntry("28", 2).containsEntry("30", 3);
+        assertThat(row.getPhysicalSizesSummary()).contains("28: 2");
+        assertThat(savedItemRef.get().getSizeCountsData()).contains("30");
+    }
+
+    @Test
+    void upsertItems_falla_siTallaNegativa() {
+        KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder().id(countId).locationId(locationId).build();
+        when(countRepository.findById(countId)).thenReturn(Optional.of(count));
+        KioscoPhysicalCountItemUpsertRequest request = KioscoPhysicalCountItemUpsertRequest.builder()
+                .productId(productId)
+                .colorId(colorId)
+                .physicalSizes(java.util.Map.of("28", -1))
+                .build();
+
+        assertThatThrownBy(() -> service.upsertItems(countId, List.of(request)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("talla");
+    }
+
+    @Test
     void upsertItems_falla_siConteoNegativo() {
         KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder().id(countId).locationId(locationId).build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));

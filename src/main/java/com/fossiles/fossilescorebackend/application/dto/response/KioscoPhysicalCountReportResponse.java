@@ -69,8 +69,12 @@ public class KioscoPhysicalCountReportResponse {
         private boolean packaging;
         /** Desglose por talla en inventario kiosko (cinchos). */
         private Map<String, Integer> systemSizes;
+        /** Conteo fisico capturado por talla (cinchos). */
+        private Map<String, Integer> physicalSizes;
         /** Texto legible del desglose por talla, p. ej. "28: 2 · 30: 5". */
         private String sizesSummary;
+        /** Texto legible del conteo fisico por talla. */
+        private String physicalSizesSummary;
         private int inventarioInicial;
         private int comprasAjustes;
         private int anulacionCompras;

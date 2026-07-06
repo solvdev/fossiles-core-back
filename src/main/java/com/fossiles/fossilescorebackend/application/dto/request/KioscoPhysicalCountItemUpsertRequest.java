@@ -16,4 +16,6 @@ public class KioscoPhysicalCountItemUpsertRequest {
     private Long colorId;
     /** Conteo por ubicacion: claves fijas V1..V7, E, BO. */
     private Map<String, Integer> counts;
+    /** Conteo fisico por talla (cinchos). */
+    private Map<String, Integer> physicalSizes;
 }
