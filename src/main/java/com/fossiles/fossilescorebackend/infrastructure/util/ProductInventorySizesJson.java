@@ -153,4 +153,61 @@ public final class ProductInventorySizesJson {
         }
         return m;
     }
+
+    /** {@code {"E":{"28":2},"BO":{"30":1}}} para conteo cincho FOSS por vitrina/bodega. */
+    public static Map<String, Map<String, BigDecimal>> parseByLocation(String json) {
+        if (json == null || json.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Map<String, Map<String, Object>> raw = MAPPER.readValue(json, new TypeReference<>() {});
+            Map<String, Map<String, BigDecimal>> out = new LinkedHashMap<>();
+            for (Map.Entry<String, Map<String, Object>> locEntry : raw.entrySet()) {
+                if (locEntry.getKey() == null || locEntry.getValue() == null) {
+                    continue;
+                }
+                String locKey = locEntry.getKey().trim().toUpperCase();
+                if (locKey.isEmpty()) {
+                    continue;
+                }
+                Map<String, BigDecimal> sizes = new LinkedHashMap<>();
+                for (Map.Entry<String, Object> sizeEntry : locEntry.getValue().entrySet()) {
+                    String sizeKey = normalizeKey(sizeEntry.getKey());
+                    if (sizeKey.isEmpty()) {
+                        continue;
+                    }
+                    sizes.put(sizeKey, toBd(sizeEntry.getValue()));
+                }
+                out.put(locKey, sizes);
+            }
+            return out;
+        } catch (JsonProcessingException e) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    public static String serializeByLocation(Map<String, Map<String, BigDecimal>> byLocation) {
+        if (byLocation == null || byLocation.isEmpty()) {
+            return null;
+        }
+        Map<String, Map<String, BigDecimal>> cleaned = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, BigDecimal>> locEntry : byLocation.entrySet()) {
+            if (locEntry.getKey() == null || locEntry.getValue() == null) {
+                continue;
+            }
+            Map<String, BigDecimal> sizes = normalizeAdjustmentSizeMap(locEntry.getValue());
+            removeZeroEntries(sizes);
+            if (!sizes.isEmpty()) {
+                cleaned.put(locEntry.getKey().trim().toUpperCase(), sizes);
+            }
+        }
+        if (cleaned.isEmpty()) {
+            return null;
+        }
+        try {
+            return MAPPER.writeValueAsString(cleaned);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("No se pudo serializar size_location_counts_data", e);
+        }
+    }
 }

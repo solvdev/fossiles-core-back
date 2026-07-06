@@ -61,6 +61,7 @@ import java.util.stream.Collectors;
 public class KioscoInventoryCountService {
 
     private static final List<String> COUNT_LOCATION_KEYS = List.of("V1", "V2", "V3", "V4", "V5", "V6", "V7", "E", "BO");
+    private static final List<String> CINCHO_SIZE_LOCATION_KEYS = List.of("E", "BO");
     private static final String UNCATEGORIZED_LABEL = "Sin categoría";
 
     /** Diferencia absoluta minima (unidades) para considerar un producto como discrepancia relevante. */
@@ -131,7 +132,11 @@ public class KioscoInventoryCountService {
                 item.setSizeCountsData(ProductInventorySizesJson.serializeIncludingZeros(
                         normalizePhysicalSizes(req.getPhysicalSizes())));
             }
-            if (normalized == null && req.getPhysicalSizes() == null) {
+            if (req.getPhysicalSizesByLocation() != null) {
+                item.setSizeLocationCountsData(ProductInventorySizesJson.serializeByLocation(
+                        normalizePhysicalSizesByLocation(req.getPhysicalSizesByLocation())));
+            }
+            if (normalized == null && req.getPhysicalSizes() == null && req.getPhysicalSizesByLocation() == null) {
                 continue;
             }
             item.setUpdatedBy(userId);
@@ -288,6 +293,8 @@ public class KioscoInventoryCountService {
                     ? ProductInventorySizesJson.parse(item.getCountsData())
                     : Map.of();
             Map<String, Integer> physicalSizes = toSystemSizesMap(item != null ? item.getSizeCountsData() : null);
+            Map<String, Map<String, Integer>> physicalSizesByLocation = toPhysicalSizesByLocationMap(
+                    item != null ? item.getSizeLocationCountsData() : null);
 
             KioscoStockEntity stock = stockByKey.get(itemKey(kardexRow.getProductId(), kardexRow.getColorId()));
             Map<String, Integer> systemSizes = toSystemSizesMap(stock != null ? stock.getSizesData() : null);
@@ -315,6 +322,7 @@ public class KioscoInventoryCountService {
                     .packaging(ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()))
                     .systemSizes(systemSizes.isEmpty() ? null : systemSizes)
                     .physicalSizes(physicalSizes.isEmpty() ? null : physicalSizes)
+                    .physicalSizesByLocation(physicalSizesByLocation)
                     .sizesSummary(sizesSummary)
                     .physicalSizesSummary(physicalSizesSummary)
                     .inventarioInicial(kardexRow.getInventarioInicial())
@@ -446,6 +454,43 @@ public class KioscoInventoryCountService {
             normalized.put(key, BigDecimal.valueOf(value));
         }
         return normalized;
+    }
+
+    private Map<String, Map<String, BigDecimal>> normalizePhysicalSizesByLocation(
+            Map<String, Map<String, Integer>> raw
+    ) throws BusinessException {
+        Map<String, Map<String, BigDecimal>> normalized = new LinkedHashMap<>();
+        if (raw == null) {
+            return normalized;
+        }
+        for (Map.Entry<String, Map<String, Integer>> locEntry : raw.entrySet()) {
+            String locKey = locEntry.getKey() == null ? "" : locEntry.getKey().trim().toUpperCase(Locale.ROOT);
+            if (!CINCHO_SIZE_LOCATION_KEYS.contains(locKey)) {
+                throw new BusinessException("Ubicacion de cincho invalida: " + locEntry.getKey()
+                        + ". Solo se admite E (vitrina) o BO (bodega).");
+            }
+            Map<String, BigDecimal> sizes = normalizePhysicalSizes(locEntry.getValue());
+            normalized.put(locKey, sizes);
+        }
+        return normalized;
+    }
+
+    private Map<String, Map<String, Integer>> toPhysicalSizesByLocationMap(String json) {
+        Map<String, Map<String, Integer>> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, BigDecimal>> locEntry
+                : ProductInventorySizesJson.parseByLocation(json).entrySet()) {
+            Map<String, Integer> sizes = new LinkedHashMap<>();
+            for (Map.Entry<String, BigDecimal> sizeEntry : locEntry.getValue().entrySet()) {
+                int qty = sizeEntry.getValue() != null ? sizeEntry.getValue().intValue() : 0;
+                if (qty > 0) {
+                    sizes.put(sizeEntry.getKey(), qty);
+                }
+            }
+            if (!sizes.isEmpty()) {
+                out.put(locEntry.getKey(), sizes);
+            }
+        }
+        return out.isEmpty() ? null : out;
     }
 
     private String itemKey(Long productId, Long colorId) {

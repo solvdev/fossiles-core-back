@@ -52,6 +52,10 @@ public class KioscoPhysicalCountItemEntity {
     @Column(name = "size_counts_data", columnDefinition = "TEXT")
     private String sizeCountsData;
 
+    /** JSON ubicacion cincho (E, BO) → talla → cantidad fisica (FOSS). */
+    @Column(name = "size_location_counts_data", columnDefinition = "TEXT")
+    private String sizeLocationCountsData;
+
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 

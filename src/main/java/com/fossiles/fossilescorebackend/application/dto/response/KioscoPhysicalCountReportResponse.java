@@ -71,6 +71,8 @@ public class KioscoPhysicalCountReportResponse {
         private Map<String, Integer> systemSizes;
         /** Conteo fisico capturado por talla (cinchos). */
         private Map<String, Integer> physicalSizes;
+        /** FOSS: desglose por vitrina (E) y bodega (BO) → talla → cantidad. */
+        private Map<String, Map<String, Integer>> physicalSizesByLocation;
         /** Texto legible del desglose por talla, p. ej. "28: 2 · 30: 5". */
         private String sizesSummary;
         /** Texto legible del conteo fisico por talla. */
