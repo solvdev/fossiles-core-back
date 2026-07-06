@@ -34,6 +34,9 @@ public final class KioskAccessHelper {
         if (normalizedRoleName.contains("ADMIN")) {
             return true;
         }
+        if (normalizedRoleName.contains("SUPERVIS") && normalizedRoleName.contains("KIOSKO")) {
+            return true;
+        }
         return LOGISTICS_ROLE_TOKENS.stream().anyMatch(normalizedRoleName::contains);
     }
 

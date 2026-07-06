@@ -15,6 +15,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEn
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoNotificationRecipientRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
@@ -51,6 +52,8 @@ class KioscoInventoryCountServiceTest {
     private KioscoNotificationRecipientRepository notificationRecipientRepository;
     @Mock
     private KioscoInventoryService kioscoInventoryService;
+    @Mock
+    private KioscoStockRepository kioscoStockRepository;
     @Mock
     private LocationRepository locationRepository;
     @Mock
@@ -93,6 +96,7 @@ class KioscoInventoryCountServiceTest {
         when(productCategoryRepository.findAllById(any())).thenReturn(List.of(ProductCategoryEntity.builder()
                 .id(categoryId).code("TARJ").name("Tarjeteros").build()));
         when(itemRepository.findByCountId(any())).thenReturn(List.of());
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of());
     }
 
     private KioscoKardexReportResponse.KioscoKardexRow kardexRow(int inventarioFinal) {

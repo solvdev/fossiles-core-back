@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.KioskCashExpenseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionCloseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeRejectRequest;
@@ -13,7 +14,9 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSalePaym
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCashExpenseResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionDailySummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCustomerProfileResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskExchangeCompleteResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskExchangePreviewResponse;
@@ -241,6 +244,30 @@ public class KioskPosController {
             @RequestBody KioskCashSessionCloseRequest request
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskPosService.closeCashSession(id, request));
+    }
+
+    @GetMapping("/cash-session/{id}/expenses")
+    public ResponseEntity<List<KioskCashExpenseResponse>> listCashExpenses(
+            @PathVariable Long id
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.listCashExpenses(id));
+    }
+
+    @PostMapping("/cash-session/{id}/expenses")
+    public ResponseEntity<KioskCashExpenseResponse> addCashExpense(
+            @PathVariable Long id,
+            @Valid @RequestBody KioskCashExpenseRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.addCashExpense(id, request));
+    }
+
+    @GetMapping("/cash-session/daily-summary")
+    public ResponseEntity<List<KioskCashSessionDailySummaryResponse>> getCashSessionDailySummaries(
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.getCashSessionDailySummaries(kioskLocationId, startDate, endDate));
     }
 
     @GetMapping("/exchanges")

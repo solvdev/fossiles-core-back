@@ -1,22 +1,25 @@
-# Manual del POS Kiosko Fossiles
+# Manual del Kiosko Fossiles
 
-**Para encargadas, cajeras y administradores**  
+**Para encargadas, cajeras, supervisoras y administradores**  
 Guía sencilla — sin tecnicismos.
+
+> **Solo Ventas del Kiosko (encargada/cajera):** [`MANUAL-VENTAS-KIOSKO-USUARIO.md`](./MANUAL-VENTAS-KIOSKO-USUARIO.md)
 
 ---
 
 ## ¿Qué es esto?
 
-El sistema te ayuda a **vender en el kiosko**, **controlar la caja**, **ver cuánto hay en inventario** y **recibir mercadería** que viene del almacén.
+El sistema te ayuda a **vender en el kiosko**, **controlar la caja**, **ver y mover inventario**, **recibir mercadería del almacén**, y gestionar **devoluciones y cambios** con boleta física.
 
-Hay **dos pantallas principales** en el menú:
+### Menú Kioscos (tres pantallas)
 
 | Menú | Para qué sirve |
 |------|----------------|
-| **Ventas del Kiosko** | Vender, cobrar, abrir/cerrar caja, ver reportes del día |
-| **Inventario del Kiosko** | Ajustes de stock, traslados, mermas, conteos físicos (uso administrativo) |
+| **Ventas del Kiosko** | POS, caja, reportes, recibir distribución, consulta rápida de stock |
+| **Inventario del Kiosko** | Stock, movimientos, kardex, conteo físico, traslados (supervisora / admin) |
+| **Devoluciones / Reintegros** | Boletas de cambio, devoluciones simples, reintegros a bodega, autorizaciones |
 
-Dentro de **Ventas del Kiosko** también hay una pestaña **Inventario** (consulta rápida). No es lo mismo que el módulo completo de inventario; abajo te explicamos la diferencia.
+Dentro de **Ventas del Kiosko** hay una pestaña **Inventario** (solo consulta). No es lo mismo que el módulo completo **Inventario del Kiosko**.
 
 ---
 
@@ -24,291 +27,238 @@ Dentro de **Ventas del Kiosko** también hay una pestaña **Inventario** (consul
 
 ### ¿Quién ve qué?
 
-- **Encargada del kiosko:** ve solo su kiosko. Puede vender, manejar caja e inventario de consulta.
-- **Administrador:** puede cambiar de kiosko con el selector de arriba y crear **Promociones**.
+| Rol | Qué puede hacer |
+|-----|-----------------|
+| **Encargada del kiosko** | Ve solo su kiosko: vender, caja, reportes, recibir envíos, devoluciones/cambios de su local |
+| **Supervisora de kiosko** | Ve **todos** los kioskos: inventario, distribución, ajustes, reportes, autorizar algunos procesos |
+| **Administrador** | Todo lo anterior + promociones, selector de kiosko, configuración |
+| **Logística** | Autoriza **cambios sin diferencia de precio** (pestaña Autorizaciones pendientes) |
 
 ### Lo más importante
 
-1. **Sin caja abierta no se puede vender.** Siempre abre caja al iniciar el turno.
+1. **Sin caja abierta no se puede vender.** Abre caja al iniciar el turno.
 2. **Cada venta rebaja el inventario** del kiosko automáticamente.
 3. **CF** = Consumidor Final (cliente sin NIT). Es lo más común en ventas al mostrador.
+4. **Boleta física obligatoria** en traslados, devoluciones y cambios (número pre-impreso; el sistema no lo genera solo).
 
 ---
 
 # Parte 1 — Ventas del Kiosko
 
-Ruta en el menú: **Ventas del Kiosko**
+Ruta: **Kioscos → Ventas del Kiosko**
 
-Al entrar verás arriba:
-- El **nombre del kiosko** (o un selector si eres admin).
+Al entrar verás:
+- Nombre del **kiosko** (o selector si eres admin/supervisora).
 - Tu **nombre**.
-- Si la caja está **abierta** (verde) o **cerrada** (gris).
-- A veces un aviso amarillo de **depósitos pendientes** (falta registrar la boleta del banco).
+- Estado de **caja** (abierta / cerrada).
+- Aviso de **depósitos pendientes** si aplica.
 
-Debajo están las **pestañas**.
+**Pestañas:** Resumen · POS · Caja · Inventario · Recibir distribución · Reportes · Promociones (solo admin)
 
 ---
 
 ## Pestaña: Resumen
 
-Muestra cómo van las ventas del kiosko en números grandes:
+Muestra ventas del kiosko en números grandes:
 
-- **Hoy** — cuánto se vendió hoy y cuántas ventas.
-- Comparación con el **mismo día del año pasado**.
+- **Hoy** — monto y cantidad de ventas (vs mismo día año anterior).
 - **Mes en curso** y **mes anterior**.
 
-Abajo hay una tabla **Ventas por día** con efectivo, tarjeta, depósitos pendientes, etc.
+Tabla **Ventas por día** (mes actual):
 
-**Úsala cuando:** quieras ver de un vistazo si el kiosko va bien, sin vender nada.
+| Columna | Significado |
+|---------|-------------|
+| Ventas / Unidades / Total | Resumen de ventas del día |
+| **Efectivo** | Cobrado en efectivo (POS) |
+| **Gastos** | Salidas de caja registradas ese día |
+| **Dif. caja** | Diferencia al cerrar caja (si ya cerró ese día) |
+| Tarjeta | Cobrado con tarjeta |
+| Depósitos pendientes | Ventas en efectivo sin boleta de banco |
+| Anuladas / Prueba | Control interno |
+
+**Úsala cuando:** quieras ver de un vistazo cómo va el kiosko sin vender.
 
 ---
 
-## Pestaña: POS (la pantalla de venta)
+## Pestaña: POS (venta)
 
-Aquí es donde **se vende**. Tiene tres zonas: catálogo, carrito y (abajo) consulta de stock en otros kioskos.
+Tres zonas: **catálogo**, **carrito**, **consulta stock en otros kioskos**.
 
-### Paso 1 — Verifica que la caja esté abierta
+### Antes de vender
 
-Si ves el mensaje *"Debes abrir caja antes de registrar ventas"*, ve a la pestaña **Caja** y ábrela (explicado más abajo).
+Caja **abierta**. Si no: pestaña **Caja → Abrir caja — Q300**.
 
-### Paso 2 — Buscar y filtrar productos
+### Buscar productos
 
-**Barra de búsqueda:** escribe código, nombre o color.
+- Barra de búsqueda: código, nombre, color.
+- Filtros: Productos/Empaques, Categoría, Línea (Dama/Caballero/Unisex), Color.
 
-**Filtros (botones/chips):**
+### Agregar al carrito
 
-| Filtro | Qué hace |
-|--------|----------|
-| **Productos / Empaques** | Productos normales o empaques de regalo (códigos SUM-) |
-| **Categoría** | Billeteras, bolsos, accesorios, etc. |
-| **Línea** | Dama, Caballero o Unisex |
-| **Color** | Negro, café, rojo, etc. |
+- Toca el **color** en la tarjeta del producto.
+- **Talla** (cinchos): elige talla en la ventana.
+- Color **gris** = sin stock.
+- Empaques **SUM-**: solo si hay stock; **sin descuento**.
 
-Toca un chip otra vez para **quitar** el filtro.
+### Carrito y cobro
 
-### Paso 3 — Agregar al carrito
+- Subtotal, descuento (automático o manual), total.
+- **Cobrar** → ventana de cobro (NIT, promoción, forma de pago).
+- Promociones automáticas aplican solas; botones 10/15/20% para casos excepcionales.
 
-- Toca el **color** del producto en la tarjeta.
-- Aparece un número en el chip = cantidad en el carrito.
-- Si el color está **gris o deshabilitado**, no hay stock.
-- Si dice **"Talla"** (cinchos): toca, elige la talla en la ventana y se agrega al carrito.
+### Formas de pago
 
-**Empaques:** solo se venden si hay stock en el kiosko.
+| Método | Qué registrar |
+|--------|----------------|
+| **Efectivo** | Monto recibido → calcula cambio |
+| **Tarjeta** | Autorización + últimos 4 dígitos |
+| **Mixto** | Parte efectivo + parte tarjeta |
 
-### Paso 4 — Revisar el carrito (lado derecho)
+### Consultar otro kiosko
 
-- Cambia la **cantidad** con el cuadro numérico.
-- **Quitar** elimina la línea.
-- Ves **Subtotal**, **Descuento** (si hay promoción vigente o automática) y **Total**.
-- Si hay promoción automática que aplica a los productos del carrito, verás **"Descuento automático aplicado"** sin tener que elegir nada.
-- **"¿Hay promoción? Aplicar descuento"** abre la pantalla de cobro para elegir un descuento manual (10/15/20% u otra promoción).
-- **"Cobrar Q…"** — botón principal para cobrar.
-- **"Cancelar venta"** — vacía el carrito.
-
-### Paso 5 — Cobrar
-
-Se abre la ventana **"Cobrar venta"**.
-
-#### Cliente / factura
-
-| Campo | Qué poner |
-|-------|-----------|
-| **NIT / CF** | Escribe `CF` para consumidor final, o el NIT del cliente |
-| **Consultar NIT** | Si escribiste un NIT válido, busca el nombre automáticamente |
-| **Nombre en factura** | Se llena solo al consultar NIT, o queda "CONSUMIDOR FINAL" |
-| **Emitir factura electrónica (CF)** | Marca solo si el cliente quiere factura aunque sea CF |
-
-#### Promoción
-
-- Las promociones **vigentes** se aplican **solas** en caja (% , monto fijo, combo y por audiencia + categoría). No hace falta seleccionarlas en cada venta.
-- Si varias promos califican, el sistema usa la que más descuento da al cliente.
-- Los **empaques (códigos SUM-)** nunca tienen descuento, ni automático ni manual.
-- Para casos excepcionales, usa botones rápidos: **10% OFF**, **15% OFF**, **20% OFF** (solo sobre productos, no empaques).
-- O busca una promoción guardada escribiendo en el selector (ej. "Liquidación") para **forzar** una campaña concreta.
-- Verás **"Descuento aplicado: -Q…"** antes de confirmar.
-
-**Promoción "Por línea":** el administrador define tiers con **audiencia + categoría + %** (ej. Caballero · Billeteras · 15%). El sistema calcula el descuento por producto según su línea y categoría.
-
-#### Forma de pago
-
-Elige **Efectivo**, **Tarjeta** o **Mixto**.
-
-**Efectivo:**
-- Escribe cuánto te dio el cliente.
-- Atajos: **EXACTO**, **+50**, **+100**, **+200**, **+500**.
-- Abajo aparece el **Cambio**.
-
-**Tarjeta:**
-- Número de **autorización** (del voucher).
-- **Últimos 4 dígitos** de la tarjeta.
-
-**Mixto:** parte en efectivo y parte en tarjeta; indica ambos montos.
-
-#### Confirmar
-
-- **"Confirmar Q…"** — registra la venta.
-- Si pide **correo para factura electrónica**, escríbelo o usa "Certificar sin correo".
-- Pantalla de éxito: **"Venta registrada"** con número de venta, total y cambio.
-- **"Nueva venta"** — listo para el siguiente cliente.
-
-### Consultar stock en otro kiosko
-
-Abajo en la pestaña POS:
-
-1. Busca el **producto / color**.
-2. Toca **Consultar**.
-3. Ves una tabla con otros kioskos y cuánto tienen.
-
-Útil cuando un cliente pregunta *"¿lo tienen en el otro local?"*
+Abajo en POS: busca producto/color → **Consultar** → tabla con stock en otros locales.
 
 ---
 
 ## Pestaña: Caja
 
-### Abrir caja (inicio del turno)
+### Abrir caja
 
-1. Toca **"Abrir caja — Q300"**.
-2. El fondo inicial es **Q300** (dinero base en el cajón).
-3. Aparece **"Caja abierta"** arriba en verde.
+**Abrir caja — Q300** → fondo inicial Q300 en el cajón.
 
-### Durante el turno
+### Durante el turno — Cuadre de efectivo
 
-Ves un resumen:
-- Ventas registradas
-- Efectivo y tarjeta en ventas
-- Efectivo esperado en caja
+El sistema calcula:
 
-Si hay ventas en efectivo sin boleta de depósito, verás una **alerta amarilla**.
+```
+Efectivo esperado = Q300 (fondo)
+                  + efectivo en ventas del turno
+                  − gastos registrados
+```
 
-### Cerrar caja (fin del turno)
+En pantalla ves:
+- Fondo inicial, efectivo en ventas, **gastos del turno**, **efectivo esperado**.
+- Ventas en tarjeta (no van al cajón de efectivo).
 
-1. Idealmente registra antes las **boletas de depósito** pendientes (pestaña Reportes).
-2. Toca **"Cerrar caja"**.
-3. Cuenta el **efectivo físico** real en el cajón.
-4. El sistema muestra si hay **diferencia** respecto a lo esperado.
-5. Puedes escribir **notas** (ej. "faltaron Q5 en monedas").
-6. **"Confirmar cierre"**.
+### Registrar gastos de efectivo
 
-Después de cerrar **no podrás vender** hasta abrir caja de nuevo.
+Si la encargada **gasta** del fondo (compras menores, etc.):
+
+1. Pestaña **Caja**.
+2. Sección **Registrar gasto de efectivo**.
+3. **Monto** + **Descripción** (obligatoria).
+4. **Agregar gasto**.
+
+Los gastos aparecen en una tabla y **restan** del efectivo esperado. Así al cerrar cuadra lo que hay vs lo que debería haber.
+
+### Cerrar caja
+
+1. Registra **boletas de depósito** pendientes (Reportes) si aplica.
+2. **Cerrar caja**.
+3. Cuenta el **efectivo físico** real.
+4. El sistema muestra **diferencia** (contado − esperado): sobra o falta.
+5. Notas opcionales → **Confirmar cierre**.
+
+Después de cerrar **no se vende** hasta abrir caja de nuevo.
 
 ---
 
-## Pestaña: Inventario (dentro de Ventas)
+## Pestaña: Inventario (consulta en Ventas)
 
-**Solo consulta** — no mueve stock manualmente.
+**Solo lectura** — no mueve stock.
 
-- Busca por código, nombre, categoría, color o talla.
-- Filtra: todos / stock bajo / sin stock.
-- Tabla por producto y color con cantidades y estado (**Normal**, **Stock bajo**, **Sin stock**).
+- Busca por código, nombre, categoría, color, talla.
+- Filtros: todos / stock bajo / sin stock.
+- Estados: Normal, Stock bajo, Sin stock.
 
-**Úsala cuando:** quieras revisar rápido qué hay en el kiosko mientras vendes.
-
-> Para ajustes, traslados o conteos formales, usa el menú **Inventario del Kiosko** (Parte 2).
+Para **ajustes, traslados o conteos**, usa **Inventario del Kiosko** (Parte 2).
 
 ---
 
 ## Pestaña: Recibir distribución
 
-*(Solo si tu usuario tiene permiso)*
+Cuando el almacén **envía mercadería**:
 
-Cuando el almacén **envía mercadería** al kiosko:
+1. Envíos en estado **pendientes** (destino = tu kiosko).
+2. **Revisar y confirmar** cada envío.
+3. Compara cantidad enviada vs recibida; anota faltantes.
+4. **Recibir todo conforme** o **Confirmar recepción** con cantidades parciales.
 
-1. Verás envíos **pendientes**.
-2. Toca **"Revisar y confirmar"** en cada envío.
-3. Revisa producto, color, cantidad enviada vs recibida.
-4. Si falta algo, anota en la **nota de la línea** o en **observación general**.
-5. **"Recibir todo conforme"** si todo llegó bien.
-6. **"Confirmar recepción"**.
+Tras confirmar, el stock **ya se puede vender** en POS.
 
-Después de confirmar, esos productos **ya se pueden vender** en el POS.
+*(Encargada: recepción simple desde aquí. Supervisora: también puede usar **Distribución → Confirmación de recepción** con más detalle.)*
 
 ---
 
 ## Pestaña: Reportes de ventas
 
-### Ver ventas
+### Filtrar ventas
 
-- Elige **fechas** (Inicio / Fin) y **Aplicar filtro**.
-- Filtro **Boleta depósito:** Todas o **Pendientes**.
-- Tabla con cada venta: fecha, número, cliente, pago, total, factura, depósito.
+- Fechas **Inicio / Fin** → **Aplicar filtro**.
+- Filtro **Boleta depósito:** Todas o Pendientes.
+- Toca una fila → **detalle** de la venta.
 
-Toca una fila para ver **detalle completo**.
+### Cuadre con caja (turno abierto)
 
-### Boleta de depósito (efectivo al banco)
+Si la caja está abierta, verás un recuadro **Cuadre de caja (turno abierto)** comparando:
+- Efectivo en ventas del turno (caja).
+- Gastos registrados.
+- Efectivo esperado.
 
-Cuando cobras en **efectivo**, el dinero debe depositarse y registrar la boleta:
+Compara con la columna **Efectivo** de las ventas del filtro.
 
-1. En reportes, busca ventas con badge **Pendiente** en depósito.
-2. Abre la venta o toca **"Boleta"**.
-3. Escribe el **número de boleta** del banco.
-4. **"Registrar boleta"**.
+### Boleta de depósito
 
-### Anular una venta (error)
+Ventas en **efectivo** → depositar en banco → registrar número de boleta en la venta (badge **Pendiente**).
 
-Solo si **la caja sigue abierta** y es una venta del **mismo turno**:
+### Anular venta
 
-1. Abre la venta en reportes.
-2. **"Anular venta"**.
-3. Escribe el **motivo** (obligatorio).
-4. Confirma.
+Solo con **caja abierta** y venta del **mismo turno**:
+Detalle → **Anular venta** → motivo obligatorio. El stock **regresa** al kiosko.
 
-El inventario **vuelve al kiosko** y, si había factura electrónica, se anula también.
+### Exportar
+
+Botones **Excel** y **PDF** del listado filtrado.
 
 ---
 
 ## Pestaña: Promociones (solo administrador)
 
-Aquí se **crean** las campañas de descuento. La cajera las **aplica al cobrar**, no aquí.
+Crear campañas de descuento:
 
-### Tipos de promoción
+| Tipo | Uso |
+|------|-----|
+| **Porcentaje (%)** | Descuento global o por línea |
+| **Porcentaje por línea** | Tiers: audiencia + categoría + % |
+| **Monto fijo (Q)** | Resta quetzales |
+| **Combo (2x1)** | Lleva X, paga Y |
 
-| Tipo | Significado | Ejemplo |
-|------|-------------|---------|
-| **Porcentaje (%)** | Descuento % a todo o a una línea | 15% en productos Dama |
-| **Porcentaje por línea** | Tiers con audiencia + categoría + % | Caballero · Billeteras · 15%; Dama · Bolsos dama · 10% |
-| **Monto fijo (Q)** | Resta un monto en quetzales | Q50 de descuento |
-| **Combo (2x1)** | Lleva X unidades, paga Y | Lleva 2, paga 1 |
-
-### Campos al crear
-
-- **Nombre** — cómo la verá la cajera (ej. "Liquidación marzo").
-- **Kiosko** — vacío = aplica a todos; o elige uno solo.
-- **Línea** — (solo en % simple) todas, Dama o Caballero.
-- **Tiers** — (solo en "Porcentaje por línea") agrega filas con audiencia, categoría y %. Al menos una fila con % mayor a cero.
-- **Inicio / Fin** — fechas de vigencia (opcional).
-- **Crear promoción**.
-
-Los selectores se pueden **buscar escribiendo** (tipo, kiosko, línea).
+Campos: nombre, kiosko (vacío = todos), fechas vigencia, línea/tiers.
 
 ---
 
-## Tu día en 5 pasos (resumen ventas)
+## Tu día en 6 pasos (encargada)
 
 ```
-1. Abrir caja          → pestaña Caja
-2. Vender              → pestaña POS
-3. Cobrar              → botón Cobrar → Confirmar
-4. Depósitos           → Reportes → registrar boletas
-5. Cerrar caja         → pestaña Caja → Cerrar
+1. Abrir caja           → Caja
+2. Vender               → POS
+3. Registrar gastos     → Caja (si gastaste efectivo)
+4. Depósitos banco      → Reportes → boletas
+5. Devoluciones/cambios → Devoluciones / Reintegros (si aplica)
+6. Cerrar caja          → Caja → contar efectivo y confirmar
 ```
 
 ---
 
 # Parte 2 — Inventario del Kiosko
 
-Ruta en el menú: **Inventario del Kiosko**
+Ruta: **Kioscos → Inventario del Kiosko**
 
-Pantalla para **personal autorizado** que necesita mover stock, corregir diferencias o hacer conteos. La cajera normal **no** usa esto en el día a día; las ventas del POS ya rebajan stock solas.
+Para **supervisora, logística o administración**. La encargada normal **no** usa esto en el día a día (el POS rebaja stock solo).
 
-Tiene **3 pestañas:**
+**3 pestañas:** Inventario y movimientos · Kardex (periodo) · Conteo físico
 
-| Pestaña | Para qué |
-|---------|----------|
-| **Inventario y movimientos** | Ver stock y registrar entradas, salidas, traslados, etc. |
-| **Kardex (periodo)** | Historial contable por fechas |
-| **Conteo físico** | Contar mercadería real vs sistema |
-
-Primero elige el **Kiosko para consulta** (puedes buscar escribiendo).
+Elige primero el **Kiosko para consulta** (buscador arriba).
 
 ---
 
@@ -316,82 +266,209 @@ Primero elige el **Kiosko para consulta** (puedes buscar escribiendo).
 
 ### Ver stock
 
-Con un kiosko seleccionado, la tabla muestra:
-- Producto, color, cantidad **actual**, **mínimo**, estado (**Normal** / **Bajo** en rojo).
+Tabla: producto, color, cantidad **actual**, **mínimo**, estado (Normal / Bajo).
 
-Filtros arriba de la tabla: **Todo**, **Productos**, **Empaques**.
+Filtros: Todo · Productos · Empaques.
 
-### Registrar un movimiento (formulario izquierdo)
-
-Elige **Operación** y completa los campos. Luego **"Registrar movimiento"**.
+### Registrar movimiento (formulario izquierdo)
 
 | Operación | Cuándo usarla |
 |-----------|---------------|
-| **Entrada de stock** | Llegó mercadería que no vino por distribución, o ajuste manual |
-| **Venta** | Registrar venta fuera del POS (caso excepcional) |
-| **Cambio de producto** | Cliente devuelve uno y recibe otro |
-| **Devolución a depósito** | Producto regresa al depósito/bodega |
-| **Devolución de cliente** | Cliente devuelve producto; indicas si está apto para reventa |
-| **Traslado entre kioskos** | Mueves unidades de un kiosko a otro — **obligatorio** número de boleta física de traslado |
-| **Merma** | Pérdida, daño, robo — baja stock con motivo |
-| **Ajuste por conteo físico** | Tras contar, indicas la **cantidad real** y el sistema corrige |
-| **Anulación de factura** | Reversa stock por anulación; indicas si el producto salió del kiosko |
+| **Entrada de stock** | Mercadería que no vino por distribución |
+| **Venta** | Venta fuera del POS (excepcional) |
+| **Cambio de producto** | Cambio manual en kardex (preferir módulo Devoluciones) |
+| **Devolución a depósito** | Producto regresa a bodega |
+| **Devolución de cliente** | Cliente devuelve; indicar si apto |
+| **Traslado entre kioskos** | Mueve stock — **boleta física obligatoria** |
+| **Merma** | Daño, pérdida, robo |
+| **Ajuste por conteo físico** | Tras contar, indicas cantidad real |
+| **Anulación de factura** | Reversa por anulación FEL |
 
-Siempre indica **producto**, **color** (si aplica) y **cantidad**.
+Completa producto, color, cantidad (y talla en cinchos). **Registrar movimiento**.
 
 ### Historial
 
-Abajo aparece **"Historial de movimientos"** — lo último que pasó en ese kiosko.
+Abajo: **Historial de movimientos** del kiosko seleccionado.
 
-### Botón "Generar inventario en kioskos"
+Referencia en kardex: prioriza **número de boleta física** cuando existe.
 
-Solo administración técnica: crea registros de stock inicial. **No lo uses** en operación normal sin indicación.
+### Generar inventario en kioskos
+
+Solo administración técnica (stock inicial). No usar en operación normal sin indicación.
 
 ---
 
 ## Kardex (periodo)
 
-Para ver **entradas, ventas y salidas** de un rango de fechas:
-
 1. Pestaña **Kardex (periodo)**.
-2. Elige kiosko (desde el selector general arriba).
-3. Fechas **Desde** / **Hasta**.
-4. Genera el reporte.
-5. Filtra por producto, línea, tipo de movimiento, etc.
-6. Toca una fila para ver el detalle de movimientos.
+2. Kiosko + fechas **Desde / Hasta**.
+3. Generar reporte.
+4. Filtrar por producto, línea, tipo de movimiento.
+5. Detalle por fila.
 
-Útil para auditorías o cuadres con contabilidad.
+Para auditoría y cuadre con contabilidad.
 
 ---
 
 ## Conteo físico
 
-Para cuando **cuentas la mercadería real** en el kiosko y la comparas con el sistema:
-
 1. Pestaña **Conteo físico**.
-2. Elige **Desde** y **Hasta** (periodo del conteo).
-3. **"Abrir conteo"** — crea una sesión nueva.
-4. Cuenta por ubicación (V1, V2, … vitrinas, bodega, etc.) y llena las cantidades.
-5. **Guardar** según avances.
-6. **Marcar como revisado** cuando termines de contar.
-7. **Cerrar conteo** cuando esté cuadrado o documentado.
+2. Periodo **Desde / Hasta**.
+3. **Abrir conteo** → sesión nueva.
+4. Cuenta por ubicación (V1…V7, vitrinas, bodega).
+5. **Guardar** · **Marcar como revisado** · **Cerrar conteo**.
+6. Exportar **Excel / PDF**.
 
-Puedes **exportar a Excel o PDF**.
-
-Si hay diferencias grandes, el sistema puede alertar a correos configurados en **"Destinatarios de alertas"**.
+Diferencias grandes → alertas a correos en **Destinatarios de alertas**.
 
 ---
 
-# ¿Cuál inventario uso?
+# Parte 3 — Devoluciones / Reintegros
+
+Ruta: **Kioscos → Devoluciones / Reintegros**
+
+Gestiona **devoluciones simples** y **boletas de cambio** con trazabilidad. Siempre necesitas el **número de boleta física** impresa.
+
+Botones principales:
+- **Boleta de cambio** — cliente devuelve un producto y recibe otro.
+- **Devolución** — cliente devuelve sin comprar otro producto en el acto.
+
+Elige **Kiosko** arriba (encargada: suele ser solo el suyo).
+
+### Pestañas
+
+| Pestaña | Contenido |
+|---------|-----------|
+| **Boletas de cambio** | Historial de cambios (número, venta orig., productos, diferencia, estado) |
+| **Devoluciones** | Devoluciones simples registradas |
+| **Reintegros pendientes** | Productos aptos devueltos que aún no regresaron a bodega PT |
+| **Autorizaciones pendientes** | Solo logística/supervisora — cambios sin cobro pendientes de aprobar |
+
+---
+
+## Devolución simple
+
+Asistente **Devolución**:
+
+1. **Número de venta POS** original → Buscar.
+2. Elige la **línea** devuelta y cantidad.
+3. **¿Apto para reventa?** Sí / No.
+4. **Motivo** (obligatorio).
+5. **Número de boleta física** de devolución (obligatorio).
+6. Confirmar → imprime comprobante.
+
+**Si apto:** queda **Pendiente reintegro** — el producto entró al kiosko pero debe **reintegrarse** a Bodega PT (pestaña Reintegros pendientes → **Reintegrar**).
+
+**Si no apto:** queda completado (no reventa).
+
+El stock del kiosko **sube** al registrar la devolución.
+
+---
+
+## Boleta de cambio
+
+Asistente **Boleta de cambio** (4 pasos):
+
+### Paso 1 — Venta original
+
+Número de venta POS → **Buscar**.
+
+### Paso 2 — Qué devuelve el cliente
+
+Selecciona **línea** de la venta y **cantidad devuelta**.
+
+### Paso 3 — Qué entrega el kiosko
+
+Busca producto nuevo con stock → elige fila (producto, color, talla si es cincho).
+
+### Paso 4 — Resumen
+
+Ves tres bloques:
+
+| Bloque | Significado |
+|--------|-------------|
+| **INGRESO** | Producto devuelto — valor a crédito (precio que pagó el cliente) |
+| **EGRESO** | Producto nuevo — valor de salida |
+| **DIFERENCIA** | EGRESO − INGRESO (lo que cobras o Q 0.00) |
+
+**Número de boleta física de cambio** (obligatorio).
+
+---
+
+### Reglas de precio en cambios
+
+El sistema usa el **precio realmente pagado** en la venta original (incluye descuentos de promoción).
+
+| Caso | Diferencia de precio |
+|------|----------------------|
+| **Mismo producto** (fallo, defecto, mismo código) | **Q 0.00** — aunque el catálogo haya subido o hubo descuento |
+| **Cincho — solo cambio de talla** | **Q 0.00** — conserva lo que pagó con descuento |
+| **Producto diferente** | Diferencia = precio catálogo del nuevo − precio pagado del devuelto |
+
+---
+
+### Cambio CON diferencia de precio (diferencia > Q 0.00)
+
+1. **Cobrar y confirmar** → cobro como mini-venta POS (efectivo/tarjeta/mixto, NIT, factura si aplica).
+2. Se mueve inventario (ingreso devuelto + egreso nuevo).
+3. Estado **Completado**.
+4. **Imprimir** boleta desde la lista.
+
+---
+
+### Cambio SIN diferencia (diferencia = Q 0.00)
+
+1. **No hay cobro ni facturación.**
+2. Indica **motivo** (ej. cambio de talla, fallo de fábrica).
+3. **Enviar solicitud de cambio**.
+4. Estado **Pendiente autorización**.
+5. **Logística** (pestaña Autorizaciones pendientes) → **Autorizar** o **Rechazar**.
+6. Al autorizar: inventario se mueve y pasa a **Completado**.
+
+---
+
+## Reintegro a bodega
+
+Devoluciones **aptas** quedan en **Reintegros pendientes**:
+
+1. Pestaña **Reintegros pendientes**.
+2. **Reintegrar** en la fila correspondiente.
+3. El producto sale del kiosko hacia **Bodega PT** (devolución depósito).
+
+---
+
+## Autorizaciones (logística / supervisora)
+
+Pestaña **Autorizaciones pendientes**:
+
+- Lista cambios sin diferencia esperando aprobación.
+- **Autorizar** — aplica movimiento de inventario.
+- **Rechazar** — indica motivo; no mueve stock.
+
+---
+
+## Impresión
+
+En las listas de boletas de cambio y devoluciones: botón **Imprimir** para reimprimir el comprobante.
+
+---
+
+# ¿Qué pantalla uso?
 
 | Necesito… | Dónde voy |
 |-----------|-----------|
-| Ver si hay stock mientras vendo | Ventas del Kiosko → pestaña **Inventario** |
-| Vender y que baje solo | Ventas del Kiosko → pestaña **POS** |
-| Recibir cajas del almacén | Ventas del Kiosko → **Recibir distribución** |
-| Trasladar a otro kiosko, merma, ajuste | **Inventario del Kiosko** → movimientos |
-| Conteo mensual formal | **Inventario del Kiosko** → **Conteo físico** |
-| Ver historial contable | **Inventario del Kiosko** → **Kardex** |
+| Vender | Ventas → **POS** |
+| Abrir/cerrar caja, gastos, cuadre | Ventas → **Caja** |
+| Ver ventas del día / depósitos | Ventas → **Reportes** o **Resumen** |
+| Consulta rápida de stock | Ventas → **Inventario** |
+| Recibir cajas del almacén | Ventas → **Recibir distribución** |
+| Cambio de producto con boleta | **Devoluciones / Reintegros** → Boleta de cambio |
+| Devolución sin compra nueva | **Devoluciones / Reintegros** → Devolución |
+| Reintegrar a bodega | **Devoluciones / Reintegros** → Reintegros pendientes |
+| Autorizar cambio sin cobro | **Devoluciones / Reintegros** → Autorizaciones pendientes |
+| Traslado, merma, ajuste | **Inventario del Kiosko** → movimientos |
+| Conteo mensual | **Inventario del Kiosko** → Conteo físico |
+| Historial contable | **Inventario del Kiosko** → Kardex |
 
 ---
 
@@ -400,69 +477,58 @@ Si hay diferencias grandes, el sistema puede alertar a correos configurados en *
 **¿Por qué no me deja vender?**  
 Caja cerrada. Abre caja en la pestaña Caja.
 
-**¿Por qué un producto no aparece o está gris?**  
-Sin stock en ese color (o talla). Revisa Inventario o consulta otro kiosko.
+**¿Por qué un producto está gris en POS?**  
+Sin stock en ese color o talla.
 
 **¿Qué pongo en NIT?**  
 `CF` para la mayoría de ventas al público.
 
-**¿Cuándo uso promoción "Por línea"?**  
-Cuando una campaña tiene distintos descuentos según **audiencia y categoría** del producto. El sistema las aplica automáticamente; el cajero solo elige manualmente si quiere **forzar** otra promo o usar 10/15/20%.
+**¿Qué es depósito pendiente?**  
+Vendiste en efectivo y falta registrar la boleta del banco.
 
-**¿Qué es "depósito pendiente"?**  
-Vendiste en efectivo y aún no registraste la boleta del depósito bancario.
+**¿Puedo anular la venta de ayer?**  
+No desde POS si ya cerraste caja. Solo ventas del turno actual con caja abierta.
 
-**¿Puedo anular ayer?**  
-No desde aquí si ya cerraste caja. Anulaciones son del turno actual con caja abierta.
+**¿Debo registrar gastos de caja?**  
+Sí, si sacaste efectivo del fondo (Q300 o ventas). Si no los registras, al cerrar caja parecerá que **falta dinero**.
 
-**¿Qué es modo piloto?**  
-Algunos kioskos en prueba: las ventas se ven localmente pero **no cuentan** en reportes generales de la empresa.
+**¿Cómo cuadra el efectivo?**  
+Esperado = Q300 + ventas efectivo − gastos. Al cerrar, comparas con el conteo físico.
 
-**¿Los empaques SUM- tienen descuento?**  
-No. Los empaques nunca reciben descuento (ni promoción automática ni botones 10/15/20%).
+**Cambio de cincho por talla con descuento — cobro diferencia?**  
+No. Mismo precio pagado → diferencia Q 0.00 → solicitud y autorización logística.
 
-**¿Los empaques SUM-?**  
-Son bolsas/cajas de regalo. Se venden como producto aparte si hay stock.
+**Mismo producto por fallo — cobro diferencia?**  
+No. Diferencia Q 0.00 aunque hubiera descuento en la venta original.
 
----
+**¿Empaques SUM- tienen descuento?**  
+No.
 
-# Boletas físicas y autorización de cambios
+**¿Modo piloto?**  
+Algunos kioskos en prueba: ventas locales que no suman en reportes generales.
 
-Para trazabilidad y auditoría, el sistema exige el **número de la boleta física pre-impresa** (no se genera automáticamente):
-
-| Operación | Dónde se captura |
-|-----------|------------------|
-| **Traslado** (inventario kiosko o bodega) | Formulario de traslado |
-| **Devolución simple** | Asistente de devolución |
-| **Boleta de cambio** | Resumen antes de confirmar |
-
-### Cambio sin diferencia de precio
-
-Si el producto nuevo cuesta **igual** que el devuelto (diferencia Q 0.00):
-
-1. **No hay cobro ni facturación.**
-2. La cajera envía **solicitud de cambio** con boleta física y motivo.
-3. **Logística** autoriza en *Devoluciones / Reintegros → Autorizaciones pendientes*.
-4. Al autorizar, el sistema mueve inventario (ingreso + egreso) vinculado a la boleta física.
-
-Permisos de logística: `KIOSCOS.CAMBIOS.AUTORIZAR.VER` y `KIOSCOS.CAMBIOS.AUTORIZAR.APROBAR`.
+**¿Quién autoriza cambios sin cobro?**  
+Usuario con permiso de logística (pestaña Autorizaciones pendientes).
 
 ---
 
-# Glosario rápido
+# Glosario
 
 | Palabra | Significado |
 |---------|-------------|
 | **POS** | Punto de venta — pantalla donde cobras |
 | **CF** | Consumidor final — sin NIT |
 | **FEL** | Factura electrónica (SAT Guatemala) |
-| **Línea** | Dama, Caballero o Unisex (tipo de producto) |
+| **Línea** | Dama, Caballero o Unisex |
 | **Kardex** | Historial de entradas y salidas de inventario |
 | **Merma** | Pérdida de producto (daño, extravío) |
 | **Boleta de depósito** | Comprobante del banco al depositar efectivo |
-| **Boleta física** | Número del comprobante impreso usado en traslados, devoluciones y cambios |
-| **Turno / sesión de caja** | Desde que abres caja hasta que la cierras |
+| **Boleta física** | Número del comprobante impreso (traslado, devolución, cambio) |
+| **Turno / sesión de caja** | Desde abrir caja hasta cerrarla |
+| **Reintegro** | Enviar producto devuelto (apto) de vuelta a bodega PT |
+| **INGRESO / EGRESO** | En cambio: producto que entra vs producto que sale del kiosko |
+| **Bodega PT** | Bodega de producto terminado |
 
 ---
 
-*Manual para usuarios del POS Kiosko Fossiles. Si algo en pantalla no coincide con este documento, puede haberse actualizado la interfaz — consulta con tu administrador.*
+*Manual del módulo Kiosko Fossiles (Ventas, Inventario, Devoluciones y Cambios). Si algo en pantalla no coincide, consulta con tu administrador.*

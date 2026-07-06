@@ -29,6 +29,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
@@ -486,6 +487,8 @@ public class KioskExchangeService {
             throw new BusinessException("Debes seleccionar el producto nuevo.");
         }
 
+        ProductEntity returnedProduct = productRepository.findById(item.getProductId())
+                .orElseThrow(() -> new ResourceNotFoundException("Product", item.getProductId()));
         ProductEntity givenProduct = productRepository.findById(request.getGivenProductId())
                 .orElseThrow(() -> new ResourceNotFoundException("Product", request.getGivenProductId()));
         ColorEntity givenColor = null;
@@ -498,7 +501,17 @@ public class KioskExchangeService {
             givenSize = null;
         }
 
-        return new ExchangeContext(access, sale, item, returnedQty, givenProduct, givenColor, givenSize, givenQty);
+        return new ExchangeContext(
+                access,
+                sale,
+                item,
+                returnedProduct,
+                returnedQty,
+                givenProduct,
+                givenColor,
+                givenSize,
+                givenQty
+        );
     }
 
     private KioskSaleEntity findSaleByQuery(Long kioskLocationId, String query) throws ResourceNotFoundException {
@@ -804,6 +817,7 @@ public class KioskExchangeService {
             AccessContext access,
             KioskSaleEntity sale,
             KioskSaleItemEntity item,
+            ProductEntity returnedProduct,
             BigDecimal returnedQty,
             ProductEntity givenProduct,
             ColorEntity givenColor,
@@ -815,13 +829,17 @@ public class KioskExchangeService {
         }
 
         private KioskExchangePreviewResponse buildPreview() throws BusinessException {
-            BigDecimal returnedUnitPrice = item.getUnitPrice() != null
-                    ? item.getUnitPrice().setScale(2, RoundingMode.HALF_UP)
-                    : BigDecimal.ZERO;
-            BigDecimal returnedAmount = returnedUnitPrice.multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
-            BigDecimal givenUnitPrice = resolveCatalogUnitPrice(givenProduct);
-            if (givenUnitPrice.compareTo(BigDecimal.ZERO) <= 0) {
-                throw new BusinessException("El producto nuevo no tiene precio de catálogo configurado.");
+            BigDecimal returnedUnitPaid = computeEffectivePaidUnitPrice(sale, item);
+            BigDecimal returnedAmount = returnedUnitPaid.multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
+
+            BigDecimal givenUnitPrice;
+            if (shouldPreservePaidPriceOnExchange(item, returnedProduct, givenProduct)) {
+                givenUnitPrice = returnedUnitPaid;
+            } else {
+                givenUnitPrice = resolveCatalogUnitPrice(givenProduct);
+                if (givenUnitPrice.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new BusinessException("El producto nuevo no tiene precio de catálogo configurado.");
+                }
             }
             BigDecimal givenAmount = givenUnitPrice.multiply(givenQty).setScale(2, RoundingMode.HALF_UP);
             BigDecimal difference = givenAmount.subtract(returnedAmount).setScale(2, RoundingMode.HALF_UP);
@@ -835,7 +853,7 @@ public class KioskExchangeService {
                     .colorName(item.getColorName())
                     .size(returnedSize)
                     .quantity(returnedQty)
-                    .unitPrice(returnedUnitPrice)
+                    .unitPrice(returnedUnitPaid)
                     .lineTotal(returnedAmount)
                     .build();
 
@@ -863,5 +881,69 @@ public class KioskExchangeService {
                     .differenceAmount(difference)
                     .build();
         }
+    }
+
+    /**
+     * Precio unitario realmente pagado en la venta original (reparte descuento de la venta).
+     */
+    static BigDecimal computeEffectivePaidUnitPrice(KioskSaleEntity sale, KioskSaleItemEntity item) {
+        if (item == null) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal qty = item.getQuantity() != null && item.getQuantity().compareTo(BigDecimal.ZERO) > 0
+                ? item.getQuantity()
+                : BigDecimal.ONE;
+        BigDecimal lineSubtotal = item.getLineTotal() != null
+                ? item.getLineTotal()
+                : safeAmount(item.getUnitPrice()).multiply(qty);
+        BigDecimal saleSubtotal = sale != null && sale.getSubtotal() != null
+                && sale.getSubtotal().compareTo(BigDecimal.ZERO) > 0
+                ? sale.getSubtotal()
+                : lineSubtotal;
+        BigDecimal discount = sale != null && sale.getDiscountAmount() != null
+                ? sale.getDiscountAmount()
+                : BigDecimal.ZERO;
+        if (saleSubtotal.compareTo(BigDecimal.ZERO) <= 0) {
+            return safeAmount(item.getUnitPrice()).setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal lineDiscountShare = discount.multiply(lineSubtotal)
+                .divide(saleSubtotal, 6, RoundingMode.HALF_UP);
+        BigDecimal linePaid = lineSubtotal.subtract(lineDiscountShare).max(BigDecimal.ZERO);
+        return linePaid.divide(qty, 2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Mismo producto (fallo/defecto) o cambio de cincho por talla: conservar precio pagado, sin diferencia por descuento.
+     */
+    static boolean shouldPreservePaidPriceOnExchange(
+            KioskSaleItemEntity item,
+            ProductEntity returnedProduct,
+            ProductEntity givenProduct
+    ) {
+        if (item == null || givenProduct == null) {
+            return false;
+        }
+        if (Objects.equals(item.getProductId(), givenProduct.getId())) {
+            return true;
+        }
+        if (!CinchoProductUtils.isFossCinchoProduct(returnedProduct)
+                || !CinchoProductUtils.isFossCinchoProduct(givenProduct)) {
+            return false;
+        }
+        String returnedBase = normalizeCinchoBaseName(returnedProduct, item.getProductName());
+        String givenBase = normalizeCinchoBaseName(givenProduct, givenProduct.getName());
+        return !returnedBase.isBlank() && returnedBase.equals(givenBase);
+    }
+
+    private static String normalizeCinchoBaseName(ProductEntity product, String fallbackName) {
+        String name = stripSizeFromProductName(fallbackName != null ? fallbackName : product.getName());
+        if (name != null && !name.isBlank()) {
+            return safeTrim(name).toUpperCase(Locale.ROOT);
+        }
+        return safeTrim(product != null ? product.getCode() : null).toUpperCase(Locale.ROOT);
+    }
+
+    private static BigDecimal safeAmount(BigDecimal value) {
+        return value != null ? value : BigDecimal.ZERO;
     }
 }

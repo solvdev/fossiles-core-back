@@ -256,6 +256,76 @@ class KioskExchangeServiceTest {
         assertThat(currentStock(originalProduct.getId())).isEqualTo(4);
     }
 
+    @Test
+    void previewExchange_sameProductWithDiscount_hasZeroDifference() throws Exception {
+        KioskPosSaleResponse discountedSale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kiosk.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("90.00"))
+                .manualDiscountPercent(new BigDecimal("50"))
+                .items(List.of(item(originalProduct.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(discountedSale.getId()).get(0);
+
+        KioskExchangePreviewResponse preview = kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(discountedSale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(originalProduct.getId())
+                        .givenColorId(negro.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .build());
+
+        assertThat(preview.getReturnedAmount()).isEqualByComparingTo("90.00");
+        assertThat(preview.getGivenAmount()).isEqualByComparingTo("90.00");
+        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    void previewExchange_cinchoSizeChangeWithDiscount_preservesPaidPrice() throws Exception {
+        ProductEntity cincho = productRepository.save(ProductEntity.builder()
+                .code("FOSS-99")
+                .name("CINCHO FOSS 99")
+                .salePrice(new BigDecimal("200.00"))
+                .build());
+        seedInventory(cincho.getId(), 5);
+
+        KioskPosSaleResponse discountedSale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kiosk.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("160.00"))
+                .manualDiscountPercent(new BigDecimal("20"))
+                .items(List.of(
+                        KioskPosSaleRequest.ItemRequest.builder()
+                                .productId(cincho.getId())
+                                .colorId(negro.getId())
+                                .quantity(BigDecimal.ONE)
+                                .size("34")
+                                .build()))
+                .build());
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(discountedSale.getId()).get(0);
+        saleItem.setProductName("CINCHO FOSS 99 T. 34");
+        saleItemRepository.save(saleItem);
+
+        KioskExchangePreviewResponse preview = kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(discountedSale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(cincho.getId())
+                        .givenColorId(negro.getId())
+                        .givenSize("36")
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .build());
+
+        assertThat(preview.getReturnedAmount()).isEqualByComparingTo("160.00");
+        assertThat(preview.getGivenAmount()).isEqualByComparingTo("160.00");
+        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("0.00");
+    }
+
     private int currentStock(Long productId) {
         return kioscoStockRepository.findByLocationIdAndProductIdAndColorId(kiosk.getId(), productId, negro.getId())
                 .map(KioscoStockEntity::getCurrentStock)

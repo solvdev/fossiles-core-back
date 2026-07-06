@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Data
 @Builder
@@ -32,4 +33,6 @@ public class KioskCashSessionResponse {
     private Integer salesCount;
     private BigDecimal cashSalesTotal;
     private BigDecimal cardSalesTotal;
+    private BigDecimal cashExpensesTotal;
+    private List<KioskCashExpenseResponse> expenses;
 }

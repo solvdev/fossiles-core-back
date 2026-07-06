@@ -14,6 +14,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Kiosco
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountStatus;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductCategoryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
@@ -21,6 +22,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEn
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoNotificationRecipientRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
@@ -32,6 +34,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -67,6 +70,7 @@ public class KioscoInventoryCountService {
     private final KioscoPhysicalCountItemRepository itemRepository;
     private final KioscoNotificationRecipientRepository notificationRecipientRepository;
     private final KioscoInventoryService kioscoInventoryService;
+    private final KioscoStockRepository kioscoStockRepository;
     private final LocationRepository locationRepository;
     private final ProductRepository productRepository;
     private final ProductCategoryRepository productCategoryRepository;
@@ -230,6 +234,10 @@ public class KioscoInventoryCountService {
         Map<String, KioscoPhysicalCountItemEntity> itemsByKey = itemRepository.findByCountId(count.getId()).stream()
                 .collect(Collectors.toMap(i -> itemKey(i.getProductId(), i.getColorId()), i -> i, (a, b) -> a));
 
+        Map<String, KioscoStockEntity> stockByKey = kioscoStockRepository
+                .findByLocationIdOrderByProductIdAscColorIdAsc(count.getLocationId()).stream()
+                .collect(Collectors.toMap(s -> itemKey(s.getProductId(), s.getColorId()), s -> s, (a, b) -> a));
+
         List<Long> productIds = kardexRows.stream()
                 .map(KioscoKardexReportResponse.KioscoKardexRow::getProductId)
                 .distinct()
@@ -252,6 +260,10 @@ public class KioscoInventoryCountService {
         List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> allRows = new ArrayList<>();
 
         for (KioscoKardexReportResponse.KioscoKardexRow kardexRow : kardexRows) {
+            if (!hasAssignedColor(kardexRow)) {
+                continue;
+            }
+
             ProductEntity product = productsById.get(kardexRow.getProductId());
             Long categoryId = product != null ? product.getCategoryId() : null;
             String categoryKey = categoryId != null ? String.valueOf(categoryId) : "NONE";
@@ -264,6 +276,10 @@ public class KioscoInventoryCountService {
             Map<String, BigDecimal> countedValues = item != null
                     ? ProductInventorySizesJson.parse(item.getCountsData())
                     : Map.of();
+
+            KioscoStockEntity stock = stockByKey.get(itemKey(kardexRow.getProductId(), kardexRow.getColorId()));
+            Map<String, Integer> systemSizes = toSystemSizesMap(stock != null ? stock.getSizesData() : null);
+            String sizesSummary = formatSizesSummary(systemSizes);
 
             Map<String, Integer> counts = new LinkedHashMap<>();
             int total = 0;
@@ -284,6 +300,8 @@ public class KioscoInventoryCountService {
                             : ProductAudienceCategory.UNISEX)
                     .cinchoType(product != null ? ProductCinchoType.normalizeCinchoType(product.getCinchoType()) : null)
                     .packaging(ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()))
+                    .systemSizes(systemSizes.isEmpty() ? null : systemSizes)
+                    .sizesSummary(sizesSummary)
                     .inventarioInicial(kardexRow.getInventarioInicial())
                     .comprasAjustes(kardexRow.getComprasAjustes())
                     .anulacionCompras(kardexRow.getAnulacionCompras())
@@ -395,6 +413,45 @@ public class KioscoInventoryCountService {
 
     private String itemKey(Long productId, Long colorId) {
         return productId + ":" + (colorId != null ? colorId : "");
+    }
+
+    private boolean hasAssignedColor(KioscoKardexReportResponse.KioscoKardexRow kardexRow) {
+        if (kardexRow == null || kardexRow.getColorId() == null) {
+            return false;
+        }
+        String colorName = kardexRow.getColorName();
+        return colorName != null && !colorName.isBlank();
+    }
+
+    private Map<String, Integer> toSystemSizesMap(String sizesDataJson) {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        for (Map.Entry<String, BigDecimal> entry : ProductInventorySizesJson.parse(sizesDataJson).entrySet()) {
+            int qty = entry.getValue() != null ? entry.getValue().intValue() : 0;
+            if (qty > 0) {
+                out.put(entry.getKey(), qty);
+            }
+        }
+        return out;
+    }
+
+    private String formatSizesSummary(Map<String, Integer> sizes) {
+        if (sizes == null || sizes.isEmpty()) {
+            return null;
+        }
+        return sizes.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey(this::compareSizeKeys))
+                .map(e -> e.getKey() + ": " + e.getValue())
+                .collect(Collectors.joining(" · "));
+    }
+
+    private int compareSizeKeys(String left, String right) {
+        try {
+            BigDecimal l = new BigDecimal(left.trim());
+            BigDecimal r = new BigDecimal(right.trim());
+            return l.compareTo(r);
+        } catch (NumberFormatException ignored) {
+            return left.compareToIgnoreCase(right);
+        }
     }
 
     private String resolveUsername(Long userId) {

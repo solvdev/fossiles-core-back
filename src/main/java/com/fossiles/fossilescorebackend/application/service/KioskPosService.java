@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.KioskCashExpenseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionCloseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
@@ -9,7 +10,9 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequ
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionTierRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCashExpenseResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionDailySummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPendingDepositSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosContextResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCustomerProfileResponse;
@@ -26,6 +29,7 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskCashExpenseEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskCashSessionEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionTierEntity;
@@ -39,6 +43,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryLocation;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskCashExpenseRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskCashSessionRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionTierRepository;
@@ -99,6 +104,7 @@ public class KioskPosService {
     private final ProductInventoryService productInventoryService;
     private final KioskSaleRepository kioskSaleRepository;
     private final KioskCashSessionRepository kioskCashSessionRepository;
+    private final KioskCashExpenseRepository kioskCashExpenseRepository;
     private final KioskSaleSequenceRepository kioskSaleSequenceRepository;
     private final KioskPromotionRepository kioskPromotionRepository;
     private final KioskPromotionTierRepository kioskPromotionTierRepository;
@@ -2268,7 +2274,14 @@ public class KioskPosService {
                 expected = expected.add(safeAmount(sale.getCashAmount()));
             }
         }
+        BigDecimal expenses = kioskCashExpenseRepository.sumAmountByCashSessionId(session.getId());
+        expected = expected.subtract(safeAmount(expenses));
         return expected.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal sumCashExpenses(Long sessionId) {
+        return safeAmount(kioskCashExpenseRepository.sumAmountByCashSessionId(sessionId))
+                .setScale(2, RoundingMode.HALF_UP);
     }
 
     private KioskCashSessionResponse toCashSessionResponse(KioskCashSessionEntity session, LocationEntity kiosk) {
@@ -2304,6 +2317,12 @@ public class KioskPosService {
         BigDecimal expectedCash = CASH_SESSION_OPEN.equalsIgnoreCase(safeTrim(session.getStatus()))
                 ? calculateExpectedCash(session, sales)
                 : session.getExpectedCash();
+        BigDecimal cashExpensesTotal = sumCashExpenses(session.getId());
+        List<KioskCashExpenseResponse> expenseRows = kioskCashExpenseRepository
+                .findByCashSessionIdOrderByCreatedAtAscIdAsc(session.getId())
+                .stream()
+                .map(this::toCashExpenseResponse)
+                .collect(Collectors.toList());
 
         return KioskCashSessionResponse.builder()
                 .id(session.getId())
@@ -2325,6 +2344,129 @@ public class KioskPosService {
                 .salesCount(salesCount)
                 .cashSalesTotal(cashTotal.setScale(2, RoundingMode.HALF_UP))
                 .cardSalesTotal(cardTotal.setScale(2, RoundingMode.HALF_UP))
+                .cashExpensesTotal(cashExpensesTotal)
+                .expenses(expenseRows)
+                .build();
+    }
+
+    public KioskCashExpenseResponse addCashExpense(Long sessionId, KioskCashExpenseRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        if (request == null || request.getAmount() == null) {
+            throw new BusinessException("Debes indicar el monto del gasto.");
+        }
+        String description = safeTrim(request.getDescription());
+        if (description.isBlank()) {
+            throw new BusinessException("Debes indicar la descripción del gasto.");
+        }
+        UserEntity user = getCurrentUserOrThrow();
+        KioskCashSessionEntity session = kioskCashSessionRepository.findById(sessionId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioskCashSession", sessionId));
+        if (!CASH_SESSION_OPEN.equalsIgnoreCase(safeTrim(session.getStatus()))) {
+            throw new BusinessException("Solo puedes registrar gastos mientras la caja esté abierta.");
+        }
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        resolveTargetKiosk(resolveAvailableKiosks(user, admin), session.getKioskLocationId());
+
+        BigDecimal amount = request.getAmount().setScale(2, RoundingMode.HALF_UP);
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("El monto del gasto debe ser mayor a cero.");
+        }
+
+        KioskCashExpenseEntity saved = kioskCashExpenseRepository.save(
+                KioskCashExpenseEntity.builder()
+                        .cashSessionId(session.getId())
+                        .amount(amount)
+                        .description(description)
+                        .createdByUserId(user.getId())
+                        .build()
+        );
+        return toCashExpenseResponse(saved);
+    }
+
+    @Transactional(readOnly = true)
+    public List<KioskCashExpenseResponse> listCashExpenses(Long sessionId) throws BusinessException, ResourceNotFoundException {
+        UserEntity user = getCurrentUserOrThrow();
+        KioskCashSessionEntity session = kioskCashSessionRepository.findById(sessionId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioskCashSession", sessionId));
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        resolveTargetKiosk(resolveAvailableKiosks(user, admin), session.getKioskLocationId());
+        return kioskCashExpenseRepository.findByCashSessionIdOrderByCreatedAtAscIdAsc(session.getId())
+                .stream()
+                .map(this::toCashExpenseResponse)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<KioskCashSessionDailySummaryResponse> getCashSessionDailySummaries(
+            Long kioskLocationId,
+            LocalDate startDate,
+            LocalDate endDate
+    ) throws BusinessException {
+        UserEntity user = getCurrentUserOrThrow();
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        LocationEntity kiosk = resolveTargetKiosk(resolveAvailableKiosks(user, admin), kioskLocationId);
+        LocalDate start = startDate != null ? startDate : GuatemalaDateTime.today();
+        LocalDate end = endDate != null ? endDate : start;
+        if (end.isBefore(start)) {
+            throw new BusinessException("La fecha final no puede ser anterior a la inicial.");
+        }
+        LocalDateTime startAt = start.atStartOfDay();
+        LocalDateTime endAt = end.plusDays(1).atStartOfDay();
+        List<KioskCashSessionEntity> sessions = kioskCashSessionRepository
+                .findByKioskLocationIdAndOpenedAtBetween(kiosk.getId(), startAt, endAt);
+        return sessions.stream()
+                .map(session -> {
+                    List<KioskSaleEntity> sales = kioskSaleRepository.findByCashSessionIdOrderBySoldAtAsc(session.getId());
+                    BigDecimal cashSales = sumCashSales(sales);
+                    BigDecimal expenses = sumCashExpenses(session.getId());
+                    BigDecimal expected = CASH_SESSION_OPEN.equalsIgnoreCase(safeTrim(session.getStatus()))
+                            ? calculateExpectedCash(session, sales)
+                            : session.getExpectedCash();
+                    return KioskCashSessionDailySummaryResponse.builder()
+                            .workDate(session.getOpenedAt() != null
+                                    ? session.getOpenedAt().toLocalDate()
+                                    : start)
+                            .sessionId(session.getId())
+                            .sessionStatus(session.getStatus())
+                            .openingAmount(session.getOpeningAmount())
+                            .cashSalesTotal(cashSales)
+                            .cashExpensesTotal(expenses)
+                            .expectedCash(expected)
+                            .countedCash(session.getCountedCash())
+                            .variance(session.getVariance())
+                            .build();
+                })
+                .collect(Collectors.toList());
+    }
+
+    private BigDecimal sumCashSales(List<KioskSaleEntity> sales) {
+        BigDecimal cashTotal = BigDecimal.ZERO;
+        for (KioskSaleEntity sale : sales) {
+            if (isVoidSale(sale)) {
+                continue;
+            }
+            String method = safeTrim(sale.getPaymentMethod()).toUpperCase(Locale.ROOT);
+            if ("EFECTIVO".equals(method)) {
+                cashTotal = cashTotal.add(safeAmount(sale.getTotalAmount()));
+            } else if ("MIXTO".equals(method)) {
+                cashTotal = cashTotal.add(safeAmount(sale.getCashAmount()));
+            }
+        }
+        return cashTotal.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private KioskCashExpenseResponse toCashExpenseResponse(KioskCashExpenseEntity entity) {
+        UserEntity createdBy = entity.getCreatedByUserId() != null
+                ? userRepository.findById(entity.getCreatedByUserId()).orElse(null)
+                : null;
+        return KioskCashExpenseResponse.builder()
+                .id(entity.getId())
+                .cashSessionId(entity.getCashSessionId())
+                .amount(entity.getAmount())
+                .description(entity.getDescription())
+                .createdAt(entity.getCreatedAt())
+                .createdByUserId(entity.getCreatedByUserId())
+                .createdByName(createdBy != null ? buildUserFullName(createdBy) : null)
                 .build();
     }
 
