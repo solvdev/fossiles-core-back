@@ -121,6 +121,18 @@ public class KioscoInventoryService {
             Integer quantity,
             Long referenceId,
             Long userId,
+            String sizeKey
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarDevolucionDeposito(locationId, productId, colorId, quantity, referenceId, userId, sizeKey, null, null);
+    }
+
+    public KioscoStockResponse registrarDevolucionDeposito(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
             String sizeKey,
             String physicalSlipNumber,
             String reason
