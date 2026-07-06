@@ -115,7 +115,7 @@ public class TaxInvoiceService {
         boolean requestInvoice = KioskSaleInvoiceMapper.shouldEmitForPos(sale.getCustomerTaxId(), true);
         TaxInvoiceResponse response = issueFromKioskSale(sale, requestInvoice);
         if (response == null) {
-            throw new BusinessException("Esta venta POS no requiere factura electrónica (CF sin solicitud).");
+            throw new BusinessException("No se pudo generar la factura electrónica para esta venta POS.");
         }
         return response;
     }

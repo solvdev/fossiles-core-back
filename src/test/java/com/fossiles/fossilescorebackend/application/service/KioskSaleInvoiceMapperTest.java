@@ -13,11 +13,11 @@ class KioskSaleInvoiceMapperTest {
     }
 
     @Test
-    void skipsCfUnlessRequested() {
-        assertThat(KioskSaleInvoiceMapper.shouldEmitForPos("CF", false)).isFalse();
-        assertThat(KioskSaleInvoiceMapper.shouldEmitForPos("CF", null)).isFalse();
+    void alwaysEmitsForPosIncludingCf() {
+        assertThat(KioskSaleInvoiceMapper.shouldEmitForPos("CF", false)).isTrue();
+        assertThat(KioskSaleInvoiceMapper.shouldEmitForPos("CF", null)).isTrue();
         assertThat(KioskSaleInvoiceMapper.shouldEmitForPos("CF", true)).isTrue();
-        assertThat(KioskSaleInvoiceMapper.shouldEmitForPos("c/f", true)).isTrue();
+        assertThat(KioskSaleInvoiceMapper.shouldEmitForPos("c/f", false)).isTrue();
     }
 
     @Test

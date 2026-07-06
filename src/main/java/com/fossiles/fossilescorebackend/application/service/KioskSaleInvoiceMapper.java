@@ -52,12 +52,9 @@ public class KioskSaleInvoiceMapper {
                 .build();
     }
 
+    /** Toda venta POS debe generar factura electrónica (CF o NIT). */
     public static boolean shouldEmitForPos(String taxId, Boolean requestInvoice) {
-        String normalized = normalizeTaxId(taxId);
-        if (!"CF".equals(normalized)) {
-            return true;
-        }
-        return Boolean.TRUE.equals(requestInvoice);
+        return true;
     }
 
     private static String buildTransactionId(KioskSaleEntity sale) {

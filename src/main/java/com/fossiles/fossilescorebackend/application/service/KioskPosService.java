@@ -445,10 +445,7 @@ public class KioskPosService {
             );
         }
 
-        boolean shouldEmitFel = KioskSaleInvoiceMapper.shouldEmitForPos(
-                normalizedTaxId, Boolean.TRUE.equals(request.getRequestInvoice()));
-        String saleEmail = normalizeFelReceptorEmail(safeTrim(request.getEmail()));
-        if (shouldEmitFel && saleEmail != null && !saleEmail.isBlank()) {
+        if (KioskSaleInvoiceMapper.shouldEmitForPos(normalizedTaxId, request.getRequestInvoice())) {
             taxInvoiceService.issueFromKioskSale(saved, true);
             saved = kioskSaleRepository.findById(saved.getId()).orElse(saved);
         }
