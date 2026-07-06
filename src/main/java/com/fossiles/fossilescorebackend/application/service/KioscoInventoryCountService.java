@@ -276,7 +276,7 @@ public class KioscoInventoryCountService {
         List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> allRows = new ArrayList<>();
 
         for (KioscoKardexReportResponse.KioscoKardexRow kardexRow : kardexRows) {
-            if (!hasAssignedColor(kardexRow)) {
+            if (!shouldIncludeInPhysicalCount(kardexRow)) {
                 continue;
             }
 
@@ -495,6 +495,13 @@ public class KioscoInventoryCountService {
 
     private String itemKey(Long productId, Long colorId) {
         return productId + ":" + (colorId != null ? colorId : "");
+    }
+
+    private boolean shouldIncludeInPhysicalCount(KioscoKardexReportResponse.KioscoKardexRow kardexRow) {
+        if (hasAssignedColor(kardexRow)) {
+            return true;
+        }
+        return ProductCinchoType.isPackagingProductCode(kardexRow != null ? kardexRow.getProductCode() : null);
     }
 
     private boolean hasAssignedColor(KioscoKardexReportResponse.KioscoKardexRow kardexRow) {
