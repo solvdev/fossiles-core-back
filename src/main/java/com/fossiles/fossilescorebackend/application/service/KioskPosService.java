@@ -642,9 +642,10 @@ public class KioskPosService {
         if (sequenceValue == null) {
             return;
         }
-        KioskSaleSequenceEntity sequence = kioskSaleSequenceRepository.findWithLockBySaleDate(sequenceDate)
+        final LocalDate lockedSequenceDate = sequenceDate;
+        KioskSaleSequenceEntity sequence = kioskSaleSequenceRepository.findWithLockBySaleDate(lockedSequenceDate)
                 .orElseGet(() -> KioskSaleSequenceEntity.builder()
-                        .saleDate(sequenceDate)
+                        .saleDate(lockedSequenceDate)
                         .lastNumber(0)
                         .build());
         int current = sequence.getLastNumber() != null ? sequence.getLastNumber() : 0;
