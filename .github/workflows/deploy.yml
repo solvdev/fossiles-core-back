@@ -13,6 +13,9 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Marcar inicio
+        run: echo "DEPLOY_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
 
       - name: Setup JDK 21
@@ -23,64 +26,136 @@ jobs:
           cache: gradle
 
       - name: Build JAR (bootJar, sin tests)
+        id: build
         run: |
-          chmod +x ./gradlew
-          ./gradlew clean bootJar -x test
+          { chmod +x ./gradlew
+            ./gradlew clean bootJar -x test
+          } 2>&1 | tee -a /tmp/deploy.log
 
       - name: Setup SSH key
+        id: ssh_setup
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.BACK_HOST }} >> ~/.ssh/known_hosts
+          { mkdir -p ~/.ssh
+            echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+            chmod 600 ~/.ssh/deploy_key
+            ssh-keyscan -H ${{ secrets.BACK_HOST }} >> ~/.ssh/known_hosts
+          } 2>&1 | tee -a /tmp/deploy.log
 
       - name: Detener servicio antes de transferir
+        id: stop_service
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
-            "sudo systemctl stop fossiles-core-backend.service"
+          { ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
+              "sudo systemctl stop fossiles-core-backend.service"
+          } 2>&1 | tee -a /tmp/deploy.log
 
       - name: Transferir JAR (rsync)
+        id: transfer
         run: |
-          rsync -avz -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
-            build/libs/fossiles-core-backend.jar \
-            ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }}:/backs/fossiles-core-backend.jar
+          { rsync -avz -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+              build/libs/fossiles-core-backend.jar \
+              ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }}:/backs/fossiles-core-backend.jar
+          } 2>&1 | tee -a /tmp/deploy.log
 
       - name: Iniciar servicio
+        id: start_service
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
-            "sudo systemctl start fossiles-core-backend.service"
+          { ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
+              "sudo systemctl start fossiles-core-backend.service"
+          } 2>&1 | tee -a /tmp/deploy.log
 
       - name: Verificar estado del servicio
+        id: verify
         run: |
-          sleep 15
-          STATUS=$(ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
-            "systemctl is-active fossiles-core-backend.service || true")
-          echo "Estado: $STATUS"
-          if [ "$STATUS" != "active" ]; then
-            echo "::error::El servicio no quedó activo, mostrando ultimos logs"
-            ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
-              "sudo journalctl -u fossiles-core-backend.service -n 50 --no-pager"
-            exit 1
-          fi
+          { sleep 15
+            STATUS=$(ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
+              "systemctl is-active fossiles-core-backend.service || true")
+            echo "Estado: $STATUS"
+            if [ "$STATUS" != "active" ]; then
+              echo "::error::El servicio no quedó activo, mostrando ultimos logs"
+              ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
+                "sudo journalctl -u fossiles-core-backend.service -n 50 --no-pager"
+              exit 1
+            fi
+          } 2>&1 | tee -a /tmp/deploy.log
 
       - name: Notificar en Discord
         if: always()
         continue-on-error: true
         run: |
+          DURATION=$(( $(date +%s) - ${DEPLOY_START:-$(date +%s)} ))
+          MIN=$(( DURATION / 60 )); SEC=$(( DURATION % 60 ))
+
           if [ "${{ job.status }}" = "success" ]; then
             EMOJI="✅"; COLOR=3066993; TITULO="Deploy exitoso"
           else
             EMOJI="❌"; COLOR=15158332; TITULO="Deploy fallido"
           fi
-          curl -s -H "Content-Type: application/json" -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" -d "{
-            \"embeds\": [{
-              \"title\": \"$EMOJI $TITULO — ${{ github.repository }}\",
-              \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
-              \"color\": $COLOR,
-              \"fields\": [
-                {\"name\": \"Rama\", \"value\": \"${{ github.ref_name }}\", \"inline\": true},
-                {\"name\": \"Commit\", \"value\": \"[\`${{ github.sha }}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})\", \"inline\": true},
-                {\"name\": \"Autor\", \"value\": \"${{ github.actor }}\", \"inline\": true}
-              ]
-            }]
-          }"
+
+          PASO_FALLIDO="-"
+          for par in \
+            "Build JAR:${{ steps.build.outcome }}" \
+            "Setup SSH:${{ steps.ssh_setup.outcome }}" \
+            "Detener servicio:${{ steps.stop_service.outcome }}" \
+            "Transferir JAR:${{ steps.transfer.outcome }}" \
+            "Iniciar servicio:${{ steps.start_service.outcome }}" \
+            "Verificar servicio:${{ steps.verify.outcome }}"
+          do
+            nombre="${par%%:*}"; estado="${par##*:}"
+            [ "$estado" = "failure" ] && PASO_FALLIDO="$nombre"
+          done
+
+          ERR_LOG=$(tail -c 3000 /tmp/deploy.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+          [ -z "$ERR_LOG" ] && ERR_LOG="(sin logs capturados)"
+
+          COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          COMMIT_CORTO="${{ github.sha }}"
+          COMMIT_CORTO="${COMMIT_CORTO:0:7}"
+
+          if [ "${{ job.status }}" = "success" ]; then
+            PAYLOAD=$(jq -n \
+              --arg titulo "$EMOJI $TITULO — ${{ github.repository }}" \
+              --arg url "$RUN_URL" \
+              --argjson color $COLOR \
+              --arg rama "${{ github.ref_name }}" \
+              --arg commit "$COMMIT_CORTO" \
+              --arg commiturl "$COMMIT_URL" \
+              --arg autor "${{ github.actor }}" \
+              --arg duracion "${MIN}m ${SEC}s" \
+              --arg host "${{ secrets.BACK_HOST }}" \
+              '{embeds: [{
+                title: $titulo, url: $url, color: $color,
+                fields: [
+                  {name: "Rama", value: $rama, inline: true},
+                  {name: "Duración", value: $duracion, inline: true},
+                  {name: "Servidor", value: $host, inline: true},
+                  {name: "Autor", value: $autor, inline: true},
+                  {name: "Commit", value: ("[`" + $commit + "`](" + $commiturl + ")"), inline: true}
+                ],
+                timestamp: (now | todate)
+              }]}')
+          else
+            PAYLOAD=$(jq -n \
+              --arg titulo "$EMOJI $TITULO — ${{ github.repository }}" \
+              --arg url "$RUN_URL" \
+              --argjson color $COLOR \
+              --arg rama "${{ github.ref_name }}" \
+              --arg commit "$COMMIT_CORTO" \
+              --arg commiturl "$COMMIT_URL" \
+              --arg autor "${{ github.actor }}" \
+              --arg paso "$PASO_FALLIDO" \
+              --arg err "$ERR_LOG" \
+              '{embeds: [{
+                title: $titulo, url: $url, color: $color,
+                fields: [
+                  {name: "Rama", value: $rama, inline: true},
+                  {name: "Paso que falló", value: $paso, inline: true},
+                  {name: "Autor", value: $autor, inline: true},
+                  {name: "Commit", value: ("[`" + $commit + "`](" + $commiturl + ")"), inline: false},
+                  {name: "Error", value: ("```\n" + ($err | .[0:950]) + "\n```"), inline: false}
+                ],
+                timestamp: (now | todate)
+              }]}')
+          fi
+
+          curl -s -H "Content-Type: application/json" -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" -d "$PAYLOAD"
