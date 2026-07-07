@@ -1076,9 +1076,55 @@ public class TaxInvoiceService {
         return locationSeriesCode + "-" + next;
     }
 
+    private static boolean requiresNewFelTransactionAfterVoid(TaxInvoiceEntity invoice) {
+        return invoice != null
+                && invoice.getFelVoidUuid() != null
+                && !invoice.getFelVoidUuid().isBlank()
+                && (invoice.getFelUuid() == null || invoice.getFelUuid().isBlank());
+    }
+
+    private String resolveCertificationTransactionId(
+            TaxInvoiceEntity invoice,
+            TaxInvoiceDocument document,
+            boolean retry,
+            boolean reissueAfterVoid
+    ) {
+        if (reissueAfterVoid) {
+            return buildReplacementFelTransactionId(invoice, document);
+        }
+        if (retry && invoice.getFelTransactionId() != null && !invoice.getFelTransactionId().isBlank()) {
+            return invoice.getFelTransactionId();
+        }
+        String fromDocument = document != null ? trimToNull(document.getTransactionId()) : null;
+        if (fromDocument != null) {
+            return fromDocument;
+        }
+        String fromInvoice = trimToNull(invoice.getFelTransactionId());
+        if (fromInvoice != null) {
+            return fromInvoice;
+        }
+        return "TINV-" + invoice.getId();
+    }
+
+    private String buildReplacementFelTransactionId(TaxInvoiceEntity invoice, TaxInvoiceDocument document) {
+        String base = trimToNull(invoice.getFelTransactionId());
+        if (base == null && document != null) {
+            base = trimToNull(document.getTransactionId());
+        }
+        if (base == null) {
+            base = "TINV-" + invoice.getId();
+        }
+        int reissueSuffix = base.indexOf("-R");
+        if (reissueSuffix > 0) {
+            base = base.substring(0, reissueSuffix);
+        }
+        return base + "-R" + System.currentTimeMillis();
+    }
+
     private void certify(TaxInvoiceEntity invoice, TaxInvoiceDocument document, boolean retry)
             throws BusinessException {
-        String action = retry ? "RETRY" : "ISSUE";
+        boolean reissueAfterVoid = requiresNewFelTransactionAfterVoid(invoice);
+        String action = reissueAfterVoid ? "REISSUE" : (retry ? "RETRY" : "ISSUE");
         if (!properties.isEnabled()) {
             applyResult(invoice, FelCertificationResult.builder().status("SKIPPED").build());
             taxInvoiceRepository.save(invoice);
@@ -1086,10 +1132,9 @@ public class TaxInvoiceService {
             return;
         }
 
-        String transactionId = retry && invoice.getFelTransactionId() != null
-                ? invoice.getFelTransactionId()
-                : document.getTransactionId();
+        String transactionId = resolveCertificationTransactionId(invoice, document, retry, reissueAfterVoid);
         invoice.setFelTransactionId(transactionId);
+        document.setTransactionId(transactionId);
 
         try {
             FelCredentials credentials = properties.resolveCredentials(resolveSandboxMode(invoice));

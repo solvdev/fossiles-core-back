@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.config;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.FelTextEncodingHelper;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -88,14 +89,20 @@ public class FelEmissionProperties {
         if (useSandbox) {
             return new FelCredentials(
                     sandbox.signKey, sandbox.signAlias, sandbox.certUsuario, sandbox.certLlave,
-                    sandbox.nitEmisor, sandbox.nombreEmisor, sandbox.nombreComercial, sandbox.correoEmisor,
-                    sandbox.direccion, sandbox.municipio, sandbox.departamento, sandbox.afiliacionIva,
+                    sandbox.nitEmisor, repair(sandbox.nombreEmisor), repair(sandbox.nombreComercial),
+                    repair(sandbox.correoEmisor),
+                    repair(sandbox.direccion), repair(sandbox.municipio), repair(sandbox.departamento),
+                    sandbox.afiliacionIva,
                     sandbox.frases);
         }
         return new FelCredentials(
                 signKey, signAlias, certUsuario, certLlave,
-                nitEmisor, nombreEmisor, nombreComercial, correoEmisor,
-                direccion, municipio, departamento, afiliacionIva,
+                nitEmisor, repair(nombreEmisor), repair(nombreComercial), repair(correoEmisor),
+                repair(direccion), repair(municipio), repair(departamento), afiliacionIva,
                 frases);
+    }
+
+    private static String repair(String value) {
+        return FelTextEncodingHelper.repairFelText(value);
     }
 }

@@ -102,7 +102,9 @@ fel.emission.sign-alias=${FEL_SIGN_ALIAS:}
 fel.emission.cert-usuario=${FEL_CERT_USUARIO:}
 fel.emission.cert-llave=${FEL_CERT_LLAVE:}
 fel.emission.nit-emisor=${FEL_NIT_EMISOR:}
-fel.emission.nombre-emisor=${FEL_NOMBRE_EMISOR:CUEROGLAM, SOCIEDAD ANÓNIMA}
+# Nombre legal emisor (UTF-8). En variables de entorno use FEL_NOMBRE_EMISOR con UTF-8,
+# o sin tildes: CUEROGLAM, SOCIEDAD ANONIMA. Unicode: AN\u00D3NIMA = ANÓNIMA
+fel.emission.nombre-emisor=${FEL_NOMBRE_EMISOR:CUEROGLAM, SOCIEDAD AN\u00D3NIMA}
 fel.emission.nombre-comercial=${FEL_NOMBRE_COMERCIAL:CUEROGLAM}
 fel.emission.correo-emisor=${FEL_CORREO_EMISOR:}
 fel.emission.afiliacion-iva=GEN
