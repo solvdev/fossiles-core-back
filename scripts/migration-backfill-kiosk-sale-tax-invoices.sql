@@ -1,9 +1,8 @@
 -- Backfill de tax_invoice para ventas POS (kiosk_sale) que aún no tienen registro.
 --
 -- RECOMENDADO (genera correlativo interno correcto, líneas por item, enlace invoice_id):
---   POST /api/tax-invoices/backfill-kiosk-sales?dryRun=true
---   POST /api/tax-invoices/backfill-kiosk-sales
---   POST /api/tax-invoices/backfill-kiosk-sales?fromDate=2026-01-01&toDate=2026-03-31&kioskLocationId=12
+--   GET  /api/tax-invoices/kiosk-sales/missing-count
+--   POST /api/tax-invoices/kiosk-sales/backfill
 --
 -- También desde Contabilidad → Facturas electrónicas → "Generar borradores POS faltantes".
 --

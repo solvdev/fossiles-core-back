@@ -53,6 +53,74 @@ public class TaxInvoiceController {
         return ResponseEntity.ok(taxInvoiceService.getSummary());
     }
 
+    @PostMapping("/manual")
+    public ResponseEntity<TaxInvoiceResponse> createManual(@Valid @RequestBody ManualTaxInvoiceRequest request)
+            throws BusinessException {
+        return ResponseEntity.ok(taxInvoiceService.issueManual(request));
+    }
+
+    @PostMapping("/from-kiosk-sale/{saleId}")
+    public ResponseEntity<TaxInvoiceResponse> fromKioskSale(@PathVariable Long saleId)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(taxInvoiceService.issueFromKioskSaleId(saleId));
+    }
+
+    @PostMapping("/draft-from-kiosk-sale/{saleId}")
+    public ResponseEntity<TaxInvoiceResponse> draftFromKioskSale(@PathVariable Long saleId)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(taxInvoiceService.createDraftFromKioskSaleId(saleId));
+    }
+
+    @GetMapping("/kiosk-sales/missing-count")
+    public ResponseEntity<TaxInvoiceBackfillResponse> countMissingKioskSaleInvoices(
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate
+    ) throws BusinessException {
+        return ResponseEntity.ok(taxInvoiceService.backfillMissingKioskSaleDrafts(
+                kioskLocationId,
+                fromDate,
+                toDate,
+                true
+        ));
+    }
+
+    @PostMapping("/kiosk-sales/backfill")
+    public ResponseEntity<TaxInvoiceBackfillResponse> backfillKioskSales(
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate
+    ) throws BusinessException {
+        return ResponseEntity.ok(taxInvoiceService.backfillMissingKioskSaleDrafts(
+                kioskLocationId,
+                fromDate,
+                toDate,
+                false
+        ));
+    }
+
+    /** @deprecated usar GET /kiosk-sales/missing-count y POST /kiosk-sales/backfill */
+    @PostMapping("/backfill-kiosk-sales")
+    public ResponseEntity<TaxInvoiceBackfillResponse> backfillKioskSalesLegacy(
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
+            @RequestParam(defaultValue = "false") boolean dryRun
+    ) throws BusinessException {
+        return ResponseEntity.ok(taxInvoiceService.backfillMissingKioskSaleDrafts(
+                kioskLocationId,
+                fromDate,
+                toDate,
+                dryRun
+        ));
+    }
+
+    @PostMapping("/from-online-sale/{saleId}")
+    public ResponseEntity<TaxInvoiceResponse> fromOnlineSale(@PathVariable Long saleId)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(taxInvoiceService.issueFromOnlineSale(saleId));
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<TaxInvoiceResponse> getById(@PathVariable Long id) throws ResourceNotFoundException {
         return ResponseEntity.ok(taxInvoiceService.getById(id));
@@ -73,45 +141,6 @@ public class TaxInvoiceController {
                         "attachment; filename=\"" + download.getFilename() + "\"")
                 .contentType(MediaType.parseMediaType(download.getContentType()))
                 .body(download.getContent());
-    }
-
-    @PostMapping("/manual")
-    public ResponseEntity<TaxInvoiceResponse> createManual(@Valid @RequestBody ManualTaxInvoiceRequest request)
-            throws BusinessException {
-        return ResponseEntity.ok(taxInvoiceService.issueManual(request));
-    }
-
-    @PostMapping("/from-kiosk-sale/{saleId}")
-    public ResponseEntity<TaxInvoiceResponse> fromKioskSale(@PathVariable Long saleId)
-            throws BusinessException, ResourceNotFoundException {
-        return ResponseEntity.ok(taxInvoiceService.issueFromKioskSaleId(saleId));
-    }
-
-    @PostMapping("/draft-from-kiosk-sale/{saleId}")
-    public ResponseEntity<TaxInvoiceResponse> draftFromKioskSale(@PathVariable Long saleId)
-            throws BusinessException, ResourceNotFoundException {
-        return ResponseEntity.ok(taxInvoiceService.createDraftFromKioskSaleId(saleId));
-    }
-
-    @PostMapping("/backfill-kiosk-sales")
-    public ResponseEntity<TaxInvoiceBackfillResponse> backfillKioskSales(
-            @RequestParam(required = false) Long kioskLocationId,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
-            @RequestParam(defaultValue = "false") boolean dryRun
-    ) throws BusinessException {
-        return ResponseEntity.ok(taxInvoiceService.backfillMissingKioskSaleDrafts(
-                kioskLocationId,
-                fromDate,
-                toDate,
-                dryRun
-        ));
-    }
-
-    @PostMapping("/from-online-sale/{saleId}")
-    public ResponseEntity<TaxInvoiceResponse> fromOnlineSale(@PathVariable Long saleId)
-            throws BusinessException, ResourceNotFoundException {
-        return ResponseEntity.ok(taxInvoiceService.issueFromOnlineSale(saleId));
     }
 
     @PostMapping("/{id}/retry")
