@@ -1902,9 +1902,9 @@ public class ProductDistributionService {
     }
 
     /**
-     * Cuadra en silencio entradas de envíos DELIVERED con cantidades del documento.
-     * Elimina duplicados, deja una ENTRADA/TRANSFER_IN por línea y recalcula stock.
-     * No toca conteo físico ni crea movimientos de ajuste visibles.
+     * Cuadra entradas de envíos DELIVERED con cantidades del documento.
+     * kiosco_movement es append-only: corrige stock con INSERT (ENTRADA faltante o MERMA por exceso)
+     * y normaliza kardex legacy (puede DELETE en product_inventory_kardex).
      */
     @Transactional
     public KioscoShipmentReconcileResponse reconcileShipmentReceiptInventory(
@@ -1996,45 +1996,17 @@ public class ProductDistributionService {
             Set<Long> affectedStockIds
     ) throws ResourceNotFoundException, BusinessException {
         String lineRef = shipmentReceiptLineReference(shipment, detail);
-        Long locationId = shipment.getLocationId();
-        Long productId = detail.getProductId();
-        Long colorId = detail.getColorId();
-
-        List<KioscoMovementEntity> movements = kioscoMovementRepository.findShipmentEntradaMovements(
-                locationId, shipment.getId(), lineRef);
-        int sumQty = movements.stream().mapToInt(m -> m.getQuantity() != null ? m.getQuantity() : 0).sum();
-        int expected = qtyExpected.intValue();
-        List<ProductInventoryKardex> kardexRows = productInventoryKardexRepository.findShipmentTransferInByLine(
-                shipment.getId(), productId, locationId, colorId, lineRef);
-        int kardexSum = kardexRows.stream()
-                .map(k -> k.getQuantity() != null ? k.getQuantity() : BigDecimal.ZERO)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .intValue();
-
-        if (movements.size() == 1 && sumQty == expected && kardexRows.size() == 1 && kardexSum == expected) {
-            movements.stream().map(KioscoMovementEntity::getKioscoStockId).filter(Objects::nonNull).forEach(affectedStockIds::add);
-            return new ReconcileLineResult(0, 0);
-        }
-
-        int removed = Math.max(0, movements.size() - 1);
-        if (!movements.isEmpty()) {
-            for (KioscoMovementEntity movement : movements) {
-                if (movement.getKioscoStockId() != null) {
-                    affectedStockIds.add(movement.getKioscoStockId());
-                }
-                kioscoMovementRepository.delete(movement);
-            }
-        }
-        removed += Math.max(0, kardexRows.size() - 1);
-        removeShipmentKardexRows(kardexRows, productId, locationId, colorId);
-
-        if (expected > 0) {
-            applyReceiptInventoryForDetail(shipment, detail, qtyExpected, lineRef);
-            kioscoStockRepository.findByLocationIdAndProductIdAndColorId(locationId, productId, colorId)
-                    .ifPresent(stock -> affectedStockIds.add(stock.getId()));
-        }
-
-        return new ReconcileLineResult(1, removed);
+        String sizeKey = detail.getSizeLabel() != null ? detail.getSizeLabel().trim() : "";
+        String sizeKeyForInventory = sizeKey.isEmpty() ? null : sizeKey;
+        return reconcileShipmentEntradaQuantities(
+                shipment,
+                detail.getProductId(),
+                detail.getColorId(),
+                lineRef,
+                qtyExpected.intValue(),
+                sizeKeyForInventory,
+                "Recepcion de envio en kiosko",
+                affectedStockIds);
     }
 
     private ReconcileLineResult reconcileDeliveredShipmentPackingInventory(
@@ -2103,44 +2075,152 @@ public class ProductDistributionService {
             Set<Long> affectedStockIds
     ) throws ResourceNotFoundException, BusinessException {
         String lineRef = shipmentPackingLineReference(shipment, materialId);
+        return reconcileShipmentEntradaQuantities(
+                shipment,
+                product.getId(),
+                null,
+                lineRef,
+                qtyExpected.intValue(),
+                null,
+                "Recepcion de empaque SUM- en kiosko",
+                affectedStockIds);
+    }
+
+    private ReconcileLineResult reconcileShipmentEntradaQuantities(
+            ProductShipmentEntity shipment,
+            Long productId,
+            Long colorId,
+            String lineRef,
+            int expected,
+            String sizeKeyForInventory,
+            String kardexDescription,
+            Set<Long> affectedStockIds
+    ) throws ResourceNotFoundException, BusinessException {
         Long locationId = shipment.getLocationId();
-        Long productId = product.getId();
 
         List<KioscoMovementEntity> movements = kioscoMovementRepository.findShipmentEntradaMovements(
                 locationId, shipment.getId(), lineRef);
         int sumQty = movements.stream().mapToInt(m -> m.getQuantity() != null ? m.getQuantity() : 0).sum();
-        int expected = qtyExpected.intValue();
         List<ProductInventoryKardex> kardexRows = productInventoryKardexRepository.findShipmentTransferInByLine(
-                shipment.getId(), productId, locationId, null, lineRef);
+                shipment.getId(), productId, locationId, colorId, lineRef);
         int kardexSum = kardexRows.stream()
                 .map(k -> k.getQuantity() != null ? k.getQuantity() : BigDecimal.ZERO)
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .intValue();
 
-        if (movements.size() == 1 && sumQty == expected && kardexRows.size() == 1 && kardexSum == expected) {
-            movements.stream().map(KioscoMovementEntity::getKioscoStockId).filter(Objects::nonNull).forEach(affectedStockIds::add);
+        boolean kardexOk = kardexRows.size() == 1 && kardexSum == expected;
+        boolean kioscoOk = sumQty == expected;
+
+        if (kardexOk && kioscoOk) {
+            trackAffectedStockIds(movements, locationId, productId, colorId, affectedStockIds);
             return new ReconcileLineResult(0, 0);
         }
 
-        int removed = Math.max(0, movements.size() - 1);
-        if (!movements.isEmpty()) {
-            for (KioscoMovementEntity movement : movements) {
-                if (movement.getKioscoStockId() != null) {
-                    affectedStockIds.add(movement.getKioscoStockId());
-                }
-                kioscoMovementRepository.delete(movement);
+        int linesReconciled = 0;
+        int duplicatesRemoved = 0;
+
+        if (!kardexOk) {
+            duplicatesRemoved += Math.max(0, kardexRows.size() - 1);
+            removeShipmentKardexRows(kardexRows, productId, locationId, colorId);
+            if (expected > 0) {
+                applySingleShipmentKardexTransferIn(
+                        shipment,
+                        productId,
+                        colorId,
+                        lineRef,
+                        BigDecimal.valueOf(expected),
+                        sizeKeyForInventory,
+                        kardexDescription);
             }
-        }
-        removed += Math.max(0, kardexRows.size() - 1);
-        removeShipmentKardexRows(kardexRows, productId, locationId, null);
-
-        if (expected > 0) {
-            applyReceiptInventoryForPackagingProduct(shipment, product, qtyExpected, materialId);
-            kioscoStockRepository.findByLocationIdAndProductIdAndColorId(locationId, productId, null)
-                    .ifPresent(stock -> affectedStockIds.add(stock.getId()));
+            linesReconciled = 1;
         }
 
-        return new ReconcileLineResult(1, removed);
+        if (sumQty < expected) {
+            int missing = expected - sumQty;
+            kioscoInventoryService.registrarEntradaDesdeIntegracion(
+                    locationId,
+                    productId,
+                    colorId,
+                    BigDecimal.valueOf(missing),
+                    shipment.getId(),
+                    securityUtil.getCurrentUserId(),
+                    sizeKeyForInventory,
+                    lineRef);
+            linesReconciled = 1;
+        } else if (sumQty > expected) {
+            int excess = sumQty - expected;
+            kioscoInventoryService.registrarCompensacionRecepcionEnvio(
+                    locationId,
+                    productId,
+                    colorId,
+                    excess,
+                    shipment.getId(),
+                    lineRef,
+                    securityUtil.getCurrentUserId());
+            duplicatesRemoved += Math.max(0, movements.size() - 1);
+            linesReconciled = 1;
+        }
+
+        trackAffectedStockIds(movements, locationId, productId, colorId, affectedStockIds);
+        return new ReconcileLineResult(linesReconciled, duplicatesRemoved);
+    }
+
+    private void trackAffectedStockIds(
+            List<KioscoMovementEntity> movements,
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Set<Long> affectedStockIds
+    ) {
+        if (movements != null) {
+            movements.stream()
+                    .map(KioscoMovementEntity::getKioscoStockId)
+                    .filter(Objects::nonNull)
+                    .forEach(affectedStockIds::add);
+        }
+        kioscoStockRepository.findByLocationIdAndProductIdAndColorId(locationId, productId, colorId)
+                .ifPresent(stock -> affectedStockIds.add(stock.getId()));
+    }
+
+    private void applySingleShipmentKardexTransferIn(
+            ProductShipmentEntity shipment,
+            Long productId,
+            Long colorId,
+            String lineRef,
+            BigDecimal qty,
+            String sizeKeyForInventory,
+            String description
+    ) throws ResourceNotFoundException, BusinessException {
+        BigDecimal before = productInventoryService
+                .getInventoryByProductAndLocationAndColor(productId, shipment.getLocationId(), colorId)
+                .getQuantity();
+        productInventoryService.incrementInventory(
+                productId,
+                shipment.getLocationId(),
+                colorId,
+                qty,
+                sizeKeyForInventory,
+                "SHIPMENT",
+                shipment.getId(),
+                shipment.getShipmentNumber(),
+                description,
+                sizeKeyForInventory);
+        BigDecimal after = productInventoryService
+                .getInventoryByProductAndLocationAndColor(productId, shipment.getLocationId(), colorId)
+                .getQuantity();
+        productInventoryService.recordProductMovementIfAbsent(
+                productId,
+                shipment.getLocationId(),
+                colorId,
+                "TRANSFER_IN",
+                qty,
+                before,
+                after,
+                sizeKeyForInventory,
+                "SHIPMENT",
+                shipment.getId(),
+                lineRef,
+                description);
     }
 
     private void removeShipmentKardexRows(

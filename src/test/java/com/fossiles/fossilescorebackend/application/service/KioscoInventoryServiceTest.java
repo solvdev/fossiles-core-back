@@ -493,12 +493,8 @@ class KioscoInventoryServiceTest {
         int rows = service.replayStockLedger(100L);
 
         assertThat(rows).isEqualTo(1);
-        assertThat(entrada.getStockBefore()).isZero();
-        assertThat(entrada.getStockAfter()).isEqualTo(10);
-        assertThat(venta.getStockBefore()).isEqualTo(10);
-        assertThat(venta.getStockAfter()).isEqualTo(7);
         assertThat(stock.getCurrentStock()).isEqualTo(7);
-        verify(kioscoMovementRepository, times(2)).save(any(KioscoMovementEntity.class));
+        verify(kioscoMovementRepository, never()).save(any(KioscoMovementEntity.class));
         verify(kioscoStockRepository).save(stock);
     }
 }

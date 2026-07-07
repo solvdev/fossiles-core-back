@@ -734,6 +734,40 @@ public class KioscoInventoryService {
         return kioscoMovementRepository.existsShipmentReceiptLine(locationId, shipmentId, lineRef.trim());
     }
 
+    /**
+     * Reduce stock por exceso de ENTRADAs de envío sin borrar movimientos (ledger append-only).
+     */
+    public KioscoStockResponse registrarCompensacionRecepcionEnvio(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            int excessQuantity,
+            Long shipmentId,
+            String lineRef,
+            Long userId
+    ) throws BusinessException, ResourceNotFoundException {
+        if (excessQuantity <= 0) {
+            throw new BusinessException("La cantidad a compensar debe ser positiva.");
+        }
+        String reason = buildShipmentReconcileReason(shipmentId, lineRef);
+        return applyStockMovement(
+                locationId,
+                productId,
+                colorId,
+                excessQuantity,
+                shipmentId,
+                null,
+                locationId,
+                resolveUserIdRequired(userId),
+                KioscoMovementType.MERMA,
+                -excessQuantity,
+                true,
+                reason,
+                null,
+                false
+        );
+    }
+
     public KioscoStockResponse registrarVentaDesdeIntegracion(
             Long locationId,
             Long productId,
@@ -1746,6 +1780,19 @@ public class KioscoInventoryService {
         return "Recepción envío " + shipmentNumber;
     }
 
+    private String buildShipmentReconcileReason(Long shipmentId, String lineRef) {
+        if (shipmentId != null) {
+            Optional<ProductShipmentEntity> shipmentOpt = productShipmentRepository.findById(shipmentId);
+            if (shipmentOpt.isPresent()) {
+                return "Cuadre recepción envío " + buildShipmentEntradaReason(shipmentOpt.get(), lineRef);
+            }
+        }
+        if (lineRef != null && !lineRef.isBlank()) {
+            return "Cuadre recepción envío · " + shipmentReceiptLineReason(lineRef);
+        }
+        return "Cuadre recepción envío";
+    }
+
     private boolean isShipmentReceiptReason(String reason) {
         if (reason == null || reason.isBlank()) {
             return false;
@@ -1791,8 +1838,8 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Recalcula stock_before/stock_after y current_stock a partir del ledger de movimientos.
-     * No crea movimientos nuevos; solo corrige consistencia interna.
+     * Recalcula current_stock a partir del ledger de movimientos.
+     * kiosco_movement es append-only: no actualiza filas del ledger.
      */
     public int replayStockLedger(Long kioscoStockId) {
         if (kioscoStockId == null) {
@@ -1810,13 +1857,10 @@ public class KioscoInventoryService {
                 continue;
             }
             int delta = movementSignedDelta(movement);
-            movement.setStockBefore(running);
             running += delta;
             if (running < 0) {
                 running = 0;
             }
-            movement.setStockAfter(running);
-            kioscoMovementRepository.save(movement);
         }
         stock.setCurrentStock(running);
         kioscoStockRepository.save(stock);
