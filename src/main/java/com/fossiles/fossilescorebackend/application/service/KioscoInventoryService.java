@@ -1870,10 +1870,15 @@ public class KioscoInventoryService {
             return;
         }
         enableAdminMovementMutation();
-        entityManager.createNativeQuery("DELETE FROM kiosco_movement WHERE id = :id")
+        int deleted = entityManager.createNativeQuery("DELETE FROM kiosco_movement WHERE id = :id")
                 .setParameter("id", movement.getId())
                 .executeUpdate();
         entityManager.flush();
+        if (deleted <= 0) {
+            throw new BusinessException(
+                    "No se pudo eliminar el movimiento #" + movement.getId()
+                            + ". Verifique migration-kiosco-movement-admin-delete.sql y el trigger en kiosco_movement.");
+        }
     }
 
     public void trimAdminEntradaQuantity(KioscoMovementEntity movement, int newQuantity) {
@@ -1881,12 +1886,17 @@ public class KioscoInventoryService {
             return;
         }
         enableAdminMovementMutation();
-        entityManager.createNativeQuery(
+        int updated = entityManager.createNativeQuery(
                         "UPDATE kiosco_movement SET quantity = :qty, stock_after = stock_before + :qty WHERE id = :id")
                 .setParameter("qty", newQuantity)
                 .setParameter("id", movement.getId())
                 .executeUpdate();
         entityManager.flush();
+        if (updated <= 0) {
+            throw new BusinessException(
+                    "No se pudo ajustar el movimiento #" + movement.getId()
+                            + ". Verifique migration-kiosco-movement-admin-delete.sql y el trigger en kiosco_movement.");
+        }
         movement.setQuantity(newQuantity);
         movement.setStockAfter(safeInt(movement.getStockBefore()) + newQuantity);
     }
@@ -1917,6 +1927,7 @@ public class KioscoInventoryService {
      */
     public int pruneExcessShipmentEntradas(List<KioscoMovementEntity> movementsOrderedAsc, int expected) {
         EntradaPrunePlan plan = planPruneExcessShipmentEntradas(movementsOrderedAsc, expected);
+        int applied = 0;
         for (PlannedEntradaAction action : plan.actions()) {
             KioscoMovementEntity movement = movementsOrderedAsc.stream()
                     .filter(m -> Objects.equals(m.getId(), action.movementId()))
@@ -1927,11 +1938,13 @@ public class KioscoInventoryService {
             }
             if ("TRIM_ENTRADA".equals(action.type())) {
                 trimAdminEntradaQuantity(movement, action.quantity() != null ? action.quantity() : 0);
+                applied++;
             } else if ("DELETE_ENTRADA".equals(action.type())) {
                 deleteAdminMovement(movement);
+                applied++;
             }
         }
-        return plan.removedCount();
+        return applied;
     }
 
     public EntradaPrunePlan planPruneExcessShipmentEntradas(

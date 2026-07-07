@@ -1941,18 +1941,15 @@ public class ProductDistributionService {
 
         for (ProductShipmentEntity shipment : shipments) {
             List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipment.getId());
-            for (ProductShipmentDetailEntity detail : details) {
-                if (detail == null || detail.getProductId() == null) {
+            for (List<ProductShipmentDetailEntity> detailGroup : groupShipmentDetailsByStock(details).values()) {
+                if (detailGroup.isEmpty()) {
                     continue;
                 }
-                BigDecimal qtyExpected = resolveShipmentLineQuantity(detail);
-                if (qtyExpected.compareTo(BigDecimal.ZERO) <= 0) {
-                    continue;
-                }
+                ProductShipmentDetailEntity anchor = detailGroup.get(0);
                 processedScopeKeys.add(sumReconcileScopeKey(
-                        shipment.getId(), detail.getProductId(), detail.getColorId()));
-                ReconcileLineResult result = reconcileShipmentProductLine(
-                        shipment, detail, qtyExpected, affectedStockIds, warnings);
+                        shipment.getId(), anchor.getProductId(), anchor.getColorId()));
+                ReconcileLineResult result = reconcileShipmentProductGroup(
+                        shipment, detailGroup, affectedStockIds, warnings);
                 linesReconciled += result.linesReconciled();
                 duplicatesRemoved += result.duplicatesRemoved();
             }
@@ -2024,18 +2021,15 @@ public class ProductDistributionService {
 
         for (ProductShipmentEntity shipment : shipments) {
             List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipment.getId());
-            for (ProductShipmentDetailEntity detail : details) {
-                if (detail == null || detail.getProductId() == null) {
+            for (List<ProductShipmentDetailEntity> detailGroup : groupShipmentDetailsByStock(details).values()) {
+                if (detailGroup.isEmpty()) {
                     continue;
                 }
-                BigDecimal qtyExpected = resolveShipmentLineQuantity(detail);
-                if (qtyExpected.compareTo(BigDecimal.ZERO) <= 0) {
-                    continue;
-                }
+                ProductShipmentDetailEntity anchor = detailGroup.get(0);
                 processedScopeKeys.add(sumReconcileScopeKey(
-                        shipment.getId(), detail.getProductId(), detail.getColorId()));
-                KioscoShipmentReconcilePreviewResponse.PreviewLine line = planShipmentProductLine(
-                        shipment, detail, qtyExpected, affectedStockIds, warnings);
+                        shipment.getId(), anchor.getProductId(), anchor.getColorId()));
+                KioscoShipmentReconcilePreviewResponse.PreviewLine line = planShipmentProductGroup(
+                        shipment, detailGroup, affectedStockIds, warnings);
                 if (line != null) {
                     previewLines.add(line);
                 }
@@ -2085,10 +2079,110 @@ public class ProductDistributionService {
                 .mermasToDelete(mermasToDelete)
                 .kardexLinesToNormalize(kardexLinesToNormalize)
                 .stockRowsToRecalculate(affectedStockIds.size())
-                .hasChanges(linesWithChanges > 0 || linesWithWarnings > 0)
+                .hasChanges(entradasToDelete > 0 || entradasToTrim > 0 || mermasToDelete > 0)
                 .warnings(warnings)
                 .lines(previewLines)
                 .build();
+    }
+
+    private Map<String, List<ProductShipmentDetailEntity>> groupShipmentDetailsByStock(
+            List<ProductShipmentDetailEntity> details
+    ) {
+        Map<String, List<ProductShipmentDetailEntity>> grouped = new LinkedHashMap<>();
+        if (details == null) {
+            return grouped;
+        }
+        for (ProductShipmentDetailEntity detail : details) {
+            if (detail == null || detail.getProductId() == null) {
+                continue;
+            }
+            String key = detail.getProductId() + ":" + (detail.getColorId() != null ? detail.getColorId() : "null");
+            grouped.computeIfAbsent(key, ignored -> new ArrayList<>()).add(detail);
+        }
+        return grouped;
+    }
+
+    private KioscoShipmentReconcilePreviewResponse.PreviewLine planShipmentProductGroup(
+            ProductShipmentEntity shipment,
+            List<ProductShipmentDetailEntity> details,
+            Set<Long> affectedStockIds,
+            List<String> warnings
+    ) {
+        ShipmentProductGroupQty groupQty = resolveShipmentProductGroupQty(details);
+        if (groupQty.expected() <= 0) {
+            return null;
+        }
+        ProductShipmentDetailEntity anchor = details.get(0);
+        String lineRef = shipmentReceiptLineReference(shipment, anchor);
+        String lineType = isPackagingProductId(anchor.getProductId()) ? "PACKING" : "PRODUCT";
+        return planShipmentEntradaQuantities(
+                shipment,
+                anchor.getProductId(),
+                anchor.getColorId(),
+                lineRef,
+                groupQty.expected(),
+                groupQty.sentQty(),
+                null,
+                lineType,
+                affectedStockIds,
+                warnings);
+    }
+
+    private ReconcileLineResult reconcileShipmentProductGroup(
+            ProductShipmentEntity shipment,
+            List<ProductShipmentDetailEntity> details,
+            Set<Long> affectedStockIds,
+            List<String> warnings
+    ) throws ResourceNotFoundException, BusinessException {
+        ShipmentProductGroupQty groupQty = resolveShipmentProductGroupQty(details);
+        if (groupQty.expected() <= 0) {
+            return new ReconcileLineResult(0, 0);
+        }
+        ProductShipmentDetailEntity anchor = details.get(0);
+        String lineRef = shipmentReceiptLineReference(shipment, anchor);
+        return reconcileShipmentEntradaQuantities(
+                shipment,
+                anchor.getProductId(),
+                anchor.getColorId(),
+                lineRef,
+                groupQty.expected(),
+                groupQty.sentQty(),
+                null,
+                "Recepcion de envio en kiosko",
+                affectedStockIds,
+                warnings);
+    }
+
+    private record ShipmentProductGroupQty(int expected, Integer sentQty) {}
+
+    private ShipmentProductGroupQty resolveShipmentProductGroupQty(List<ProductShipmentDetailEntity> details) {
+        int expected = 0;
+        int sentQty = 0;
+        boolean hasSent = false;
+        for (ProductShipmentDetailEntity detail : details) {
+            if (detail == null) {
+                continue;
+            }
+            BigDecimal qty = resolveShipmentLineQuantity(detail);
+            if (qty.compareTo(BigDecimal.ZERO) > 0) {
+                expected += qty.intValue();
+            }
+            if (detail.getQuantity() != null && detail.getQuantity().compareTo(BigDecimal.ZERO) > 0) {
+                sentQty += detail.getQuantity().intValue();
+                hasSent = true;
+            }
+        }
+        return new ShipmentProductGroupQty(expected, hasSent ? sentQty : null);
+    }
+
+    private boolean isPackagingProductId(Long productId) {
+        if (productId == null) {
+            return false;
+        }
+        return productRepository.findById(productId)
+                .map(ProductEntity::getCode)
+                .map(ProductCinchoType::isPackagingProductCode)
+                .orElse(false);
     }
 
     private KioscoShipmentReconcilePreviewResponse.PreviewLine planShipmentProductLine(
@@ -2204,6 +2298,24 @@ public class ProductDistributionService {
                 locationId, shipment.getId(), lineRef, productId, colorId, shipment);
         int sumQty = movements.stream().mapToInt(m -> m.getQuantity() != null ? m.getQuantity() : 0).sum();
         expected = reconcileExpectedEntradaQty(expected, sentQty, sumQty, movements.size());
+        if (expected <= 0 && sentQty != null && sentQty > 0) {
+            expected = sentQty;
+        }
+        if (expected <= 0 && movements.size() > 1) {
+            int inferredExpected = movements.stream()
+                    .mapToInt(m -> m.getQuantity() != null ? m.getQuantity() : 0)
+                    .filter(qty -> qty > 0)
+                    .min()
+                    .orElse(0);
+            if (inferredExpected > 0 && sumQty > inferredExpected) {
+                expected = inferredExpected;
+                if (sentQty == null) {
+                    sentQty = inferredExpected;
+                }
+                warnings.add(resolveProductLabel(productId) + ": cantidad documentada ausente; "
+                        + "se usará " + inferredExpected + " u. (menor ENTRADA) para detectar duplicados SUM-.");
+            }
+        }
         int stockQty = resolveKioscoStockQty(locationId, productId, colorId);
 
         List<KioscoShipmentReconcilePreviewResponse.PreviewAction> actions = new ArrayList<>();
@@ -2445,6 +2557,24 @@ public class ProductDistributionService {
                 locationId, shipment.getId(), lineRef, productId, colorId, shipment);
         int sumQty = movements.stream().mapToInt(m -> m.getQuantity() != null ? m.getQuantity() : 0).sum();
         expected = reconcileExpectedEntradaQty(expected, sentQty, sumQty, movements.size());
+        if (expected <= 0 && sentQty != null && sentQty > 0) {
+            expected = sentQty;
+        }
+        if (expected <= 0 && movements.size() > 1) {
+            int inferredExpected = movements.stream()
+                    .mapToInt(m -> m.getQuantity() != null ? m.getQuantity() : 0)
+                    .filter(qty -> qty > 0)
+                    .min()
+                    .orElse(0);
+            if (inferredExpected > 0 && sumQty > inferredExpected) {
+                expected = inferredExpected;
+                if (sentQty == null) {
+                    sentQty = inferredExpected;
+                }
+                warnings.add(resolveProductLabel(productId) + ": cantidad documentada ausente; "
+                        + "se usará " + inferredExpected + " u. para eliminar duplicados.");
+            }
+        }
 
         int linesReconciled = 0;
         int duplicatesRemoved = 0;
@@ -2550,9 +2680,13 @@ public class ProductDistributionService {
     }
 
     private int reconcileExpectedEntradaQty(int documentExpected, Integer sentQty, int sumQty, int movementCount) {
-        if (sentQty != null && sentQty > 0 && movementCount > 1
-                && documentExpected > sentQty && sumQty >= documentExpected) {
-            return sentQty;
+        if (sentQty != null && sentQty > 0) {
+            if (movementCount > 1 && sumQty > sentQty) {
+                return sentQty;
+            }
+            if (documentExpected > sentQty && sumQty >= documentExpected) {
+                return sentQty;
+            }
         }
         return documentExpected;
     }
@@ -2713,13 +2847,10 @@ public class ProductDistributionService {
             }
             if (expected <= 0) {
                 int sumQty = scopeMovements.stream().mapToInt(m -> m.getQuantity() != null ? m.getQuantity() : 0).sum();
-                if (scopeMovements.size() > 1 || sumQty > resolveKioscoStockQty(locationId, stock.getProductId(), stock.getColorId())) {
-                    String productLabel = resolveProductLabel(stock.getProductId());
-                    warnings.add(productLabel + ": ENTRADAs SUM- detectadas en envío #"
-                            + shipment.getId() + " pero sin cantidad documentada (packing_items/detalle). "
-                            + "Revise el envío o corrija manualmente.");
+                int stockQty = resolveKioscoStockQty(locationId, stock.getProductId(), stock.getColorId());
+                if (scopeMovements.size() <= 1 && sumQty <= stockQty) {
+                    continue;
                 }
-                continue;
             }
 
             processedScopeKeys.add(entry.getKey());

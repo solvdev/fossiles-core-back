@@ -30,3 +30,15 @@ COMMENT ON FUNCTION prevent_kiosco_movement_mutation() IS
 
 COMMENT ON TABLE kiosco_movement IS
     'Log de movimientos de inventario kiosko. Append-only por defecto; admin puede mutar con app.kiosco_movement_admin_mutation.';
+
+DROP TRIGGER IF EXISTS trg_kiosco_movement_prevent_update ON kiosco_movement;
+CREATE TRIGGER trg_kiosco_movement_prevent_update
+BEFORE UPDATE ON kiosco_movement
+FOR EACH ROW
+EXECUTE FUNCTION prevent_kiosco_movement_mutation();
+
+DROP TRIGGER IF EXISTS trg_kiosco_movement_prevent_delete ON kiosco_movement;
+CREATE TRIGGER trg_kiosco_movement_prevent_delete
+BEFORE DELETE ON kiosco_movement
+FOR EACH ROW
+EXECUTE FUNCTION prevent_kiosco_movement_mutation();

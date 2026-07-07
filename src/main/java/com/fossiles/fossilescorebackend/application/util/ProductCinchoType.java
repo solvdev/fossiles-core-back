@@ -30,7 +30,8 @@ public final class ProductCinchoType {
         if (productCode == null || productCode.isBlank()) {
             return false;
         }
-        return productCode.trim().toUpperCase(Locale.ROOT).startsWith("SUM-");
+        String normalized = productCode.trim().toUpperCase(Locale.ROOT);
+        return normalized.startsWith("SUM-") || normalized.startsWith("SUM");
     }
 
     private static String safeUpper(String value) {
