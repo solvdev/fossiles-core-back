@@ -615,6 +615,22 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
+    void syncFossCurrentStockFromSizes_alignsUndercountedTotal() {
+        when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
+                .id(productId)
+                .code("FOSS-15")
+                .name("CINCHO FOSS 15")
+                .build()));
+        KioscoStockEntity stock = stockEntity(10, 0);
+        stock.setId(100L);
+        stock.setSizesData("{\"32\":4,\"34\":4,\"36\":4,\"38\":4,\"40\":2,\"42\":2}");
+
+        service.syncFossCurrentStockFromSizes(stock);
+
+        assertThat(stock.getCurrentStock()).isEqualTo(20);
+    }
+
+    @Test
     void reconcileStaleSizeBreakdown_clearsSizesWhenExceedCurrentStock() {
         KioscoStockEntity stock = stockEntity(13, 0);
         stock.setId(100L);

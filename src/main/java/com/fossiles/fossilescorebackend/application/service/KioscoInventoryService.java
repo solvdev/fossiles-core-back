@@ -644,7 +644,7 @@ public class KioscoInventoryService {
                 .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
 
         KioscoStockEntity stock = getOrCreateLockedStock(locationId, productId, colorId, resolvedUserId);
-        reconcileStaleSizeBreakdown(stock);
+        syncFossCurrentStockFromSizes(stock);
         stock = kioscoStockRepository.findForUpdate(locationId, productId, colorId).orElse(stock);
 
         Map<String, BigDecimal> targetSizes = normalizeRealSizesMap(realSizes);
@@ -1091,14 +1091,12 @@ public class KioscoInventoryService {
         for (KioscoStockEntity stock : kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(locationId)) {
             int initial = initialBalanceByStockId.getOrDefault(stock.getId(), 0);
             KardexAccumulator acc = accByStockId.getOrDefault(stock.getId(), new KardexAccumulator());
-            int finalBalance = acc.applyTo(initial);
-            if (stock.getCurrentStock() != null) {
-                finalBalance = safeInt(stock.getCurrentStock());
-            }
+            ProductEntity product = stock.getProduct();
+            syncFossCurrentStockFromSizes(stock);
+            int finalBalance = resolveInventarioFinal(stock, product);
             if (!includeZeroRows && initial == 0 && finalBalance == 0 && acc.isEmpty()) {
                 continue;
             }
-            ProductEntity product = stock.getProduct();
             ColorEntity color = stock.getColor();
             rows.add(KioscoKardexReportResponse.KioscoKardexRow.builder()
                     .productId(stock.getProductId())
@@ -1716,7 +1714,7 @@ public class KioscoInventoryService {
         LocationEntity location = entity.getLocation();
         ProductEntity product = entity.getProduct();
         ColorEntity color = entity.getColor();
-        int current = safeInt(entity.getCurrentStock());
+        int current = resolveInventarioFinal(entity, product);
         int minimum = safeInt(entity.getMinimumStock());
         Map<String, BigDecimal> sizes = positiveSizesMap(entity.getSizesData());
         return KioscoStockResponse.builder()
@@ -2193,8 +2191,60 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Si el desglose por talla supera el stock real (p. ej. ENTRADAs duplicadas ya eliminadas),
-     * limpia sizes_data para forzar corrección con ajuste por conteo físico.
+     * Cinchos FOSS: el inventario final es la suma de tallas en sizes_data cuando existe desglose.
+     */
+    public int resolveInventarioFinal(KioscoStockEntity stock, ProductEntity product) {
+        if (stock == null) {
+            return 0;
+        }
+        int current = safeInt(stock.getCurrentStock());
+        ProductEntity resolvedProduct = product;
+        if (resolvedProduct == null && stock.getProductId() != null) {
+            resolvedProduct = productRepository.findById(stock.getProductId()).orElse(null);
+        }
+        if (!CinchoProductUtils.isFossCinchoProduct(resolvedProduct)) {
+            return current;
+        }
+        Map<String, BigDecimal> sizes = ProductInventorySizesJson.parse(stock.getSizesData());
+        if (sizes.isEmpty()) {
+            return current;
+        }
+        return ProductInventorySizesJson.sum(sizes).setScale(0, RoundingMode.HALF_UP).intValue();
+    }
+
+    /**
+     * Cinchos FOSS: si sizes_data tiene más unidades que current_stock (entradas por talla sin reflejar
+     * el total agregado), alinea current_stock con la suma de tallas.
+     */
+    public void syncFossCurrentStockFromSizes(KioscoStockEntity stock) {
+        if (stock == null || stock.getId() == null) {
+            return;
+        }
+        ProductEntity product = stock.getProduct();
+        if (product == null && stock.getProductId() != null) {
+            product = productRepository.findById(stock.getProductId()).orElse(null);
+        }
+        if (!CinchoProductUtils.isFossCinchoProduct(product)) {
+            return;
+        }
+        Map<String, BigDecimal> sizes = ProductInventorySizesJson.parse(stock.getSizesData());
+        if (sizes.isEmpty()) {
+            return;
+        }
+        int sizesTotal = ProductInventorySizesJson.sum(sizes).setScale(0, RoundingMode.HALF_UP).intValue();
+        int current = safeInt(stock.getCurrentStock());
+        if (sizesTotal > current) {
+            stock.setCurrentStock(sizesTotal);
+            stock.setLastUpdatedAt(LocalDateTime.now());
+            kioscoStockRepository.save(stock);
+            log.info(
+                    "KIOSCO_SYNC_FOSS_SIZES stockId={} productId={} colorId={} {} -> {}",
+                    stock.getId(), stock.getProductId(), stock.getColorId(), current, sizesTotal);
+        }
+    }
+
+    /**
+     * Tras replay de movimientos (cuadre): si sizes_data quedó inflado respecto al ledger, limpiarlo.
      */
     public void reconcileStaleSizeBreakdown(KioscoStockEntity stock) {
         if (stock == null || stock.getId() == null) {

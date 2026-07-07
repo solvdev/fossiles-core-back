@@ -27,6 +27,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Lo
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -246,6 +247,7 @@ public class KioscoInventoryCountService {
         Map<String, KioscoStockEntity> stockByKey = kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAsc(count.getLocationId()).stream()
                 .collect(Collectors.toMap(s -> itemKey(s.getProductId(), s.getColorId()), s -> s, (a, b) -> a));
+        stockByKey.values().forEach(kioscoInventoryService::syncFossCurrentStockFromSizes);
 
         List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows = kioscoInventoryService.buildKardexRows(
                 count.getLocationId(), count.getPeriodFrom(), count.getPeriodTo(), true);
@@ -301,11 +303,17 @@ public class KioscoInventoryCountService {
             String physicalSizesSummary = formatSizesSummary(physicalSizes);
 
             Map<String, Integer> counts = new LinkedHashMap<>();
-            int total = 0;
+            int total = computePhysicalCountTotal(
+                    product, countedValues, physicalSizes, physicalSizesByLocation);
+
             for (String key : COUNT_LOCATION_KEYS) {
                 int value = countedValues.getOrDefault(key, BigDecimal.ZERO).intValue();
                 counts.put(key, value);
-                total += value;
+            }
+
+            int inventarioFinal = kardexRow.getInventarioFinal();
+            if (!systemSizes.isEmpty() && CinchoProductUtils.isFossCinchoProduct(product)) {
+                inventarioFinal = systemSizes.values().stream().mapToInt(Integer::intValue).sum();
             }
 
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow row = KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
@@ -331,10 +339,10 @@ public class KioscoInventoryCountService {
                     .ventas(kardexRow.getVentas())
                     .anulacionVenta(kardexRow.getAnulacionVenta())
                     .salida(kardexRow.getSalida())
-                    .inventarioFinal(kardexRow.getInventarioFinal())
+                    .inventarioFinal(inventarioFinal)
                     .counts(counts)
                     .total(total)
-                    .diferencia(kardexRow.getInventarioFinal() - total)
+                    .diferencia(inventarioFinal - total)
                     .build();
             allRows.add(row);
             rowsByCategoryKey.computeIfAbsent(categoryKey, k -> new ArrayList<>()).add(row);
@@ -515,18 +523,39 @@ public class KioscoInventoryCountService {
         if (stock == null) {
             return Map.of();
         }
-        Map<String, Integer> sizes = toSystemSizesMap(stock.getSizesData());
-        if (sizes.isEmpty()) {
-            return sizes;
+        return toSystemSizesMap(stock.getSizesData());
+    }
+
+    private int computePhysicalCountTotal(
+            ProductEntity product,
+            Map<String, BigDecimal> countedValues,
+            Map<String, Integer> physicalSizes,
+            Map<String, Map<String, Integer>> physicalSizesByLocation
+    ) {
+        int locationTotal = 0;
+        for (String key : COUNT_LOCATION_KEYS) {
+            locationTotal += countedValues.getOrDefault(key, BigDecimal.ZERO).intValue();
         }
-        int totalFromSizes = sizes.values().stream().mapToInt(Integer::intValue).sum();
-        int current = stock.getCurrentStock() != null ? stock.getCurrentStock() : 0;
-        if (totalFromSizes > current) {
-            log.warn(
-                    "KIOSCO_STALE_SIZES stockId={} productId={} colorId={} sizesTotal={} currentStock={}",
-                    stock.getId(), stock.getProductId(), stock.getColorId(), totalFromSizes, current);
+        if (!CinchoProductUtils.isFossCinchoProduct(product)) {
+            return locationTotal;
         }
-        return sizes;
+        if (physicalSizesByLocation != null && !physicalSizesByLocation.isEmpty()) {
+            int sizeTotal = physicalSizesByLocation.values().stream()
+                    .filter(Objects::nonNull)
+                    .flatMap(loc -> loc.values().stream())
+                    .mapToInt(value -> value != null ? value : 0)
+                    .sum();
+            if (sizeTotal > 0) {
+                return sizeTotal;
+            }
+        }
+        if (physicalSizes != null && !physicalSizes.isEmpty()) {
+            int sizeTotal = physicalSizes.values().stream().mapToInt(value -> value != null ? value : 0).sum();
+            if (sizeTotal > 0) {
+                return sizeTotal;
+            }
+        }
+        return locationTotal;
     }
 
     private Map<String, Integer> toSystemSizesMap(String sizesDataJson) {
