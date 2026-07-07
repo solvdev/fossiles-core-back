@@ -57,6 +57,55 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             @Param("productId") Long productId);
 
     @Query("SELECT m FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
+            + "AND s.productId = :productId "
+            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
+            + "AND (m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
+            + "OR m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_ENTRADA) "
+            + "AND (m.referenceId = :shipmentId "
+            + "OR (:shipmentToken IS NOT NULL AND :shipmentToken <> '' AND ("
+            + "     (m.referenceId IS NULL AND LOWER(m.reason) LIKE LOWER(CONCAT('%', :shipmentToken, '%'))) "
+            + "     OR (:lineKey IS NOT NULL AND :lineKey <> '' AND m.reason LIKE CONCAT('%', :lineKey, '%')) "
+            + "     OR (:lineReasonKey IS NOT NULL AND :lineReasonKey <> '' AND m.reason LIKE CONCAT('%', :lineReasonKey, '%'))"
+            + "))) "
+            + "ORDER BY m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findShipmentEntradaMovementsByProductLoose(
+            @Param("locationId") Long locationId,
+            @Param("shipmentId") Long shipmentId,
+            @Param("productId") Long productId,
+            @Param("colorId") Long colorId,
+            @Param("shipmentToken") String shipmentToken,
+            @Param("lineKey") String lineKey,
+            @Param("lineReasonKey") String lineReasonKey);
+
+    @Query("SELECT m FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "JOIN ProductEntity p ON p.id = s.productId "
+            + "WHERE s.locationId = :locationId "
+            + "AND UPPER(p.code) LIKE 'SUM-%' "
+            + "AND m.referenceId IN :shipmentIds "
+            + "AND (m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
+            + "OR m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_ENTRADA) "
+            + "ORDER BY m.referenceId ASC, s.productId ASC, s.colorId ASC, m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findSumPackagingEntradasForShipments(
+            @Param("locationId") Long locationId,
+            @Param("shipmentIds") List<Long> shipmentIds);
+
+    @Query("SELECT m FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "JOIN ProductEntity p ON p.id = s.productId "
+            + "WHERE s.locationId = :locationId "
+            + "AND UPPER(p.code) LIKE 'SUM-%' "
+            + "AND m.referenceId IS NULL "
+            + "AND (m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
+            + "OR m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_ENTRADA) "
+            + "AND (LOWER(m.reason) LIKE '%recepc%env%' OR m.reason LIKE '%SHIPMENT_RCPT:%') "
+            + "ORDER BY s.productId ASC, s.colorId ASC, m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findSumPackagingEntradasWithoutReference(
+            @Param("locationId") Long locationId);
+
+    @Query("SELECT m FROM KioscoMovementEntity m "
             + "WHERE m.kioscoStockId = :stockId "
             + "AND m.referenceId = :shipmentId "
             + "AND (m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
