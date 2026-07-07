@@ -32,6 +32,23 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
     @Query("SELECT m FROM KioscoMovementEntity m "
             + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
             + "WHERE s.locationId = :locationId "
+            + "AND s.productId = :productId "
+            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
+            + "AND m.referenceId = :shipmentId "
+            + "AND m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.MERMA "
+            + "AND (LOWER(m.reason) LIKE '%cuadre recepc%' OR LOWER(m.reason) LIKE '%cuadre recepcion%') "
+            + "AND m.reason LIKE CONCAT('%', :lineKey, '%') "
+            + "ORDER BY m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findShipmentReconcileMermaMovements(
+            @Param("locationId") Long locationId,
+            @Param("shipmentId") Long shipmentId,
+            @Param("lineKey") String lineKey,
+            @Param("productId") Long productId,
+            @Param("colorId") Long colorId);
+
+    @Query("SELECT m FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
             + "ORDER BY m.createdAt DESC, m.id DESC")
     List<KioscoMovementEntity> findByLocationIdOrderByCreatedAtDesc(@Param("locationId") Long locationId);
 

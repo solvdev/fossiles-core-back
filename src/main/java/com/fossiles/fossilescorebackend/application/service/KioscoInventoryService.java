@@ -30,6 +30,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -67,6 +68,7 @@ public class KioscoInventoryService {
         return SHIPMENT_RECEIPT_LINE_PREFIX + lineRef.trim();
     }
     private static final String REFERENCE_KIOSCO_INVENTORY = "KIOSCO_INVENTORY";
+    private static final String ADMIN_MOVEMENT_MUTATION_KEY = "app.kiosco_movement_admin_mutation";
 
     private final KioscoStockRepository kioscoStockRepository;
     private final KioscoMovementRepository kioscoMovementRepository;
@@ -80,6 +82,7 @@ public class KioscoInventoryService {
     private final ProductShipmentRepository productShipmentRepository;
     private final ProductInventoryKardexRepository productInventoryKardexRepository;
     private final InventoryTransferRepository inventoryTransferRepository;
+    private final EntityManager entityManager;
 
     public KioscoStockResponse registrarEntrada(
             Long locationId,
@@ -735,7 +738,7 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Reduce stock por exceso de ENTRADAs de envío sin borrar movimientos (ledger append-only).
+     * Reduce stock por exceso de ENTRADAs de envío (legacy; preferir pruneExcessShipmentEntradas).
      */
     public KioscoStockResponse registrarCompensacionRecepcionEnvio(
             Long locationId,
@@ -1835,6 +1838,94 @@ public class KioscoInventoryService {
 
     private static String locationCode(LocationEntity location) {
         return location != null ? location.getCode() : null;
+    }
+
+    /**
+     * Habilita DELETE/UPDATE en kiosco_movement dentro de la transaccion actual
+     * (requiere migration-kiosco-movement-admin-delete.sql).
+     */
+    public void enableAdminMovementMutation() {
+        entityManager.createNativeQuery(
+                        "SELECT set_config(:key, 'true', true)")
+                .setParameter("key", ADMIN_MOVEMENT_MUTATION_KEY)
+                .getSingleResult();
+    }
+
+    public void deleteAdminMovement(KioscoMovementEntity movement) {
+        if (movement == null || movement.getId() == null) {
+            return;
+        }
+        enableAdminMovementMutation();
+        kioscoMovementRepository.delete(movement);
+    }
+
+    public void trimAdminEntradaQuantity(KioscoMovementEntity movement, int newQuantity) {
+        if (movement == null || movement.getId() == null || newQuantity <= 0) {
+            return;
+        }
+        enableAdminMovementMutation();
+        int before = safeInt(movement.getStockBefore());
+        movement.setQuantity(newQuantity);
+        movement.setStockAfter(before + newQuantity);
+        kioscoMovementRepository.save(movement);
+    }
+
+    /**
+     * Elimina MERMA de cuadre previo por linea de envio (artefacto de reconciliacion antigua).
+     */
+    public int deleteShipmentReconcileMermaMovements(
+            Long locationId,
+            Long shipmentId,
+            String lineRef,
+            Long productId,
+            Long colorId
+    ) {
+        if (locationId == null || shipmentId == null || lineRef == null || lineRef.isBlank()) {
+            return 0;
+        }
+        List<KioscoMovementEntity> mermaRows = kioscoMovementRepository.findShipmentReconcileMermaMovements(
+                locationId, shipmentId, lineRef, productId, colorId);
+        for (KioscoMovementEntity movement : mermaRows) {
+            deleteAdminMovement(movement);
+        }
+        return mermaRows.size();
+    }
+
+    /**
+     * Conserva ENTRADAs mas antiguas hasta expected y elimina sobrantes (duplicados de envio).
+     */
+    public int pruneExcessShipmentEntradas(List<KioscoMovementEntity> movementsOrderedAsc, int expected) {
+        if (movementsOrderedAsc == null || movementsOrderedAsc.isEmpty() || expected < 0) {
+            return 0;
+        }
+        int removed = 0;
+        int keptQty = 0;
+        for (KioscoMovementEntity movement : movementsOrderedAsc) {
+            int qty = safeInt(movement.getQuantity());
+            if (qty <= 0) {
+                deleteAdminMovement(movement);
+                removed++;
+                continue;
+            }
+            if (keptQty >= expected) {
+                deleteAdminMovement(movement);
+                removed++;
+                continue;
+            }
+            if (keptQty + qty <= expected) {
+                keptQty += qty;
+                continue;
+            }
+            int allowed = expected - keptQty;
+            if (allowed <= 0) {
+                deleteAdminMovement(movement);
+                removed++;
+            } else {
+                trimAdminEntradaQuantity(movement, allowed);
+                keptQty = expected;
+            }
+        }
+        return removed;
     }
 
     /**

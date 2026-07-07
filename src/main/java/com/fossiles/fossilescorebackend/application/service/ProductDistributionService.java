@@ -1903,8 +1903,7 @@ public class ProductDistributionService {
 
     /**
      * Cuadra entradas de envíos DELIVERED con cantidades del documento.
-     * kiosco_movement es append-only: corrige stock con INSERT (ENTRADA faltante o MERMA por exceso)
-     * y normaliza kardex legacy (puede DELETE en product_inventory_kardex).
+     * Elimina ENTRADAs duplicadas del envío, limpia MERMA de cuadre previo y normaliza kardex legacy.
      */
     @Transactional
     public KioscoShipmentReconcileResponse reconcileShipmentReceiptInventory(
@@ -1912,6 +1911,7 @@ public class ProductDistributionService {
             Long shipmentId
     ) throws ResourceNotFoundException, BusinessException {
         requireReconcileAdminAccess();
+        kioscoInventoryService.enableAdminMovementMutation();
 
         List<ProductShipmentEntity> shipments;
 
@@ -2108,16 +2108,25 @@ public class ProductDistributionService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .intValue();
 
+        int linesReconciled = 0;
+        int duplicatesRemoved = 0;
+
+        duplicatesRemoved += kioscoInventoryService.deleteShipmentReconcileMermaMovements(
+                locationId, shipment.getId(), lineRef, productId, colorId);
+        if (duplicatesRemoved > 0) {
+            linesReconciled = 1;
+            movements = kioscoMovementRepository.findShipmentEntradaMovements(
+                    locationId, shipment.getId(), lineRef);
+            sumQty = movements.stream().mapToInt(m -> m.getQuantity() != null ? m.getQuantity() : 0).sum();
+        }
+
         boolean kardexOk = kardexRows.size() == 1 && kardexSum == expected;
         boolean kioscoOk = sumQty == expected;
 
-        if (kardexOk && kioscoOk) {
+        if (kardexOk && kioscoOk && duplicatesRemoved == 0) {
             trackAffectedStockIds(movements, locationId, productId, colorId, affectedStockIds);
             return new ReconcileLineResult(0, 0);
         }
-
-        int linesReconciled = 0;
-        int duplicatesRemoved = 0;
 
         if (!kardexOk) {
             duplicatesRemoved += Math.max(0, kardexRows.size() - 1);
@@ -2148,16 +2157,8 @@ public class ProductDistributionService {
                     lineRef);
             linesReconciled = 1;
         } else if (sumQty > expected) {
-            int excess = sumQty - expected;
-            kioscoInventoryService.registrarCompensacionRecepcionEnvio(
-                    locationId,
-                    productId,
-                    colorId,
-                    excess,
-                    shipment.getId(),
-                    lineRef,
-                    securityUtil.getCurrentUserId());
-            duplicatesRemoved += Math.max(0, movements.size() - 1);
+            int removedEntradas = kioscoInventoryService.pruneExcessShipmentEntradas(movements, expected);
+            duplicatesRemoved += removedEntradas;
             linesReconciled = 1;
         }
 

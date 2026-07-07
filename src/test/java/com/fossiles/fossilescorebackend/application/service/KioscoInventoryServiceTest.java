@@ -19,6 +19,8 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -73,6 +75,10 @@ class KioscoInventoryServiceTest {
     private ProductInventoryKardexRepository productInventoryKardexRepository;
     @Mock
     private InventoryTransferRepository inventoryTransferRepository;
+    @Mock
+    private EntityManager entityManager;
+    @Mock
+    private Query nativeQuery;
 
     @InjectMocks
     private KioscoInventoryService service;
@@ -117,6 +123,9 @@ class KioscoInventoryServiceTest {
             movement.setId(1000L);
             return movement;
         });
+        when(entityManager.createNativeQuery(any(String.class))).thenReturn(nativeQuery);
+        when(nativeQuery.setParameter(any(String.class), any())).thenReturn(nativeQuery);
+        when(nativeQuery.getSingleResult()).thenReturn("true");
     }
 
     @Test
@@ -469,6 +478,20 @@ class KioscoInventoryServiceTest {
                 .build();
     }
 
+    private KioscoMovementEntity shipmentEntrada(long id, int quantity) {
+        return KioscoMovementEntity.builder()
+                .id(id)
+                .kioscoStockId(100L)
+                .movementType(KioscoMovementType.ENTRADA)
+                .quantity(quantity)
+                .stockBefore(0)
+                .stockAfter(quantity)
+                .affectsStock(true)
+                .userId(userId)
+                .createdAt(LocalDateTime.now())
+                .build();
+    }
+
     private KioscoStockEntity stockEntity(int current, int minimum) {
         return KioscoStockEntity.builder()
                 .id(100L)
@@ -479,6 +502,55 @@ class KioscoInventoryServiceTest {
                 .minimumStock(minimum)
                 .lastUpdatedAt(LocalDateTime.now())
                 .build();
+    }
+
+    @Test
+    void pruneExcessShipmentEntradas_keepsOldestAndRemovesDuplicates() {
+        List<KioscoMovementEntity> entradas = List.of(
+                shipmentEntrada(1L, 1),
+                shipmentEntrada(2L, 1),
+                shipmentEntrada(3L, 1),
+                shipmentEntrada(4L, 1));
+
+        int removed = service.pruneExcessShipmentEntradas(entradas, 1);
+
+        assertThat(removed).isEqualTo(3);
+        verify(kioscoMovementRepository, times(3)).delete(any(KioscoMovementEntity.class));
+        verify(kioscoMovementRepository, never()).save(any(KioscoMovementEntity.class));
+    }
+
+    @Test
+    void pruneExcessShipmentEntradas_trimsSingleOversizedEntrada() {
+        KioscoMovementEntity oversized = shipmentEntrada(10L, 25);
+        oversized.setStockBefore(0);
+        oversized.setStockAfter(25);
+
+        int removed = service.pruneExcessShipmentEntradas(List.of(oversized), 10);
+
+        assertThat(removed).isZero();
+        assertThat(oversized.getQuantity()).isEqualTo(10);
+        assertThat(oversized.getStockAfter()).isEqualTo(10);
+        verify(kioscoMovementRepository).save(oversized);
+        verify(kioscoMovementRepository, never()).delete(any(KioscoMovementEntity.class));
+    }
+
+    @Test
+    void deleteShipmentReconcileMermaMovements_deletesOnlyCuadreRows() {
+        KioscoMovementEntity merma = KioscoMovementEntity.builder()
+                .id(55L)
+                .kioscoStockId(100L)
+                .movementType(KioscoMovementType.MERMA)
+                .quantity(5)
+                .reason("Cuadre recepción envío · SHIPMENT_RCPT:ENV#L1")
+                .build();
+        when(kioscoMovementRepository.findShipmentReconcileMermaMovements(
+                locationId, 700L, "ENV#L1", productId, colorId)).thenReturn(List.of(merma));
+
+        int removed = service.deleteShipmentReconcileMermaMovements(
+                locationId, 700L, "ENV#L1", productId, colorId);
+
+        assertThat(removed).isEqualTo(1);
+        verify(kioscoMovementRepository).delete(merma);
     }
 
     @Test
