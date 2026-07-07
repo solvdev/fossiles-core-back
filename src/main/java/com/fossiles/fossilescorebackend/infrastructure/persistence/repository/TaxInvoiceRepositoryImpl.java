@@ -20,6 +20,7 @@ public class TaxInvoiceRepositoryImpl implements TaxInvoiceRepositoryCustom {
             String sourceType,
             String status,
             String customerTaxIdPattern,
+            String internalNumberPattern,
             String certificationFilter,
             LocalDateTime from,
             LocalDateTime to
@@ -38,6 +39,10 @@ public class TaxInvoiceRepositoryImpl implements TaxInvoiceRepositoryCustom {
         if (customerTaxIdPattern != null) {
             jpql.append(" AND UPPER(t.customerTaxId) LIKE :customerTaxIdPattern");
             params.put("customerTaxIdPattern", customerTaxIdPattern);
+        }
+        if (internalNumberPattern != null) {
+            jpql.append(" AND UPPER(t.internalNumber) LIKE :internalNumberPattern");
+            params.put("internalNumberPattern", internalNumberPattern);
         }
         if (certificationFilter != null) {
             switch (certificationFilter) {

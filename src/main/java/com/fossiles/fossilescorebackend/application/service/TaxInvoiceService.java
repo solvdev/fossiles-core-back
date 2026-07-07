@@ -392,8 +392,21 @@ public class TaxInvoiceService {
 
     @Transactional
     public TaxInvoiceResponse issueManual(ManualTaxInvoiceRequest request) throws BusinessException {
+        Long kioskSaleId = resolveManualKioskSaleId(request);
+        if (kioskSaleId != null) {
+            return issueManualFromKioskSale(request, kioskSaleId);
+        }
+
+        if (request.getLines() == null || request.getLines().isEmpty()) {
+            throw new BusinessException("Debe incluir al menos una línea.");
+        }
+
         TaxInvoiceDocument document = buildManualDocument(request);
-        enrichEmitterForCueroGlamCentral(document);
+        if (!locationRepository.existsById(request.getLocationId())) {
+            throw new BusinessException("La ubicación seleccionada no existe.");
+        }
+        enrichEmitterFromKioskLocation(document, request.getLocationId());
+        assertEmitterConfigured(document);
         enrichReceptorFromLookup(document);
         validateDocument(document);
         Long userId = securityUtil.getCurrentUserId();
@@ -402,6 +415,106 @@ public class TaxInvoiceService {
         taxInvoiceRepository.save(invoice);
         certify(invoice, document, false);
         return toResponse(invoice);
+    }
+
+    private Long resolveManualKioskSaleId(ManualTaxInvoiceRequest request) throws BusinessException {
+        if (request.getKioskSaleId() != null) {
+            return request.getKioskSaleId();
+        }
+        String saleNumber = trimToNull(request.getKioskSaleNumber());
+        if (saleNumber == null) {
+            return null;
+        }
+        if (request.getLocationId() == null) {
+            throw new BusinessException("Seleccione el establecimiento para buscar la venta POS.");
+        }
+        return kioskSaleRepository.findByKioskLocationIdAndSaleNumberIgnoreCase(
+                        request.getLocationId(),
+                        saleNumber
+                )
+                .map(KioskSaleEntity::getId)
+                .orElseThrow(() -> new BusinessException(
+                        "No se encontró la venta POS " + saleNumber + " en el establecimiento seleccionado."));
+    }
+
+    private TaxInvoiceResponse issueManualFromKioskSale(
+            ManualTaxInvoiceRequest request,
+            Long kioskSaleId
+    ) throws BusinessException {
+        KioskSaleEntity sale = kioskSaleRepository.findById(kioskSaleId)
+                .orElseThrow(() -> new BusinessException("La venta POS seleccionada no existe."));
+        if (!Objects.equals(sale.getKioskLocationId(), request.getLocationId())) {
+            throw new BusinessException("La venta POS no pertenece al establecimiento seleccionado.");
+        }
+        if ("VOID".equalsIgnoreCase(safe(sale.getStatus()))) {
+            throw new BusinessException("No se puede facturar una venta anulada.");
+        }
+
+        Optional<TaxInvoiceEntity> existing = resolveKioskSaleInvoice(sale);
+        if (existing.isPresent() && !isEligibleForKioskSaleFelAssociation(existing.get())) {
+            throw new BusinessException("La venta POS ya tiene una factura certificada o no disponible para asociar.");
+        }
+
+        TaxInvoiceDocument document = kioskSaleInvoiceMapper.fromSale(sale);
+        enrichEmitterFromKioskLocation(document, request.getLocationId());
+        assertEmitterConfigured(document);
+        enrichReceptorFromLookup(document);
+        validateDocument(document);
+
+        if (existing.isPresent()) {
+            TaxInvoiceEntity invoice = existing.get();
+            syncInvoiceFromDocument(invoice, document);
+            invoice.setFelTransactionId(document.getTransactionId());
+            if (request.getNotes() != null) {
+                appendInvoiceNote(invoice, trimToNull(request.getNotes()));
+            }
+            taxInvoiceRepository.save(invoice);
+            linkKioskSaleToInvoice(sale, invoice);
+            certify(invoice, document, true);
+            syncSourceFelFields(invoice);
+            return toResponse(invoice);
+        }
+
+        Long userId = securityUtil.getCurrentUserId();
+        TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, userId);
+        if (request.getNotes() != null) {
+            invoice.setNotes(trimToNull(request.getNotes()));
+            taxInvoiceRepository.save(invoice);
+        }
+        linkKioskSaleToInvoice(sale, invoice);
+        certify(invoice, document, false);
+        return toResponse(invoice);
+    }
+
+    private Optional<TaxInvoiceEntity> resolveKioskSaleInvoice(KioskSaleEntity sale) {
+        if (sale == null) {
+            return Optional.empty();
+        }
+        Optional<TaxInvoiceEntity> bySource = taxInvoiceRepository.findBySourceTypeAndSourceId(
+                "KIOSK_SALE",
+                sale.getId()
+        );
+        if (bySource.isPresent()) {
+            return bySource;
+        }
+        if (sale.getInvoiceId() != null) {
+            return taxInvoiceRepository.findById(sale.getInvoiceId());
+        }
+        if (sale.getSaleNumber() != null && !sale.getSaleNumber().isBlank()) {
+            return taxInvoiceRepository.findFirstByFelTransactionIdIgnoreCase(sale.getSaleNumber().trim());
+        }
+        return Optional.empty();
+    }
+
+    private boolean isEligibleForKioskSaleFelAssociation(TaxInvoiceEntity invoice) {
+        if (invoice == null) {
+            return true;
+        }
+        if ("CERTIFIED".equals(invoice.getStatus()) || "VOID".equalsIgnoreCase(safe(invoice.getStatus()))) {
+            return false;
+        }
+        boolean hasFelUuid = invoice.getFelUuid() != null && !invoice.getFelUuid().isBlank();
+        return !hasFelUuid;
     }
 
     @Transactional
@@ -589,6 +702,7 @@ public class TaxInvoiceService {
             String sourceType,
             String status,
             String customerTaxId,
+            String internalNumber,
             String certificationFilter,
             LocalDate fromDate,
             LocalDate toDate
@@ -599,10 +713,12 @@ public class TaxInvoiceService {
         String normalizedStatus = trimToNull(status);
         String normalizedCertificationFilter = trimToNull(certificationFilter);
         String customerTaxIdPattern = buildCustomerTaxIdPattern(customerTaxId);
+        String internalNumberPattern = buildInternalNumberPattern(internalNumber);
         return taxInvoiceRepository.search(
                         normalizedSourceType,
                         normalizedStatus,
                         customerTaxIdPattern,
+                        internalNumberPattern,
                         normalizedCertificationFilter,
                         from,
                         to
@@ -644,6 +760,14 @@ public class TaxInvoiceService {
 
     private String buildCustomerTaxIdPattern(String customerTaxId) {
         String normalized = trimToNull(customerTaxId);
+        if (normalized == null) {
+            return null;
+        }
+        return "%" + normalized.toUpperCase(Locale.ROOT) + "%";
+    }
+
+    private String buildInternalNumberPattern(String internalNumber) {
+        String normalized = trimToNull(internalNumber);
         if (normalized == null) {
             return null;
         }
@@ -943,6 +1067,13 @@ public class TaxInvoiceService {
             return;
         }
         locationRepository.findById(kioskLocationId).ifPresent(location -> applyLocationEmitter(document, location));
+    }
+
+    private void assertEmitterConfigured(TaxInvoiceDocument document) throws BusinessException {
+        if (document == null || isBlank(document.getEmitterEstablishmentCode())) {
+            throw new BusinessException(
+                    "La ubicación seleccionada no tiene código de establecimiento FEL configurado.");
+        }
     }
 
     /**

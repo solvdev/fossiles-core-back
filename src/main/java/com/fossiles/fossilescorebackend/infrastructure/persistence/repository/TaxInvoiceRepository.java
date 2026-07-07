@@ -11,6 +11,8 @@ public interface TaxInvoiceRepository extends JpaRepository<TaxInvoiceEntity, Lo
 
     Optional<TaxInvoiceEntity> findBySourceTypeAndSourceId(String sourceType, Long sourceId);
 
+    Optional<TaxInvoiceEntity> findFirstByFelTransactionIdIgnoreCase(String felTransactionId);
+
     List<TaxInvoiceEntity> findBySourceTypeAndSourceIdOrderByIdDesc(String sourceType, Long sourceId);
 
     @Query("SELECT t.status, COUNT(t) FROM TaxInvoiceEntity t GROUP BY t.status")

@@ -40,12 +40,13 @@ public class TaxInvoiceController {
             @RequestParam(required = false) String sourceType,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String customerTaxId,
+            @RequestParam(required = false) String internalNumber,
             @RequestParam(required = false) String certificationFilter,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate
     ) {
         return ResponseEntity.ok(taxInvoiceService.list(
-                sourceType, status, customerTaxId, certificationFilter, fromDate, toDate));
+                sourceType, status, customerTaxId, internalNumber, certificationFilter, fromDate, toDate));
     }
 
     @GetMapping("/summary")

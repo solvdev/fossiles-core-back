@@ -1,5 +1,11 @@
 -- Backfill de tax_invoice para ventas POS (kiosk_sale) que aún no tienen registro.
 --
+-- CLAVE DE EMPAREJAMIENTO:
+--   kiosk_sale.sale_number = tax_invoice.fel_transaction_id
+--
+-- Si ya existen facturas pero desalineadas (source_id, invoice_id, FEL), usar:
+--   scripts/migration-sync-kiosk-sale-tax-invoice.sql
+--
 -- RECOMENDADO (genera correlativo interno correcto, líneas por item, enlace invoice_id):
 --   GET  /api/tax-invoices/kiosk-sales/missing-count
 --   POST /api/tax-invoices/kiosk-sales/backfill

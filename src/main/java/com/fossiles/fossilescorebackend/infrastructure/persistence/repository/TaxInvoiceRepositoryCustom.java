@@ -11,6 +11,7 @@ public interface TaxInvoiceRepositoryCustom {
             String sourceType,
             String status,
             String customerTaxIdPattern,
+            String internalNumberPattern,
             String certificationFilter,
             LocalDateTime from,
             LocalDateTime to

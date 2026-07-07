@@ -2,7 +2,6 @@ package com.fossiles.fossilescorebackend.application.dto.request;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import lombok.AllArgsConstructor;
@@ -22,6 +21,15 @@ public class ManualTaxInvoiceRequest {
     @NotBlank(message = "El NIT o CF es obligatorio.")
     private String customerTaxId;
 
+    @NotNull(message = "Debe seleccionar el establecimiento emisor.")
+    private Long locationId;
+
+    /** Venta POS existente a asociar (opcional). */
+    private Long kioskSaleId;
+
+    /** Alternativa: número de venta POS (= fel_transaction_id). Requiere locationId. */
+    private String kioskSaleNumber;
+
     /** FACT (factura) o FCAM (factura cambiaria). Por defecto FACT. */
     private String documentType;
 
@@ -31,7 +39,6 @@ public class ManualTaxInvoiceRequest {
     private String email;
     private String notes;
 
-    @NotEmpty(message = "Debe incluir al menos una línea.")
     @Valid
     private List<LineRequest> lines;
 
