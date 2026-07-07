@@ -2120,6 +2120,8 @@ public class KioskPosService {
                 ? userRepository.findById(sale.getDepositRecordedBy()).orElse(null)
                 : null;
 
+        UserEntity soldByUser = resolveSaleSoldByUser(sale, user);
+
         KioskPosSaleResponse.InvoiceInfo invoiceInfo = buildInvoiceInfo(sale);
 
         return KioskPosSaleResponse.builder()
@@ -2130,9 +2132,9 @@ public class KioskPosService {
                 .kioskId(kiosk.getId())
                 .kioskCode(kiosk.getCode())
                 .kioskName(kiosk.getName())
-                .soldByUserId(user.getId())
-                .soldByUsername(user.getUsername())
-                .soldByName(buildUserFullName(user))
+                .soldByUserId(soldByUser.getId())
+                .soldByUsername(soldByUser.getUsername())
+                .soldByName(buildUserFullName(soldByUser))
                 .customerTaxId(sale.getCustomerTaxId())
                 .customerName(sale.getCustomerName())
                 .address(sale.getAddress())
@@ -2755,6 +2757,14 @@ public class KioskPosService {
 
     private BigDecimal safeAmount(BigDecimal value) {
         return value != null ? value : BigDecimal.ZERO;
+    }
+
+    private UserEntity resolveSaleSoldByUser(KioskSaleEntity sale, UserEntity fallbackUser) {
+        Long soldByUserId = sale.getSoldByUserId();
+        if (soldByUserId == null) {
+            return fallbackUser;
+        }
+        return userRepository.findById(soldByUserId).orElse(fallbackUser);
     }
 
     private String buildUserFullName(UserEntity user) {

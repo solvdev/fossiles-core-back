@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.dto.request;
 
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -25,7 +26,8 @@ public class KioscoInventoryDevolucionDepositoRequest {
     /** Talla cuando el producto maneja inventario por talla (cinchos FOSS). */
     private String sizeKey;
 
-    /** Número de boleta física de respaldo. */
+    /** Número de boleta física de respaldo (devolución a bodega). */
+    @NotBlank(message = "Debes indicar el número de boleta de devolución a bodega.")
     private String physicalSlipNumber;
 
     /** Motivo u observación del movimiento. */
