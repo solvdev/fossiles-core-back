@@ -40,6 +40,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -1900,7 +1901,7 @@ public class ProductDistributionService {
         }
         return ShipmentReceiptRepairResponse.builder()
                 .repairedLines(repaired)
-                .warnings(warnings)
+                .warnings(deduplicateReconcileWarnings(warnings))
                 .build();
     }
 
@@ -2087,22 +2088,26 @@ public class ProductDistributionService {
                 .mermasToDelete(mermasToDelete)
                 .kardexLinesToNormalize(kardexLinesToNormalize)
                 .stockRowsToRecalculate(affectedStockIds.size())
-                .hasChanges(entradasToDelete > 0 || entradasToTrim > 0 || mermasToDelete > 0)
-                .warnings(warnings)
+                .hasChanges(entradasToDelete > 0 || entradasToTrim > 0 || mermasToDelete > 0
+                        || affectedStockIds.size() > 0)
+                .warnings(deduplicateReconcileWarnings(warnings))
                 .lines(previewLines)
                 .build();
     }
 
+    private List<String> deduplicateReconcileWarnings(List<String> warnings) {
+        if (warnings == null || warnings.isEmpty()) {
+            return List.of();
+        }
+        return new ArrayList<>(new LinkedHashSet<>(warnings));
+    }
+
+    /**
+     * Cinchos FOSS comparten stock por producto+color: cuadrar una sola vez por grupo
+     * (suma de lo enviado vs todas las ENTRADAs del envío), no por cada línea/talla.
+     */
     private boolean shouldReconcileShipmentDetailsIndividually(List<ProductShipmentDetailEntity> details) {
-        if (details == null || details.isEmpty()) {
-            return false;
-        }
-        ProductShipmentDetailEntity first = details.stream().filter(Objects::nonNull).findFirst().orElse(null);
-        if (first == null || first.getProductId() == null) {
-            return false;
-        }
-        ProductEntity product = productRepository.findById(first.getProductId()).orElse(null);
-        return CinchoProductUtils.isFossCinchoProduct(product);
+        return false;
     }
 
     private ReconcileLineResult reconcileShipmentDetailGroup(
@@ -2421,13 +2426,20 @@ public class ProductDistributionService {
                         foss ? "CHANGE" : "WARNING",
                         foss ? List.of(recalculateStockPreviewAction()) : List.of());
             }
-            if (stockQty > expected && movements.isEmpty()) {
+            if (stockQty > sentBaseline && movements.isEmpty()) {
                 String productLabel = resolveProductLabel(productId);
+                ProductEntity product = productRepository.findById(productId).orElse(null);
+                boolean foss = CinchoProductUtils.isFossCinchoProduct(product);
                 warnings.add(productLabel + ": stock kiosco=" + stockQty
-                        + " sin ENTRADAs enlazadas al envío (documento " + expected + ").");
+                        + " supera lo enviado (" + sentBaseline + ") y no hay ENTRADAs enlazadas a este envío."
+                        + (foss
+                        ? " Se recalculará stock y se limpiará sizes_data inflado."
+                        : " Revise recepciones manuales o use ajuste de inventario."));
+                trackAffectedStockIds(movements, locationId, productId, colorId, affectedStockIds);
                 return buildPreviewLine(
-                        shipment, productId, colorId, lineType, expected, sumQty, movements.size(), stockQty,
-                        "WARNING", List.of());
+                        shipment, productId, colorId, lineType, sentBaseline, sumQty, movements.size(), stockQty,
+                        foss ? "CHANGE" : "WARNING",
+                        foss ? List.of(recalculateStockPreviewAction()) : List.of());
             }
             return null;
         }
@@ -2690,9 +2702,15 @@ public class ProductDistributionService {
                         ? " Se recalculará stock al finalizar el cuadre."
                         : " Corrija con ajuste por talla si sizes_data quedó duplicado."));
                 trackAffectedStockIds(movements, locationId, productId, colorId, affectedStockIds);
-            } else if (stockQty > expected && movements.isEmpty()) {
+            } else if (stockQty > sentBaseline && movements.isEmpty()) {
+                ProductEntity product = productRepository.findById(productId).orElse(null);
+                boolean foss = CinchoProductUtils.isFossCinchoProduct(product);
                 warnings.add(resolveProductLabel(productId) + ": stock kiosco=" + stockQty
-                        + " pero no se encontraron ENTRADAs enlazadas al envío (esperado " + expected + ").");
+                        + " supera lo enviado (" + sentBaseline + ") y no hay ENTRADAs enlazadas a este envío."
+                        + (foss
+                        ? " Se recalculará stock al finalizar el cuadre."
+                        : " Revise recepciones manuales o use ajuste de inventario."));
+                trackAffectedStockIds(movements, locationId, productId, colorId, affectedStockIds);
             }
             return new ReconcileLineResult(linesReconciled, duplicatesRemoved);
         }
@@ -2771,6 +2789,11 @@ public class ProductDistributionService {
         }
         mergeShipmentEntradaMovements(merged, findShipmentEntradaMovementsFallback(
                 locationId, shipmentId, productId, colorId, shipment, lineRef, mergeAllProductShipmentEntradas));
+
+        if (merged.isEmpty() && !mergeAllProductShipmentEntradas) {
+            return resolveShipmentEntradaMovementsForReconcile(
+                    locationId, shipmentId, lineRef, productId, colorId, shipment, true);
+        }
 
         return merged.values().stream()
                 .sorted(Comparator
