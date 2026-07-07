@@ -1823,7 +1823,7 @@ public class KioscoInventoryService {
         return 1;
     }
 
-    private static int movementSignedDelta(KioscoMovementEntity movement) {
+    private int movementSignedDelta(KioscoMovementEntity movement) {
         if (movement == null || movement.getMovementType() == null) {
             return safeInt(movement != null ? movement.getStockAfter() : 0)
                     - safeInt(movement != null ? movement.getStockBefore() : 0);

@@ -1882,11 +1882,11 @@ public class ProductDistributionService {
             if (qtyExpected.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
-            if (repairShipmentProductLineIfMissing(shipment, detail, qtyExpected, force)) {
+            if (repairShipmentProductLineIfMissing(shipment, detail, qtyExpected, false)) {
                 repaired++;
             }
         }
-        repaired += repairDeliveredShipmentPackingInventory(shipment, details, force, warnings);
+        repaired += repairDeliveredShipmentPackingInventory(shipment, details, false, warnings);
         if (repaired == 0 && warnings.isEmpty()) {
             List<ProductShipmentResponse.PackingItemResponse> packingItems =
                     parsePackingItems(shipment.getPackingItems());
@@ -2160,7 +2160,6 @@ public class ProductDistributionService {
                         locationId,
                         colorId,
                         qty,
-                        null,
                         "SHIPMENT",
                         row.getReferenceId(),
                         row.getReferenceNumber(),
