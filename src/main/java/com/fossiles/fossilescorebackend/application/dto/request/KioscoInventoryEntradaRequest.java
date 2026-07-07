@@ -25,4 +25,7 @@ public class KioscoInventoryEntradaRequest {
     private Long referenceId;
 
     private Long userId;
+
+    /** Talla para cinchos FOSS cuando el stock tiene desglose por talla. */
+    private String sizeKey;
 }

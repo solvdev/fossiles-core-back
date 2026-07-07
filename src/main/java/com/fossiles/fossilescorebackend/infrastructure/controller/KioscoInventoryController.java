@@ -64,7 +64,8 @@ public class KioscoInventoryController {
                 request.getColorId(),
                 request.getQuantity(),
                 request.getReferenceId(),
-                request.getUserId()
+                request.getUserId(),
+                request.getSizeKey()
         ));
     }
 
@@ -79,7 +80,8 @@ public class KioscoInventoryController {
                 request.getColorId(),
                 request.getQuantity(),
                 request.getInvoiceId(),
-                request.getUserId()
+                request.getUserId(),
+                request.getSizeKey()
         ));
     }
 
@@ -143,7 +145,8 @@ public class KioscoInventoryController {
                 request.getColorId(),
                 request.getQuantity(),
                 request.getReason(),
-                request.getUserId()
+                request.getUserId(),
+                request.getSizeKey()
         ));
     }
 
@@ -157,6 +160,7 @@ public class KioscoInventoryController {
                 request.getProductId(),
                 request.getColorId(),
                 request.getRealQuantity(),
+                request.getRealSizes(),
                 request.getReason(),
                 request.getUserId()
         ));

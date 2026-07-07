@@ -14,6 +14,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.InventoryTransferRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductInventoryLocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductInventoryKardexRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
@@ -34,7 +35,9 @@ import org.mockito.quality.Strictness;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -67,6 +70,8 @@ class KioscoInventoryServiceTest {
     private SecurityUtil securityUtil;
     @Mock
     private ProductInventoryService productInventoryService;
+    @Mock
+    private ProductInventoryLocationRepository productInventoryLocationRepository;
     @Mock
     private KioskInventoryGuard kioskInventoryGuard;
     @Mock
@@ -105,7 +110,14 @@ class KioscoInventoryServiceTest {
                 .build()));
         when(kioskInventoryGuard.isKioskLocation(any(LocationEntity.class))).thenReturn(true);
         when(productRepository.existsById(productId)).thenReturn(true);
+        when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
+                .id(productId)
+                .code("SUM-001")
+                .name("Empaque")
+                .build()));
         when(colorRepository.existsById(colorId)).thenReturn(true);
+        when(productInventoryLocationRepository.findByProductIdAndLocationIdAndColorId(
+                productId, locationId, colorId)).thenReturn(Optional.empty());
         when(userRepository.existsById(userId)).thenReturn(true);
         when(securityUtil.getCurrentUserId()).thenReturn(userId);
         when(kioscoStockRepository.save(any(KioscoStockEntity.class))).thenAnswer(inv -> {
@@ -370,6 +382,52 @@ class KioscoInventoryServiceTest {
     void ajuste_falla_siMotivoVacio() {
         assertThatThrownBy(() -> service.registrarAjuste(locationId, productId, colorId, 3, "", userId))
                 .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void ajuste_foss_conRealSizes_actualizaSizesData() throws Exception {
+        when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
+                .id(productId)
+                .code("FOSS-15")
+                .name("CINCHO FOSS 15")
+                .build()));
+        KioscoStockEntity stock = stockEntity(10, 0);
+        stock.setSizesData("{\"32\":4,\"34\":6}");
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId)).thenReturn(Optional.of(stock));
+
+        Map<String, Integer> realSizes = new LinkedHashMap<>();
+        realSizes.put("32", 3);
+        realSizes.put("34", 4);
+
+        KioscoStockResponse response = service.registrarAjuste(
+                locationId, productId, colorId, 7, realSizes, "conteo fisico", userId);
+
+        assertThat(response.getCurrentStock()).isEqualTo(7);
+        assertThat(response.getSizes()).containsEntry("32", new BigDecimal("3"));
+        assertThat(response.getSizes()).containsEntry("34", new BigDecimal("4"));
+    }
+
+    @Test
+    void venta_falla_siHayDesglosePorTallaSinIndicarTalla() {
+        KioscoStockEntity stock = stockEntity(5, 0);
+        stock.setSizesData("{\"32\":5}");
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId)).thenReturn(Optional.of(stock));
+
+        assertThatThrownBy(() -> service.registrarVenta(locationId, productId, colorId, 1, 100L, userId))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Indique la talla");
+    }
+
+    @Test
+    void venta_conTalla_descuentaSizesData() throws Exception {
+        KioscoStockEntity stock = stockEntity(5, 0);
+        stock.setSizesData("{\"32\":5}");
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId)).thenReturn(Optional.of(stock));
+
+        KioscoStockResponse response = service.registrarVenta(locationId, productId, colorId, 2, 100L, userId, "32");
+
+        assertThat(response.getCurrentStock()).isEqualTo(3);
+        assertThat(response.getSizes()).containsEntry("32", new BigDecimal("3"));
     }
 
     @Test

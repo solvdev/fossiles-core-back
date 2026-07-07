@@ -27,4 +27,7 @@ public class KioscoInventoryMermaRequest {
     private String reason;
 
     private Long userId;
+
+    /** Talla para cinchos FOSS cuando el stock tiene desglose por talla. */
+    private String sizeKey;
 }

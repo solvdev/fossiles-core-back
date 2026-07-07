@@ -4,12 +4,13 @@
 -- Uso manual (psql / pgAdmin), siempre dentro de una transaccion:
 --
 --   BEGIN;
---   SELECT set_config('app.kiosco_movement_admin_mutation', 'true', true);
+--   SELECT set_config('app.kiosco_movement_admin_mutation', 'true', false);
 --   DELETE FROM kiosco_movement WHERE id = 12345;
---   -- Opcional: recalcular stock del producto afectado en kiosco_stock
+--   SELECT set_config('app.kiosco_movement_admin_mutation', 'false', false);
 --   COMMIT;
 --
--- Sin el flag, DELETE y UPDATE siguen bloqueados (append-only por defecto).
+-- IMPORTANTE: ejecute BEGIN, set_config, DELETE/UPDATE y COMMIT en UN SOLO script.
+-- Si corre set_config y DELETE en consultas separadas con autocommit, el flag se pierde.
 
 CREATE OR REPLACE FUNCTION prevent_kiosco_movement_mutation()
 RETURNS TRIGGER AS $$
@@ -31,6 +32,8 @@ COMMENT ON FUNCTION prevent_kiosco_movement_mutation() IS
 COMMENT ON TABLE kiosco_movement IS
     'Log de movimientos de inventario kiosko. Append-only por defecto; admin puede mutar con app.kiosco_movement_admin_mutation.';
 
+DROP TRIGGER IF EXISTS trg_kiosco_movement_no_update ON kiosco_movement;
+DROP TRIGGER IF EXISTS trg_kiosco_movement_no_delete ON kiosco_movement;
 DROP TRIGGER IF EXISTS trg_kiosco_movement_prevent_update ON kiosco_movement;
 CREATE TRIGGER trg_kiosco_movement_prevent_update
 BEFORE UPDATE ON kiosco_movement
@@ -42,3 +45,6 @@ CREATE TRIGGER trg_kiosco_movement_prevent_delete
 BEFORE DELETE ON kiosco_movement
 FOR EACH ROW
 EXECUTE FUNCTION prevent_kiosco_movement_mutation();
+
+
+

@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.ProductInventoryLocationRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoConsolidatedReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoInventoryInitializeResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoKardexReportResponse;
@@ -16,6 +17,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Kiosco
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryLocation;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryKardex;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
@@ -24,10 +26,12 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.In
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductInventoryLocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductInventoryKardexRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import jakarta.persistence.EntityManager;
@@ -78,6 +82,7 @@ public class KioscoInventoryService {
     private final UserRepository userRepository;
     private final SecurityUtil securityUtil;
     private final ProductInventoryService productInventoryService;
+    private final ProductInventoryLocationRepository productInventoryLocationRepository;
     private final KioskInventoryGuard kioskInventoryGuard;
     private final ProductShipmentRepository productShipmentRepository;
     private final ProductInventoryKardexRepository productInventoryKardexRepository;
@@ -92,7 +97,19 @@ public class KioscoInventoryService {
             Long referenceId,
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
-        return registrarEntradaInternal(locationId, productId, colorId, quantity, referenceId, userId, true, null);
+        return registrarEntrada(locationId, productId, colorId, quantity, referenceId, userId, null);
+    }
+
+    public KioscoStockResponse registrarEntrada(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarEntradaInternal(locationId, productId, colorId, quantity, referenceId, userId, true, sizeKey);
     }
 
     public KioscoStockResponse registrarVenta(
@@ -103,7 +120,19 @@ public class KioscoInventoryService {
             Long invoiceId,
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
-        return registrarVentaInternal(locationId, productId, colorId, quantity, invoiceId, userId, true, null);
+        return registrarVenta(locationId, productId, colorId, quantity, invoiceId, userId, null);
+    }
+
+    public KioscoStockResponse registrarVenta(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long invoiceId,
+            Long userId,
+            String sizeKey
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarVentaInternal(locationId, productId, colorId, quantity, invoiceId, userId, true, sizeKey);
     }
 
     public KioscoStockResponse registrarDevolucionDeposito(
@@ -547,6 +576,18 @@ public class KioscoInventoryService {
             String reason,
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarMerma(locationId, productId, colorId, quantity, reason, userId, null);
+    }
+
+    public KioscoStockResponse registrarMerma(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            String reason,
+            Long userId,
+            String sizeKey
+    ) throws BusinessException, ResourceNotFoundException {
         if (safeTrim(reason).isEmpty()) {
             throw new BusinessException("El motivo de merma es obligatorio.");
         }
@@ -563,7 +604,7 @@ public class KioscoInventoryService {
                 -quantity,
                 true,
                 reason.trim(),
-                null,
+                sizeKey,
                 true
         );
     }
@@ -576,6 +617,18 @@ public class KioscoInventoryService {
             String reason,
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarAjuste(locationId, productId, colorId, realQuantity, null, reason, userId);
+    }
+
+    public KioscoStockResponse registrarAjuste(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer realQuantity,
+            Map<String, Integer> realSizes,
+            String reason,
+            Long userId
+    ) throws BusinessException, ResourceNotFoundException {
         if (realQuantity == null || realQuantity < 0) {
             throw new BusinessException("La cantidad real no puede ser negativa.");
         }
@@ -584,7 +637,47 @@ public class KioscoInventoryService {
         }
 
         Long resolvedUserId = resolveUserIdRequired(userId);
+        validateLocationIsKiosk(locationId);
+        validateProduct(productId);
+        validateColor(colorId);
+        ProductEntity product = productRepository.findById(productId)
+                .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
+
         KioscoStockEntity stock = getOrCreateLockedStock(locationId, productId, colorId, resolvedUserId);
+        ensureSizesDataAligned(stock);
+        stock = kioscoStockRepository.findForUpdate(locationId, productId, colorId).orElse(stock);
+
+        Map<String, BigDecimal> targetSizes = normalizeRealSizesMap(realSizes);
+        boolean fossWithSizes = CinchoProductUtils.isFossCinchoProduct(product)
+                && (targetSizes != null || ProductInventorySizesJson.hasNonEmptyBreakdown(stock.getSizesData()));
+
+        if (fossWithSizes) {
+            if (targetSizes == null) {
+                throw new BusinessException(
+                        "Los cinchos FOSS requieren desglose por talla: envíe realSizes con la cantidad contada por talla.");
+            }
+            int targetTotal = ProductInventorySizesJson.sum(targetSizes).setScale(0, RoundingMode.HALF_UP).intValue();
+            if (realQuantity != targetTotal) {
+                throw new BusinessException("realQuantity debe coincidir con la suma de realSizes (" + targetTotal + ").");
+            }
+            int before = safeInt(stock.getCurrentStock());
+            int delta = targetTotal - before;
+            stock.setSizesData(ProductInventorySizesJson.serializeIncludingZeros(targetSizes));
+            stock.setCurrentStock(targetTotal);
+            stock.setUpdatedBy(resolvedUserId);
+            stock.setLastUpdatedAt(LocalDateTime.now());
+            KioscoStockEntity savedStock = kioscoStockRepository.save(stock);
+
+            saveMovement(savedStock, KioscoMovementType.AJUSTE, Math.abs(delta), before, targetTotal,
+                    null, reason.trim(), true, resolvedUserId, null, null);
+
+            syncLegacyInventoryToTargetSizes(locationId, productId, colorId, targetSizes);
+            if (delta < 0) {
+                verificarStockMinimo(locationId, productId, colorId);
+            }
+            return toStockResponse(savedStock);
+        }
+
         int before = safeInt(stock.getCurrentStock());
         int delta = realQuantity - before;
         int after = before + delta;
@@ -1346,6 +1439,7 @@ public class KioscoInventoryService {
         validateUser(userId);
 
         KioscoStockEntity stock = getOrCreateLockedStock(locationId, productId, colorId, userId);
+        validateSizeKeyRequired(locationId, productId, colorId, stock, sizeKey);
         int before = safeInt(stock.getCurrentStock());
         int after = before;
 
@@ -1855,12 +1949,21 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Habilita DELETE/UPDATE en kiosco_movement dentro de la transaccion actual
+     * Habilita DELETE/UPDATE en kiosco_movement en la conexion JDBC actual
      * (requiere migration-kiosco-movement-admin-delete.sql).
+     * Usa alcance de sesion (no solo la sentencia) para que el flag no se pierda entre queries.
      */
     public void enableAdminMovementMutation() {
         entityManager.createNativeQuery(
-                        "SELECT set_config(:key, 'true', true)")
+                        "SELECT set_config(:key, 'true', false)")
+                .setParameter("key", ADMIN_MOVEMENT_MUTATION_KEY)
+                .getSingleResult();
+    }
+
+    /** Restablece append-only al devolver la conexion al pool. */
+    public void disableAdminMovementMutation() {
+        entityManager.createNativeQuery(
+                        "SELECT set_config(:key, 'false', false)")
                 .setParameter("key", ADMIN_MOVEMENT_MUTATION_KEY)
                 .getSingleResult();
     }
@@ -2042,6 +2145,7 @@ public class KioscoInventoryService {
         }
         entityManager.flush();
         stock.setCurrentStock(running);
+        ensureSizesDataAligned(stock);
         kioscoStockRepository.save(stock);
         return 1;
     }
@@ -2070,6 +2174,7 @@ public class KioscoInventoryService {
             }
         }
         stock.setCurrentStock(running);
+        ensureSizesDataAligned(stock);
         kioscoStockRepository.save(stock);
         return 1;
     }
@@ -2085,6 +2190,87 @@ public class KioscoInventoryService {
             case VENTA, DEVOLUCION_DEPOSITO, TRASLADO_SALIDA, MERMA -> -qty;
             case AJUSTE, CAMBIO -> safeInt(movement.getStockAfter()) - safeInt(movement.getStockBefore());
         };
+    }
+
+    /**
+     * Alinea sizes_data de kiosco con inventario legacy cuando falta desglose por talla,
+     * y garantiza que current_stock coincida con la suma de tallas.
+     */
+    public void ensureSizesDataAligned(KioscoStockEntity stock) {
+        if (stock == null || stock.getId() == null) {
+            return;
+        }
+        Map<String, BigDecimal> kioscoSizes = ProductInventorySizesJson.parse(stock.getSizesData());
+        if (kioscoSizes.isEmpty()) {
+            productInventoryLocationRepository
+                    .findByProductIdAndLocationIdAndColorId(stock.getProductId(), stock.getLocationId(), stock.getColorId())
+                    .map(ProductInventoryLocation::getSizesData)
+                    .filter(ProductInventorySizesJson::hasNonEmptyBreakdown)
+                    .ifPresent(legacyJson -> kioscoSizes.putAll(ProductInventorySizesJson.parse(legacyJson)));
+        }
+        if (!kioscoSizes.isEmpty()) {
+            int totalFromSizes = ProductInventorySizesJson.sum(kioscoSizes).setScale(0, RoundingMode.HALF_UP).intValue();
+            if (safeInt(stock.getCurrentStock()) != totalFromSizes) {
+                stock.setCurrentStock(totalFromSizes);
+            }
+            stock.setSizesData(ProductInventorySizesJson.serialize(kioscoSizes));
+            stock.setLastUpdatedAt(LocalDateTime.now());
+            kioscoStockRepository.save(stock);
+        }
+    }
+
+    private void validateSizeKeyRequired(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            KioscoStockEntity stock,
+            String sizeKey
+    ) throws BusinessException {
+        boolean kioscoBreakdown = ProductInventorySizesJson.hasNonEmptyBreakdown(stock.getSizesData());
+        boolean legacyBreakdown = productInventoryLocationRepository
+                .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
+                .map(ProductInventoryLocation::getSizesData)
+                .map(ProductInventorySizesJson::hasNonEmptyBreakdown)
+                .orElse(false);
+        if ((kioscoBreakdown || legacyBreakdown)
+                && ProductInventorySizesJson.normalizeKey(sizeKey).isEmpty()) {
+            throw new BusinessException("Indique la talla para esta operación de inventario kiosko.");
+        }
+    }
+
+    private Map<String, BigDecimal> normalizeRealSizesMap(Map<String, Integer> realSizes) throws BusinessException {
+        if (realSizes == null || realSizes.isEmpty()) {
+            return null;
+        }
+        Map<String, BigDecimal> normalized = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> entry : realSizes.entrySet()) {
+            String key = ProductInventorySizesJson.normalizeKey(entry.getKey());
+            if (key.isEmpty()) {
+                continue;
+            }
+            Integer value = entry.getValue();
+            if (value == null || value < 0) {
+                throw new BusinessException("El conteo de talla " + key + " no puede ser negativo.");
+            }
+            normalized.put(key, BigDecimal.valueOf(value));
+        }
+        return normalized.isEmpty() ? null : normalized;
+    }
+
+    private void syncLegacyInventoryToTargetSizes(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Map<String, BigDecimal> targetSizes
+    ) throws BusinessException, ResourceNotFoundException {
+        BigDecimal total = ProductInventorySizesJson.sum(targetSizes);
+        productInventoryService.createOrUpdateInventory(ProductInventoryLocationRequest.builder()
+                .productId(productId)
+                .locationId(locationId)
+                .colorId(colorId)
+                .quantity(total)
+                .sizes(new LinkedHashMap<>(targetSizes))
+                .build());
     }
 
     @lombok.Data

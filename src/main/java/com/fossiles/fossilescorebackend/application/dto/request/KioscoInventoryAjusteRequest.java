@@ -8,6 +8,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.Map;
+
 @Data
 @Builder
 @NoArgsConstructor
@@ -27,4 +29,7 @@ public class KioscoInventoryAjusteRequest {
     private String reason;
 
     private Long userId;
+
+    /** Cinchos FOSS: cantidad real por talla; actualiza sizes_data e inventario final. */
+    private Map<String, Integer> realSizes;
 }

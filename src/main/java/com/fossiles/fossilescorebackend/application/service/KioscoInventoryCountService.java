@@ -35,7 +35,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -244,15 +243,16 @@ public class KioscoInventoryCountService {
 
     private KioscoPhysicalCountReportResponse buildReport(KioscoPhysicalCountEntity count)
             throws BusinessException, ResourceNotFoundException {
+        Map<String, KioscoStockEntity> stockByKey = kioscoStockRepository
+                .findByLocationIdOrderByProductIdAscColorIdAsc(count.getLocationId()).stream()
+                .collect(Collectors.toMap(s -> itemKey(s.getProductId(), s.getColorId()), s -> s, (a, b) -> a));
+        stockByKey.values().forEach(kioscoInventoryService::ensureSizesDataAligned);
+
         List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows = kioscoInventoryService.buildKardexRows(
                 count.getLocationId(), count.getPeriodFrom(), count.getPeriodTo(), true);
 
         Map<String, KioscoPhysicalCountItemEntity> itemsByKey = itemRepository.findByCountId(count.getId()).stream()
                 .collect(Collectors.toMap(i -> itemKey(i.getProductId(), i.getColorId()), i -> i, (a, b) -> a));
-
-        Map<String, KioscoStockEntity> stockByKey = kioscoStockRepository
-                .findByLocationIdOrderByProductIdAscColorIdAsc(count.getLocationId()).stream()
-                .collect(Collectors.toMap(s -> itemKey(s.getProductId(), s.getColorId()), s -> s, (a, b) -> a));
 
         List<Long> productIds = kardexRows.stream()
                 .map(KioscoKardexReportResponse.KioscoKardexRow::getProductId)

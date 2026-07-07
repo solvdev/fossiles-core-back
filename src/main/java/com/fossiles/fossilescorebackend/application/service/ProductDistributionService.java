@@ -1915,7 +1915,17 @@ public class ProductDistributionService {
     ) throws ResourceNotFoundException, BusinessException {
         requireReconcileAdminAccess();
         kioscoInventoryService.enableAdminMovementMutation();
+        try {
+            return reconcileShipmentReceiptInventoryInternal(locationId, shipmentId);
+        } finally {
+            kioscoInventoryService.disableAdminMovementMutation();
+        }
+    }
 
+    private KioscoShipmentReconcileResponse reconcileShipmentReceiptInventoryInternal(
+            Long locationId,
+            Long shipmentId
+    ) throws ResourceNotFoundException, BusinessException {
         List<ProductShipmentEntity> shipments;
 
         if (shipmentId != null) {
