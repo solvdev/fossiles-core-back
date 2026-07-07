@@ -648,10 +648,7 @@ public class KioscoInventoryService {
         stock = kioscoStockRepository.findForUpdate(locationId, productId, colorId).orElse(stock);
 
         Map<String, BigDecimal> targetSizes = normalizeRealSizesMap(realSizes);
-        boolean fossWithSizes = CinchoProductUtils.isFossCinchoProduct(product)
-                && (targetSizes != null || ProductInventorySizesJson.hasNonEmptyBreakdown(stock.getSizesData()));
-
-        if (fossWithSizes) {
+        if (CinchoProductUtils.isFossCinchoProduct(product)) {
             if (targetSizes == null) {
                 throw new BusinessException(
                         "Los cinchos FOSS requieren desglose por talla: envíe realSizes con la cantidad contada por talla.");
@@ -1710,6 +1707,16 @@ public class KioscoInventoryService {
         return parsed.isEmpty() ? null : parsed;
     }
 
+    private String resolveLegacySizesDataJson(Long locationId, Long productId, Long colorId) {
+        if (locationId == null || productId == null) {
+            return null;
+        }
+        return productInventoryLocationRepository
+                .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
+                .map(ProductInventoryLocation::getSizesData)
+                .orElse(null);
+    }
+
     private KioscoStockResponse toStockResponse(KioscoStockEntity entity) {
         LocationEntity location = entity.getLocation();
         ProductEntity product = entity.getProduct();
@@ -1717,6 +1724,10 @@ public class KioscoInventoryService {
         int current = resolveInventarioFinal(entity, product);
         int minimum = safeInt(entity.getMinimumStock());
         Map<String, BigDecimal> sizes = positiveSizesMap(entity.getSizesData());
+        if ((sizes == null || sizes.isEmpty()) && CinchoProductUtils.isFossCinchoProduct(product)) {
+            sizes = positiveSizesMap(resolveLegacySizesDataJson(
+                    entity.getLocationId(), entity.getProductId(), entity.getColorId()));
+        }
         return KioscoStockResponse.builder()
                 .id(entity.getId())
                 .locationId(entity.getLocationId())
