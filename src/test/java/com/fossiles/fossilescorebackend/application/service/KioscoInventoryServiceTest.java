@@ -126,6 +126,7 @@ class KioscoInventoryServiceTest {
         when(entityManager.createNativeQuery(any(String.class))).thenReturn(nativeQuery);
         when(nativeQuery.setParameter(any(String.class), any())).thenReturn(nativeQuery);
         when(nativeQuery.getSingleResult()).thenReturn("true");
+        when(nativeQuery.executeUpdate()).thenReturn(1);
     }
 
     @Test
@@ -515,8 +516,9 @@ class KioscoInventoryServiceTest {
         int removed = service.pruneExcessShipmentEntradas(entradas, 1);
 
         assertThat(removed).isEqualTo(3);
-        verify(kioscoMovementRepository, times(3)).delete(any(KioscoMovementEntity.class));
-        verify(kioscoMovementRepository, never()).save(any(KioscoMovementEntity.class));
+        verify(entityManager).createNativeQuery("DELETE FROM kiosco_movement WHERE id = :id");
+        verify(entityManager, never()).createNativeQuery(
+                org.mockito.ArgumentMatchers.eq("UPDATE kiosco_movement SET quantity = :qty, stock_after = stock_before + :qty WHERE id = :id"));
     }
 
     @Test
@@ -530,8 +532,9 @@ class KioscoInventoryServiceTest {
         assertThat(removed).isZero();
         assertThat(oversized.getQuantity()).isEqualTo(10);
         assertThat(oversized.getStockAfter()).isEqualTo(10);
-        verify(kioscoMovementRepository).save(oversized);
-        verify(kioscoMovementRepository, never()).delete(any(KioscoMovementEntity.class));
+        verify(entityManager).createNativeQuery(
+                "UPDATE kiosco_movement SET quantity = :qty, stock_after = stock_before + :qty WHERE id = :id");
+        verify(entityManager, never()).createNativeQuery("DELETE FROM kiosco_movement WHERE id = :id");
     }
 
     @Test
@@ -550,7 +553,7 @@ class KioscoInventoryServiceTest {
                 locationId, 700L, "ENV#L1", productId, colorId);
 
         assertThat(removed).isEqualTo(1);
-        verify(kioscoMovementRepository).delete(merma);
+        verify(entityManager).createNativeQuery("DELETE FROM kiosco_movement WHERE id = :id");
     }
 
     @Test

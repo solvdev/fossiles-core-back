@@ -12,6 +12,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.ProductInventor
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ShipmentReceiptInventoryAuditResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentReconcileResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentReconcilePreviewResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ShipmentReceiptRepairResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -185,6 +186,13 @@ public class ProductDistributionController {
             @PathVariable Long id)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(distributionService.auditDeliveredShipmentReceiptInventory(id));
+    }
+
+    @GetMapping("/shipments/{id}/reconcile-shipment-entries/preview")
+    public ResponseEntity<KioscoShipmentReconcilePreviewResponse> previewReconcileDeliveredShipmentReceiptInventory(
+            @PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.previewShipmentReceiptInventoryReconcile(null, id));
     }
 
     @PostMapping("/shipments/standalone-internal")

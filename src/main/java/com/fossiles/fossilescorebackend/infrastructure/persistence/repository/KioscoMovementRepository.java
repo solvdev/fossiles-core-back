@@ -47,6 +47,39 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
             + "WHERE s.locationId = :locationId "
             + "AND s.productId = :productId "
+            + "AND m.referenceId = :shipmentId "
+            + "AND (m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
+            + "OR m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_ENTRADA) "
+            + "ORDER BY m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findShipmentEntradaMovementsByProductAnyColor(
+            @Param("locationId") Long locationId,
+            @Param("shipmentId") Long shipmentId,
+            @Param("productId") Long productId);
+
+    @Query("SELECT m FROM KioscoMovementEntity m "
+            + "WHERE m.kioscoStockId = :stockId "
+            + "AND m.referenceId = :shipmentId "
+            + "AND (m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
+            + "OR m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_ENTRADA) "
+            + "ORDER BY m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findShipmentEntradasByStockAndShipment(
+            @Param("stockId") Long stockId,
+            @Param("shipmentId") Long shipmentId);
+
+    @Query("SELECT m FROM KioscoMovementEntity m "
+            + "WHERE m.kioscoStockId = :stockId "
+            + "AND (m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
+            + "OR m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_ENTRADA) "
+            + "AND LOWER(m.reason) LIKE LOWER(CONCAT('%', :token, '%')) "
+            + "ORDER BY m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findShipmentEntradasByStockAndReasonToken(
+            @Param("stockId") Long stockId,
+            @Param("token") String token);
+
+    @Query("SELECT m FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
+            + "AND s.productId = :productId "
             + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
             + "AND m.referenceId = :shipmentId "
             + "AND m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.MERMA "

@@ -20,6 +20,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoNotificat
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountSessionSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentReconcileResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentReconcilePreviewResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -332,5 +333,12 @@ public class KioscoInventoryController {
             @PathVariable Long locationId
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(productDistributionService.reconcileShipmentReceiptInventory(locationId, null));
+    }
+
+    @GetMapping("/{locationId}/reconcile-shipment-entries/preview")
+    public ResponseEntity<KioscoShipmentReconcilePreviewResponse> previewReconcileShipmentEntries(
+            @PathVariable Long locationId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(productDistributionService.previewShipmentReceiptInventoryReconcile(locationId, null));
     }
 }

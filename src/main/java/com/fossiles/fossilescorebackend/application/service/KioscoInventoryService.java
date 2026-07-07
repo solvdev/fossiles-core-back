@@ -1870,7 +1870,10 @@ public class KioscoInventoryService {
             return;
         }
         enableAdminMovementMutation();
-        kioscoMovementRepository.delete(movement);
+        entityManager.createNativeQuery("DELETE FROM kiosco_movement WHERE id = :id")
+                .setParameter("id", movement.getId())
+                .executeUpdate();
+        entityManager.flush();
     }
 
     public void trimAdminEntradaQuantity(KioscoMovementEntity movement, int newQuantity) {
@@ -1878,10 +1881,14 @@ public class KioscoInventoryService {
             return;
         }
         enableAdminMovementMutation();
-        int before = safeInt(movement.getStockBefore());
+        entityManager.createNativeQuery(
+                        "UPDATE kiosco_movement SET quantity = :qty, stock_after = stock_before + :qty WHERE id = :id")
+                .setParameter("qty", newQuantity)
+                .setParameter("id", movement.getId())
+                .executeUpdate();
+        entityManager.flush();
         movement.setQuantity(newQuantity);
-        movement.setStockAfter(before + newQuantity);
-        kioscoMovementRepository.save(movement);
+        movement.setStockAfter(safeInt(movement.getStockBefore()) + newQuantity);
     }
 
     /**
@@ -1909,20 +1916,51 @@ public class KioscoInventoryService {
      * Conserva ENTRADAs mas antiguas hasta expected y elimina sobrantes (duplicados de envio).
      */
     public int pruneExcessShipmentEntradas(List<KioscoMovementEntity> movementsOrderedAsc, int expected) {
-        if (movementsOrderedAsc == null || movementsOrderedAsc.isEmpty() || expected < 0) {
-            return 0;
+        EntradaPrunePlan plan = planPruneExcessShipmentEntradas(movementsOrderedAsc, expected);
+        for (PlannedEntradaAction action : plan.actions()) {
+            KioscoMovementEntity movement = movementsOrderedAsc.stream()
+                    .filter(m -> Objects.equals(m.getId(), action.movementId()))
+                    .findFirst()
+                    .orElse(null);
+            if (movement == null) {
+                continue;
+            }
+            if ("TRIM_ENTRADA".equals(action.type())) {
+                trimAdminEntradaQuantity(movement, action.quantity() != null ? action.quantity() : 0);
+            } else if ("DELETE_ENTRADA".equals(action.type())) {
+                deleteAdminMovement(movement);
+            }
         }
+        return plan.removedCount();
+    }
+
+    public EntradaPrunePlan planPruneExcessShipmentEntradas(
+            List<KioscoMovementEntity> movementsOrderedAsc,
+            int expected
+    ) {
+        if (movementsOrderedAsc == null || movementsOrderedAsc.isEmpty() || expected < 0) {
+            return new EntradaPrunePlan(0, List.of());
+        }
+        List<PlannedEntradaAction> actions = new ArrayList<>();
         int removed = 0;
         int keptQty = 0;
         for (KioscoMovementEntity movement : movementsOrderedAsc) {
             int qty = safeInt(movement.getQuantity());
             if (qty <= 0) {
-                deleteAdminMovement(movement);
+                actions.add(new PlannedEntradaAction(
+                        "DELETE_ENTRADA",
+                        movement.getId(),
+                        qty,
+                        "Eliminar ENTRADA vacía #" + movement.getId()));
                 removed++;
                 continue;
             }
             if (keptQty >= expected) {
-                deleteAdminMovement(movement);
+                actions.add(new PlannedEntradaAction(
+                        "DELETE_ENTRADA",
+                        movement.getId(),
+                        qty,
+                        "Eliminar ENTRADA duplicada #" + movement.getId() + " (" + qty + " u.)"));
                 removed++;
                 continue;
             }
@@ -1932,15 +1970,27 @@ public class KioscoInventoryService {
             }
             int allowed = expected - keptQty;
             if (allowed <= 0) {
-                deleteAdminMovement(movement);
+                actions.add(new PlannedEntradaAction(
+                        "DELETE_ENTRADA",
+                        movement.getId(),
+                        qty,
+                        "Eliminar ENTRADA duplicada #" + movement.getId() + " (" + qty + " u.)"));
                 removed++;
             } else {
-                trimAdminEntradaQuantity(movement, allowed);
+                actions.add(new PlannedEntradaAction(
+                        "TRIM_ENTRADA",
+                        movement.getId(),
+                        allowed,
+                        "Recortar ENTRADA #" + movement.getId() + " de " + qty + " a " + allowed + " u."));
                 keptQty = expected;
             }
         }
-        return removed;
+        return new EntradaPrunePlan(removed, actions);
     }
+
+    public record PlannedEntradaAction(String type, Long movementId, Integer quantity, String label) {}
+
+    public record EntradaPrunePlan(int removedCount, List<PlannedEntradaAction> actions) {}
 
     /**
      * Recalcula stock_before/stock_after y current_stock (requiere flag admin en la transaccion).
@@ -1968,8 +2018,15 @@ public class KioscoInventoryService {
                 running = 0;
             }
             movement.setStockAfter(running);
-            kioscoMovementRepository.save(movement);
+            enableAdminMovementMutation();
+            entityManager.createNativeQuery(
+                            "UPDATE kiosco_movement SET stock_before = :before, stock_after = :after WHERE id = :id")
+                    .setParameter("before", movement.getStockBefore())
+                    .setParameter("after", movement.getStockAfter())
+                    .setParameter("id", movement.getId())
+                    .executeUpdate();
         }
+        entityManager.flush();
         stock.setCurrentStock(running);
         kioscoStockRepository.save(stock);
         return 1;
