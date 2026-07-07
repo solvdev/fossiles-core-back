@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSession
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotionEstimateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSalePaymentUpdateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRestoreRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
@@ -78,6 +79,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -92,6 +94,7 @@ public class KioskPosService {
     private static final String CASH_SESSION_CLOSED = "CLOSED";
     private static final String SALE_STATUS_VOID = "VOID";
     private static final Pattern CARD_LAST4_PATTERN = Pattern.compile("^\\d{4}$");
+    private static final Pattern POS_SALE_NUMBER_PATTERN = Pattern.compile("^POS-(\\d{8})-(\\d{4})$", Pattern.CASE_INSENSITIVE);
 
     private final SecurityUtil securityUtil;
     private final UserRepository userRepository;
@@ -451,6 +454,215 @@ public class KioskPosService {
         }
 
         return toSaleResponse(saved, kiosk, user);
+    }
+
+    /**
+     * Restaura una venta POS borrada por error con el mismo {@code saleNumber}.
+     * Solo administradores. No descuenta inventario ni requiere caja abierta.
+     */
+    public KioskPosSaleResponse restoreSale(KioskPosSaleRestoreRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        if (request == null || request.getItems() == null || request.getItems().isEmpty()) {
+            throw new BusinessException("Debes agregar al menos un producto para restaurar la venta.");
+        }
+
+        UserEntity user = getCurrentUserOrThrow();
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        if (!admin) {
+            throw new BusinessException("Solo administradores pueden restaurar ventas POS eliminadas.");
+        }
+
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+        LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
+
+        String saleNumber = safeTrim(request.getSaleNumber());
+        if (saleNumber.isBlank()) {
+            throw new BusinessException("El número de venta es obligatorio.");
+        }
+        if (kioskSaleRepository.existsByKioskLocationIdAndSaleNumberIgnoreCase(kiosk.getId(), saleNumber)) {
+            throw new BusinessException("Ya existe una venta con el número " + saleNumber + " en este kiosko.");
+        }
+
+        LocalDate saleDate = resolveRestoreSaleDate(request, saleNumber);
+        LocalDateTime soldAt = request.getSoldAt() != null ? request.getSoldAt() : saleDate.atTime(12, 0);
+
+        String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod());
+        validateCardFields(normalizedPaymentMethod, request.getCardAmount(), request.getCardAuthNumber(), request.getCardLast4());
+
+        String normalizedTaxId = normalizeTaxId(request.getCustomerTaxId());
+
+        List<PreparedLine> preparedLines = new ArrayList<>();
+        BigDecimal subtotal = BigDecimal.ZERO;
+        BigDecimal totalItems = BigDecimal.ZERO;
+
+        for (KioskPosSaleRestoreRequest.RestoreItemRequest itemRequest : request.getItems()) {
+            if (itemRequest == null || itemRequest.getProductId() == null) {
+                throw new BusinessException("Todos los renglones deben tener producto.");
+            }
+            BigDecimal quantity = itemRequest.getQuantity();
+            if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BusinessException("La cantidad debe ser mayor a cero para todos los productos.");
+            }
+
+            ProductEntity product = productRepository.findById(itemRequest.getProductId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
+
+            ColorEntity color = null;
+            if (itemRequest.getColorId() != null) {
+                color = colorRepository.findById(itemRequest.getColorId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Color", itemRequest.getColorId()));
+            }
+
+            String sizeLabel = ProductInventorySizesJson.normalizeKey(itemRequest.getSize());
+            BigDecimal unitPrice = itemRequest.getUnitPrice() != null
+                    ? itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP)
+                    : resolvePosUnitPrice(product);
+            BigDecimal lineTotal = itemRequest.getLineTotal() != null
+                    ? itemRequest.getLineTotal().setScale(2, RoundingMode.HALF_UP)
+                    : unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+
+            preparedLines.add(new PreparedLine(
+                    product,
+                    color,
+                    sizeLabel.isEmpty() ? null : sizeLabel,
+                    quantity,
+                    unitPrice,
+                    lineTotal
+            ));
+            subtotal = subtotal.add(lineTotal);
+            totalItems = totalItems.add(quantity);
+        }
+
+        BigDecimal discountAmount = request.getDiscountAmount() != null
+                ? request.getDiscountAmount().setScale(2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+        BigDecimal resolvedSubtotal = request.getSubtotal() != null
+                ? request.getSubtotal().setScale(2, RoundingMode.HALF_UP)
+                : subtotal.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal totalAmount = request.getTotalAmount() != null
+                ? request.getTotalAmount().setScale(2, RoundingMode.HALF_UP)
+                : resolvedSubtotal.subtract(discountAmount).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
+
+        PaymentSnapshot payment = resolvePaymentSnapshot(
+                normalizedPaymentMethod,
+                totalAmount,
+                request.getAmountReceived(),
+                request.getCashAmount(),
+                request.getCardAmount()
+        );
+
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .saleNumber(saleNumber)
+                .kioskLocationId(kiosk.getId())
+                .soldByUserId(user.getId())
+                .saleDate(saleDate)
+                .soldAt(soldAt)
+                .customerTaxId(normalizedTaxId)
+                .customerName(safeTrim(request.getCustomerName()))
+                .address(safeTrim(request.getAddress()))
+                .phone(safeTrim(request.getPhone()))
+                .email(normalizeFelReceptorEmail(safeTrim(request.getEmail())))
+                .paymentMethod(normalizedPaymentMethod)
+                .status("COMPLETED")
+                .notes(appendRestoreNote(safeTrim(request.getNotes())))
+                .comments(safeTrim(request.getComments()))
+                .subtotal(resolvedSubtotal)
+                .totalAmount(totalAmount)
+                .discountAmount(discountAmount)
+                .amountReceived(payment.amountReceived())
+                .changeAmount(payment.changeAmount())
+                .cashAmount(payment.cashAmount())
+                .cardAmount(payment.cardAmount())
+                .cardAuthNumber(safeTrim(request.getCardAuthNumber()))
+                .cardLast4(safeTrim(request.getCardLast4()))
+                .totalItems(totalItems)
+                .testSale(false)
+                .cashSessionId(null)
+                .depositSlipNumber(safeTrim(request.getDepositSlipNumber()))
+                .felStatus(safeTrim(request.getFelStatus()))
+                .felUuid(safeTrim(request.getFelUuid()))
+                .felSerie(safeTrim(request.getFelSerie()))
+                .felNumero(safeTrim(request.getFelNumero()))
+                .felError(safeTrim(request.getFelError()))
+                .felCertifiedAt(request.getFelCertifiedAt())
+                .createdBy(user.getId())
+                .items(new ArrayList<>())
+                .build();
+
+        for (PreparedLine line : preparedLines) {
+            String displayName = line.product().getName();
+            if (line.size() != null && !line.size().isBlank()) {
+                displayName = displayName + " T." + line.size();
+            }
+            KioskSaleItemEntity saleItem = KioskSaleItemEntity.builder()
+                    .kioskSale(sale)
+                    .productId(line.product().getId())
+                    .productCode(line.product().getCode())
+                    .productName(displayName)
+                    .colorId(line.color() != null ? line.color().getId() : null)
+                    .colorName(line.color() != null ? line.color().getName() : "")
+                    .quantity(line.quantity())
+                    .unitPrice(line.unitPrice())
+                    .lineTotal(line.lineTotal())
+                    .build();
+            sale.getItems().add(saleItem);
+        }
+
+        KioskSaleEntity saved = kioskSaleRepository.save(sale);
+        syncSaleSequenceFloor(saleNumber, saleDate);
+
+        boolean createDraft = request.getCreateTaxInvoiceDraft() == null || Boolean.TRUE.equals(request.getCreateTaxInvoiceDraft());
+        if (createDraft) {
+            taxInvoiceService.createDraftFromKioskSaleId(saved.getId());
+            saved = kioskSaleRepository.findById(saved.getId()).orElse(saved);
+        }
+
+        return toSaleResponse(saved, kiosk, user);
+    }
+
+    private LocalDate resolveRestoreSaleDate(KioskPosSaleRestoreRequest request, String saleNumber) {
+        if (request.getSaleDate() != null) {
+            return request.getSaleDate();
+        }
+        Matcher matcher = POS_SALE_NUMBER_PATTERN.matcher(saleNumber);
+        if (matcher.matches()) {
+            return LocalDate.parse(matcher.group(1), SALE_NUMBER_DATE);
+        }
+        return GuatemalaDateTime.today();
+    }
+
+    private void syncSaleSequenceFloor(String saleNumber, LocalDate fallbackDate) {
+        Matcher matcher = POS_SALE_NUMBER_PATTERN.matcher(safeTrim(saleNumber));
+        LocalDate sequenceDate = fallbackDate;
+        Integer sequenceValue = null;
+        if (matcher.matches()) {
+            sequenceDate = LocalDate.parse(matcher.group(1), SALE_NUMBER_DATE);
+            sequenceValue = Integer.parseInt(matcher.group(2));
+        }
+        if (sequenceValue == null) {
+            return;
+        }
+        KioskSaleSequenceEntity sequence = kioskSaleSequenceRepository.findWithLockBySaleDate(sequenceDate)
+                .orElseGet(() -> KioskSaleSequenceEntity.builder()
+                        .saleDate(sequenceDate)
+                        .lastNumber(0)
+                        .build());
+        int current = sequence.getLastNumber() != null ? sequence.getLastNumber() : 0;
+        if (sequenceValue > current) {
+            sequence.setLastNumber(sequenceValue);
+            kioskSaleSequenceRepository.save(sequence);
+        }
+    }
+
+    private static String appendRestoreNote(String notes) {
+        String marker = "[Restaurada manualmente]";
+        if (notes == null || notes.isBlank()) {
+            return marker;
+        }
+        if (notes.contains(marker)) {
+            return notes;
+        }
+        return marker + " " + notes.trim();
     }
 
     public KioskPosSaleResponse updateSaleInvoiceContact(
@@ -1907,6 +2119,8 @@ public class KioskPosService {
                 ? userRepository.findById(sale.getDepositRecordedBy()).orElse(null)
                 : null;
 
+        KioskPosSaleResponse.InvoiceInfo invoiceInfo = buildInvoiceInfo(sale);
+
         return KioskPosSaleResponse.builder()
                 .id(sale.getId())
                 .saleNumber(sale.getSaleNumber())
@@ -1947,7 +2161,8 @@ public class KioskPosService {
                 .felNumero(sale.getFelNumero())
                 .felError(sale.getFelError())
                 .felCertifiedAt(sale.getFelCertifiedAt())
-                .invoice(buildInvoiceInfo(sale))
+                .internalNumber(invoiceInfo != null ? invoiceInfo.getInternalNumber() : null)
+                .invoice(invoiceInfo)
                 .depositSlipNumber(sale.getDepositSlipNumber())
                 .depositRecordedAt(sale.getDepositRecordedAt())
                 .depositRecordedByUserId(sale.getDepositRecordedBy())

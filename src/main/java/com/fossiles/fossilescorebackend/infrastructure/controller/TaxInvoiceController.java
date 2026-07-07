@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ManualTaxInvoice
 import com.fossiles.fossilescorebackend.application.dto.request.UpdateTaxInvoiceFelMetadataRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceAttemptResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceCertifiedXmlDownload;
+import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceBackfillResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceSummaryResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -84,6 +85,27 @@ public class TaxInvoiceController {
     public ResponseEntity<TaxInvoiceResponse> fromKioskSale(@PathVariable Long saleId)
             throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(taxInvoiceService.issueFromKioskSaleId(saleId));
+    }
+
+    @PostMapping("/draft-from-kiosk-sale/{saleId}")
+    public ResponseEntity<TaxInvoiceResponse> draftFromKioskSale(@PathVariable Long saleId)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(taxInvoiceService.createDraftFromKioskSaleId(saleId));
+    }
+
+    @PostMapping("/backfill-kiosk-sales")
+    public ResponseEntity<TaxInvoiceBackfillResponse> backfillKioskSales(
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
+            @RequestParam(defaultValue = "false") boolean dryRun
+    ) throws BusinessException {
+        return ResponseEntity.ok(taxInvoiceService.backfillMissingKioskSaleDrafts(
+                kioskLocationId,
+                fromDate,
+                toDate,
+                dryRun
+        ));
     }
 
     @PostMapping("/from-online-sale/{saleId}")

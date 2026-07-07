@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.UpdateTaxInvoice
 import com.fossiles.fossilescorebackend.application.dto.response.FelCertificationResult;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceAttemptResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceCertifiedXmlDownload;
+import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceBackfillResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxpayerLookupResponse;
@@ -41,6 +42,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -118,6 +120,173 @@ public class TaxInvoiceService {
             throw new BusinessException("No se pudo generar la factura electrónica para esta venta POS.");
         }
         return response;
+    }
+
+    /**
+     * Crea borradores tax_invoice para ventas POS que aún no tienen registro asociado.
+     * No certifica ante FEL: sirve para cargar después UUID/serie/número manualmente.
+     */
+    @Transactional
+    public TaxInvoiceBackfillResponse backfillMissingKioskSaleDrafts(
+            Long kioskLocationId,
+            LocalDate fromDate,
+            LocalDate toDate,
+            boolean dryRun
+    ) throws BusinessException {
+        taxInvoiceAccessGuard.assertCanEditFelMetadata();
+
+        List<KioskSaleEntity> candidates = kioskSaleRepository.findMissingTaxInvoice(
+                kioskLocationId,
+                fromDate,
+                toDate
+        );
+
+        int created = 0;
+        int skipped = 0;
+        int failed = 0;
+        List<String> errors = new ArrayList<>();
+        List<TaxInvoiceBackfillResponse.Item> samples = new ArrayList<>();
+
+        for (KioskSaleEntity sale : candidates) {
+            if (dryRun) {
+                appendBackfillSample(samples, sale, null, "Pendiente de crear borrador");
+                continue;
+            }
+            try {
+                TaxInvoiceResponse invoice = createDraftFromKioskSale(sale);
+                created++;
+                appendBackfillSample(
+                        samples,
+                        sale,
+                        invoice,
+                        "Borrador creado"
+                );
+            } catch (BusinessException ex) {
+                failed++;
+                if (errors.size() < 100) {
+                    errors.add("Venta " + safeSaleLabel(sale) + ": " + ex.getMessage());
+                }
+                appendBackfillSample(samples, sale, null, ex.getMessage());
+            } catch (Exception ex) {
+                failed++;
+                log.warn("Backfill tax_invoice falló para venta {}: {}", sale.getId(), ex.getMessage(), ex);
+                if (errors.size() < 100) {
+                    errors.add("Venta " + safeSaleLabel(sale) + ": " + ex.getMessage());
+                }
+                appendBackfillSample(samples, sale, null, ex.getMessage());
+            }
+        }
+
+        return TaxInvoiceBackfillResponse.builder()
+                .dryRun(dryRun)
+                .candidates(candidates.size())
+                .created(created)
+                .skipped(skipped)
+                .failed(failed)
+                .errors(errors)
+                .samples(samples.stream().limit(50).collect(Collectors.toList()))
+                .build();
+    }
+
+    /**
+     * Crea (o reutiliza) el borrador tax_invoice de una venta POS sin certificar FEL.
+     */
+    @Transactional
+    public TaxInvoiceResponse createDraftFromKioskSaleId(Long saleId)
+            throws BusinessException, ResourceNotFoundException {
+        taxInvoiceAccessGuard.assertCanEditFelMetadata();
+        KioskSaleEntity sale = kioskSaleRepository.findById(saleId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioskSale", saleId));
+        return createDraftFromKioskSale(sale);
+    }
+
+    private TaxInvoiceResponse createDraftFromKioskSale(KioskSaleEntity sale) throws BusinessException {
+        Optional<TaxInvoiceEntity> existing = taxInvoiceRepository.findBySourceTypeAndSourceId("KIOSK_SALE", sale.getId());
+        if (existing.isPresent()) {
+            TaxInvoiceEntity invoice = existing.get();
+            linkKioskSaleToInvoice(sale, invoice);
+            return toResponse(invoice);
+        }
+
+        TaxInvoiceDocument document = kioskSaleInvoiceMapper.fromSale(sale);
+        enrichEmitterFromKioskLocation(document, sale.getKioskLocationId());
+        validateDocument(document);
+
+        TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, sale.getCreatedBy());
+        applyKioskSaleFelSnapshot(invoice, sale);
+        invoice.setFelTransactionId(document.getTransactionId());
+        appendInvoiceNote(invoice, "[Backfill] Borrador generado desde venta POS existente.");
+        TaxInvoiceEntity saved = taxInvoiceRepository.save(invoice);
+        linkKioskSaleToInvoice(sale, saved);
+        return toResponse(saved);
+    }
+
+    private void linkKioskSaleToInvoice(KioskSaleEntity sale, TaxInvoiceEntity invoice) {
+        if (sale == null || invoice == null || invoice.getId() == null) {
+            return;
+        }
+        if (!Objects.equals(sale.getInvoiceId(), invoice.getId())) {
+            sale.setInvoiceId(invoice.getId());
+        }
+        syncKioskSaleFelFields(sale, invoice);
+        kioskSaleRepository.save(sale);
+    }
+
+    private void applyKioskSaleFelSnapshot(TaxInvoiceEntity invoice, KioskSaleEntity sale) {
+        if (invoice == null || sale == null) {
+            return;
+        }
+        String status = trimToNull(sale.getFelStatus());
+        if (status != null) {
+            invoice.setStatus(status);
+        }
+        if (sale.getFelUuid() != null && !sale.getFelUuid().isBlank()) {
+            invoice.setFelUuid(sale.getFelUuid().trim());
+        }
+        if (sale.getFelSerie() != null && !sale.getFelSerie().isBlank()) {
+            invoice.setFelSerie(sale.getFelSerie().trim());
+        }
+        if (sale.getFelNumero() != null && !sale.getFelNumero().isBlank()) {
+            invoice.setFelNumero(sale.getFelNumero().trim());
+        }
+        if (sale.getFelError() != null && !sale.getFelError().isBlank()) {
+            invoice.setFelError(sale.getFelError().trim());
+        }
+        if (sale.getFelCertifiedAt() != null) {
+            invoice.setFelCertifiedAt(sale.getFelCertifiedAt());
+            invoice.setIssuedAt(sale.getFelCertifiedAt());
+        } else if (sale.getSoldAt() != null) {
+            invoice.setIssuedAt(sale.getSoldAt());
+        }
+    }
+
+    private static String safeSaleLabel(KioskSaleEntity sale) {
+        if (sale == null) {
+            return "—";
+        }
+        if (sale.getSaleNumber() != null && !sale.getSaleNumber().isBlank()) {
+            return sale.getSaleNumber().trim() + " (id=" + sale.getId() + ")";
+        }
+        return "id=" + sale.getId();
+    }
+
+    private static void appendBackfillSample(
+            List<TaxInvoiceBackfillResponse.Item> samples,
+            KioskSaleEntity sale,
+            TaxInvoiceResponse invoice,
+            String message
+    ) {
+        if (samples.size() >= 50 || sale == null) {
+            return;
+        }
+        samples.add(TaxInvoiceBackfillResponse.Item.builder()
+                .saleId(sale.getId())
+                .saleNumber(sale.getSaleNumber())
+                .invoiceId(invoice != null ? invoice.getId() : null)
+                .internalNumber(invoice != null ? invoice.getInternalNumber() : null)
+                .status(invoice != null ? invoice.getStatus() : null)
+                .message(message)
+                .build());
     }
 
     @Transactional

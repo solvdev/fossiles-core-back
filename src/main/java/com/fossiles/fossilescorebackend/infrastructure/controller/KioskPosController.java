@@ -11,6 +11,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositS
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotionEstimateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleInvoiceContactRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSalePaymentUpdateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRestoreRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
@@ -74,6 +75,12 @@ public class KioskPosController {
     public ResponseEntity<KioskPosSaleResponse> createSale(@Valid @RequestBody KioskPosSaleRequest request)
             throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskPosService.createSale(request));
+    }
+
+    @PostMapping("/sales/restore")
+    public ResponseEntity<KioskPosSaleResponse> restoreSale(@Valid @RequestBody KioskPosSaleRestoreRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.restoreSale(request));
     }
 
     @GetMapping("/sales/{id}")

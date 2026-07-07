@@ -18,6 +18,7 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             Long kioskLocationId,
             String saleNumber
     );
+    boolean existsByKioskLocationIdAndSaleNumberIgnoreCase(Long kioskLocationId, String saleNumber);
     List<KioskSaleEntity> findByKioskLocationIdOrderBySoldAtDesc(Long kioskLocationId);
     List<KioskSaleEntity> findByKioskLocationIdAndSaleDateBetweenOrderBySoldAtDesc(
             Long kioskLocationId,
@@ -43,4 +44,22 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             ORDER BY s.soldAt DESC
             """)
     List<KioskSaleEntity> findPendingDepositsByKioskLocationId(@Param("kioskLocationId") Long kioskLocationId);
+
+    @Query("""
+            SELECT DISTINCT ks FROM KioskSaleEntity ks
+            LEFT JOIN FETCH ks.items
+            WHERE NOT EXISTS (
+                SELECT 1 FROM TaxInvoiceEntity ti
+                WHERE ti.sourceType = 'KIOSK_SALE' AND ti.sourceId = ks.id
+            )
+            AND (:kioskLocationId IS NULL OR ks.kioskLocationId = :kioskLocationId)
+            AND (:fromDate IS NULL OR ks.saleDate >= :fromDate)
+            AND (:toDate IS NULL OR ks.saleDate <= :toDate)
+            ORDER BY ks.soldAt ASC, ks.id ASC
+            """)
+    List<KioskSaleEntity> findMissingTaxInvoice(
+            @Param("kioskLocationId") Long kioskLocationId,
+            @Param("fromDate") LocalDate fromDate,
+            @Param("toDate") LocalDate toDate
+    );
 }
