@@ -615,6 +615,18 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
+    void reconcileStaleSizeBreakdown_clearsSizesWhenExceedCurrentStock() {
+        KioscoStockEntity stock = stockEntity(13, 0);
+        stock.setId(100L);
+        stock.setSizesData("{\"18\":2,\"20\":4,\"22\":4,\"24\":2,\"26\":1}");
+
+        service.reconcileStaleSizeBreakdown(stock);
+
+        assertThat(stock.getSizesData()).isNull();
+        assertThat(stock.getCurrentStock()).isEqualTo(13);
+    }
+
+    @Test
     void replayStockLedgerRecalculatesFromMovements() {
         KioscoStockEntity stock = stockEntity(99, 0);
         KioscoMovementEntity entrada = movement(KioscoMovementType.ENTRADA, 0, 10);

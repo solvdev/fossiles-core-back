@@ -644,7 +644,7 @@ public class KioscoInventoryService {
                 .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
 
         KioscoStockEntity stock = getOrCreateLockedStock(locationId, productId, colorId, resolvedUserId);
-        ensureSizesDataAligned(stock);
+        reconcileStaleSizeBreakdown(stock);
         stock = kioscoStockRepository.findForUpdate(locationId, productId, colorId).orElse(stock);
 
         Map<String, BigDecimal> targetSizes = normalizeRealSizesMap(realSizes);
@@ -2145,7 +2145,7 @@ public class KioscoInventoryService {
         }
         entityManager.flush();
         stock.setCurrentStock(running);
-        ensureSizesDataAligned(stock);
+        reconcileStaleSizeBreakdown(stock);
         kioscoStockRepository.save(stock);
         return 1;
     }
@@ -2174,7 +2174,7 @@ public class KioscoInventoryService {
             }
         }
         stock.setCurrentStock(running);
-        ensureSizesDataAligned(stock);
+        reconcileStaleSizeBreakdown(stock);
         kioscoStockRepository.save(stock);
         return 1;
     }
@@ -2193,27 +2193,24 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Alinea sizes_data de kiosco con inventario legacy cuando falta desglose por talla,
-     * y garantiza que current_stock coincida con la suma de tallas.
+     * Si el desglose por talla supera el stock real (p. ej. ENTRADAs duplicadas ya eliminadas),
+     * limpia sizes_data para forzar corrección con ajuste por conteo físico.
      */
-    public void ensureSizesDataAligned(KioscoStockEntity stock) {
+    public void reconcileStaleSizeBreakdown(KioscoStockEntity stock) {
         if (stock == null || stock.getId() == null) {
             return;
         }
-        Map<String, BigDecimal> kioscoSizes = ProductInventorySizesJson.parse(stock.getSizesData());
-        if (kioscoSizes.isEmpty()) {
-            productInventoryLocationRepository
-                    .findByProductIdAndLocationIdAndColorId(stock.getProductId(), stock.getLocationId(), stock.getColorId())
-                    .map(ProductInventoryLocation::getSizesData)
-                    .filter(ProductInventorySizesJson::hasNonEmptyBreakdown)
-                    .ifPresent(legacyJson -> kioscoSizes.putAll(ProductInventorySizesJson.parse(legacyJson)));
+        Map<String, BigDecimal> sizes = ProductInventorySizesJson.parse(stock.getSizesData());
+        if (sizes.isEmpty()) {
+            return;
         }
-        if (!kioscoSizes.isEmpty()) {
-            int totalFromSizes = ProductInventorySizesJson.sum(kioscoSizes).setScale(0, RoundingMode.HALF_UP).intValue();
-            if (safeInt(stock.getCurrentStock()) != totalFromSizes) {
-                stock.setCurrentStock(totalFromSizes);
-            }
-            stock.setSizesData(ProductInventorySizesJson.serialize(kioscoSizes));
+        int totalFromSizes = ProductInventorySizesJson.sum(sizes).setScale(0, RoundingMode.HALF_UP).intValue();
+        int current = safeInt(stock.getCurrentStock());
+        if (totalFromSizes > current) {
+            log.warn(
+                    "KIOSCO_CLEAR_STALE_SIZES stockId={} productId={} colorId={} sizesTotal={} currentStock={}",
+                    stock.getId(), stock.getProductId(), stock.getColorId(), totalFromSizes, current);
+            stock.setSizesData(null);
             stock.setLastUpdatedAt(LocalDateTime.now());
             kioscoStockRepository.save(stock);
         }

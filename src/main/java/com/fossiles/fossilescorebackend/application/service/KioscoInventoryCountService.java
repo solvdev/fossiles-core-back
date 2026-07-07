@@ -246,7 +246,6 @@ public class KioscoInventoryCountService {
         Map<String, KioscoStockEntity> stockByKey = kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAsc(count.getLocationId()).stream()
                 .collect(Collectors.toMap(s -> itemKey(s.getProductId(), s.getColorId()), s -> s, (a, b) -> a));
-        stockByKey.values().forEach(kioscoInventoryService::ensureSizesDataAligned);
 
         List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows = kioscoInventoryService.buildKardexRows(
                 count.getLocationId(), count.getPeriodFrom(), count.getPeriodTo(), true);
@@ -297,7 +296,7 @@ public class KioscoInventoryCountService {
                     item != null ? item.getSizeLocationCountsData() : null);
 
             KioscoStockEntity stock = stockByKey.get(itemKey(kardexRow.getProductId(), kardexRow.getColorId()));
-            Map<String, Integer> systemSizes = toSystemSizesMap(stock != null ? stock.getSizesData() : null);
+            Map<String, Integer> systemSizes = resolveSystemSizesForReport(stock);
             String sizesSummary = formatSizesSummary(systemSizes);
             String physicalSizesSummary = formatSizesSummary(physicalSizes);
 
@@ -510,6 +509,24 @@ public class KioscoInventoryCountService {
         }
         String colorName = kardexRow.getColorName();
         return colorName != null && !colorName.isBlank();
+    }
+
+    private Map<String, Integer> resolveSystemSizesForReport(KioscoStockEntity stock) {
+        if (stock == null) {
+            return Map.of();
+        }
+        Map<String, Integer> sizes = toSystemSizesMap(stock.getSizesData());
+        if (sizes.isEmpty()) {
+            return sizes;
+        }
+        int totalFromSizes = sizes.values().stream().mapToInt(Integer::intValue).sum();
+        int current = stock.getCurrentStock() != null ? stock.getCurrentStock() : 0;
+        if (totalFromSizes > current) {
+            log.warn(
+                    "KIOSCO_STALE_SIZES stockId={} productId={} colorId={} sizesTotal={} currentStock={}",
+                    stock.getId(), stock.getProductId(), stock.getColorId(), totalFromSizes, current);
+        }
+        return sizes;
     }
 
     private Map<String, Integer> toSystemSizesMap(String sizesDataJson) {
