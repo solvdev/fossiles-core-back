@@ -20,10 +20,34 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
     );
     boolean existsByKioskLocationIdAndSaleNumberIgnoreCase(Long kioskLocationId, String saleNumber);
     List<KioskSaleEntity> findByKioskLocationIdOrderBySoldAtDesc(Long kioskLocationId);
+
+    @Query("""
+            SELECT DISTINCT s FROM KioskSaleEntity s
+            LEFT JOIN FETCH s.items
+            WHERE s.kioskLocationId = :kioskLocationId
+            ORDER BY s.soldAt DESC
+            """)
+    List<KioskSaleEntity> findByKioskLocationIdWithItemsOrderBySoldAtDesc(
+            @Param("kioskLocationId") Long kioskLocationId
+    );
+
     List<KioskSaleEntity> findByKioskLocationIdAndSaleDateBetweenOrderBySoldAtDesc(
             Long kioskLocationId,
             LocalDate startDate,
             LocalDate endDate
+    );
+
+    @Query("""
+            SELECT DISTINCT s FROM KioskSaleEntity s
+            LEFT JOIN FETCH s.items
+            WHERE s.kioskLocationId = :kioskLocationId
+              AND s.saleDate BETWEEN :startDate AND :endDate
+            ORDER BY s.soldAt DESC
+            """)
+    List<KioskSaleEntity> findByKioskLocationIdAndSaleDateBetweenWithItemsOrderBySoldAtDesc(
+            @Param("kioskLocationId") Long kioskLocationId,
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate") LocalDate endDate
     );
     List<KioskSaleEntity> findBySaleDateBetweenOrderBySoldAtDesc(LocalDate startDate, LocalDate endDate);
     List<KioskSaleEntity> findByCashSessionIdOrderBySoldAtAsc(Long cashSessionId);

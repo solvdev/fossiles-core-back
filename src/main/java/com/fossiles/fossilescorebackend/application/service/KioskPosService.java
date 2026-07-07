@@ -2027,10 +2027,10 @@ public class KioskPosService {
     private List<KioskSaleEntity> findSalesByDateRangeForKiosk(Long kioskId, LocalDate startDate, LocalDate endDate) {
         LocalDate[] range = normalizeSaleDateRange(startDate, endDate);
         if (range[0] != null && range[1] != null) {
-            return kioskSaleRepository.findByKioskLocationIdAndSaleDateBetweenOrderBySoldAtDesc(
+            return kioskSaleRepository.findByKioskLocationIdAndSaleDateBetweenWithItemsOrderBySoldAtDesc(
                     kioskId, range[0], range[1]);
         }
-        return kioskSaleRepository.findByKioskLocationIdOrderBySoldAtDesc(kioskId);
+        return kioskSaleRepository.findByKioskLocationIdWithItemsOrderBySoldAtDesc(kioskId);
     }
 
     private List<KioskSaleEntity> findSalesByDateRange(LocalDate startDate, LocalDate endDate) {
