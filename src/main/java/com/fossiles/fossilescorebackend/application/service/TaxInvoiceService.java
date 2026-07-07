@@ -89,7 +89,12 @@ public class TaxInvoiceService {
                 return toResponse(invoice);
             }
             if ("FAILED".equals(invoice.getStatus()) || "DRAFT".equals(invoice.getStatus())
-                    || "SKIPPED".equals(invoice.getStatus())) {
+                    || "SKIPPED".equals(invoice.getStatus())
+                    || isVoidReadyForReissue(invoice)) {
+                if (isVoidReadyForReissue(invoice)) {
+                    invoice.setStatus("DRAFT");
+                    taxInvoiceRepository.save(invoice);
+                }
                 try {
                     return retry(invoice.getId());
                 } catch (ResourceNotFoundException ex) {
@@ -298,7 +303,7 @@ public class TaxInvoiceService {
         TaxInvoiceEntity invoice = taxInvoiceRepository.findById(invoiceId)
                 .orElseThrow(() -> new ResourceNotFoundException("TaxInvoice", invoiceId));
         if ("VOID".equalsIgnoreCase(safe(invoice.getStatus()))) {
-            throw new BusinessException("La factura ya está anulada.");
+            throw new BusinessException("La factura ya está anulada localmente. Si necesita reemitir, use Firmar FEL.");
         }
         if (!"CERTIFIED".equalsIgnoreCase(safe(invoice.getStatus()))) {
             throw new BusinessException("Solo se pueden anular facturas certificadas.");
@@ -346,11 +351,34 @@ public class TaxInvoiceService {
         return toResponse(invoice);
     }
 
+    /**
+     * Tras anular ante el SAT, deja la factura en borrador para volver a certificar.
+     * Limpia UUID/serie/número FEL en tax_invoice y kiosk_sale; conserva fel_void_uuid y motivo.
+     */
     private void markInvoiceVoidLocal(TaxInvoiceEntity invoice, String reason, String voidUuid) {
-        invoice.setStatus("VOID");
+        invoice.setStatus("DRAFT");
+        clearFelCertificationFields(invoice);
         invoice.setVoidedAt(GuatemalaDateTime.now());
         invoice.setVoidReason(reason);
         invoice.setFelVoidUuid(voidUuid);
+    }
+
+    private void clearFelCertificationFields(TaxInvoiceEntity invoice) {
+        invoice.setFelUuid(null);
+        invoice.setFelSerie(null);
+        invoice.setFelNumero(null);
+        invoice.setFelError(null);
+        invoice.setFelCertifiedAt(null);
+        invoice.setFelCertifiedXml(null);
+    }
+
+    private void clearKioskSaleFelFields(KioskSaleEntity sale) {
+        sale.setFelStatus("DRAFT");
+        sale.setFelUuid(null);
+        sale.setFelSerie(null);
+        sale.setFelNumero(null);
+        sale.setFelError(null);
+        sale.setFelCertifiedAt(null);
     }
 
     @Transactional
@@ -368,7 +396,12 @@ public class TaxInvoiceService {
                 throw new BusinessException("Esta venta online ya tiene factura certificada.");
             }
             if ("FAILED".equals(invoice.getStatus()) || "DRAFT".equals(invoice.getStatus())
-                    || "SKIPPED".equals(invoice.getStatus())) {
+                    || "SKIPPED".equals(invoice.getStatus())
+                    || isVoidReadyForReissue(invoice)) {
+                if (isVoidReadyForReissue(invoice)) {
+                    invoice.setStatus("DRAFT");
+                    taxInvoiceRepository.save(invoice);
+                }
                 try {
                     return retry(invoice.getId());
                 } catch (ResourceNotFoundException ex) {
@@ -516,7 +549,8 @@ public class TaxInvoiceService {
         if (invoice == null) {
             return true;
         }
-        if ("CERTIFIED".equals(invoice.getStatus()) || "VOID".equalsIgnoreCase(safe(invoice.getStatus()))) {
+        if ("CERTIFIED".equals(invoice.getStatus()) || ("VOID".equalsIgnoreCase(safe(invoice.getStatus()))
+                && !isVoidReadyForReissue(invoice))) {
             return false;
         }
         boolean hasFelUuid = invoice.getFelUuid() != null && !invoice.getFelUuid().isBlank();
@@ -531,7 +565,18 @@ public class TaxInvoiceService {
             throw new BusinessException("La factura ya está certificada.");
         }
         if ("VOID".equalsIgnoreCase(safe(invoice.getStatus()))) {
-            throw new BusinessException("No se puede certificar una factura anulada.");
+            if (invoice.getFelVoidUuid() != null && !invoice.getFelVoidUuid().isBlank()) {
+                clearFelCertificationFields(invoice);
+                invoice.setStatus("DRAFT");
+                taxInvoiceRepository.save(invoice);
+                syncSourceFelFields(invoice);
+            } else if (invoice.getFelUuid() != null && !invoice.getFelUuid().isBlank()) {
+                throw new BusinessException(
+                        "La factura quedó marcada como anulada. Anúlela de nuevo desde Facturas FEL para dejarla en borrador.");
+            } else {
+                invoice.setStatus("DRAFT");
+                taxInvoiceRepository.save(invoice);
+            }
         }
         TaxInvoiceDocument document = rebuildDocumentForRetry(invoice);
         Long locationId = resolveLocationIdForInvoice(invoice);
@@ -1130,6 +1175,8 @@ public class TaxInvoiceService {
             sale.setFelNumero(invoice.getFelNumero());
             sale.setFelError(null);
             sale.setFelCertifiedAt(invoice.getFelCertifiedAt());
+        } else if ("DRAFT".equals(invoice.getStatus())) {
+            clearKioskSaleFelFields(sale);
         } else if ("VOID".equals(invoice.getStatus())) {
             sale.setFelError(invoice.getVoidReason());
         } else if ("SKIPPED".equals(invoice.getStatus())) {
@@ -1137,6 +1184,12 @@ public class TaxInvoiceService {
         } else {
             sale.setFelError(invoice.getFelError());
         }
+    }
+
+    private static boolean isVoidReadyForReissue(TaxInvoiceEntity invoice) {
+        return invoice != null
+                && "VOID".equalsIgnoreCase(safe(invoice.getStatus()))
+                && (invoice.getFelUuid() == null || invoice.getFelUuid().isBlank());
     }
 
     private void applyResult(TaxInvoiceEntity invoice, FelCertificationResult result) {
