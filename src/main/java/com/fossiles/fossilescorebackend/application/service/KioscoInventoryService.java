@@ -969,13 +969,24 @@ public class KioscoInventoryService {
         LocalDateTime toDtExclusive = to.plusDays(1).atStartOfDay();
 
         Map<Long, Integer> initialBalanceByStockId = new LinkedHashMap<>();
-        for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBefore(locationId, fromDt)) {
-            initialBalanceByStockId.putIfAbsent(m.getKioscoStockId(), safeInt(m.getStockAfter()));
+        for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(locationId, fromDt)) {
+            if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
+                continue;
+            }
+            int running = initialBalanceByStockId.getOrDefault(m.getKioscoStockId(), 0);
+            running += movementSignedDelta(m);
+            if (running < 0) {
+                running = 0;
+            }
+            initialBalanceByStockId.put(m.getKioscoStockId(), running);
         }
 
         Map<Long, KardexAccumulator> accByStockId = new LinkedHashMap<>();
         for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBetween(locationId, fromDt, toDtExclusive)) {
-            int delta = safeInt(m.getStockAfter()) - safeInt(m.getStockBefore());
+            if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
+                continue;
+            }
+            int delta = movementSignedDelta(m);
             if (delta == 0) {
                 continue;
             }
@@ -988,6 +999,9 @@ public class KioscoInventoryService {
             int initial = initialBalanceByStockId.getOrDefault(stock.getId(), 0);
             KardexAccumulator acc = accByStockId.getOrDefault(stock.getId(), new KardexAccumulator());
             int finalBalance = acc.applyTo(initial);
+            if (stock.getCurrentStock() != null) {
+                finalBalance = safeInt(stock.getCurrentStock());
+            }
             if (!includeZeroRows && initial == 0 && finalBalance == 0 && acc.isEmpty()) {
                 continue;
             }
@@ -1929,8 +1943,40 @@ public class KioscoInventoryService {
     }
 
     /**
+     * Recalcula stock_before/stock_after y current_stock (requiere flag admin en la transaccion).
+     */
+    public int replayMovementStockChain(Long kioscoStockId) {
+        if (kioscoStockId == null) {
+            return 0;
+        }
+        KioscoStockEntity stock = kioscoStockRepository.findById(kioscoStockId).orElse(null);
+        if (stock == null) {
+            return 0;
+        }
+        enableAdminMovementMutation();
+        List<KioscoMovementEntity> movements = kioscoMovementRepository
+                .findByKioscoStockIdOrderByCreatedAtAscIdAsc(kioscoStockId);
+        int running = 0;
+        for (KioscoMovementEntity movement : movements) {
+            if (!Boolean.TRUE.equals(movement.getAffectsStock())) {
+                continue;
+            }
+            int delta = movementSignedDelta(movement);
+            movement.setStockBefore(running);
+            running += delta;
+            if (running < 0) {
+                running = 0;
+            }
+            movement.setStockAfter(running);
+            kioscoMovementRepository.save(movement);
+        }
+        stock.setCurrentStock(running);
+        kioscoStockRepository.save(stock);
+        return 1;
+    }
+
+    /**
      * Recalcula current_stock a partir del ledger de movimientos.
-     * kiosco_movement es append-only: no actualiza filas del ledger.
      */
     public int replayStockLedger(Long kioscoStockId) {
         if (kioscoStockId == null) {
@@ -1947,8 +1993,7 @@ public class KioscoInventoryService {
             if (!Boolean.TRUE.equals(movement.getAffectsStock())) {
                 continue;
             }
-            int delta = movementSignedDelta(movement);
-            running += delta;
+            running += movementSignedDelta(movement);
             if (running < 0) {
                 running = 0;
             }

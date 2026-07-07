@@ -35,6 +35,20 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             + "AND s.productId = :productId "
             + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
             + "AND m.referenceId = :shipmentId "
+            + "AND m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
+            + "ORDER BY m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findShipmentEntradaMovementsByProduct(
+            @Param("locationId") Long locationId,
+            @Param("shipmentId") Long shipmentId,
+            @Param("productId") Long productId,
+            @Param("colorId") Long colorId);
+
+    @Query("SELECT m FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
+            + "AND s.productId = :productId "
+            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
+            + "AND m.referenceId = :shipmentId "
             + "AND m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.MERMA "
             + "AND (LOWER(m.reason) LIKE '%cuadre recepc%' OR LOWER(m.reason) LIKE '%cuadre recepcion%') "
             + "AND m.reason LIKE CONCAT('%', :lineKey, '%') "
@@ -90,6 +104,16 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             @Param("from") LocalDateTime from,
             @Param("to") LocalDateTime to
     );
+
+    /** Movimientos previos al inicio del periodo, orden cronologico ascendente (saldo inicial kardex). */
+    @Query("SELECT m FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
+            + "AND m.createdAt < :before "
+            + "ORDER BY m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findByLocationAndCreatedAtBeforeAsc(
+            @Param("locationId") Long locationId,
+            @Param("before") LocalDateTime before);
 
     /** Movimientos previos al inicio del periodo, mas reciente primero (para saldo inicial del kardex). */
     @Query("SELECT m FROM KioscoMovementEntity m "

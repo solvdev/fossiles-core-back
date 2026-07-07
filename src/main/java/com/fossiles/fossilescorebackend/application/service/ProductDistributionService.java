@@ -1957,7 +1957,7 @@ public class ProductDistributionService {
 
         int stockRowsRecalculated = 0;
         for (Long stockId : affectedStockIds) {
-            stockRowsRecalculated += kioscoInventoryService.replayStockLedger(stockId);
+            stockRowsRecalculated += kioscoInventoryService.replayMovementStockChain(stockId);
         }
 
         return KioscoShipmentReconcileResponse.builder()
@@ -2098,8 +2098,8 @@ public class ProductDistributionService {
     ) throws ResourceNotFoundException, BusinessException {
         Long locationId = shipment.getLocationId();
 
-        List<KioscoMovementEntity> movements = kioscoMovementRepository.findShipmentEntradaMovements(
-                locationId, shipment.getId(), lineRef);
+        List<KioscoMovementEntity> movements = resolveShipmentEntradaMovements(
+                locationId, shipment.getId(), lineRef, productId, colorId);
         int sumQty = movements.stream().mapToInt(m -> m.getQuantity() != null ? m.getQuantity() : 0).sum();
         List<ProductInventoryKardex> kardexRows = productInventoryKardexRepository.findShipmentTransferInByLine(
                 shipment.getId(), productId, locationId, colorId, lineRef);
@@ -2115,8 +2115,8 @@ public class ProductDistributionService {
                 locationId, shipment.getId(), lineRef, productId, colorId);
         if (duplicatesRemoved > 0) {
             linesReconciled = 1;
-            movements = kioscoMovementRepository.findShipmentEntradaMovements(
-                    locationId, shipment.getId(), lineRef);
+            movements = resolveShipmentEntradaMovements(
+                    locationId, shipment.getId(), lineRef, productId, colorId);
             sumQty = movements.stream().mapToInt(m -> m.getQuantity() != null ? m.getQuantity() : 0).sum();
         }
 
@@ -2164,6 +2164,27 @@ public class ProductDistributionService {
 
         trackAffectedStockIds(movements, locationId, productId, colorId, affectedStockIds);
         return new ReconcileLineResult(linesReconciled, duplicatesRemoved);
+    }
+
+    private List<KioscoMovementEntity> resolveShipmentEntradaMovements(
+            Long locationId,
+            Long shipmentId,
+            String lineRef,
+            Long productId,
+            Long colorId
+    ) {
+        List<KioscoMovementEntity> byLine = kioscoMovementRepository.findShipmentEntradaMovements(
+                locationId, shipmentId, lineRef);
+        if (!byLine.isEmpty()) {
+            return byLine;
+        }
+        String lineReasonKey = KioscoInventoryService.shipmentReceiptLineReason(lineRef);
+        byLine = kioscoMovementRepository.findShipmentEntradaMovements(locationId, shipmentId, lineReasonKey);
+        if (!byLine.isEmpty()) {
+            return byLine;
+        }
+        return kioscoMovementRepository.findShipmentEntradaMovementsByProduct(
+                locationId, shipmentId, productId, colorId);
     }
 
     private void trackAffectedStockIds(
