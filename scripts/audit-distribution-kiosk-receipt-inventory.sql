@@ -99,9 +99,9 @@ ORDER BY pd.distribution_number DESC;
 
 -- =============================================================================
 -- 5) Reparar inventario de envio DELIVERED (tallas faltantes en kiosko)
---    API: PUT /api/product-distributions/shipments/{shipmentId}/repair-receipt-inventory
---    Opcional force=true para re-aplicar cuando hay movimiento pero stock kiosco < esperado
---    Ejecutar por cada envio DELIVERED con cinchos de varias tallas ya recibidos.
+--    API add:  PUT /api/product-distributions/shipments/{shipmentId}/repair-receipt-inventory
+--    API cuadrar (admin, sin duplicar): mismo endpoint con ?mode=reset
+--    o por kiosko: POST /api/kiosco-inventory/{locationId}/reconcile-shipment-entries
 -- =============================================================================
 
 -- =============================================================================

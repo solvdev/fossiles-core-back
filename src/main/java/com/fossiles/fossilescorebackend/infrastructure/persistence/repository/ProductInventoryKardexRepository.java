@@ -84,5 +84,23 @@ public interface ProductInventoryKardexRepository extends JpaRepository<ProductI
             @Param("locationId") Long locationId,
             @Param("colorId") Long colorId,
             @Param("referenceNumber") String referenceNumber);
+
+    @Query("""
+        SELECT k FROM ProductInventoryKardex k
+        WHERE k.referenceType = 'SHIPMENT'
+          AND k.referenceId = :shipmentId
+          AND k.movementType = 'TRANSFER_IN'
+          AND k.productId = :productId
+          AND k.locationId = :locationId
+          AND ((:colorId IS NULL AND k.colorId IS NULL) OR k.colorId = :colorId)
+          AND k.referenceNumber = :referenceNumber
+        ORDER BY k.id ASC
+        """)
+    List<ProductInventoryKardex> findShipmentTransferInByLine(
+            @Param("shipmentId") Long shipmentId,
+            @Param("productId") Long productId,
+            @Param("locationId") Long locationId,
+            @Param("colorId") Long colorId,
+            @Param("referenceNumber") String referenceNumber);
 }
 

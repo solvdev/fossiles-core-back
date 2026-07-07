@@ -19,11 +19,13 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementR
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoNotificationRecipientResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountSessionSummaryResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentReconcileResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.KioscoInventoryCountService;
 import com.fossiles.fossilescorebackend.application.service.KioscoInventoryService;
+import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -48,6 +50,7 @@ public class KioscoInventoryController {
 
     private final KioscoInventoryService kioscoInventoryService;
     private final KioscoInventoryCountService kioscoInventoryCountService;
+    private final ProductDistributionService productDistributionService;
 
     @PostMapping("/{locationId}/entrada")
     public ResponseEntity<KioscoStockResponse> registrarEntrada(
@@ -322,5 +325,12 @@ public class KioscoInventoryController {
             @RequestParam(required = false) Long userId
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioscoInventoryService.initializeMissingStock(locationId, userId));
+    }
+
+    @PostMapping("/{locationId}/reconcile-shipment-entries")
+    public ResponseEntity<KioscoShipmentReconcileResponse> reconcileShipmentEntries(
+            @PathVariable Long locationId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(productDistributionService.reconcileShipmentReceiptInventory(locationId, null));
     }
 }

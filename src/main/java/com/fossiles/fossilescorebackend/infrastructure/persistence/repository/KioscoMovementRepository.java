@@ -15,6 +15,20 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
 
     List<KioscoMovementEntity> findByKioscoStockIdOrderByCreatedAtDescIdDesc(Long kioscoStockId);
 
+    List<KioscoMovementEntity> findByKioscoStockIdOrderByCreatedAtAscIdAsc(Long kioscoStockId);
+
+    @Query("SELECT m FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
+            + "AND m.referenceId = :shipmentId "
+            + "AND m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
+            + "AND m.reason LIKE CONCAT('%', :lineKey, '%') "
+            + "ORDER BY m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findShipmentEntradaMovements(
+            @Param("locationId") Long locationId,
+            @Param("shipmentId") Long shipmentId,
+            @Param("lineKey") String lineKey);
+
     @Query("SELECT m FROM KioscoMovementEntity m "
             + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
             + "WHERE s.locationId = :locationId "

@@ -11,6 +11,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.ProductDistribu
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryLocationResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ShipmentReceiptInventoryAuditResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentReconcileResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ShipmentReceiptRepairResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -168,11 +169,15 @@ public class ProductDistributionController {
 
     /** Sincroniza inventario kiosco con todas las líneas del envío entregado (productos, tallas, empaques SUM-). */
     @PutMapping("/shipments/{id}/repair-receipt-inventory")
-    public ResponseEntity<ShipmentReceiptRepairResponse> repairDeliveredShipmentReceiptInventory(
+    public ResponseEntity<?> repairDeliveredShipmentReceiptInventory(
             @PathVariable Long id,
-            @RequestParam(defaultValue = "false") boolean force)
+            @RequestParam(defaultValue = "false") boolean force,
+            @RequestParam(defaultValue = "add") String mode)
             throws ResourceNotFoundException, BusinessException {
-        return ResponseEntity.ok(distributionService.repairDeliveredShipmentReceiptInventory(id, force));
+        if ("reset".equalsIgnoreCase(mode) || force) {
+            return ResponseEntity.ok(distributionService.reconcileShipmentReceiptInventory(null, id));
+        }
+        return ResponseEntity.ok(distributionService.repairDeliveredShipmentReceiptInventory(id, false));
     }
 
     @GetMapping("/shipments/{id}/receipt-inventory-audit")

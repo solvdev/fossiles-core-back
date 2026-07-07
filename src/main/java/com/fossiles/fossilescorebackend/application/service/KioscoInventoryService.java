@@ -1790,6 +1790,52 @@ public class KioscoInventoryService {
         return location != null ? location.getCode() : null;
     }
 
+    /**
+     * Recalcula stock_before/stock_after y current_stock a partir del ledger de movimientos.
+     * No crea movimientos nuevos; solo corrige consistencia interna.
+     */
+    public int replayStockLedger(Long kioscoStockId) {
+        if (kioscoStockId == null) {
+            return 0;
+        }
+        KioscoStockEntity stock = kioscoStockRepository.findById(kioscoStockId).orElse(null);
+        if (stock == null) {
+            return 0;
+        }
+        List<KioscoMovementEntity> movements = kioscoMovementRepository
+                .findByKioscoStockIdOrderByCreatedAtAscIdAsc(kioscoStockId);
+        int running = 0;
+        for (KioscoMovementEntity movement : movements) {
+            if (!Boolean.TRUE.equals(movement.getAffectsStock())) {
+                continue;
+            }
+            int delta = movementSignedDelta(movement);
+            movement.setStockBefore(running);
+            running += delta;
+            if (running < 0) {
+                running = 0;
+            }
+            movement.setStockAfter(running);
+            kioscoMovementRepository.save(movement);
+        }
+        stock.setCurrentStock(running);
+        kioscoStockRepository.save(stock);
+        return 1;
+    }
+
+    private static int movementSignedDelta(KioscoMovementEntity movement) {
+        if (movement == null || movement.getMovementType() == null) {
+            return safeInt(movement != null ? movement.getStockAfter() : 0)
+                    - safeInt(movement != null ? movement.getStockBefore() : 0);
+        }
+        int qty = safeInt(movement.getQuantity());
+        return switch (movement.getMovementType()) {
+            case ENTRADA, TRASLADO_ENTRADA, DEVOLUCION_CLIENTE, ANULACION -> qty;
+            case VENTA, DEVOLUCION_DEPOSITO, TRASLADO_SALIDA, MERMA -> -qty;
+            case AJUSTE, CAMBIO -> safeInt(movement.getStockAfter()) - safeInt(movement.getStockBefore());
+        };
+    }
+
     @lombok.Data
     @lombok.Builder
     @lombok.NoArgsConstructor

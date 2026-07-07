@@ -480,4 +480,25 @@ class KioscoInventoryServiceTest {
                 .lastUpdatedAt(LocalDateTime.now())
                 .build();
     }
+
+    @Test
+    void replayStockLedgerRecalculatesFromMovements() {
+        KioscoStockEntity stock = stockEntity(99, 0);
+        KioscoMovementEntity entrada = movement(KioscoMovementType.ENTRADA, 0, 10);
+        KioscoMovementEntity venta = movement(KioscoMovementType.VENTA, 10, 7);
+        when(kioscoStockRepository.findById(100L)).thenReturn(Optional.of(stock));
+        when(kioscoMovementRepository.findByKioscoStockIdOrderByCreatedAtAscIdAsc(100L))
+                .thenReturn(List.of(entrada, venta));
+
+        int rows = service.replayStockLedger(100L);
+
+        assertThat(rows).isEqualTo(1);
+        assertThat(entrada.getStockBefore()).isZero();
+        assertThat(entrada.getStockAfter()).isEqualTo(10);
+        assertThat(venta.getStockBefore()).isEqualTo(10);
+        assertThat(venta.getStockAfter()).isEqualTo(7);
+        assertThat(stock.getCurrentStock()).isEqualTo(7);
+        verify(kioscoMovementRepository, times(2)).save(any(KioscoMovementEntity.class));
+        verify(kioscoStockRepository).save(stock);
+    }
 }
