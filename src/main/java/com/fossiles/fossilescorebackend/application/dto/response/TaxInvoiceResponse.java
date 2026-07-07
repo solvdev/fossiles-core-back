@@ -35,6 +35,9 @@ public class TaxInvoiceResponse {
     private String felNumero;
     private String felError;
     private LocalDateTime felCertifiedAt;
+    private LocalDateTime voidedAt;
+    private String voidReason;
+    private String felVoidUuid;
     /** true si hay XML certificado almacenado (descargable vía GET /{id}/certified-xml). */
     private Boolean hasCertifiedXml;
     private String notes;

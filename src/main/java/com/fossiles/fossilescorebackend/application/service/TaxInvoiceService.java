@@ -291,6 +291,7 @@ public class TaxInvoiceService {
 
     @Transactional
     public TaxInvoiceResponse voidInvoice(Long invoiceId, String reason) throws BusinessException, ResourceNotFoundException {
+        taxInvoiceAccessGuard.assertCanEditFelMetadata();
         if (reason == null || reason.trim().isEmpty()) {
             throw new BusinessException("Debes indicar el motivo de anulación.");
         }
@@ -1048,6 +1049,9 @@ public class TaxInvoiceService {
         try {
             FelCredentials credentials = properties.resolveCredentials(resolveSandboxMode(invoice));
             validateEmitterConfig(credentials);
+            if (invoice.getInternalNumber() != null && !invoice.getInternalNumber().isBlank()) {
+                document.setInternalNumber(invoice.getInternalNumber());
+            }
             String unsignedXml = factXmlBuilder.buildUnsignedXml(document, credentials);
             String signedXml = signerService.signXml(unsignedXml, transactionId, credentials);
             FelCertificationResult result = certificationService.certifySignedXml(signedXml, transactionId, credentials);
@@ -1356,6 +1360,9 @@ public class TaxInvoiceService {
                 .felNumero(invoice.getFelNumero())
                 .felError(invoice.getFelError())
                 .felCertifiedAt(invoice.getFelCertifiedAt())
+                .voidedAt(invoice.getVoidedAt())
+                .voidReason(invoice.getVoidReason())
+                .felVoidUuid(invoice.getFelVoidUuid())
                 .hasCertifiedXml(hasCertifiedXml(invoice))
                 .notes(invoice.getNotes())
                 .createdAt(invoice.getCreatedAt())

@@ -192,8 +192,13 @@ public class FelFactXmlBuilder {
         if (internalNumber == null || internalNumber.isBlank()) {
             return "";
         }
-        return "<dte:Adenda><NumeroControlInterno>"
-                + FelXmlEscaper.escape(internalNumber.trim())
+        String value = FelXmlEscaper.escape(internalNumber.trim());
+        // INFILE imprime "Control:" en la representación gráfica leyendo la adenda.
+        // Enviamos ambas etiquetas por compatibilidad con plantillas distintas.
+        return "<dte:Adenda><Control>"
+                + value
+                + "</Control><NumeroControlInterno>"
+                + value
                 + "</NumeroControlInterno></dte:Adenda>";
     }
 

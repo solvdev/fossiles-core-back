@@ -201,7 +201,8 @@ class FelFactXmlBuilderTest {
 
         String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
 
-        assertThat(xml).contains("<dte:Adenda><NumeroControlInterno>A45-241</NumeroControlInterno></dte:Adenda>");
+        assertThat(xml).contains("<Control>A45-241</Control>");
+        assertThat(xml).contains("<NumeroControlInterno>A45-241</NumeroControlInterno>");
         int dteClose = xml.indexOf("</dte:DTE>");
         int adendaOpen = xml.indexOf("<dte:Adenda>");
         int satClose = xml.indexOf("</dte:SAT>");

@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ManualTaxInvoiceRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.TaxInvoiceVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.UpdateTaxInvoiceFelMetadataRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceAttemptResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceCertifiedXmlDownload;
@@ -148,6 +149,14 @@ public class TaxInvoiceController {
     public ResponseEntity<TaxInvoiceResponse> retry(@PathVariable Long id)
             throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(taxInvoiceService.retry(id));
+    }
+
+    @PostMapping("/{id}/void")
+    public ResponseEntity<TaxInvoiceResponse> voidInvoice(
+            @PathVariable Long id,
+            @Valid @RequestBody TaxInvoiceVoidRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(taxInvoiceService.voidInvoice(id, request.getReason()));
     }
 
     @PatchMapping("/{id}/fel-metadata")
