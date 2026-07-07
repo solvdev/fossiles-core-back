@@ -54,6 +54,9 @@ public class ProductDistributionService {
     private static final java.util.Set<String> TERMINAL_SHIPMENT_STATUSES =
             java.util.Set.of("SENT", "DELIVERED", "COMPLETED", "RECEIVED", "CANCELLED");
 
+    private static final java.util.Set<String> KIOSK_RECEIPT_SHIPMENT_STATUSES =
+            java.util.Set.of("DELIVERED", "RECEIVED", "COMPLETED");
+
     private static final String DESTINO_PREFIX = "DESTINO:";
     private static final String DOCUMENT_DATE_TAG = "DOCUMENT_DATE:";
     private static final String OPV_PACKING_TAG = "__OPV_PACKING__:";
@@ -1919,7 +1922,7 @@ public class ProductDistributionService {
         if (shipmentId != null) {
             ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
                     .orElseThrow(() -> new ResourceNotFoundException("Shipment", shipmentId));
-            assertDeliveredShipment(shipment);
+            assertKioskReceiptShipment(shipment);
             if (shipment.getLocationId() == null) {
                 throw new BusinessException("El envío no tiene kiosko destino.");
             }
@@ -1928,7 +1931,7 @@ public class ProductDistributionService {
             if (locationId == null) {
                 throw new BusinessException("Debes indicar el kiosko o el envío a cuadrar.");
             }
-            shipments = shipmentRepository.findByStatusIgnoreCaseAndLocationId("DELIVERED", locationId);
+            shipments = resolveKioskReceiptShipmentsForReconcile(locationId);
         }
 
         int linesReconciled = 0;
@@ -1938,6 +1941,7 @@ public class ProductDistributionService {
 
         for (ProductShipmentEntity shipment : shipments) {
             List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipment.getId());
+            Set<Long> detailProductIdsWithPositiveQty = buildDetailProductIdsWithPositiveQty(details);
             for (ProductShipmentDetailEntity detail : details) {
                 if (detail == null || detail.getProductId() == null) {
                     continue;
@@ -1952,7 +1956,7 @@ public class ProductDistributionService {
                 duplicatesRemoved += result.duplicatesRemoved();
             }
             ReconcileLineResult packingResult = reconcileDeliveredShipmentPackingInventory(
-                    shipment, details, affectedStockIds, warnings);
+                    shipment, details, detailProductIdsWithPositiveQty, affectedStockIds, warnings);
             linesReconciled += packingResult.linesReconciled();
             duplicatesRemoved += packingResult.duplicatesRemoved();
         }
@@ -1986,7 +1990,7 @@ public class ProductDistributionService {
         if (shipmentId != null) {
             ProductShipmentEntity shipment = shipmentRepository.findById(shipmentId)
                     .orElseThrow(() -> new ResourceNotFoundException("Shipment", shipmentId));
-            assertDeliveredShipment(shipment);
+            assertKioskReceiptShipment(shipment);
             if (shipment.getLocationId() == null) {
                 throw new BusinessException("El envío no tiene kiosko destino.");
             }
@@ -1996,15 +2000,20 @@ public class ProductDistributionService {
             if (locationId == null) {
                 throw new BusinessException("Debes indicar el kiosko o el envío a revisar.");
             }
-            shipments = shipmentRepository.findByStatusIgnoreCaseAndLocationId("DELIVERED", locationId);
+            shipments = resolveKioskReceiptShipmentsForReconcile(locationId);
         }
 
         List<String> warnings = new ArrayList<>();
         List<KioscoShipmentReconcilePreviewResponse.PreviewLine> previewLines = new ArrayList<>();
         Set<Long> affectedStockIds = new HashSet<>();
 
+        if (shipments.isEmpty()) {
+            warnings.add("No se encontraron envíos recibidos en este kiosko (DELIVERED/RECEIVED/COMPLETED).");
+        }
+
         for (ProductShipmentEntity shipment : shipments) {
             List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipment.getId());
+            Set<Long> detailProductIdsWithPositiveQty = buildDetailProductIdsWithPositiveQty(details);
             for (ProductShipmentDetailEntity detail : details) {
                 if (detail == null || detail.getProductId() == null) {
                     continue;
@@ -2019,7 +2028,8 @@ public class ProductDistributionService {
                     previewLines.add(line);
                 }
             }
-            previewDeliveredShipmentPackingInventory(shipment, details, affectedStockIds, warnings, previewLines);
+            previewDeliveredShipmentPackingInventory(
+                    shipment, details, detailProductIdsWithPositiveQty, affectedStockIds, warnings, previewLines);
         }
 
         int entradasToDelete = 0;
@@ -2086,6 +2096,7 @@ public class ProductDistributionService {
     private void previewDeliveredShipmentPackingInventory(
             ProductShipmentEntity shipment,
             List<ProductShipmentDetailEntity> details,
+            Set<Long> detailProductIdsWithPositiveQty,
             Set<Long> affectedStockIds,
             List<String> warnings,
             List<KioscoShipmentReconcilePreviewResponse.PreviewLine> previewLines
@@ -2093,24 +2104,6 @@ public class ProductDistributionService {
         List<ProductShipmentResponse.PackingItemResponse> packingItems = parsePackingItems(shipment.getPackingItems());
         if (packingItems.isEmpty()) {
             return;
-        }
-
-        Set<Long> receivedProductIds = new HashSet<>();
-        if (details != null) {
-            for (ProductShipmentDetailEntity detail : details) {
-                if (detail == null || detail.getProductId() == null) {
-                    continue;
-                }
-                BigDecimal qtyExpected = resolveShipmentLineQuantity(detail);
-                if (qtyExpected.compareTo(BigDecimal.ZERO) <= 0) {
-                    continue;
-                }
-                String lineRef = shipmentReceiptLineReference(shipment, detail);
-                if (kioscoInventoryService.hasShipmentReceiptLineApplied(
-                        shipment.getLocationId(), shipment.getId(), lineRef)) {
-                    receivedProductIds.add(detail.getProductId());
-                }
-            }
         }
 
         for (ProductShipmentResponse.PackingItemResponse item : packingItems) {
@@ -2125,11 +2118,12 @@ public class ProductDistributionService {
                 MaterialEntity material = materialRepository.findById(item.getMaterialId()).orElse(null);
                 String materialSku = material != null && material.getSku() != null
                         ? material.getSku().trim() : ("material#" + item.getMaterialId());
-                warnings.add("Empaque SUM- " + materialSku + ": no se pudo cuadrar (SKU inválido).");
+                warnings.add("Empaque SUM- " + materialSku + " (envío "
+                        + shipmentLabel(shipment) + "): no se pudo cuadrar (SKU inválido).");
                 continue;
             }
             ProductEntity product = productOpt.get();
-            if (receivedProductIds.contains(product.getId())) {
+            if (detailProductIdsWithPositiveQty.contains(product.getId())) {
                 continue;
             }
             String lineRef = shipmentPackingLineReference(shipment, item.getMaterialId());
@@ -2326,11 +2320,46 @@ public class ProductDistributionService {
         }
     }
 
-    private void assertDeliveredShipment(ProductShipmentEntity shipment) throws BusinessException {
+    private void assertKioskReceiptShipment(ProductShipmentEntity shipment) throws BusinessException {
         String currentStatus = shipment.getStatus() == null ? "" : shipment.getStatus().trim().toUpperCase();
-        if (!"DELIVERED".equals(currentStatus)) {
-            throw new BusinessException("Solo se puede cuadrar inventario de envíos ya entregados (DELIVERED).");
+        if (!KIOSK_RECEIPT_SHIPMENT_STATUSES.contains(currentStatus)) {
+            throw new BusinessException(
+                    "Solo se puede cuadrar inventario de envíos ya recibidos en kiosko (DELIVERED/RECEIVED/COMPLETED).");
         }
+    }
+
+    private List<ProductShipmentEntity> resolveKioskReceiptShipmentsForReconcile(Long locationId) {
+        if (locationId == null) {
+            return List.of();
+        }
+        return shipmentRepository.findKioskReceiptShipmentsByLocationId(locationId);
+    }
+
+    private Set<Long> buildDetailProductIdsWithPositiveQty(List<ProductShipmentDetailEntity> details) {
+        Set<Long> productIds = new HashSet<>();
+        if (details == null) {
+            return productIds;
+        }
+        for (ProductShipmentDetailEntity detail : details) {
+            if (detail == null || detail.getProductId() == null) {
+                continue;
+            }
+            BigDecimal qtyExpected = resolveShipmentLineQuantity(detail);
+            if (qtyExpected.compareTo(BigDecimal.ZERO) > 0) {
+                productIds.add(detail.getProductId());
+            }
+        }
+        return productIds;
+    }
+
+    private String shipmentLabel(ProductShipmentEntity shipment) {
+        if (shipment == null) {
+            return "—";
+        }
+        if (shipment.getShipmentNumber() != null && !shipment.getShipmentNumber().isBlank()) {
+            return shipment.getShipmentNumber().trim();
+        }
+        return "#" + shipment.getId();
     }
 
     private ReconcileLineResult reconcileShipmentProductLine(
@@ -2358,30 +2387,13 @@ public class ProductDistributionService {
     private ReconcileLineResult reconcileDeliveredShipmentPackingInventory(
             ProductShipmentEntity shipment,
             List<ProductShipmentDetailEntity> details,
+            Set<Long> detailProductIdsWithPositiveQty,
             Set<Long> affectedStockIds,
             List<String> warnings
     ) throws ResourceNotFoundException, BusinessException {
         List<ProductShipmentResponse.PackingItemResponse> packingItems = parsePackingItems(shipment.getPackingItems());
         if (packingItems.isEmpty()) {
             return new ReconcileLineResult(0, 0);
-        }
-
-        Set<Long> receivedProductIds = new HashSet<>();
-        if (details != null) {
-            for (ProductShipmentDetailEntity detail : details) {
-                if (detail == null || detail.getProductId() == null) {
-                    continue;
-                }
-                BigDecimal qtyExpected = resolveShipmentLineQuantity(detail);
-                if (qtyExpected.compareTo(BigDecimal.ZERO) <= 0) {
-                    continue;
-                }
-                String lineRef = shipmentReceiptLineReference(shipment, detail);
-                if (kioscoInventoryService.hasShipmentReceiptLineApplied(
-                        shipment.getLocationId(), shipment.getId(), lineRef)) {
-                    receivedProductIds.add(detail.getProductId());
-                }
-            }
         }
 
         int linesReconciled = 0;
@@ -2398,11 +2410,12 @@ public class ProductDistributionService {
                 MaterialEntity material = materialRepository.findById(item.getMaterialId()).orElse(null);
                 String materialSku = material != null && material.getSku() != null
                         ? material.getSku().trim() : ("material#" + item.getMaterialId());
-                warnings.add("Empaque SUM- " + materialSku + ": no se pudo cuadrar (SKU inválido).");
+                warnings.add("Empaque SUM- " + materialSku + " (envío "
+                        + shipmentLabel(shipment) + "): no se pudo cuadrar (SKU inválido).");
                 continue;
             }
             ProductEntity product = productOpt.get();
-            if (receivedProductIds.contains(product.getId())) {
+            if (detailProductIdsWithPositiveQty.contains(product.getId())) {
                 continue;
             }
             ReconcileLineResult result = reconcileShipmentPackingLine(
@@ -2543,6 +2556,14 @@ public class ProductDistributionService {
             Long colorId,
             ProductShipmentEntity shipment
     ) {
+        if (isPackagingProduct(productId)) {
+            List<KioscoMovementEntity> packagingMovements = findShipmentEntradaMovementsFallback(
+                    locationId, shipmentId, productId, colorId);
+            if (!packagingMovements.isEmpty()) {
+                return packagingMovements;
+            }
+        }
+
         Optional<KioscoStockEntity> stockOpt = resolveStockForShipmentLine(locationId, productId, colorId);
         if (stockOpt.isPresent()) {
             Long stockId = stockOpt.get().getId();
@@ -2557,18 +2578,32 @@ public class ProductDistributionService {
                 }
             }
             if (!byStock.isEmpty()) {
-                return filterEntradasForShipmentLine(byStock, lineRef);
+                return filterEntradasForShipmentLine(byStock, lineRef, productId);
             }
         }
 
         List<KioscoMovementEntity> byLine = kioscoMovementRepository.findShipmentEntradaMovements(
                 locationId, shipmentId, lineRef);
         if (!byLine.isEmpty()) {
+            if (isPackagingProduct(productId)) {
+                List<KioscoMovementEntity> allForProduct = findShipmentEntradaMovementsFallback(
+                        locationId, shipmentId, productId, colorId);
+                if (!allForProduct.isEmpty()) {
+                    return allForProduct;
+                }
+            }
             return byLine;
         }
         String lineReasonKey = KioscoInventoryService.shipmentReceiptLineReason(lineRef);
         byLine = kioscoMovementRepository.findShipmentEntradaMovements(locationId, shipmentId, lineReasonKey);
         if (!byLine.isEmpty()) {
+            if (isPackagingProduct(productId)) {
+                List<KioscoMovementEntity> allForProduct = findShipmentEntradaMovementsFallback(
+                        locationId, shipmentId, productId, colorId);
+                if (!allForProduct.isEmpty()) {
+                    return allForProduct;
+                }
+            }
             return byLine;
         }
         return findShipmentEntradaMovementsFallback(locationId, shipmentId, productId, colorId);
@@ -2621,8 +2656,12 @@ public class ProductDistributionService {
 
     private List<KioscoMovementEntity> filterEntradasForShipmentLine(
             List<KioscoMovementEntity> movements,
-            String lineRef
+            String lineRef,
+            Long productId
     ) {
+        if (isPackagingProduct(productId)) {
+            return movements != null ? movements : List.of();
+        }
         if (movements == null || movements.isEmpty() || lineRef == null || lineRef.isBlank()) {
             return movements != null ? movements : List.of();
         }

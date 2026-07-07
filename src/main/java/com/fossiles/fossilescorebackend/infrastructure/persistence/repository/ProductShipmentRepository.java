@@ -34,6 +34,15 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
 
     List<ProductShipmentEntity> findByStatusIgnoreCaseAndLocationId(String status, Long locationId);
 
+    /** Envíos ya recibidos en kiosko (cualquier origen: distribución, OP, standalone, LF). */
+    @Query("""
+        SELECT s FROM ProductShipmentEntity s
+        WHERE s.locationId = :locationId
+          AND UPPER(TRIM(COALESCE(s.status, ''))) IN ('DELIVERED', 'RECEIVED', 'COMPLETED')
+        ORDER BY s.receivedAt DESC NULLS LAST, s.id DESC
+        """)
+    List<ProductShipmentEntity> findKioskReceiptShipmentsByLocationId(@Param("locationId") Long locationId);
+
     List<ProductShipmentEntity> findByStatusIgnoreCaseAndLocationIdIn(String status, Collection<Long> locationIds);
 
     long countByStatusIgnoreCaseAndLocationId(String status, Long locationId);
