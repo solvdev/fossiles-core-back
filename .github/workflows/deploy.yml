@@ -62,3 +62,25 @@ jobs:
               "sudo journalctl -u fossiles-core-backend.service -n 50 --no-pager"
             exit 1
           fi
+
+      - name: Notificar en Discord
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            EMOJI="✅"; COLOR=3066993; TITULO="Deploy exitoso"
+          else
+            EMOJI="❌"; COLOR=15158332; TITULO="Deploy fallido"
+          fi
+          curl -s -H "Content-Type: application/json" -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" -d "{
+            \"embeds\": [{
+              \"title\": \"$EMOJI $TITULO — ${{ github.repository }}\",
+              \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+              \"color\": $COLOR,
+              \"fields\": [
+                {\"name\": \"Rama\", \"value\": \"${{ github.ref_name }}\", \"inline\": true},
+                {\"name\": \"Commit\", \"value\": \"[\`${{ github.sha }}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})\", \"inline\": true},
+                {\"name\": \"Autor\", \"value\": \"${{ github.actor }}\", \"inline\": true}
+              ]
+            }]
+          }"
