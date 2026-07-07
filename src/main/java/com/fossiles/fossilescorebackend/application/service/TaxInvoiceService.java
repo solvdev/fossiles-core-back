@@ -102,7 +102,7 @@ public class TaxInvoiceService {
         TaxInvoiceDocument document = kioskSaleInvoiceMapper.fromSale(sale);
         enrichEmitterFromKioskLocation(document, sale.getKioskLocationId());
         validateDocument(document);
-        TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, sale.getCreatedBy());
+        TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, sale.getCreatedBy(), sale.getKioskLocationId());
         certify(invoice, document, false);
         sale.setInvoiceId(invoice.getId());
         syncKioskSaleFelFields(sale, invoice);
@@ -212,7 +212,7 @@ public class TaxInvoiceService {
         enrichEmitterFromKioskLocation(document, sale.getKioskLocationId());
         validateDocument(document);
 
-        TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, sale.getCreatedBy());
+        TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, sale.getCreatedBy(), sale.getKioskLocationId());
         applyKioskSaleFelSnapshot(invoice, sale);
         invoice.setFelTransactionId(document.getTransactionId());
         appendInvoiceNote(invoice, "[Backfill] Borrador generado desde venta POS existente.");
@@ -407,10 +407,11 @@ public class TaxInvoiceService {
         }
         enrichEmitterFromKioskLocation(document, request.getLocationId());
         assertEmitterConfigured(document);
+        assertInternalSeriesConfigured(request.getLocationId(), document);
         enrichReceptorFromLookup(document);
         validateDocument(document);
         Long userId = securityUtil.getCurrentUserId();
-        TaxInvoiceEntity invoice = persistDraft("MANUAL", null, document, userId);
+        TaxInvoiceEntity invoice = persistDraft("MANUAL", null, document, userId, request.getLocationId());
         invoice.setNotes(trimToNull(request.getNotes()));
         taxInvoiceRepository.save(invoice);
         certify(invoice, document, false);
@@ -458,11 +459,15 @@ public class TaxInvoiceService {
         TaxInvoiceDocument document = kioskSaleInvoiceMapper.fromSale(sale);
         enrichEmitterFromKioskLocation(document, request.getLocationId());
         assertEmitterConfigured(document);
+        assertInternalSeriesConfigured(request.getLocationId(), document);
         enrichReceptorFromLookup(document);
         validateDocument(document);
 
         if (existing.isPresent()) {
             TaxInvoiceEntity invoice = existing.get();
+            assignInternalNumber(invoice, document, request.getLocationId());
+            invoice.setSourceType("KIOSK_SALE");
+            invoice.setSourceId(sale.getId());
             syncInvoiceFromDocument(invoice, document);
             invoice.setFelTransactionId(document.getTransactionId());
             if (request.getNotes() != null) {
@@ -476,7 +481,7 @@ public class TaxInvoiceService {
         }
 
         Long userId = securityUtil.getCurrentUserId();
-        TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, userId);
+        TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, userId, request.getLocationId());
         if (request.getNotes() != null) {
             invoice.setNotes(trimToNull(request.getNotes()));
             taxInvoiceRepository.save(invoice);
@@ -528,6 +533,8 @@ public class TaxInvoiceService {
             throw new BusinessException("No se puede certificar una factura anulada.");
         }
         TaxInvoiceDocument document = rebuildDocumentForRetry(invoice);
+        Long locationId = resolveLocationIdForInvoice(invoice);
+        assignInternalNumber(invoice, document, locationId);
         syncInvoiceFromDocument(invoice, document);
         certify(invoice, document, true);
         syncSourceFelFields(invoice);
@@ -854,7 +861,8 @@ public class TaxInvoiceService {
             String sourceType,
             Long sourceId,
             TaxInvoiceDocument document,
-            Long createdBy
+            Long createdBy,
+            Long locationIdForSeries
     ) {
         BigDecimal taxAmount = sumTax(document);
         String documentType = resolveDocumentType(document.getDocumentType());
@@ -897,10 +905,98 @@ public class TaxInvoiceService {
         }
 
         TaxInvoiceEntity saved = taxInvoiceRepository.save(invoice);
-        String internalNumber = generateInternalNumber(saved.getId(), document.getLocationInternalSeriesCode());
-        saved.setInternalNumber(internalNumber);
-        document.setInternalNumber(internalNumber);
+        assignInternalNumber(saved, document, locationIdForSeries);
         return taxInvoiceRepository.save(saved);
+    }
+
+    private TaxInvoiceEntity persistDraft(
+            String sourceType,
+            Long sourceId,
+            TaxInvoiceDocument document,
+            Long createdBy
+    ) {
+        return persistDraft(sourceType, sourceId, document, createdBy, null);
+    }
+
+    private Long resolveLocationIdForInvoice(TaxInvoiceEntity invoice) {
+        if (invoice == null || !"KIOSK_SALE".equals(invoice.getSourceType()) || invoice.getSourceId() == null) {
+            return null;
+        }
+        return kioskSaleRepository.findById(invoice.getSourceId())
+                .map(KioskSaleEntity::getKioskLocationId)
+                .orElse(null);
+    }
+
+    private String resolveLocationSeriesCode(Long locationId, TaxInvoiceDocument document) {
+        if (locationId != null) {
+            String fromLocation = locationRepository.findById(locationId)
+                    .map(LocationEntity::getInternalSeriesCode)
+                    .filter(code -> code != null && !code.isBlank())
+                    .map(code -> code.trim().toUpperCase(Locale.ROOT))
+                    .orElse(null);
+            if (fromLocation != null) {
+                return fromLocation;
+            }
+        }
+        if (document != null
+                && document.getLocationInternalSeriesCode() != null
+                && !document.getLocationInternalSeriesCode().isBlank()) {
+            return document.getLocationInternalSeriesCode().trim().toUpperCase(Locale.ROOT);
+        }
+        return null;
+    }
+
+    private static boolean matchesInternalSeriesFormat(String internalNumber, String seriesCode) {
+        if (seriesCode == null || seriesCode.isBlank() || internalNumber == null || internalNumber.isBlank()) {
+            return false;
+        }
+        return internalNumber.trim().toUpperCase(Locale.ROOT)
+                .matches("^" + java.util.regex.Pattern.quote(seriesCode.trim().toUpperCase(Locale.ROOT)) + "-\\d+$");
+    }
+
+    private static boolean needsInternalNumberAssignment(String internalNumber, String seriesCode) {
+        if (internalNumber == null || internalNumber.isBlank()) {
+            return true;
+        }
+        String normalized = internalNumber.trim().toUpperCase(Locale.ROOT);
+        if (normalized.startsWith("TINV-")) {
+            return true;
+        }
+        if (seriesCode == null || seriesCode.isBlank()) {
+            return false;
+        }
+        return !matchesInternalSeriesFormat(normalized, seriesCode);
+    }
+
+    /**
+     * Asigna número interno "{serie}-{correlativo}" desde location_internal_number_sequence.
+     * Reutiliza el existente si ya tiene la serie correcta (reintentos / borradores backfill).
+     */
+    private void assignInternalNumber(
+            TaxInvoiceEntity invoice,
+            TaxInvoiceDocument document,
+            Long locationId
+    ) {
+        if (invoice == null || document == null || invoice.getId() == null) {
+            return;
+        }
+        String seriesCode = resolveLocationSeriesCode(locationId, document);
+        if (seriesCode != null && !seriesCode.isBlank()) {
+            document.setLocationInternalSeriesCode(seriesCode);
+        }
+        if (!needsInternalNumberAssignment(invoice.getInternalNumber(), seriesCode)) {
+            document.setInternalNumber(invoice.getInternalNumber());
+            return;
+        }
+        if (seriesCode == null || seriesCode.isBlank()) {
+            String fallback = String.format("TINV-%06d", invoice.getId());
+            invoice.setInternalNumber(fallback);
+            document.setInternalNumber(fallback);
+            return;
+        }
+        String internalNumber = generateInternalNumber(invoice.getId(), seriesCode);
+        invoice.setInternalNumber(internalNumber);
+        document.setInternalNumber(internalNumber);
     }
 
     private String resolveDocumentType(String requested) {
@@ -1073,6 +1169,14 @@ public class TaxInvoiceService {
         if (document == null || isBlank(document.getEmitterEstablishmentCode())) {
             throw new BusinessException(
                     "La ubicación seleccionada no tiene código de establecimiento FEL configurado.");
+        }
+    }
+
+    private void assertInternalSeriesConfigured(Long locationId, TaxInvoiceDocument document) throws BusinessException {
+        if (resolveLocationSeriesCode(locationId, document) == null) {
+            throw new BusinessException(
+                    "El establecimiento seleccionado no tiene serie de número interno configurada (ej. A45). "
+                            + "Revise Catálogos → Ubicaciones y location_internal_number_sequence.");
         }
     }
 

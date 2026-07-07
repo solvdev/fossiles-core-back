@@ -155,8 +155,8 @@ public class FelFactXmlBuilder {
                         </dte:Totales>
                       </dte:DatosEmision>
                     </dte:DTE>
+                    %s
                   </dte:SAT>
-                  %s
                 </dte:GTDocumento>
                 """.formatted(
                 properties.getMoneda(),
@@ -185,9 +185,8 @@ public class FelFactXmlBuilder {
     }
 
     /**
-     * Adenda: información no tributaria (no forma parte de "DatosCertificados", no la valida
-     * la SAT). Se usa para reflejar el número de control interno propio en la factura, tal como
-     * indica la Guía de requisitos de la representación gráfica del DTE.
+     * Adenda: información no tributaria dentro de {@code SAT}, hermana de {@code DTE}
+     * (esquema GT_Documento-0.2.0). No va como hijo directo de {@code GTDocumento}.
      */
     private String buildAdendaXml(String internalNumber) {
         if (internalNumber == null || internalNumber.isBlank()) {
