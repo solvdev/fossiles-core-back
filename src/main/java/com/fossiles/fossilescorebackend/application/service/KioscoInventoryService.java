@@ -1865,7 +1865,7 @@ public class KioscoInventoryService {
                 .getSingleResult();
     }
 
-    public void deleteAdminMovement(KioscoMovementEntity movement) {
+    public void deleteAdminMovement(KioscoMovementEntity movement) throws BusinessException {
         if (movement == null || movement.getId() == null) {
             return;
         }
@@ -1881,7 +1881,7 @@ public class KioscoInventoryService {
         }
     }
 
-    public void trimAdminEntradaQuantity(KioscoMovementEntity movement, int newQuantity) {
+    public void trimAdminEntradaQuantity(KioscoMovementEntity movement, int newQuantity) throws BusinessException {
         if (movement == null || movement.getId() == null || newQuantity <= 0) {
             return;
         }
@@ -1910,7 +1910,7 @@ public class KioscoInventoryService {
             String lineRef,
             Long productId,
             Long colorId
-    ) {
+    ) throws BusinessException {
         if (locationId == null || shipmentId == null || lineRef == null || lineRef.isBlank()) {
             return 0;
         }
@@ -1925,7 +1925,8 @@ public class KioscoInventoryService {
     /**
      * Conserva ENTRADAs mas antiguas hasta expected y elimina sobrantes (duplicados de envio).
      */
-    public int pruneExcessShipmentEntradas(List<KioscoMovementEntity> movementsOrderedAsc, int expected) {
+    public int pruneExcessShipmentEntradas(List<KioscoMovementEntity> movementsOrderedAsc, int expected)
+            throws BusinessException {
         EntradaPrunePlan plan = planPruneExcessShipmentEntradas(movementsOrderedAsc, expected);
         int applied = 0;
         for (PlannedEntradaAction action : plan.actions()) {

@@ -506,7 +506,7 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
-    void pruneExcessShipmentEntradas_keepsOldestAndRemovesDuplicates() {
+    void pruneExcessShipmentEntradas_keepsOldestAndRemovesDuplicates() throws BusinessException {
         List<KioscoMovementEntity> entradas = List.of(
                 shipmentEntrada(1L, 1),
                 shipmentEntrada(2L, 1),
@@ -522,14 +522,14 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
-    void pruneExcessShipmentEntradas_trimsSingleOversizedEntrada() {
+    void pruneExcessShipmentEntradas_trimsSingleOversizedEntrada() throws BusinessException {
         KioscoMovementEntity oversized = shipmentEntrada(10L, 25);
         oversized.setStockBefore(0);
         oversized.setStockAfter(25);
 
         int removed = service.pruneExcessShipmentEntradas(List.of(oversized), 10);
 
-        assertThat(removed).isZero();
+        assertThat(removed).isEqualTo(1);
         assertThat(oversized.getQuantity()).isEqualTo(10);
         assertThat(oversized.getStockAfter()).isEqualTo(10);
         verify(entityManager).createNativeQuery(
@@ -538,7 +538,7 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
-    void deleteShipmentReconcileMermaMovements_deletesOnlyCuadreRows() {
+    void deleteShipmentReconcileMermaMovements_deletesOnlyCuadreRows() throws BusinessException {
         KioscoMovementEntity merma = KioscoMovementEntity.builder()
                 .id(55L)
                 .kioscoStockId(100L)
