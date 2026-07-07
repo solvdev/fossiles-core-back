@@ -2025,19 +2025,37 @@ public class KioskPosService {
     }
 
     private List<KioskSaleEntity> findSalesByDateRangeForKiosk(Long kioskId, LocalDate startDate, LocalDate endDate) {
-        if (startDate != null && endDate != null) {
-            return kioskSaleRepository.findByKioskLocationIdAndSaleDateBetweenOrderBySoldAtDesc(kioskId, startDate, endDate);
+        LocalDate[] range = normalizeSaleDateRange(startDate, endDate);
+        if (range[0] != null && range[1] != null) {
+            return kioskSaleRepository.findByKioskLocationIdAndSaleDateBetweenOrderBySoldAtDesc(
+                    kioskId, range[0], range[1]);
         }
         return kioskSaleRepository.findByKioskLocationIdOrderBySoldAtDesc(kioskId);
     }
 
     private List<KioskSaleEntity> findSalesByDateRange(LocalDate startDate, LocalDate endDate) {
-        if (startDate != null && endDate != null) {
-            return kioskSaleRepository.findBySaleDateBetweenOrderBySoldAtDesc(startDate, endDate);
+        LocalDate[] range = normalizeSaleDateRange(startDate, endDate);
+        if (range[0] != null && range[1] != null) {
+            return kioskSaleRepository.findBySaleDateBetweenOrderBySoldAtDesc(range[0], range[1]);
         }
         return kioskSaleRepository.findAll().stream()
                 .sorted(Comparator.comparing(KioskSaleEntity::getSoldAt, Comparator.nullsLast(Comparator.reverseOrder())))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Acepta un solo día (solo inicio o solo fin), o rango completo. Intercambia si vienen invertidas.
+     */
+    private LocalDate[] normalizeSaleDateRange(LocalDate startDate, LocalDate endDate) {
+        if (startDate == null && endDate == null) {
+            return new LocalDate[] { null, null };
+        }
+        LocalDate from = startDate != null ? startDate : endDate;
+        LocalDate to = endDate != null ? endDate : startDate;
+        if (to.isBefore(from)) {
+            return new LocalDate[] { to, from };
+        }
+        return new LocalDate[] { from, to };
     }
 
     private KioskPosReportsResponse buildReportResponse(List<KioskSaleEntity> sales, LocalDate startDate, LocalDate endDate) {
