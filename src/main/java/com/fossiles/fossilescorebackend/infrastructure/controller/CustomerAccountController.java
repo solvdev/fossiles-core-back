@@ -61,10 +61,11 @@ public class CustomerAccountController {
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) Integer routeNumber,
             @RequestParam(required = false) String routeLocationCode,
+            @RequestParam(defaultValue = "false") boolean allOrderTypes,
             @RequestParam(defaultValue = "200") int limit) {
         return ResponseEntity.ok(customerAccountService.searchReceivables(
                 search, orderKind, chargeStatus, hasCharge, hasPayment,
-                regionCode, routeNumber, routeLocationCode, limit));
+                regionCode, routeNumber, routeLocationCode, allOrderTypes, limit));
     }
 
     @GetMapping("/customers/{customerId}/balance")

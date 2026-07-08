@@ -23,6 +23,7 @@ public class CustomerAccountReceivableSearchResponse {
     private Long productionOrderId;
     private String orderCode;
     private String orderKind;
+    private String orderType;
 
     private Long productShipmentId;
     private String shipmentNumber;
@@ -39,6 +40,7 @@ public class CustomerAccountReceivableSearchResponse {
     private String chargeStatus;
     private BigDecimal chargedAmount;
     private BigDecimal balanceDue;
+    private BigDecimal estimatedTotal;
     private boolean hasCharge;
     private boolean hasPayment;
     private LocalDate chargeDate;

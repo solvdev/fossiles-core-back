@@ -28,6 +28,14 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
             ORDER BY po.deliveryDate DESC NULLS LAST, po.createdAt DESC
             """)
     List<ProductionOrderEntity> findOpvCatalogOrders();
+
+    @Query("""
+            SELECT po FROM ProductionOrderEntity po
+            WHERE po.customerId IS NOT NULL
+              AND UPPER(COALESCE(po.status, '')) <> 'CANCELLED'
+            ORDER BY po.deliveryDate DESC NULLS LAST, po.createdAt DESC
+            """)
+    List<ProductionOrderEntity> findOrdersWithCustomer();
     Optional<ProductionOrderEntity> findByDistributionId(Long distributionId);
 
     @Query("SELECT po FROM ProductionOrderEntity po WHERE po.status IN :statuses ORDER BY po.deliveryDate ASC, po.createdAt ASC")
