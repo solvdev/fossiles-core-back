@@ -47,6 +47,14 @@ public interface CustomerAccountEntryRepository extends JpaRepository<CustomerAc
     @Query("""
             SELECT DISTINCT e.customerId FROM CustomerAccountEntryEntity e
             WHERE e.status = 'ACTIVE'
+              AND e.customerId IS NOT NULL
+              AND UPPER(COALESCE(e.orderKind, '')) IN ('OPV', 'OPC')
+            """)
+    List<Long> findCustomerIdsWithLfOrderKindEntries();
+
+    @Query("""
+            SELECT DISTINCT e.customerId FROM CustomerAccountEntryEntity e
+            WHERE e.status = 'ACTIVE'
               AND (
                 LOWER(COALESCE(e.invoiceNumber, '')) LIKE LOWER(CONCAT('%', :q, '%'))
                 OR LOWER(COALESCE(e.vendorShipmentNumber, '')) LIKE LOWER(CONCAT('%', :q, '%'))

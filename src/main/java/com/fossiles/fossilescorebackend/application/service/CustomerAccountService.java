@@ -61,6 +61,7 @@ public class CustomerAccountService {
             Integer routeNumber,
             String routeLocationCode) {
         Set<Long> lfCustomerIds = new HashSet<>(entryRepository.findLuisFelipeReceivableCustomerIds());
+        lfCustomerIds.addAll(entryRepository.findCustomerIdsWithLfOrderKindEntries());
         List<CustomerEntity> customers = customerRepository.findAll();
 
         String searchNorm = search != null ? search.trim().toLowerCase(Locale.ROOT) : "";
@@ -646,23 +647,8 @@ public class CustomerAccountService {
             }
 
             RouteMeta routeMeta = resolveRouteMeta(customer.getRouteLocationCode());
-            if (regionFilter != null) {
-                if (routeMeta.regionCode() == null || !regionFilter.equals(routeMeta.regionCode())) {
-                    continue;
-                }
-            }
-            if (routeNumber != null) {
-                if (routeMeta.routeNumber() == null || !routeNumber.equals(routeMeta.routeNumber())) {
-                    continue;
-                }
-            }
-            if (routeCodeFilter != null) {
-                String customerCode = customer.getRouteLocationCode() != null
-                        ? customer.getRouteLocationCode().trim().toUpperCase(Locale.ROOT)
-                        : null;
-                if (!routeCodeFilter.equals(customerCode)) {
-                    continue;
-                }
+            if (!matchesRouteFilters(routeMeta, customer, regionFilter, routeNumber, routeCodeFilter)) {
+                continue;
             }
 
             String orderKindValue = classifyOrderKind(order);
@@ -671,29 +657,37 @@ public class CustomerAccountService {
             }
 
             List<CustomerAccountEntryEntity> entries = entriesByCustomer.getOrDefault(customer.getId(), List.of());
-            List<ProductionOrderPartialReleaseEntity> releases =
-                    partialReleaseRepository.findByProductionOrderIdOrderBySequenceNumAsc(order.getId());
-
-            if (releases.isEmpty()) {
+            for (ReceivableSlot slot : collectReceivableSlots(order)) {
                 appendReceivableSearchRow(
-                        results, customer, routeMeta, order, null, null, entries,
+                        results, customer, routeMeta, order, slot.release(), slot.shipment(), entries,
                         searchNorm, statusFilter, hasCharge, hasPayment);
-            } else {
-                for (ProductionOrderPartialReleaseEntity release : releases) {
-                    List<ProductShipmentEntity> shipments =
-                            productShipmentRepository.findByPartialReleaseId(release.getId());
-                    if (shipments.isEmpty()) {
-                        appendReceivableSearchRow(
-                                results, customer, routeMeta, order, release, null, entries,
-                                searchNorm, statusFilter, hasCharge, hasPayment);
-                    } else {
-                        for (ProductShipmentEntity shipment : shipments) {
-                            appendReceivableSearchRow(
-                                    results, customer, routeMeta, order, release, shipment, entries,
-                                    searchNorm, statusFilter, hasCharge, hasPayment);
-                        }
-                    }
+            }
+        }
+
+        Set<Long> coveredChargeIds = results.stream()
+                .map(CustomerAccountReceivableSearchResponse::getChargeEntryId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        for (Map.Entry<Long, List<CustomerAccountEntryEntity>> bucket : entriesByCustomer.entrySet()) {
+            CustomerEntity customer = customersById.get(bucket.getKey());
+            if (customer == null) {
+                continue;
+            }
+            RouteMeta routeMeta = resolveRouteMeta(customer.getRouteLocationCode());
+            if (!matchesRouteFilters(routeMeta, customer, regionFilter, routeNumber, routeCodeFilter)) {
+                continue;
+            }
+            for (CustomerAccountEntryEntity charge : bucket.getValue()) {
+                if (!TYPE_CHARGE.equalsIgnoreCase(charge.getEntryType())) {
+                    continue;
                 }
+                if (coveredChargeIds.contains(charge.getId())) {
+                    continue;
+                }
+                appendOrphanChargeRow(
+                        results, customer, routeMeta, charge, bucket.getValue(),
+                        kindFilter, searchNorm, statusFilter, hasCharge, hasPayment);
             }
         }
 
@@ -712,6 +706,149 @@ public class CustomerAccountService {
             return results.subList(0, maxResults);
         }
         return results;
+    }
+
+    private record ReceivableSlot(ProductionOrderPartialReleaseEntity release, ProductShipmentEntity shipment) {}
+
+    private List<ReceivableSlot> collectReceivableSlots(ProductionOrderEntity order) {
+        List<ProductionOrderPartialReleaseEntity> releases =
+                partialReleaseRepository.findByProductionOrderIdOrderBySequenceNumAsc(order.getId());
+        List<ProductShipmentEntity> allShipments = productShipmentRepository.findByProductionOrderId(order.getId());
+        Set<Long> usedShipmentIds = new HashSet<>();
+        List<ReceivableSlot> slots = new ArrayList<>();
+
+        for (ProductionOrderPartialReleaseEntity release : releases) {
+            List<ProductShipmentEntity> releaseShipments = allShipments.stream()
+                    .filter(s -> Objects.equals(s.getPartialReleaseId(), release.getId()))
+                    .toList();
+            if (releaseShipments.isEmpty()) {
+                slots.add(new ReceivableSlot(release, null));
+            } else {
+                for (ProductShipmentEntity shipment : releaseShipments) {
+                    usedShipmentIds.add(shipment.getId());
+                    slots.add(new ReceivableSlot(release, shipment));
+                }
+            }
+        }
+
+        for (ProductShipmentEntity shipment : allShipments) {
+            if (usedShipmentIds.contains(shipment.getId())) {
+                continue;
+            }
+            ProductionOrderPartialReleaseEntity release = null;
+            if (shipment.getPartialReleaseId() != null) {
+                release = partialReleaseRepository.findById(shipment.getPartialReleaseId()).orElse(null);
+            }
+            usedShipmentIds.add(shipment.getId());
+            slots.add(new ReceivableSlot(release, shipment));
+        }
+
+        if (slots.isEmpty()) {
+            slots.add(new ReceivableSlot(null, null));
+        }
+        return slots;
+    }
+
+    private boolean matchesRouteFilters(
+            RouteMeta routeMeta,
+            CustomerEntity customer,
+            String regionFilter,
+            Integer routeNumber,
+            String routeCodeFilter) {
+        if (regionFilter != null) {
+            if (routeMeta.regionCode() == null || !regionFilter.equals(routeMeta.regionCode())) {
+                return false;
+            }
+        }
+        if (routeNumber != null) {
+            if (routeMeta.routeNumber() == null || !routeNumber.equals(routeMeta.routeNumber())) {
+                return false;
+            }
+        }
+        if (routeCodeFilter != null) {
+            String customerCode = customer.getRouteLocationCode() != null
+                    ? customer.getRouteLocationCode().trim().toUpperCase(Locale.ROOT)
+                    : null;
+            if (!routeCodeFilter.equals(customerCode)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void appendOrphanChargeRow(
+            List<CustomerAccountReceivableSearchResponse> results,
+            CustomerEntity customer,
+            RouteMeta routeMeta,
+            CustomerAccountEntryEntity charge,
+            List<CustomerAccountEntryEntity> entries,
+            String kindFilter,
+            String searchNorm,
+            String statusFilter,
+            Boolean hasCharge,
+            Boolean hasPayment) {
+        ProductionOrderEntity order = charge.getProductionOrderId() != null
+                ? productionOrderRepository.findById(charge.getProductionOrderId()).orElse(null)
+                : null;
+        if (order != null && !isLfReceivableOrder(order)) {
+            return;
+        }
+
+        String orderKind = charge.getOrderKind();
+        if (orderKind == null && order != null) {
+            orderKind = classifyOrderKind(order);
+        }
+        if (kindFilter != null && (orderKind == null || !kindFilter.equalsIgnoreCase(orderKind))) {
+            return;
+        }
+
+        ProductShipmentEntity shipment = charge.getProductShipmentId() != null
+                ? productShipmentRepository.findById(charge.getProductShipmentId()).orElse(null)
+                : null;
+        ProductionOrderPartialReleaseEntity release = charge.getPartialReleaseId() != null
+                ? partialReleaseRepository.findById(charge.getPartialReleaseId()).orElse(null)
+                : null;
+
+        BigDecimal balanceDue = computeChargeBalanceDue(charge, entries);
+        String status = resolveChargeStatus(Optional.of(charge), balanceDue);
+        boolean paid = "PARTIAL".equals(status) || "PAID".equals(status);
+
+        if (!matchesReceivableRowSearch(customer, order, release, shipment, charge, searchNorm)) {
+            return;
+        }
+        if (!matchesChargeStatusFilter(status, statusFilter, hasCharge, hasPayment)) {
+            return;
+        }
+
+        String shipmentNumber = shipment != null
+                ? shipment.getShipmentNumber()
+                : firstNonBlank(charge.getVendorShipmentNumber(), order != null ? order.getVendorShipmentNumber() : null);
+
+        results.add(CustomerAccountReceivableSearchResponse.builder()
+                .customerId(customer.getId())
+                .customerName(customer.getName())
+                .legacyCode(customer.getLegacyCode())
+                .nit(customer.getNit())
+                .routeLocationCode(customer.getRouteLocationCode())
+                .routeLocationLabel(routeMeta.label())
+                .productionOrderId(charge.getProductionOrderId())
+                .orderCode(order != null ? order.getCode() : charge.getDocumentNumber())
+                .orderKind(orderKind)
+                .productShipmentId(charge.getProductShipmentId())
+                .shipmentNumber(shipmentNumber)
+                .vendorShipmentNumber(order != null ? order.getVendorShipmentNumber() : charge.getVendorShipmentNumber())
+                .partialReleaseId(charge.getPartialReleaseId())
+                .partialReleaseLabel(release != null ? release.getLabel() : null)
+                .documentLevel(shipment != null ? "SHIPMENT" : "CHARGE")
+                .chargeEntryId(charge.getId())
+                .invoiceNumber(charge.getInvoiceNumber())
+                .chargeStatus(status)
+                .chargedAmount(charge.getAmount())
+                .balanceDue(balanceDue)
+                .hasCharge(true)
+                .hasPayment(paid)
+                .chargeDate(charge.getEntryDate())
+                .build());
     }
 
     private void appendReceivableSearchRow(
@@ -870,9 +1007,19 @@ public class CustomerAccountService {
 
         List<ProductionOrderPartialReleaseEntity> releases =
                 partialReleaseRepository.findByProductionOrderIdOrderBySequenceNumAsc(order.getId());
-        List<LfPartialReleaseDocumentResponse> partialDocs = releases.stream()
-                .map(release -> toPartialReleaseDoc(release, order, entries, chargeMetaById, withBalance))
+        Set<Long> usedShipmentIds = new HashSet<>();
+        List<LfPartialReleaseDocumentResponse> partialDocs = new ArrayList<>();
+        for (ProductionOrderPartialReleaseEntity release : releases) {
+            partialDocs.add(toPartialReleaseDoc(release, order, entries, chargeMetaById, withBalance));
+            productShipmentRepository.findByPartialReleaseId(release.getId())
+                    .forEach(s -> usedShipmentIds.add(s.getId()));
+        }
+        List<ProductShipmentEntity> looseShipments = productShipmentRepository.findByProductionOrderId(order.getId()).stream()
+                .filter(s -> !usedShipmentIds.contains(s.getId()))
                 .collect(Collectors.toList());
+        if (!looseShipments.isEmpty()) {
+            partialDocs.add(buildLooseShipmentsPartialDoc(order, looseShipments, entries, withBalance));
+        }
 
         return LfSalesDocumentResponse.builder()
                 .productionOrderId(order.getId())
@@ -919,6 +1066,33 @@ public class CustomerAccountService {
                 .balanceDue(withBalance ? balanceDue : null)
                 .chargeStatus(resolveChargeStatus(releaseCharge, balanceDue))
                 .chargeEntryId(releaseCharge.map(CustomerAccountEntryEntity::getId).orElse(null))
+                .shipments(shipmentDocs)
+                .build();
+    }
+
+    private LfPartialReleaseDocumentResponse buildLooseShipmentsPartialDoc(
+            ProductionOrderEntity order,
+            List<ProductShipmentEntity> shipments,
+            List<CustomerAccountEntryEntity> entries,
+            boolean withBalance) {
+        List<LfShipmentDocumentResponse> shipmentDocs = shipments.stream()
+                .map(shipment -> toShipmentDoc(
+                        shipment,
+                        order,
+                        shipment.getPartialReleaseId(),
+                        entries,
+                        withBalance))
+                .collect(Collectors.toList());
+        return LfPartialReleaseDocumentResponse.builder()
+                .partialReleaseId(null)
+                .sequenceNum(null)
+                .label(shipments.size() == 1 ? "Envío directo" : "Envíos directos")
+                .status(null)
+                .estimatedTotal(null)
+                .chargedAmount(null)
+                .balanceDue(null)
+                .chargeStatus("NONE")
+                .chargeEntryId(null)
                 .shipments(shipmentDocs)
                 .build();
     }
