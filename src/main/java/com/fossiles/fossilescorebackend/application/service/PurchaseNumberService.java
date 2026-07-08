@@ -97,6 +97,10 @@ public class PurchaseNumberService {
         PurchaseNumberEntity entity = purchaseNumberRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Purchase Number", id));
 
+        if ("PAGADO".equals(entity.getStatus())) {
+            throw new BusinessException("No se puede editar una compra finalizada");
+        }
+
         // Validar que todas las facturas no estén aprobadas (PAGADO)
         List<MinorExpenseEntity> expenses = minorExpenseRepository.findByPurchaseNumberId(id);
         
@@ -189,14 +193,32 @@ public class PurchaseNumberService {
                 .orElseThrow(() -> new ResourceNotFoundException("Purchase Number", id));
 
         if (!"PENDIENTE".equals(entity.getStatus())) {
-            throw new BusinessException("Solo se pueden cerrar compras abiertas");
+            throw new BusinessException("Solo se puede cerrar la lista de artículos en compras abiertas");
         }
 
         if (!purchaseNumberItemRepository.existsByPurchaseNumberId(id)) {
-            throw new BusinessException("Agregue al menos un artículo antes de cerrar la compra");
+            throw new BusinessException("Agregue al menos un artículo antes de cerrar la lista");
         }
 
         entity.setStatus("TERMINADO");
+        entity.setUpdatedBy(securityUtil.getCurrentUserId());
+        PurchaseNumberEntity saved = purchaseNumberRepository.save(entity);
+        return toResponse(saved);
+    }
+
+    public PurchaseNumberResponse finalizePurchaseNumber(Long id)
+            throws ResourceNotFoundException, BusinessException {
+        PurchaseNumberEntity entity = purchaseNumberRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Purchase Number", id));
+
+        if ("PAGADO".equals(entity.getStatus())) {
+            throw new BusinessException("La compra ya está finalizada");
+        }
+        if (!"TERMINADO".equals(entity.getStatus())) {
+            throw new BusinessException("Primero debe cerrar la lista de artículos");
+        }
+
+        entity.setStatus("PAGADO");
         entity.setUpdatedBy(securityUtil.getCurrentUserId());
         PurchaseNumberEntity saved = purchaseNumberRepository.save(entity);
         return toResponse(saved);
@@ -388,10 +410,12 @@ public class PurchaseNumberService {
         long expenseCount = expenses.size();
 
         // Verificar si es editable (gastos / reembolsos)
-        boolean isEditable = expenses.isEmpty() || expenses.stream()
-                .noneMatch(exp -> "PAGADO".equals(exp.getReimbursementStatus()));
+        boolean reimbursementsLocked = !expenses.isEmpty() && expenses.stream()
+                .allMatch(exp -> "PAGADO".equals(exp.getReimbursementStatus()));
+        boolean purchaseFinalized = "PAGADO".equals(entity.getStatus());
+        boolean isEditable = !purchaseFinalized && !reimbursementsLocked;
 
-        boolean itemsEditable = "PENDIENTE".equals(entity.getStatus()) && isEditable;
+        boolean itemsEditable = "PENDIENTE".equals(entity.getStatus());
 
         // ====== Calcular balance contable ======
         BigDecimal totalAmount = entity.getTotalAmount() != null ? entity.getTotalAmount() : BigDecimal.ZERO;
@@ -435,8 +459,11 @@ public class PurchaseNumberService {
     }
 
     private void assertPurchaseAcceptsItems(PurchaseNumberEntity purchaseNumber) throws BusinessException {
+        if ("PAGADO".equals(purchaseNumber.getStatus())) {
+            throw new BusinessException("La compra está finalizada y no se pueden modificar artículos");
+        }
         if (!"PENDIENTE".equals(purchaseNumber.getStatus())) {
-            throw new BusinessException("La compra está cerrada y no se pueden modificar artículos");
+            throw new BusinessException("La lista de artículos está cerrada y no se pueden modificar artículos");
         }
     }
 

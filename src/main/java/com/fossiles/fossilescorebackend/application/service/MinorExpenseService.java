@@ -30,6 +30,8 @@ public class MinorExpenseService {
     private final com.fossiles.fossilescorebackend.infrastructure.persistence.repository.PurchaseNumberItemRepository purchaseNumberItemRepository;
 
     public MinorExpenseResponse createMinorExpense(MinorExpenseRequest request) throws BusinessException, ResourceNotFoundException {
+        assertPurchaseAcceptsExpenseChanges(request.getPurchaseNumberId());
+
         // Validar número de factura único
         if (minorExpenseRepository.existsByInvoiceNumber(request.getInvoiceNumber())) {
             throw new BusinessException("El número de factura ya existe: " + request.getInvoiceNumber());
@@ -150,6 +152,11 @@ public class MinorExpenseService {
     public MinorExpenseResponse updateMinorExpense(Long id, MinorExpenseRequest request) throws BusinessException, ResourceNotFoundException {
         MinorExpenseEntity entity = minorExpenseRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Minor Expense", id));
+
+        Long purchaseNumberId = request.getPurchaseNumberId() != null
+                ? request.getPurchaseNumberId()
+                : entity.getPurchaseNumberId();
+        assertPurchaseAcceptsExpenseChanges(purchaseNumberId);
 
         // Validar que no se puede eliminar/editar si tiene reembolso pagado
         if ("PAGADO".equals(entity.getReimbursementStatus())) {
@@ -471,6 +478,18 @@ public class MinorExpenseService {
                 .updatedBy(entity.getUpdatedBy())
                 .updatedByName(updatedByName)
                 .build();
+    }
+
+    private void assertPurchaseAcceptsExpenseChanges(Long purchaseNumberId)
+            throws BusinessException, ResourceNotFoundException {
+        if (purchaseNumberId == null) {
+            return;
+        }
+        PurchaseNumberEntity purchaseNumber = purchaseNumberRepository.findById(purchaseNumberId)
+                .orElseThrow(() -> new ResourceNotFoundException("Purchase Number", purchaseNumberId));
+        if ("PAGADO".equals(purchaseNumber.getStatus())) {
+            throw new BusinessException("La compra está finalizada y no se pueden modificar gastos");
+        }
     }
 }
 

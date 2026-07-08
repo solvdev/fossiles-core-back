@@ -86,6 +86,14 @@ public class PurchaseNumberController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/{id}/finalize")
+    @PreAuthorize("hasAnyAuthority('ADMIN', 'ACCOUNTING', 'CAPTURIST')")
+    public ResponseEntity<PurchaseNumberResponse> finalizePurchaseNumber(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        PurchaseNumberResponse response = purchaseNumberService.finalizePurchaseNumber(id);
+        return ResponseEntity.ok(response);
+    }
+
     @GetMapping("/{id}/expenses")
     @PreAuthorize("hasAnyAuthority('ADMIN', 'ACCOUNTING', 'CAPTURIST', 'CONSULT')")
     public ResponseEntity<List<com.fossiles.fossilescorebackend.application.dto.response.MinorExpenseResponse>> getPurchaseNumberExpenses(
