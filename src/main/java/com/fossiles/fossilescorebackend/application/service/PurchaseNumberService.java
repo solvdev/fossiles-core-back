@@ -207,7 +207,7 @@ public class PurchaseNumberService {
                 .purchaseNumberId(purchaseNumberId)
                 .itemName(request.getItemName())
                 .description(request.getDescription())
-                .supplier(request.getSupplier())
+                .supplier(normalizeItemSupplier(request.getSupplier()))
                 .estimatedPrice(request.getEstimatedPrice())
                 .quantity(request.getQuantity())
                 .createdBy(currentUserId)
@@ -233,7 +233,7 @@ public class PurchaseNumberService {
 
         item.setItemName(request.getItemName());
         item.setDescription(request.getDescription());
-        item.setSupplier(request.getSupplier());
+        item.setSupplier(normalizeItemSupplier(request.getSupplier()));
         item.setEstimatedPrice(request.getEstimatedPrice());
         item.setQuantity(request.getQuantity());
         
@@ -395,6 +395,13 @@ public class PurchaseNumberService {
                 .expenseCount(expenseCount)
                 .editable(isEditable)
                 .build();
+    }
+
+    private String normalizeItemSupplier(String supplier) {
+        if (supplier == null || supplier.isBlank()) {
+            return "Pendiente";
+        }
+        return supplier.trim();
     }
 }
 

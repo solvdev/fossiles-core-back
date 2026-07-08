@@ -25,7 +25,6 @@ public class PurchaseNumberItemRequest {
     @Size(max = 1000, message = "Description must not exceed 1000 characters")
     private String description;
 
-    @NotBlank(message = "Supplier is required")
     @Size(max = 200, message = "Supplier must not exceed 200 characters")
     private String supplier;
 
