@@ -202,6 +202,8 @@ public class PurchaseNumberService {
         }
 
         Long currentUserId = securityUtil.getCurrentUserId();
+        BigDecimal estimatedTotal = request.getEstimatedPrice()
+                .multiply(BigDecimal.valueOf(request.getQuantity()));
 
         PurchaseNumberItemEntity item = PurchaseNumberItemEntity.builder()
                 .purchaseNumberId(purchaseNumberId)
@@ -210,6 +212,7 @@ public class PurchaseNumberService {
                 .supplier(normalizeItemSupplier(request.getSupplier()))
                 .estimatedPrice(request.getEstimatedPrice())
                 .quantity(request.getQuantity())
+                .estimatedTotal(estimatedTotal)
                 .createdBy(currentUserId)
                 .build();
 
@@ -236,6 +239,8 @@ public class PurchaseNumberService {
         item.setSupplier(normalizeItemSupplier(request.getSupplier()));
         item.setEstimatedPrice(request.getEstimatedPrice());
         item.setQuantity(request.getQuantity());
+        item.setEstimatedTotal(request.getEstimatedPrice()
+                .multiply(BigDecimal.valueOf(request.getQuantity())));
         
         Long currentUserId = securityUtil.getCurrentUserId();
         item.setUpdatedBy(currentUserId);
