@@ -76,6 +76,12 @@ public class InternalShipmentRequestEntity {
     @Column(name = "production_order_id")
     private Long productionOrderId;
 
+    @Column(name = "opi_authorized_by")
+    private Long opiAuthorizedBy;
+
+    @Column(name = "opi_authorized_at")
+    private LocalDateTime opiAuthorizedAt;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

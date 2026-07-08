@@ -33,7 +33,8 @@ Es posible y **no siempre es un error de captura**:
 
 | Estado | Significado | Cómo llega ahí |
 |--------|-------------|----------------|
-| **PENDING** | Orden creada; producción no iniciada formalmente | Creación de OP; tareas sin iniciar; tareas pendientes sin ninguna en progreso |
+| **DRAFT** | Borrador (solo OPI / INTERNA) | Creación manual de OPI o auto-generada por solicitud ENVI; pendiente autorización de Contabilidad |
+| **PENDING** | Orden creada; producción no iniciada formalmente | Creación de OP; autorización de OPI; tareas sin iniciar; tareas pendientes sin ninguna en progreso |
 | **IN_PROGRESS** | Producción en curso | Consumo de materiales; alguna tarea en progreso; rechazos en bodega PT; cinchos pasados a “En progreso” |
 | **COMPLETED** | Producción (tareas) terminada según sistema | **Todas** las tareas no canceladas en `COMPLETED` (sincronización automática); cinchos marcados Completada manualmente; despacho online completo (casos VENTA_EN_LINEA) |
 | **CANCELLED** | Orden cancelada | Acción manual |

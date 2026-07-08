@@ -34,6 +34,9 @@ public class InternalShipmentRequestResponse {
     private String shipmentNumber;
     private Long productionOrderId;
     private String productionOrderCode;
+    private String productionOrderStatus;
+    private Long opiAuthorizedBy;
+    private LocalDateTime opiAuthorizedAt;
     private List<LineResponse> lines;
 
     @Data

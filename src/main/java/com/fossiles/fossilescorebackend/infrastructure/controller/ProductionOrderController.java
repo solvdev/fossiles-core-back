@@ -13,6 +13,7 @@ import com.fossiles.fossilescorebackend.application.service.ProductInventoryServ
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.application.service.CustomerShipmentDispatchService;
+import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestService;
 import com.fossiles.fossilescorebackend.application.service.OpiVendorShipmentNumberService;
 import com.fossiles.fossilescorebackend.application.service.OpvVendorShipmentNumberService;
 import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
@@ -76,6 +77,7 @@ public class ProductionOrderController {
     private final ProductDistributionService productDistributionService;
     private final ProductionOrderPartialReleaseService productionOrderPartialReleaseService;
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
+    private final InternalShipmentRequestService internalShipmentRequestService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @GetMapping
@@ -213,6 +215,10 @@ public class ProductionOrderController {
         entity.setOrderType(effectiveOrderType);
         applyDefaultSchedulingPriority(entity, effectiveOrderType);
         entity.setCode(orderCode);
+        boolean isInternaOpi = "INTERNA".equals(effectiveOrderType);
+        if (isInternaOpi) {
+            entity.setStatus("DRAFT");
+        }
         ProductionOrderEntity saved = productionOrderRepository.save(entity);
 
         if (isOpvVendorShipmentFlow(saved)) {
@@ -247,9 +253,9 @@ public class ProductionOrderController {
                     .collect(Collectors.toList());
         }
 
-        // Generar solicitudes de materiales automáticamente si falta stock
+        // Generar solicitudes de materiales automáticamente si falta stock (no en OPI borrador)
         try {
-            if (request.getItems() != null && !request.getItems().isEmpty()) {
+            if (!isInternaOpi && request.getItems() != null && !request.getItems().isEmpty()) {
                 for (ProductionOrderItemRequest item : request.getItems()) {
                     if (item.getProductId() != null) {
                         // Calcular cantidad total (quantity + sizes si aplica)
@@ -274,6 +280,14 @@ public class ProductionOrderController {
             // Log error pero no fallar la creación de la orden
             System.err.println("Error al generar solicitudes automáticas de materiales: " + e.getMessage());
             e.printStackTrace();
+        }
+
+        if (isInternaOpi) {
+            opiVendorShipmentNumberService.assignIfMissing(saved);
+            saved = productionOrderRepository.save(saved);
+            List<ProductionOrderItemEntity> savedItems =
+                    productionOrderItemRepository.findByProductionOrderId(saved.getId());
+            internalShipmentRequestService.createRequestForManualOpi(saved, savedItems);
         }
 
         return ResponseEntity.created(URI.create("/api/production-orders/" + saved.getId()))

@@ -120,6 +120,11 @@ public class InternalShipmentRequestService {
         if (!"PENDIENTE".equalsIgnoreCase(safe(entity.getStatus()))) {
             throw new BusinessException("Solo se pueden aprobar solicitudes pendientes.");
         }
+        if ("OPI".equalsIgnoreCase(safe(entity.getRequestType()))) {
+            throw new BusinessException(
+                    "Las solicitudes de producción OPI se autorizan con «Autorizar producción», no con envío.");
+        }
+        assertLinkedOpiProductionAuthorized(entity);
         List<ProductShipmentRequest.ProductShipmentDetailRequest> products = toProductLines(entity);
         try {
             productDistributionService.validateDispatchStock(products);
@@ -175,8 +180,76 @@ public class InternalShipmentRequestService {
         entity.setReviewedBy(securityUtil.getCurrentUserId());
         entity.setReviewedAt(LocalDateTime.now());
         entity.setRejectionReason(normalizedReason);
+        cancelLinkedDraftOpi(entity);
         requestRepository.save(entity);
         return getById(id);
+    }
+
+    @Transactional
+    public InternalShipmentRequestResponse authorizeProduction(Long id)
+            throws BusinessException, ResourceNotFoundException {
+        accessGuard.assertCanApproveOrReject();
+        InternalShipmentRequestEntity entity = requestRepository.findByIdWithLines(id)
+                .orElseThrow(() -> new ResourceNotFoundException("InternalShipmentRequest", id));
+        if (!"PENDIENTE".equalsIgnoreCase(safe(entity.getStatus()))) {
+            throw new BusinessException("Solo se pueden autorizar solicitudes pendientes.");
+        }
+        if (entity.getProductionOrderId() == null) {
+            throw new BusinessException("Esta solicitud no tiene una OPI vinculada.");
+        }
+        if (entity.getOpiAuthorizedAt() != null) {
+            throw new BusinessException("La producción OPI ya fue autorizada para esta solicitud.");
+        }
+        ProductionOrderEntity order = productionOrderRepository.findById(entity.getProductionOrderId())
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", entity.getProductionOrderId()));
+        if (!"DRAFT".equalsIgnoreCase(safe(order.getStatus()))) {
+            throw new BusinessException("La OPI vinculada no está en borrador o ya fue autorizada.");
+        }
+
+        order.setStatus("PENDING");
+        productionOrderRepository.save(order);
+        generateMaterialsForProductionOrder(order.getId());
+
+        entity.setOpiAuthorizedBy(securityUtil.getCurrentUserId());
+        entity.setOpiAuthorizedAt(LocalDateTime.now());
+        if ("OPI".equalsIgnoreCase(safe(entity.getRequestType()))) {
+            entity.setStatus("APROBADA");
+            entity.setReviewedBy(securityUtil.getCurrentUserId());
+            entity.setReviewedAt(LocalDateTime.now());
+        }
+        requestRepository.save(entity);
+        return toResponse(entity);
+    }
+
+    /**
+     * Crea solicitud tipo OPI vinculada a una orden INTERNA recién registrada (estado DRAFT).
+     */
+    @Transactional
+    public InternalShipmentRequestEntity createRequestForManualOpi(
+            ProductionOrderEntity order,
+            List<ProductionOrderItemEntity> items) throws BusinessException {
+        if (order == null || order.getId() == null) {
+            throw new BusinessException("Orden de producción inválida para solicitud OPI.");
+        }
+        String recipient = order.getCustomerName() == null || order.getCustomerName().isBlank()
+                ? "Producción interna"
+                : order.getCustomerName().trim();
+        InternalShipmentRequestEntity entity = InternalShipmentRequestEntity.builder()
+                .status("PENDIENTE")
+                .requestType("OPI")
+                .recipientName(recipient)
+                .notes(trimToNull(order.getObservations()))
+                .documentDate(order.getStartDate() != null ? order.getStartDate().toString() : null)
+                .productionOrderId(order.getId())
+                .requestedBy(securityUtil.getCurrentUserId())
+                .requestedAt(LocalDateTime.now())
+                .lines(new ArrayList<>())
+                .build();
+        entity.getLines().addAll(buildRequestLinesFromProductionItems(entity, items));
+        if (entity.getLines().isEmpty()) {
+            throw new BusinessException("La OPI debe tener al menos un producto para crear la solicitud.");
+        }
+        return requestRepository.save(entity);
     }
 
     @Transactional(readOnly = true)
@@ -241,6 +314,9 @@ public class InternalShipmentRequestService {
             assertPlanillaMonthlyLimit(employeeId, month, null);
         } else if (recipient.isBlank()) {
             throw new BusinessException("El nombre del colaborador es obligatorio.");
+        }
+        if ("OPI".equals(requestType)) {
+            throw new BusinessException("Las solicitudes OPI se crean automáticamente al registrar una orden INTERNA.");
         }
         ProductDistributionService.validateDefectosDiscount(
                 requestType, request.getDiscountPercent(), request.getDiscountAmount());
@@ -325,7 +401,7 @@ public class InternalShipmentRequestService {
                 .observations("OPI generada por faltante de stock PT/Devoluciones. "
                         + "Solicitud ENVI #" + request.getId() + " (" + requestTypeLabel + "). "
                         + "Colaborador: " + recipient + ".")
-                .status("PENDING")
+                .status("DRAFT")
                 .createdBy(securityUtil.getCurrentUserId())
                 .build();
         opiVendorShipmentNumberService.assignIfMissing(order);
@@ -351,16 +427,118 @@ public class InternalShipmentRequestService {
                     .createdBy(securityUtil.getCurrentUserId())
                     .build();
             productionOrderItemRepository.save(item);
-            try {
-                smartMaterialRequestService.checkAndGenerateRequestsForProductionOrder(
-                        savedOrder.getId(),
-                        shortage.getProductId(),
-                        BigDecimal.valueOf(qty));
-            } catch (Exception ignored) {
-                // No bloquear la OPI si falla la solicitud automática de materiales.
-            }
         }
         return savedOrder.getId();
+    }
+
+    private void generateMaterialsForProductionOrder(Long productionOrderId) {
+        List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
+        for (ProductionOrderItemEntity item : items) {
+            if (item.getProductId() == null) {
+                continue;
+            }
+            int totalQuantity = item.getQuantity() != null ? item.getQuantity() : 0;
+            if (item.getSizesData() != null && !item.getSizesData().isBlank()) {
+                try {
+                    Map<String, Integer> sizes = objectMapper.readValue(
+                            item.getSizesData(),
+                            objectMapper.getTypeFactory().constructMapType(LinkedHashMap.class, String.class, Integer.class));
+                    totalQuantity += sizes.values().stream().mapToInt(v -> v != null ? v : 0).sum();
+                } catch (Exception ignored) {
+                    // usar quantity base
+                }
+            }
+            if (totalQuantity <= 0) {
+                continue;
+            }
+            try {
+                smartMaterialRequestService.checkAndGenerateRequestsForProductionOrder(
+                        productionOrderId,
+                        item.getProductId(),
+                        BigDecimal.valueOf(totalQuantity));
+            } catch (Exception ignored) {
+                // No bloquear autorización si falla solicitud automática de materiales.
+            }
+        }
+    }
+
+    private void assertLinkedOpiProductionAuthorized(InternalShipmentRequestEntity entity)
+            throws BusinessException {
+        if (entity.getProductionOrderId() == null) {
+            return;
+        }
+        ProductionOrderEntity linkedOpi = productionOrderRepository.findById(entity.getProductionOrderId())
+                .orElse(null);
+        if (linkedOpi == null) {
+            return;
+        }
+        if ("DRAFT".equalsIgnoreCase(safe(linkedOpi.getStatus()))) {
+            String opiRef = linkedOpi.getCode() != null ? linkedOpi.getCode() : "OPI #" + linkedOpi.getId();
+            throw new BusinessException(
+                    "Debe autorizar la producción de " + opiRef + " antes de autorizar el envío.");
+        }
+    }
+
+    private void cancelLinkedDraftOpi(InternalShipmentRequestEntity entity) {
+        if (entity.getProductionOrderId() == null) {
+            return;
+        }
+        productionOrderRepository.findById(entity.getProductionOrderId()).ifPresent(order -> {
+            if ("DRAFT".equalsIgnoreCase(safe(order.getStatus()))) {
+                order.setStatus("CANCELLED");
+                productionOrderRepository.save(order);
+            }
+        });
+    }
+
+    private List<InternalShipmentRequestLineEntity> buildRequestLinesFromProductionItems(
+            InternalShipmentRequestEntity request,
+            List<ProductionOrderItemEntity> items) {
+        List<InternalShipmentRequestLineEntity> lines = new ArrayList<>();
+        int lineOrder = 0;
+        for (ProductionOrderItemEntity item : items) {
+            if (item == null || item.getProductId() == null) {
+                continue;
+            }
+            if (item.getSizesData() != null && !item.getSizesData().isBlank()) {
+                try {
+                    Map<String, Integer> sizes = objectMapper.readValue(
+                            item.getSizesData(),
+                            objectMapper.getTypeFactory().constructMapType(LinkedHashMap.class, String.class, Integer.class));
+                    for (Map.Entry<String, Integer> entry : sizes.entrySet()) {
+                        int qty = entry.getValue() != null ? entry.getValue() : 0;
+                        if (qty <= 0) {
+                            continue;
+                        }
+                        lineOrder++;
+                        lines.add(InternalShipmentRequestLineEntity.builder()
+                                .request(request)
+                                .lineOrder(lineOrder)
+                                .productId(item.getProductId())
+                                .colorId(item.getColorId())
+                                .size(entry.getKey())
+                                .quantity(BigDecimal.valueOf(qty))
+                                .build());
+                    }
+                    continue;
+                } catch (Exception ignored) {
+                    // fallback a quantity simple
+                }
+            }
+            int qty = item.getQuantity() != null ? item.getQuantity() : 0;
+            if (qty <= 0) {
+                continue;
+            }
+            lineOrder++;
+            lines.add(InternalShipmentRequestLineEntity.builder()
+                    .request(request)
+                    .lineOrder(lineOrder)
+                    .productId(item.getProductId())
+                    .colorId(item.getColorId())
+                    .quantity(BigDecimal.valueOf(qty))
+                    .build());
+        }
+        return lines;
     }
 
     private String buildProductionItemSizesData(String sizeLabel, int quantity) {
@@ -396,10 +574,14 @@ public class InternalShipmentRequestService {
                     .orElse(null);
         }
         String productionOrderCode = null;
+        String productionOrderStatus = null;
         if (entity.getProductionOrderId() != null) {
-            productionOrderCode = productionOrderRepository.findById(entity.getProductionOrderId())
-                    .map(ProductionOrderEntity::getCode)
+            ProductionOrderEntity linkedOrder = productionOrderRepository.findById(entity.getProductionOrderId())
                     .orElse(null);
+            if (linkedOrder != null) {
+                productionOrderCode = linkedOrder.getCode();
+                productionOrderStatus = linkedOrder.getStatus();
+            }
         }
         List<InternalShipmentRequestResponse.LineResponse> lines = entity.getLines() == null
                 ? List.of()
@@ -427,6 +609,9 @@ public class InternalShipmentRequestService {
                 .shipmentNumber(shipmentNumber)
                 .productionOrderId(entity.getProductionOrderId())
                 .productionOrderCode(productionOrderCode)
+                .productionOrderStatus(productionOrderStatus)
+                .opiAuthorizedBy(entity.getOpiAuthorizedBy())
+                .opiAuthorizedAt(entity.getOpiAuthorizedAt())
                 .lines(lines)
                 .build();
     }

@@ -59,6 +59,12 @@ public class InternalShipmentRequestController {
         return ResponseEntity.ok(internalShipmentRequestService.approve(id));
     }
 
+    @PostMapping("/{id}/authorize-production")
+    public ResponseEntity<InternalShipmentRequestResponse> authorizeProduction(@PathVariable Long id)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(internalShipmentRequestService.authorizeProduction(id));
+    }
+
     @PostMapping("/{id}/reject")
     public ResponseEntity<InternalShipmentRequestResponse> reject(
             @PathVariable Long id,

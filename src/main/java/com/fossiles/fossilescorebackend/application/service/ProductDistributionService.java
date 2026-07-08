@@ -821,6 +821,9 @@ public class ProductDistributionService {
         if ("DEFECTOS".equals(normalized)) {
             return "DEFECTOS";
         }
+        if ("OPI".equals(normalized) || "PRODUCCION_INTERNA".equals(normalized)) {
+            return "OPI";
+        }
         return "PLANILLA";
     }
 
@@ -830,6 +833,9 @@ public class ProductDistributionService {
 
     static void validateDefectosDiscount(String requestType, BigDecimal discountPercent, BigDecimal discountAmount)
             throws BusinessException {
+        if ("OPI".equals(normalizeInternalRequestType(requestType))) {
+            return;
+        }
         if (!"DEFECTOS".equals(normalizeInternalRequestType(requestType))) {
             return;
         }

@@ -50,6 +50,8 @@ public class ProductionTaskGenerationService {
         ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
 
+        assertProductionOrderReadyForTasks(po);
+
         if (isCinchoOrderType(po.getOrderType())) {
             throw new BusinessException(
                     "Las órdenes de tipo cinchos se gestionan en la vista de Cinchos, no en el centro de producción.");
@@ -266,6 +268,8 @@ public class ProductionTaskGenerationService {
         ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
 
+        assertProductionOrderReadyForTasks(po);
+
         if (isCinchoOrderType(po.getOrderType())) {
             throw new BusinessException(
                     "Las órdenes de tipo cinchos se gestionan en la vista de Cinchos, no en el centro de producción.");
@@ -402,6 +406,18 @@ public class ProductionTaskGenerationService {
             sb.append("Hay tareas mixtas con otras órdenes.");
         }
         return new RegenerationRisk(true, sb.toString().trim());
+    }
+
+    private static void assertProductionOrderReadyForTasks(ProductionOrderEntity po) throws BusinessException {
+        if (po == null) {
+            return;
+        }
+        if ("DRAFT".equalsIgnoreCase(String.valueOf(po.getStatus()).trim())) {
+            String code = po.getCode() != null ? po.getCode() : "OPI";
+            throw new BusinessException(
+                    "La orden " + code + " está en borrador. Contabilidad debe autorizar la producción "
+                            + "desde Autorizar envíos internos antes de generar tareas.");
+        }
     }
 
     private static boolean isCinchoOrderType(String orderType) {
