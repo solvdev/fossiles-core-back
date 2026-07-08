@@ -36,5 +36,6 @@ public class PurchaseNumberResponse {
     private String updatedByName;
     private Long expenseCount;
     private Boolean editable;
+    private Boolean itemsEditable;
 }
 

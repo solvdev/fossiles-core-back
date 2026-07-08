@@ -23,7 +23,7 @@ public class PurchaseNumberEntity {
     private String purchaseNumber; // Ej: "COMP-00001"
 
     @Column(name = "status", nullable = false, length = 30)
-    private String status; // PENDIENTE, PAGADO, TERMINADO
+    private String status; // PENDIENTE=Abierta, TERMINADO=Cerrada, PAGADO=Pagada
 
     @Column(name = "description", length = 500)
     private String description; // Descripción opcional de la compra

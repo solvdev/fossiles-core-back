@@ -183,6 +183,25 @@ public class PurchaseNumberService {
         purchaseNumberRepository.delete(entity);
     }
 
+    public PurchaseNumberResponse closePurchaseNumber(Long id)
+            throws ResourceNotFoundException, BusinessException {
+        PurchaseNumberEntity entity = purchaseNumberRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Purchase Number", id));
+
+        if (!"PENDIENTE".equals(entity.getStatus())) {
+            throw new BusinessException("Solo se pueden cerrar compras abiertas");
+        }
+
+        if (!purchaseNumberItemRepository.existsByPurchaseNumberId(id)) {
+            throw new BusinessException("Agregue al menos un artículo antes de cerrar la compra");
+        }
+
+        entity.setStatus("TERMINADO");
+        entity.setUpdatedBy(securityUtil.getCurrentUserId());
+        PurchaseNumberEntity saved = purchaseNumberRepository.save(entity);
+        return toResponse(saved);
+    }
+
     // ========== PURCHASE NUMBER ITEMS ==========
 
     public PurchaseNumberItemResponse createPurchaseNumberItem(Long purchaseNumberId, PurchaseNumberItemRequest request) 
@@ -190,6 +209,8 @@ public class PurchaseNumberService {
         // Validar que la compra existe
         PurchaseNumberEntity purchaseNumber = purchaseNumberRepository.findById(purchaseNumberId)
                 .orElseThrow(() -> new ResourceNotFoundException("Purchase Number", purchaseNumberId));
+
+        assertPurchaseAcceptsItems(purchaseNumber);
 
         // Validar que la compra sea editable
         List<MinorExpenseEntity> expenses = minorExpenseRepository.findByPurchaseNumberId(purchaseNumberId);
@@ -226,6 +247,10 @@ public class PurchaseNumberService {
 
     public PurchaseNumberItemResponse updatePurchaseNumberItem(Long purchaseNumberId, Long itemId, PurchaseNumberItemRequest request) 
             throws ResourceNotFoundException, BusinessException {
+        PurchaseNumberEntity purchaseNumber = purchaseNumberRepository.findById(purchaseNumberId)
+                .orElseThrow(() -> new ResourceNotFoundException("Purchase Number", purchaseNumberId));
+        assertPurchaseAcceptsItems(purchaseNumber);
+
         PurchaseNumberItemEntity item = purchaseNumberItemRepository.findByIdAndPurchaseNumberId(itemId, purchaseNumberId)
                 .orElseThrow(() -> new ResourceNotFoundException("Purchase Number Item", itemId));
 
@@ -255,6 +280,10 @@ public class PurchaseNumberService {
 
     public void deletePurchaseNumberItem(Long purchaseNumberId, Long itemId) 
             throws ResourceNotFoundException, BusinessException {
+        PurchaseNumberEntity purchaseNumber = purchaseNumberRepository.findById(purchaseNumberId)
+                .orElseThrow(() -> new ResourceNotFoundException("Purchase Number", purchaseNumberId));
+        assertPurchaseAcceptsItems(purchaseNumber);
+
         PurchaseNumberItemEntity item = purchaseNumberItemRepository.findByIdAndPurchaseNumberId(itemId, purchaseNumberId)
                 .orElseThrow(() -> new ResourceNotFoundException("Purchase Number Item", itemId));
 
@@ -358,9 +387,11 @@ public class PurchaseNumberService {
         List<MinorExpenseEntity> expenses = minorExpenseRepository.findByPurchaseNumberId(entity.getId());
         long expenseCount = expenses.size();
 
-        // Verificar si es editable
+        // Verificar si es editable (gastos / reembolsos)
         boolean isEditable = expenses.isEmpty() || expenses.stream()
                 .noneMatch(exp -> "PAGADO".equals(exp.getReimbursementStatus()));
+
+        boolean itemsEditable = "PENDIENTE".equals(entity.getStatus()) && isEditable;
 
         // ====== Calcular balance contable ======
         BigDecimal totalAmount = entity.getTotalAmount() != null ? entity.getTotalAmount() : BigDecimal.ZERO;
@@ -399,7 +430,14 @@ public class PurchaseNumberService {
                 .updatedByName(updatedByUser != null ? updatedByUser.getUsername() : null)
                 .expenseCount(expenseCount)
                 .editable(isEditable)
+                .itemsEditable(itemsEditable)
                 .build();
+    }
+
+    private void assertPurchaseAcceptsItems(PurchaseNumberEntity purchaseNumber) throws BusinessException {
+        if (!"PENDIENTE".equals(purchaseNumber.getStatus())) {
+            throw new BusinessException("La compra está cerrada y no se pueden modificar artículos");
+        }
     }
 
     private String normalizeItemSupplier(String supplier) {
