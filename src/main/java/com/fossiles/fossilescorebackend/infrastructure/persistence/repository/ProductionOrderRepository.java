@@ -19,6 +19,15 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
     List<ProductionOrderEntity> findByOrderType(String orderType);
     List<ProductionOrderEntity> findByStatus(String status);
     List<ProductionOrderEntity> findByCustomerId(Long customerId);
+
+    @Query("""
+            SELECT po FROM ProductionOrderEntity po
+            WHERE UPPER(COALESCE(po.sellerName, '')) LIKE '%LUIS FELIPE%'
+              AND UPPER(COALESCE(po.orderType, '')) IN ('MARCAS', 'OPV')
+              AND UPPER(COALESCE(po.status, '')) <> 'CANCELLED'
+            ORDER BY po.deliveryDate DESC NULLS LAST, po.createdAt DESC
+            """)
+    List<ProductionOrderEntity> findOpvCatalogOrders();
     Optional<ProductionOrderEntity> findByDistributionId(Long distributionId);
 
     @Query("SELECT po FROM ProductionOrderEntity po WHERE po.status IN :statuses ORDER BY po.deliveryDate ASC, po.createdAt ASC")

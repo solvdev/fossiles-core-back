@@ -1,7 +1,9 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.response.OpvShipmentCatalogRowResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.SalesDashboardResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.application.service.OpvShipmentCatalogService;
 import com.fossiles.fossilescorebackend.application.service.SalesDashboardService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -20,6 +22,7 @@ import java.util.List;
 public class SalesDashboardController {
 
     private final SalesDashboardService salesDashboardService;
+    private final OpvShipmentCatalogService opvShipmentCatalogService;
 
     @GetMapping("/dashboard")
     public ResponseEntity<SalesDashboardResponse> getDashboard(
@@ -40,5 +43,19 @@ public class SalesDashboardController {
             @RequestParam(required = false, defaultValue = "500") Integer limit
     ) throws BusinessException {
         return ResponseEntity.ok(salesDashboardService.getUnifiedSales(startDate, endDate, channel, kioskLocationId, limit));
+    }
+
+    @GetMapping("/opv-shipments")
+    public ResponseEntity<List<OpvShipmentCatalogRowResponse>> getOpvShipments(
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) String orderStatus,
+            @RequestParam(required = false) String shipmentStatus,
+            @RequestParam(required = false) Long customerId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(required = false) Boolean hasShipment,
+            @RequestParam(defaultValue = "300") int limit) {
+        return ResponseEntity.ok(opvShipmentCatalogService.search(
+                search, orderStatus, shipmentStatus, customerId, from, to, hasShipment, limit));
     }
 }
