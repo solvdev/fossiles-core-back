@@ -64,6 +64,7 @@ public class CustomerAccountService {
         List<CustomerEntity> customers = customerRepository.findAll();
 
         String searchNorm = search != null ? search.trim().toLowerCase(Locale.ROOT) : "";
+        Set<Long> extendedSearchCustomerIds = findExtendedSearchCustomerIds(searchNorm);
         String regionFilter = regionCode != null && !regionCode.isBlank()
                 ? regionCode.trim().toUpperCase(Locale.ROOT)
                 : null;
@@ -86,7 +87,9 @@ public class CustomerAccountService {
             if (luisFelipeOnly && !lfCustomerIds.contains(customer.getId())) {
                 continue;
             }
-            if (!searchNorm.isEmpty() && !matchesSearch(customer, searchNorm)) {
+            if (!searchNorm.isEmpty()
+                    && !matchesSearch(customer, searchNorm)
+                    && !extendedSearchCustomerIds.contains(customer.getId())) {
                 continue;
             }
 
@@ -597,6 +600,238 @@ public class CustomerAccountService {
                 .sorted(Comparator.comparing(LfReceivableDocumentResponse::getDueDate, Comparator.nullsLast(Comparator.naturalOrder()))
                         .thenComparing(LfReceivableDocumentResponse::getInvoiceNumber, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
                 .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<CustomerAccountReceivableSearchResponse> searchReceivables(
+            String search,
+            String orderKind,
+            String chargeStatus,
+            Boolean hasCharge,
+            Boolean hasPayment,
+            String regionCode,
+            Integer routeNumber,
+            String routeLocationCode,
+            int limit) {
+        int maxResults = limit > 0 ? Math.min(limit, 500) : 200;
+        String searchNorm = search != null ? search.trim().toLowerCase(Locale.ROOT) : "";
+        String kindFilter = orderKind != null && !orderKind.isBlank()
+                ? orderKind.trim().toUpperCase(Locale.ROOT)
+                : null;
+        String statusFilter = chargeStatus != null && !chargeStatus.isBlank()
+                ? chargeStatus.trim().toUpperCase(Locale.ROOT)
+                : null;
+        String regionFilter = regionCode != null && !regionCode.isBlank()
+                ? regionCode.trim().toUpperCase(Locale.ROOT)
+                : null;
+        String routeCodeFilter = routeLocationCode != null && !routeLocationCode.isBlank()
+                ? routeLocationCode.trim().toUpperCase(Locale.ROOT)
+                : null;
+
+        Map<Long, CustomerEntity> customersById = customerRepository.findAll().stream()
+                .collect(Collectors.toMap(CustomerEntity::getId, c -> c, (a, b) -> a));
+        Map<Long, List<CustomerAccountEntryEntity>> entriesByCustomer = entryRepository.findAll().stream()
+                .filter(e -> STATUS_ACTIVE.equalsIgnoreCase(e.getStatus()))
+                .collect(Collectors.groupingBy(CustomerAccountEntryEntity::getCustomerId));
+
+        List<CustomerAccountReceivableSearchResponse> results = new ArrayList<>();
+
+        for (ProductionOrderEntity order : productionOrderRepository.findAll()) {
+            if (!isLfReceivableOrder(order) || order.getCustomerId() == null) {
+                continue;
+            }
+            CustomerEntity customer = customersById.get(order.getCustomerId());
+            if (customer == null) {
+                continue;
+            }
+
+            RouteMeta routeMeta = resolveRouteMeta(customer.getRouteLocationCode());
+            if (regionFilter != null) {
+                if (routeMeta.regionCode() == null || !regionFilter.equals(routeMeta.regionCode())) {
+                    continue;
+                }
+            }
+            if (routeNumber != null) {
+                if (routeMeta.routeNumber() == null || !routeNumber.equals(routeMeta.routeNumber())) {
+                    continue;
+                }
+            }
+            if (routeCodeFilter != null) {
+                String customerCode = customer.getRouteLocationCode() != null
+                        ? customer.getRouteLocationCode().trim().toUpperCase(Locale.ROOT)
+                        : null;
+                if (!routeCodeFilter.equals(customerCode)) {
+                    continue;
+                }
+            }
+
+            String orderKindValue = classifyOrderKind(order);
+            if (kindFilter != null && !kindFilter.equals(orderKindValue)) {
+                continue;
+            }
+
+            List<CustomerAccountEntryEntity> entries = entriesByCustomer.getOrDefault(customer.getId(), List.of());
+            List<ProductionOrderPartialReleaseEntity> releases =
+                    partialReleaseRepository.findByProductionOrderIdOrderBySequenceNumAsc(order.getId());
+
+            if (releases.isEmpty()) {
+                appendReceivableSearchRow(
+                        results, customer, routeMeta, order, null, null, entries,
+                        searchNorm, statusFilter, hasCharge, hasPayment);
+            } else {
+                for (ProductionOrderPartialReleaseEntity release : releases) {
+                    List<ProductShipmentEntity> shipments =
+                            productShipmentRepository.findByPartialReleaseId(release.getId());
+                    if (shipments.isEmpty()) {
+                        appendReceivableSearchRow(
+                                results, customer, routeMeta, order, release, null, entries,
+                                searchNorm, statusFilter, hasCharge, hasPayment);
+                    } else {
+                        for (ProductShipmentEntity shipment : shipments) {
+                            appendReceivableSearchRow(
+                                    results, customer, routeMeta, order, release, shipment, entries,
+                                    searchNorm, statusFilter, hasCharge, hasPayment);
+                        }
+                    }
+                }
+            }
+        }
+
+        results.sort(Comparator
+                .comparing((CustomerAccountReceivableSearchResponse r) ->
+                        DeliveryRouteCatalog.regionSortOrder(resolveRouteMeta(r.getRouteLocationCode()).regionCode()))
+                .thenComparing(r -> {
+                    RouteMeta meta = resolveRouteMeta(r.getRouteLocationCode());
+                    return meta.routeNumber() == null ? 999 : meta.routeNumber();
+                })
+                .thenComparing(r -> r.getRouteLocationCode() == null ? "ZZZZ" : r.getRouteLocationCode())
+                .thenComparing(r -> Optional.ofNullable(r.getShipmentNumber()).orElse(""), String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(r -> Optional.ofNullable(r.getCustomerName()).orElse(""), String.CASE_INSENSITIVE_ORDER));
+
+        if (results.size() > maxResults) {
+            return results.subList(0, maxResults);
+        }
+        return results;
+    }
+
+    private void appendReceivableSearchRow(
+            List<CustomerAccountReceivableSearchResponse> results,
+            CustomerEntity customer,
+            RouteMeta routeMeta,
+            ProductionOrderEntity order,
+            ProductionOrderPartialReleaseEntity release,
+            ProductShipmentEntity shipment,
+            List<CustomerAccountEntryEntity> entries,
+            String searchNorm,
+            String statusFilter,
+            Boolean hasCharge,
+            Boolean hasPayment) {
+        Long partialReleaseId = release != null ? release.getId() : null;
+        Long productShipmentId = shipment != null ? shipment.getId() : null;
+        Optional<CustomerAccountEntryEntity> chargeOpt =
+                findActiveCharge(entries, order.getId(), partialReleaseId, productShipmentId);
+        BigDecimal chargedAmount = chargeOpt.map(CustomerAccountEntryEntity::getAmount).orElse(BigDecimal.ZERO);
+        BigDecimal balanceDue = chargeOpt.map(c -> computeChargeBalanceDue(c, entries)).orElse(BigDecimal.ZERO);
+        String status = resolveChargeStatus(chargeOpt, balanceDue);
+        boolean charged = chargeOpt.isPresent();
+        boolean paid = "PARTIAL".equals(status) || "PAID".equals(status);
+
+        if (!matchesReceivableRowSearch(customer, order, release, shipment, chargeOpt.orElse(null), searchNorm)) {
+            return;
+        }
+        if (!matchesChargeStatusFilter(status, statusFilter, hasCharge, hasPayment)) {
+            return;
+        }
+
+        String shipmentNumber = shipment != null
+                ? shipment.getShipmentNumber()
+                : order.getVendorShipmentNumber();
+        String documentLevel = shipment != null ? "SHIPMENT" : "ORDER";
+
+        results.add(CustomerAccountReceivableSearchResponse.builder()
+                .customerId(customer.getId())
+                .customerName(customer.getName())
+                .legacyCode(customer.getLegacyCode())
+                .nit(customer.getNit())
+                .routeLocationCode(customer.getRouteLocationCode())
+                .routeLocationLabel(routeMeta.label())
+                .productionOrderId(order.getId())
+                .orderCode(order.getCode())
+                .orderKind(classifyOrderKind(order))
+                .productShipmentId(productShipmentId)
+                .shipmentNumber(shipmentNumber)
+                .vendorShipmentNumber(order.getVendorShipmentNumber())
+                .partialReleaseId(partialReleaseId)
+                .partialReleaseLabel(release != null ? release.getLabel() : null)
+                .documentLevel(documentLevel)
+                .chargeEntryId(chargeOpt.map(CustomerAccountEntryEntity::getId).orElse(null))
+                .invoiceNumber(chargeOpt.map(CustomerAccountEntryEntity::getInvoiceNumber).orElse(null))
+                .chargeStatus(status)
+                .chargedAmount(charged ? chargedAmount : null)
+                .balanceDue(charged ? balanceDue : null)
+                .hasCharge(charged)
+                .hasPayment(paid)
+                .chargeDate(chargeOpt.map(CustomerAccountEntryEntity::getEntryDate).orElse(null))
+                .build());
+    }
+
+    private Set<Long> findExtendedSearchCustomerIds(String searchNorm) {
+        if (searchNorm == null || searchNorm.isEmpty()) {
+            return Set.of();
+        }
+        Set<Long> ids = new HashSet<>();
+        ids.addAll(productionOrderRepository.findCustomerIdsByCodeOrVendorShipment(searchNorm));
+        ids.addAll(productShipmentRepository.findCustomerIdsByShipmentNumber(searchNorm));
+        ids.addAll(entryRepository.findCustomerIdsByDocumentReference(searchNorm));
+        return ids;
+    }
+
+    private static boolean matchesReceivableRowSearch(
+            CustomerEntity customer,
+            ProductionOrderEntity order,
+            ProductionOrderPartialReleaseEntity release,
+            ProductShipmentEntity shipment,
+            CustomerAccountEntryEntity charge,
+            String searchNorm) {
+        if (searchNorm == null || searchNorm.isEmpty()) {
+            return true;
+        }
+        return contains(customer.getName(), searchNorm)
+                || contains(customer.getLegacyCode(), searchNorm)
+                || contains(customer.getNit(), searchNorm)
+                || contains(customer.getPhone(), searchNorm)
+                || contains(order.getCode(), searchNorm)
+                || contains(order.getVendorShipmentNumber(), searchNorm)
+                || (release != null && contains(release.getLabel(), searchNorm))
+                || (shipment != null && contains(shipment.getShipmentNumber(), searchNorm))
+                || (charge != null && (
+                        contains(charge.getInvoiceNumber(), searchNorm)
+                                || contains(charge.getVendorShipmentNumber(), searchNorm)
+                                || contains(charge.getDocumentNumber(), searchNorm)
+                                || contains(charge.getReference(), searchNorm)));
+    }
+
+    private static boolean matchesChargeStatusFilter(
+            String status,
+            String statusFilter,
+            Boolean hasCharge,
+            Boolean hasPayment) {
+        if (statusFilter != null && !statusFilter.equalsIgnoreCase(status)) {
+            return false;
+        }
+        if (hasCharge != null) {
+            boolean charged = !"NONE".equals(status);
+            if (hasCharge != charged) {
+                return false;
+            }
+        }
+        if (hasPayment != null) {
+            boolean paid = "PARTIAL".equals(status) || "PAID".equals(status);
+            if (hasPayment != paid) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private LfReceivableDocumentResponse toReceivableDocument(

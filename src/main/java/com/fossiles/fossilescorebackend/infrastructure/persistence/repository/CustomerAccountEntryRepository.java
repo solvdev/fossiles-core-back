@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerAccountEntryEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -42,4 +43,16 @@ public interface CustomerAccountEntryRepository extends JpaRepository<CustomerAc
               AND UPPER(po.orderType) NOT IN ('INTERNA', 'CLIENTE_KIOSKO')
             """)
     List<Long> findLuisFelipeReceivableCustomerIds();
+
+    @Query("""
+            SELECT DISTINCT e.customerId FROM CustomerAccountEntryEntity e
+            WHERE e.status = 'ACTIVE'
+              AND (
+                LOWER(COALESCE(e.invoiceNumber, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+                OR LOWER(COALESCE(e.vendorShipmentNumber, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+                OR LOWER(COALESCE(e.documentNumber, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+                OR LOWER(COALESCE(e.reference, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+              )
+            """)
+    List<Long> findCustomerIdsByDocumentReference(@Param("q") String q);
 }

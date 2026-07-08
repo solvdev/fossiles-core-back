@@ -35,6 +35,16 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
     @Query("SELECT COUNT(po) > 0 FROM ProductionOrderEntity po WHERE po.vendorShipmentNumber = :num AND po.id <> :excludeId")
     boolean existsByVendorShipmentNumberAndIdNot(@Param("num") String num, @Param("excludeId") Long excludeId);
 
+    @Query("""
+            SELECT DISTINCT po.customerId FROM ProductionOrderEntity po
+            WHERE po.customerId IS NOT NULL
+              AND (
+                LOWER(COALESCE(po.code, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+                OR LOWER(COALESCE(po.vendorShipmentNumber, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+              )
+            """)
+    List<Long> findCustomerIdsByCodeOrVendorShipment(@Param("q") String q);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT po FROM ProductionOrderEntity po WHERE po.id = :id")
     Optional<ProductionOrderEntity> findByIdForUpdate(@Param("id") Long id);

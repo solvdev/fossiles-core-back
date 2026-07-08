@@ -51,6 +51,22 @@ public class CustomerAccountController {
                 search, luisFelipeOnly, positiveBalanceOnly, from, to, regionCode, routeNumber, routeLocationCode));
     }
 
+    @GetMapping("/receivable-search")
+    public ResponseEntity<List<CustomerAccountReceivableSearchResponse>> searchReceivables(
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) String orderKind,
+            @RequestParam(required = false) String chargeStatus,
+            @RequestParam(required = false) Boolean hasCharge,
+            @RequestParam(required = false) Boolean hasPayment,
+            @RequestParam(required = false) String regionCode,
+            @RequestParam(required = false) Integer routeNumber,
+            @RequestParam(required = false) String routeLocationCode,
+            @RequestParam(defaultValue = "200") int limit) {
+        return ResponseEntity.ok(customerAccountService.searchReceivables(
+                search, orderKind, chargeStatus, hasCharge, hasPayment,
+                regionCode, routeNumber, routeLocationCode, limit));
+    }
+
     @GetMapping("/customers/{customerId}/balance")
     public ResponseEntity<CustomerAccountBalanceResponse> getBalance(@PathVariable Long customerId)
             throws ResourceNotFoundException {

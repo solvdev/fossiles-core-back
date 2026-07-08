@@ -114,6 +114,14 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
     @Query("SELECT s.shipmentNumber FROM ProductShipmentEntity s WHERE UPPER(s.shipmentNumber) LIKE 'ENVP-%'")
     List<String> findEnvpPrefixShipmentNumbers();
 
+    @Query("""
+            SELECT DISTINCT po.customerId FROM ProductShipmentEntity s
+            JOIN ProductionOrderEntity po ON po.id = s.productionOrderId
+            WHERE po.customerId IS NOT NULL
+              AND LOWER(COALESCE(s.shipmentNumber, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+            """)
+    List<Long> findCustomerIdsByShipmentNumber(@Param("q") String q);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s FROM ProductShipmentEntity s WHERE s.id = :id")
     Optional<ProductShipmentEntity> findByIdForUpdate(@Param("id") Long id);
