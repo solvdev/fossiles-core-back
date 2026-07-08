@@ -74,9 +74,7 @@ public class OnlineSaleInvoiceMapper {
 
         return TaxInvoiceDocument.builder()
                 .transactionId(buildTransactionId(sale))
-                .issuedAt(sale.getSaleDate() != null
-                        ? sale.getSaleDate().atStartOfDay()
-                        : GuatemalaDateTime.now())
+                .issuedAt(GuatemalaDateTime.now())
                 .customerTaxId(sale.getInvoiceTaxId())
                 .customerName(sale.getCustomerName())
                 .address(sale.getAddress())

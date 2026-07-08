@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.application.model.TaxInvoiceDocument;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -11,6 +12,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,5 +61,32 @@ class OnlineSaleInvoiceMapperTest {
         assertThat(document.getLines()).hasSize(3);
         assertThat(document.getTotalAmount()).isEqualByComparingTo("615.00");
         assertThat(document.getSubtotal()).isEqualByComparingTo("615.00");
+    }
+
+    @Test
+    void usesTodayAsIssuedAtNotSaleDate() {
+        OnlineSaleEntity sale = OnlineSaleEntity.builder()
+                .id(9L)
+                .saleNumber("9")
+                .saleDate(LocalDate.of(2020, 6, 24))
+                .totalAmount(new BigDecimal("100.00"))
+                .netAmount(new BigDecimal("100.00"))
+                .invoiceTaxId("CF")
+                .customerName("CONSUMIDOR FINAL")
+                .build();
+
+        when(itemRepository.findByOnlineSaleIdOrderByIdAsc(9L)).thenReturn(List.of(
+                OnlineSaleItemEntity.builder()
+                        .productName("Producto")
+                        .quantity(1)
+                        .unitPrice(new BigDecimal("100.00"))
+                        .subtotal(new BigDecimal("100.00"))
+                        .build()
+        ));
+
+        TaxInvoiceDocument document = mapper.fromSale(sale);
+
+        assertThat(document.getIssuedAt().toLocalDate()).isEqualTo(GuatemalaDateTime.today());
+        assertThat(document.getIssuedAt().toLocalDate()).isNotEqualTo(sale.getSaleDate());
     }
 }
