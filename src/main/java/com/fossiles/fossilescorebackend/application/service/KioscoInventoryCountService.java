@@ -344,6 +344,12 @@ public class KioscoInventoryCountService {
                 inventarioFinal = systemSizes.values().stream().mapToInt(Integer::intValue).sum();
             }
 
+            Long productCategoryId = product != null ? product.getCategoryId() : null;
+            String productCategoryName = productCategoryId != null
+                    ? Optional.ofNullable(categoriesById.get(productCategoryId))
+                            .map(ProductCategoryEntity::getName).orElse(UNCATEGORIZED_LABEL)
+                    : UNCATEGORIZED_LABEL;
+
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow row = KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
                     .productId(kardexRow.getProductId())
                     .productCode(kardexRow.getProductCode())
@@ -355,6 +361,8 @@ public class KioscoInventoryCountService {
                             : ProductAudienceCategory.UNISEX)
                     .cinchoType(product != null ? ProductCinchoType.normalizeCinchoType(product.getCinchoType()) : null)
                     .packaging(ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()))
+                    .productCategoryId(productCategoryId)
+                    .productCategoryName(productCategoryName)
                     .systemSizes(systemSizes.isEmpty() ? null : systemSizes)
                     .physicalSizes(physicalSizes.isEmpty() ? null : physicalSizes)
                     .physicalSizesByLocation(physicalSizesByLocation)

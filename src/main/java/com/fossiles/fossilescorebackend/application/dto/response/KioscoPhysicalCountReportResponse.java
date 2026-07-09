@@ -67,6 +67,9 @@ public class KioscoPhysicalCountReportResponse {
         private String cinchoType;
         /** true si el código del producto es empaque SUM- */
         private boolean packaging;
+        /** Categoría de catálogo del producto (antes de agrupar empaques / billeteras). */
+        private Long productCategoryId;
+        private String productCategoryName;
         /** Desglose por talla en inventario kiosko (cinchos). */
         private Map<String, Integer> systemSizes;
         /** Conteo fisico capturado por talla (cinchos). */
