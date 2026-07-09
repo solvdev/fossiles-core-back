@@ -261,17 +261,22 @@ public class KioscoInventoryController {
 
     @GetMapping("/conteo-fisico/{countId}")
     public ResponseEntity<KioscoPhysicalCountReportResponse> getConteoFisico(
-            @PathVariable Long countId
+            @PathVariable Long countId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate asOf
     ) throws BusinessException, ResourceNotFoundException {
+        if (asOf != null) {
+            return ResponseEntity.ok(kioscoInventoryCountService.getSubcountReport(countId, asOf));
+        }
         return ResponseEntity.ok(kioscoInventoryCountService.getReport(countId));
     }
 
+    /** Alias de GET /conteo-fisico/{countId}?asOf= */
     @GetMapping("/conteo-fisico/{countId}/subconteo")
     public ResponseEntity<KioscoPhysicalCountReportResponse> getSubconteoFisico(
             @PathVariable Long countId,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate asOf
     ) throws BusinessException, ResourceNotFoundException {
-        return ResponseEntity.ok(kioscoInventoryCountService.getSubcountReport(countId, asOf));
+        return getConteoFisico(countId, asOf);
     }
 
     @PutMapping("/conteo-fisico/{countId}/items")
