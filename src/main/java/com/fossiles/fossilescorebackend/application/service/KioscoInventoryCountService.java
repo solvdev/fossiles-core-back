@@ -104,9 +104,7 @@ public class KioscoInventoryCountService {
     public KioscoPhysicalCountReportResponse upsertItems(Long countId, List<KioscoPhysicalCountItemUpsertRequest> items)
             throws BusinessException, ResourceNotFoundException {
         KioscoPhysicalCountEntity count = findCountOrThrow(countId);
-        if (count.getStatus() == KioscoPhysicalCountStatus.CERRADO) {
-            throw new BusinessException("El conteo está cerrado y no admite más cambios.");
-        }
+        assertCountEditable(count);
         if (items == null || items.isEmpty()) {
             throw new BusinessException("Debes indicar al menos un conteo para guardar.");
         }
@@ -145,11 +143,31 @@ public class KioscoInventoryCountService {
         return buildAndPersistReport(count);
     }
 
+    /**
+     * Marca el conteo físico como terminado: bloquea la edición de vitrinas antes de la revisión.
+     */
+    public KioscoPhysicalCountReportResponse terminarConteo(Long countId)
+            throws BusinessException, ResourceNotFoundException {
+        KioscoPhysicalCountEntity count = findCountOrThrow(countId);
+        if (count.getStatus() != KioscoPhysicalCountStatus.DRAFT) {
+            throw new BusinessException("Solo se puede terminar un conteo en borrador.");
+        }
+        count.setStatus(KioscoPhysicalCountStatus.CONTADO);
+        countRepository.save(count);
+        return buildAndPersistReport(count);
+    }
+
     public KioscoPhysicalCountReportResponse markReviewed(Long countId, String notes)
             throws BusinessException, ResourceNotFoundException {
         KioscoPhysicalCountEntity count = findCountOrThrow(countId);
         if (count.getStatus() == KioscoPhysicalCountStatus.CERRADO) {
             throw new BusinessException("El conteo está cerrado y no admite más cambios.");
+        }
+        if (count.getStatus() == KioscoPhysicalCountStatus.DRAFT) {
+            throw new BusinessException("Debe terminar el conteo físico antes de marcarlo como revisado.");
+        }
+        if (count.getStatus() != KioscoPhysicalCountStatus.CONTADO) {
+            throw new BusinessException("Solo se puede revisar un conteo que ya fue marcado como contado.");
         }
         count.setStatus(KioscoPhysicalCountStatus.REVISADO);
         count.setReviewedBy(resolveCurrentUserId());
@@ -229,6 +247,16 @@ public class KioscoInventoryCountService {
     private KioscoPhysicalCountEntity findCountOrThrow(Long countId) throws ResourceNotFoundException {
         return countRepository.findById(countId)
                 .orElseThrow(() -> new ResourceNotFoundException("KioscoPhysicalCount", countId));
+    }
+
+    private void assertCountEditable(KioscoPhysicalCountEntity count) throws BusinessException {
+        if (count.getStatus() == KioscoPhysicalCountStatus.CERRADO) {
+            throw new BusinessException("El conteo está cerrado y no admite más cambios.");
+        }
+        if (count.getStatus() != KioscoPhysicalCountStatus.DRAFT) {
+            throw new BusinessException(
+                    "El conteo ya fue terminado; las vitrinas están bloqueadas. Solo se puede revisar o exportar.");
+        }
     }
 
     /** Recalcula el reporte y persiste maxAbsDiff en la sesion, para que las consultas de alertas queden al dia. */

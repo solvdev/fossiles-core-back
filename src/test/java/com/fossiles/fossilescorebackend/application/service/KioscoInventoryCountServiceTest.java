@@ -330,13 +330,32 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
-    void markReviewed_actualizaEstadoRevisorYNotas() throws Exception {
+    void terminarConteo_marcaComoContado_siEstaEnBorrador() throws Exception {
         KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
                 .id(countId)
                 .locationId(locationId)
                 .periodFrom(from)
                 .periodTo(to)
                 .status(KioscoPhysicalCountStatus.DRAFT)
+                .generatedBy(userId)
+                .build();
+        when(countRepository.findById(countId)).thenReturn(Optional.of(count));
+        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(kardexRow(10)));
+
+        KioscoPhysicalCountReportResponse report = service.terminarConteo(countId);
+
+        assertThat(report.getStatus()).isEqualTo("CONTADO");
+        assertThat(count.getStatus()).isEqualTo(KioscoPhysicalCountStatus.CONTADO);
+    }
+
+    @Test
+    void markReviewed_actualizaEstadoRevisorYNotas() throws Exception {
+        KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
+                .id(countId)
+                .locationId(locationId)
+                .periodFrom(from)
+                .periodTo(to)
+                .status(KioscoPhysicalCountStatus.CONTADO)
                 .generatedBy(userId)
                 .build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
@@ -406,6 +425,38 @@ class KioscoInventoryCountServiceTest {
         assertThatThrownBy(() -> service.cerrarConteo(countId))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("revisado");
+    }
+
+    @Test
+    void markReviewed_falla_siSigueEnBorrador() {
+        KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
+                .id(countId)
+                .locationId(locationId)
+                .status(KioscoPhysicalCountStatus.DRAFT)
+                .build();
+        when(countRepository.findById(countId)).thenReturn(Optional.of(count));
+
+        assertThatThrownBy(() -> service.markReviewed(countId, "Notas"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("terminar");
+    }
+
+    @Test
+    void upsertItems_falla_siConteoEstaContado() {
+        KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
+                .id(countId)
+                .locationId(locationId)
+                .status(KioscoPhysicalCountStatus.CONTADO)
+                .build();
+        when(countRepository.findById(countId)).thenReturn(Optional.of(count));
+        KioscoPhysicalCountItemUpsertRequest request = KioscoPhysicalCountItemUpsertRequest.builder()
+                .productId(productId)
+                .counts(java.util.Map.of("V1", 2))
+                .build();
+
+        assertThatThrownBy(() -> service.upsertItems(countId, List.of(request)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("bloqueadas");
     }
 
     @Test

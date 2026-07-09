@@ -274,6 +274,13 @@ public class KioscoInventoryController {
         return ResponseEntity.ok(kioscoInventoryCountService.upsertItems(countId, items));
     }
 
+    @PostMapping("/conteo-fisico/{countId}/terminar")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> terminarConteoFisico(
+            @PathVariable Long countId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryCountService.terminarConteo(countId));
+    }
+
     @PostMapping("/conteo-fisico/{countId}/revisar")
     public ResponseEntity<KioscoPhysicalCountReportResponse> revisarConteoFisico(
             @PathVariable Long countId,
