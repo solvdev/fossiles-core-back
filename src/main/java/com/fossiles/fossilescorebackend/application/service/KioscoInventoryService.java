@@ -1047,6 +1047,17 @@ public class KioscoInventoryService {
     List<KioscoKardexReportResponse.KioscoKardexRow> buildKardexRows(
             Long locationId, LocalDate from, LocalDate to, boolean includeZeroRows
     ) throws BusinessException, ResourceNotFoundException {
+        return buildKardexRows(locationId, from, to, includeZeroRows, null);
+    }
+
+    /**
+     * Filas de kardex por producto/color. Con {@code balanceAsOf}, el inventario final es el saldo
+     * replay de movimientos hasta esa fecha (no el stock vivo).
+     */
+    @Transactional(readOnly = true)
+    List<KioscoKardexReportResponse.KioscoKardexRow> buildKardexRows(
+            Long locationId, LocalDate from, LocalDate to, boolean includeZeroRows, LocalDate balanceAsOf
+    ) throws BusinessException, ResourceNotFoundException {
         if (from == null || to == null) {
             throw new BusinessException("Debes indicar el rango de fechas (from y to).");
         }
@@ -1058,18 +1069,10 @@ public class KioscoInventoryService {
         LocalDateTime fromDt = from.atStartOfDay();
         LocalDateTime toDtExclusive = to.plusDays(1).atStartOfDay();
 
-        Map<Long, Integer> initialBalanceByStockId = new LinkedHashMap<>();
-        for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(locationId, fromDt)) {
-            if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
-                continue;
-            }
-            int running = initialBalanceByStockId.getOrDefault(m.getKioscoStockId(), 0);
-            running += movementSignedDelta(m);
-            if (running < 0) {
-                running = 0;
-            }
-            initialBalanceByStockId.put(m.getKioscoStockId(), running);
-        }
+        Map<Long, Integer> initialBalanceByStockId = computeBalanceByStockId(locationId, fromDt);
+        Map<Long, Integer> balanceAtCutoffByStockId = balanceAsOf != null
+                ? computeBalanceByStockId(locationId, balanceAsOf.plusDays(1).atStartOfDay())
+                : null;
 
         Map<Long, KardexAccumulator> accByStockId = new LinkedHashMap<>();
         for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBetween(locationId, fromDt, toDtExclusive)) {
@@ -1090,7 +1093,9 @@ public class KioscoInventoryService {
             KardexAccumulator acc = accByStockId.getOrDefault(stock.getId(), new KardexAccumulator());
             ProductEntity product = stock.getProduct();
             syncFossCurrentStockFromSizes(stock);
-            int finalBalance = resolveInventarioFinal(stock, product);
+            int finalBalance = balanceAtCutoffByStockId != null
+                    ? balanceAtCutoffByStockId.getOrDefault(stock.getId(), 0)
+                    : resolveInventarioFinal(stock, product);
             if (!includeZeroRows && initial == 0 && finalBalance == 0 && acc.isEmpty()) {
                 continue;
             }
@@ -1123,6 +1128,23 @@ public class KioscoInventoryService {
                         Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER))
                 .thenComparing(r -> String.valueOf(r.getColorName()), Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)));
         return rows;
+    }
+
+    private Map<Long, Integer> computeBalanceByStockId(Long locationId, LocalDateTime cutoffExclusive) {
+        Map<Long, Integer> balanceByStockId = new LinkedHashMap<>();
+        for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(
+                locationId, cutoffExclusive)) {
+            if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
+                continue;
+            }
+            int running = balanceByStockId.getOrDefault(m.getKioscoStockId(), 0);
+            running += movementSignedDelta(m);
+            if (running < 0) {
+                running = 0;
+            }
+            balanceByStockId.put(m.getKioscoStockId(), running);
+        }
+        return balanceByStockId;
     }
 
     /** Acumula deltas de movimientos del periodo por categoria de kardex kiosco. */

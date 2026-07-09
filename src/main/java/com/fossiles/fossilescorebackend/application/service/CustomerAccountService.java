@@ -275,6 +275,7 @@ public class CustomerAccountService {
         BigDecimal totalCreditNotes = BigDecimal.ZERO;
         BigDecimal totalReturns = BigDecimal.ZERO;
         List<CustomerAccountStatementLineResponse> lines = new ArrayList<>();
+        Map<Long, ChargeMeta> chargeMetaById = buildChargeMetaMap(allActive);
 
         for (CustomerAccountEntryEntity entry : inRange) {
             boolean active = STATUS_ACTIVE.equalsIgnoreCase(entry.getStatus());
@@ -299,6 +300,9 @@ public class CustomerAccountService {
             }
 
             String orderCode = resolveOrderCode(entry.getProductionOrderId());
+            ChargeMeta chargeMeta = TYPE_CHARGE.equalsIgnoreCase(entry.getEntryType())
+                    ? chargeMetaById.get(entry.getId())
+                    : null;
             lines.add(CustomerAccountStatementLineResponse.builder()
                     .id(entry.getId())
                     .entryDate(entry.getEntryDate())
@@ -313,11 +317,16 @@ public class CustomerAccountService {
                     .documentNumber(entry.getDocumentNumber())
                     .returnVoucherNumber(entry.getReturnVoucherNumber())
                     .productionOrderCode(orderCode)
+                    .productionOrderId(entry.getProductionOrderId())
+                    .partialReleaseId(entry.getPartialReleaseId())
+                    .productShipmentId(entry.getProductShipmentId())
                     .vendorShipmentNumber(entry.getVendorShipmentNumber())
                     .orderKind(entry.getOrderKind())
                     .grossCollectedAmount(entry.getGrossCollectedAmount())
                     .paymentDiscountAmount(entry.getPaymentDiscountAmount())
                     .status(entry.getStatus())
+                    .appliedToEntryId(entry.getAppliedToEntryId())
+                    .chargeBalanceDue(chargeMeta != null ? chargeMeta.balanceDue() : null)
                     .debit(debit)
                     .credit(credit)
                     .runningBalance(active ? running.setScale(2, RoundingMode.HALF_UP) : null)

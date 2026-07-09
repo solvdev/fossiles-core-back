@@ -523,6 +523,61 @@ class KioscoInventoryServiceTest {
                 .hasMessageContaining("posterior");
     }
 
+    @Test
+    void buildKardexRows_conBalanceAsOf_replayHastaFechaExcluyeVentasPosteriores() throws Exception {
+        KioscoStockEntity stock = stockEntity(5, 0);
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(locationId))
+                .thenReturn(List.of(stock));
+
+        LocalDate from = LocalDate.of(2026, 6, 1);
+        LocalDate asOf = LocalDate.of(2026, 6, 15);
+        KioscoMovementEntity entradaPrevia = movementAt(KioscoMovementType.ENTRADA, 0, 10,
+                LocalDateTime.of(2026, 5, 20, 10, 0));
+        KioscoMovementEntity ventaAntesDelCorte = movementAt(KioscoMovementType.VENTA, 10, 7,
+                LocalDateTime.of(2026, 6, 10, 12, 0));
+        KioscoMovementEntity ventaDespuesDelCorte = movementAt(KioscoMovementType.VENTA, 7, 5,
+                LocalDateTime.of(2026, 6, 20, 12, 0));
+
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBefore(eq(locationId), any(LocalDateTime.class)))
+                .thenAnswer(invocation -> {
+                    LocalDateTime cutoff = invocation.getArgument(1);
+                    return List.of(entradaPrevia, ventaAntesDelCorte, ventaDespuesDelCorte).stream()
+                            .filter(m -> m.getCreatedAt().isBefore(cutoff))
+                            .toList();
+                });
+
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBetween(
+                eq(locationId), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(List.of(ventaAntesDelCorte));
+
+        List<KioscoKardexReportResponse.KioscoKardexRow> rowsLive = service.buildKardexRows(
+                locationId, from, asOf, false, null);
+        assertThat(rowsLive).hasSize(1);
+        assertThat(rowsLive.get(0).getInventarioFinal()).isEqualTo(5);
+
+        List<KioscoKardexReportResponse.KioscoKardexRow> rowsAsOf = service.buildKardexRows(
+                locationId, from, asOf, false, asOf);
+        assertThat(rowsAsOf).hasSize(1);
+        assertThat(rowsAsOf.get(0).getInventarioFinal()).isEqualTo(7);
+        assertThat(rowsAsOf.get(0).getVentas()).isEqualTo(3);
+    }
+
+    private KioscoMovementEntity movementAt(
+            KioscoMovementType type, int stockBefore, int stockAfter, LocalDateTime createdAt
+    ) {
+        return KioscoMovementEntity.builder()
+                .id(2000L + createdAt.getDayOfMonth())
+                .kioscoStockId(100L)
+                .movementType(type)
+                .quantity(Math.abs(stockAfter - stockBefore))
+                .stockBefore(stockBefore)
+                .stockAfter(stockAfter)
+                .affectsStock(true)
+                .userId(userId)
+                .createdAt(createdAt)
+                .build();
+    }
+
     private KioscoMovementEntity movement(KioscoMovementType type, int stockBefore, int stockAfter) {
         return KioscoMovementEntity.builder()
                 .id(2000L)

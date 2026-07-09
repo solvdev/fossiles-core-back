@@ -26,6 +26,9 @@ public class CustomerAccountStatementLineResponse {
     private String documentNumber;
     private String returnVoucherNumber;
     private String productionOrderCode;
+    private Long productionOrderId;
+    private Long partialReleaseId;
+    private Long productShipmentId;
     private String vendorShipmentNumber;
     private String orderKind;
     private BigDecimal grossCollectedAmount;
@@ -34,4 +37,8 @@ public class CustomerAccountStatementLineResponse {
     private BigDecimal debit;
     private BigDecimal credit;
     private BigDecimal runningBalance;
+    /** Cargo al que aplica este movimiento (descarga, descuento, devolución). */
+    private Long appliedToEntryId;
+    /** Saldo pendiente del cargo (solo en filas tipo CHARGE activas). */
+    private BigDecimal chargeBalanceDue;
 }

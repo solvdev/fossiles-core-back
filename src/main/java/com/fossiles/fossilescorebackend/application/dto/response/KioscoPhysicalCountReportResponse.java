@@ -37,6 +37,12 @@ public class KioscoPhysicalCountReportResponse {
     private String closedByName;
     private LocalDateTime closedAt;
     private int maxAbsDiff;
+    /** PRINCIPAL o SUBCONTEO */
+    private String reportType;
+    /** Fecha de corte del inventario sistema (solo subconteo). */
+    private LocalDate asOfDate;
+    /** ID del conteo padre cuando reportType es SUBCONTEO. */
+    private Long parentCountId;
     private List<KioscoPhysicalCountCategoryGroup> categories;
     private KioscoPhysicalCountRow totalGeneral;
 

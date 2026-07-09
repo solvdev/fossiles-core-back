@@ -67,6 +67,9 @@ public class KioscoInventoryCountService {
     private static final String PACKAGING_CATEGORY_KEY = "PACKAGING";
     private static final String PACKAGING_CATEGORY_NAME = "Empaques";
 
+    private static final String REPORT_TYPE_PRINCIPAL = "PRINCIPAL";
+    private static final String REPORT_TYPE_SUBCONTEO = "SUBCONTEO";
+
     /** Diferencia absoluta minima (unidades) para considerar un producto como discrepancia relevante. */
     public static final int DIFF_ALERT_THRESHOLD = 3;
 
@@ -101,7 +104,21 @@ public class KioscoInventoryCountService {
 
     @Transactional(readOnly = true)
     public KioscoPhysicalCountReportResponse getReport(Long countId) throws BusinessException, ResourceNotFoundException {
-        return buildReport(findCountOrThrow(countId));
+        return buildReport(findCountOrThrow(countId), null);
+    }
+
+    @Transactional(readOnly = true)
+    public KioscoPhysicalCountReportResponse getSubcountReport(Long countId, LocalDate asOf)
+            throws BusinessException, ResourceNotFoundException {
+        if (asOf == null) {
+            throw new BusinessException("Debes indicar la fecha de corte (asOf).");
+        }
+        KioscoPhysicalCountEntity count = findCountOrThrow(countId);
+        if (asOf.isBefore(count.getPeriodFrom()) || asOf.isAfter(count.getPeriodTo())) {
+            throw new BusinessException(
+                    "La fecha de corte debe estar entre " + count.getPeriodFrom() + " y " + count.getPeriodTo() + ".");
+        }
+        return buildReport(count, asOf);
     }
 
     public KioscoPhysicalCountReportResponse upsertItems(Long countId, List<KioscoPhysicalCountItemUpsertRequest> items)
@@ -275,13 +292,23 @@ public class KioscoInventoryCountService {
 
     private KioscoPhysicalCountReportResponse buildReport(KioscoPhysicalCountEntity count)
             throws BusinessException, ResourceNotFoundException {
+        return buildReport(count, null);
+    }
+
+    private KioscoPhysicalCountReportResponse buildReport(KioscoPhysicalCountEntity count, LocalDate balanceAsOf)
+            throws BusinessException, ResourceNotFoundException {
+        boolean isSubcount = balanceAsOf != null;
+        LocalDate kardexTo = isSubcount ? balanceAsOf : count.getPeriodTo();
+
         Map<String, KioscoStockEntity> stockByKey = kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAsc(count.getLocationId()).stream()
                 .collect(Collectors.toMap(s -> itemKey(s.getProductId(), s.getColorId()), s -> s, (a, b) -> a));
-        stockByKey.values().forEach(kioscoInventoryService::syncFossCurrentStockFromSizes);
+        if (!isSubcount) {
+            stockByKey.values().forEach(kioscoInventoryService::syncFossCurrentStockFromSizes);
+        }
 
         List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows = kioscoInventoryService.buildKardexRows(
-                count.getLocationId(), count.getPeriodFrom(), count.getPeriodTo(), true);
+                count.getLocationId(), count.getPeriodFrom(), kardexTo, true, balanceAsOf);
 
         Map<String, KioscoPhysicalCountItemEntity> itemsByKey = itemRepository.findByCountId(count.getId()).stream()
                 .collect(Collectors.toMap(i -> itemKey(i.getProductId(), i.getColorId()), i -> i, (a, b) -> a));
@@ -340,9 +367,12 @@ public class KioscoInventoryCountService {
             }
 
             int inventarioFinal = kardexRow.getInventarioFinal();
-            if (!systemSizes.isEmpty() && CinchoProductUtils.isFossCinchoProduct(product)) {
+            if (!isSubcount && !systemSizes.isEmpty() && CinchoProductUtils.isFossCinchoProduct(product)) {
                 inventarioFinal = systemSizes.values().stream().mapToInt(Integer::intValue).sum();
             }
+
+            Map<String, Integer> rowSystemSizes = isSubcount ? null : (systemSizes.isEmpty() ? null : systemSizes);
+            String rowSizesSummary = isSubcount ? null : sizesSummary;
 
             Long productCategoryId = product != null ? product.getCategoryId() : null;
             String productCategoryName = productCategoryId != null
@@ -363,10 +393,10 @@ public class KioscoInventoryCountService {
                     .packaging(ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()))
                     .productCategoryId(productCategoryId)
                     .productCategoryName(productCategoryName)
-                    .systemSizes(systemSizes.isEmpty() ? null : systemSizes)
+                    .systemSizes(rowSystemSizes)
                     .physicalSizes(physicalSizes.isEmpty() ? null : physicalSizes)
                     .physicalSizesByLocation(physicalSizesByLocation)
-                    .sizesSummary(sizesSummary)
+                    .sizesSummary(rowSizesSummary)
                     .physicalSizesSummary(physicalSizesSummary)
                     .inventarioInicial(kardexRow.getInventarioInicial())
                     .comprasAjustes(kardexRow.getComprasAjustes())
@@ -380,8 +410,10 @@ public class KioscoInventoryCountService {
                     .total(total)
                     .diferencia(inventarioFinal - total)
                     .build();
-            for (KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow displayRow
-                    : expandRowsForDisplay(row, product)) {
+            List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> displayRows = isSubcount
+                    ? List.of(row)
+                    : expandRowsForDisplay(row, product);
+            for (KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow displayRow : displayRows) {
                 allRows.add(displayRow);
                 rowsByCategoryKey.computeIfAbsent(categoryKey, k -> new ArrayList<>()).add(displayRow);
             }
@@ -427,6 +459,9 @@ public class KioscoInventoryCountService {
                 .closedByName(resolveUsername(count.getClosedBy()))
                 .closedAt(count.getClosedAt())
                 .maxAbsDiff(maxAbsDiff)
+                .reportType(isSubcount ? REPORT_TYPE_SUBCONTEO : REPORT_TYPE_PRINCIPAL)
+                .asOfDate(balanceAsOf)
+                .parentCountId(isSubcount ? count.getId() : null)
                 .categories(categories)
                 .totalGeneral(sumRows(allRows))
                 .build();

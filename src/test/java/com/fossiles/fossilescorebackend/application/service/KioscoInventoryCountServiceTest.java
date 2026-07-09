@@ -542,6 +542,45 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
+    void getSubcountReport_devuelveTipoSubconteoConInventarioAlCorte() throws Exception {
+        LocalDate asOf = LocalDate.of(2026, 6, 15);
+        KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
+                .id(countId)
+                .locationId(locationId)
+                .periodFrom(from)
+                .periodTo(to)
+                .status(KioscoPhysicalCountStatus.DRAFT)
+                .generatedBy(userId)
+                .build();
+        when(countRepository.findById(countId)).thenReturn(Optional.of(count));
+        when(kioscoInventoryService.buildKardexRows(locationId, from, asOf, true, asOf))
+                .thenReturn(List.of(kardexRow(7)));
+
+        KioscoPhysicalCountReportResponse report = service.getSubcountReport(countId, asOf);
+
+        assertThat(report.getReportType()).isEqualTo("SUBCONTEO");
+        assertThat(report.getAsOfDate()).isEqualTo(asOf);
+        assertThat(report.getParentCountId()).isEqualTo(countId);
+        assertThat(report.getCategories().get(0).getRows().get(0).getInventarioFinal()).isEqualTo(7);
+    }
+
+    @Test
+    void getSubcountReport_falla_siFechaFueraDelPeriodo() {
+        KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
+                .id(countId)
+                .locationId(locationId)
+                .periodFrom(from)
+                .periodTo(to)
+                .status(KioscoPhysicalCountStatus.DRAFT)
+                .build();
+        when(countRepository.findById(countId)).thenReturn(Optional.of(count));
+
+        assertThatThrownBy(() -> service.getSubcountReport(countId, LocalDate.of(2026, 7, 1)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("fecha de corte");
+    }
+
+    @Test
     void upsertItems_falla_siConteoEstaContado() {
         KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
                 .id(countId)
