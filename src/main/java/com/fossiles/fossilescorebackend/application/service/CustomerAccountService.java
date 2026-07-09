@@ -626,7 +626,7 @@ public class CustomerAccountService {
             String routeLocationCode,
             boolean allOrderTypes,
             int limit) {
-        int maxResults = limit > 0 ? Math.min(limit, 500) : 200;
+        int maxResults = limit > 0 ? Math.min(limit, 5000) : 200;
         String searchNorm = search != null ? search.trim().toLowerCase(Locale.ROOT) : "";
         String kindFilter = orderKind != null && !orderKind.isBlank()
                 ? orderKind.trim().toUpperCase(Locale.ROOT)
@@ -837,6 +837,7 @@ public class CustomerAccountService {
                 ? partialReleaseRepository.findById(charge.getPartialReleaseId()).orElse(null)
                 : null;
 
+        BigDecimal appliedCredits = computeAppliedCredits(charge, entries);
         BigDecimal balanceDue = computeChargeBalanceDue(charge, entries);
         String status = resolveChargeStatus(Optional.of(charge), balanceDue);
         boolean paid = "PARTIAL".equals(status) || "PAID".equals(status);
@@ -873,6 +874,7 @@ public class CustomerAccountService {
                 .invoiceNumber(charge.getInvoiceNumber())
                 .chargeStatus(status)
                 .chargedAmount(charge.getAmount())
+                .appliedCredits(appliedCredits)
                 .balanceDue(balanceDue)
                 .estimatedTotal(order != null ? estimateReceivableDocumentTotal(order, release, shipment) : charge.getAmount())
                 .hasCharge(true)
@@ -898,6 +900,7 @@ public class CustomerAccountService {
         Optional<CustomerAccountEntryEntity> chargeOpt =
                 findActiveCharge(entries, order.getId(), partialReleaseId, productShipmentId);
         BigDecimal chargedAmount = chargeOpt.map(CustomerAccountEntryEntity::getAmount).orElse(BigDecimal.ZERO);
+        BigDecimal appliedCredits = chargeOpt.map(c -> computeAppliedCredits(c, entries)).orElse(BigDecimal.ZERO);
         BigDecimal balanceDue = chargeOpt.map(c -> computeChargeBalanceDue(c, entries)).orElse(BigDecimal.ZERO);
         String status = resolveChargeStatus(chargeOpt, balanceDue);
         boolean charged = chargeOpt.isPresent();
@@ -937,6 +940,7 @@ public class CustomerAccountService {
                 .invoiceNumber(chargeOpt.map(CustomerAccountEntryEntity::getInvoiceNumber).orElse(null))
                 .chargeStatus(status)
                 .chargedAmount(charged ? chargedAmount : null)
+                .appliedCredits(charged ? appliedCredits : null)
                 .balanceDue(charged ? balanceDue : null)
                 .estimatedTotal(estimatedTotal)
                 .hasCharge(charged)
@@ -1007,11 +1011,20 @@ public class CustomerAccountService {
     private LfReceivableDocumentResponse toReceivableDocument(
             CustomerAccountEntryEntity charge,
             List<CustomerAccountEntryEntity> entries) {
+        BigDecimal appliedCredits = computeAppliedCredits(charge, entries);
         BigDecimal balanceDue = computeChargeBalanceDue(charge, entries);
         String orderCode = resolveOrderCode(charge.getProductionOrderId());
         String partialLabel = resolvePartialReleaseLabel(charge.getPartialReleaseId());
+        CustomerEntity customer = customerRepository.findById(charge.getCustomerId()).orElse(null);
+        RouteMeta routeMeta = resolveRouteMeta(customer != null ? customer.getRouteLocationCode() : null);
         return LfReceivableDocumentResponse.builder()
                 .chargeEntryId(charge.getId())
+                .customerId(charge.getCustomerId())
+                .customerName(customer != null ? customer.getName() : null)
+                .legacyCode(customer != null ? customer.getLegacyCode() : null)
+                .nit(customer != null ? customer.getNit() : null)
+                .routeLocationCode(customer != null ? customer.getRouteLocationCode() : null)
+                .routeLocationLabel(routeMeta.label())
                 .productionOrderId(charge.getProductionOrderId())
                 .partialReleaseId(charge.getPartialReleaseId())
                 .productShipmentId(charge.getProductShipmentId())
@@ -1019,9 +1032,12 @@ public class CustomerAccountService {
                 .orderKind(charge.getOrderKind())
                 .invoiceNumber(firstNonBlank(charge.getInvoiceNumber(), charge.getVendorShipmentNumber()))
                 .documentNumber(firstNonBlank(charge.getDocumentNumber(), orderCode, charge.getVendorShipmentNumber()))
+                .vendorShipmentNumber(charge.getVendorShipmentNumber())
                 .partialReleaseLabel(partialLabel)
                 .dueDate(charge.getEntryDate())
+                .chargeDate(charge.getEntryDate())
                 .chargeAmount(charge.getAmount())
+                .appliedCredits(appliedCredits)
                 .balanceDue(balanceDue)
                 .chargeStatus(balanceDue.compareTo(BigDecimal.ZERO) <= 0 ? "PAID"
                         : balanceDue.compareTo(charge.getAmount()) < 0 ? "PARTIAL" : "OPEN")
@@ -1210,13 +1226,23 @@ public class CustomerAccountService {
         return computeChargeBalanceDue(charge, loadActiveEntries(charge.getCustomerId()));
     }
 
-    private BigDecimal computeChargeBalanceDue(CustomerAccountEntryEntity charge, List<CustomerAccountEntryEntity> entries) {
-        BigDecimal applied = entries.stream()
+    private BigDecimal computeAppliedCredits(CustomerAccountEntryEntity charge, List<CustomerAccountEntryEntity> entries) {
+        if (charge == null || charge.getId() == null || entries == null) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        return entries.stream()
+                .filter(e -> STATUS_ACTIVE.equalsIgnoreCase(e.getStatus()))
                 .filter(e -> charge.getId().equals(e.getAppliedToEntryId()))
                 .filter(e -> isCreditType(e.getEntryType()))
                 .map(this::resolveAppliedCreditAmount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        return charge.getAmount().subtract(applied).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal computeChargeBalanceDue(CustomerAccountEntryEntity charge, List<CustomerAccountEntryEntity> entries) {
+        BigDecimal applied = computeAppliedCredits(charge, entries);
+        BigDecimal chargeAmount = charge.getAmount() != null ? charge.getAmount() : BigDecimal.ZERO;
+        return chargeAmount.subtract(applied).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
     }
 
     private Map<Long, ChargeMeta> buildChargeMetaMap(List<CustomerAccountEntryEntity> entries) {

@@ -39,6 +39,8 @@ public class CustomerAccountReceivableSearchResponse {
     private String invoiceNumber;
     private String chargeStatus;
     private BigDecimal chargedAmount;
+    /** Abonos + notas de crédito + devoluciones aplicadas al cargo. */
+    private BigDecimal appliedCredits;
     private BigDecimal balanceDue;
     private BigDecimal estimatedTotal;
     private boolean hasCharge;

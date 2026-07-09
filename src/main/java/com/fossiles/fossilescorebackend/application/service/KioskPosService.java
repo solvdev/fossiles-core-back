@@ -1024,6 +1024,43 @@ public class KioskPosService {
         return buildReportResponse(sales, startDate, endDate);
     }
 
+    /** Ventas detalladas (con ítems) para exportar REPORTE DE VENTAS desde admin. */
+    @Transactional(readOnly = true)
+    public List<KioskPosSaleResponse> getGeneralSalesDetail(
+            LocalDate startDate,
+            LocalDate endDate,
+            Long kioskLocationId
+    ) throws BusinessException {
+        UserEntity user = getCurrentUserOrThrow();
+        if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
+            throw new BusinessException("Solo administradores o logística pueden exportar el reporte general de ventas.");
+        }
+        Map<Long, LocationEntity> kioskById = locationRepository.findAll().stream()
+                .filter(this::isKioskLocation)
+                .collect(Collectors.toMap(LocationEntity::getId, item -> item, (a, b) -> a));
+
+        List<KioskSaleEntity> sales = findSalesByDateRange(startDate, endDate).stream()
+                .filter(KioskPosService::countsForProductionMetrics)
+                .filter(sale -> kioskLocationId == null || Objects.equals(sale.getKioskLocationId(), kioskLocationId))
+                .sorted(Comparator
+                        .comparing(KioskSaleEntity::getKioskLocationId, Comparator.nullsLast(Long::compareTo))
+                        .thenComparing(KioskSaleEntity::getSoldAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
+
+        List<KioskPosSaleResponse> result = new ArrayList<>();
+        for (KioskSaleEntity sale : sales) {
+            LocationEntity kiosk = kioskById.get(sale.getKioskLocationId());
+            if (kiosk == null) {
+                kiosk = locationRepository.findById(sale.getKioskLocationId()).orElse(null);
+            }
+            if (kiosk == null) {
+                continue;
+            }
+            result.add(toSaleResponse(sale, kiosk, user));
+        }
+        return result;
+    }
+
     @Transactional(readOnly = true)
     public TaxpayerLookupResponse lookupTaxpayer(String taxId) throws BusinessException {
         String normalizedTaxId = normalizeTaxId(taxId);
@@ -2119,6 +2156,7 @@ public class KioskPosService {
     }
 
     private KioskPosSaleResponse toSaleResponse(KioskSaleEntity sale, LocationEntity kiosk, UserEntity user) {
+        Map<Long, String> categoryNameByProductId = resolveSaleItemCategoryNames(sale);
         List<KioskPosSaleResponse.Item> items = sale.getItems() == null
                 ? List.of()
                 : sale.getItems().stream().map(row -> KioskPosSaleResponse.Item.builder()
@@ -2128,6 +2166,7 @@ public class KioskPosService {
                         .productName(row.getProductName())
                         .colorId(row.getColorId())
                         .colorName(row.getColorName())
+                        .categoryName(categoryNameByProductId.get(row.getProductId()))
                         .quantity(row.getQuantity())
                         .unitPrice(row.getUnitPrice())
                         .lineTotal(row.getLineTotal())
@@ -2191,6 +2230,41 @@ public class KioskPosService {
                 .pendingDeposit(isPendingDeposit(sale))
                 .items(items)
                 .build();
+    }
+
+    private Map<Long, String> resolveSaleItemCategoryNames(KioskSaleEntity sale) {
+        if (sale.getItems() == null || sale.getItems().isEmpty()) {
+            return Map.of();
+        }
+        Set<Long> productIds = sale.getItems().stream()
+                .map(KioskSaleItemEntity::getProductId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (productIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, ProductEntity> productsById = productRepository.findAllById(productIds).stream()
+                .collect(Collectors.toMap(ProductEntity::getId, item -> item, (a, b) -> a));
+        Set<Long> categoryIds = productsById.values().stream()
+                .map(ProductEntity::getCategoryId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, String> categoryNames = categoryIds.isEmpty()
+                ? Map.of()
+                : productCategoryRepository.findAllById(categoryIds).stream()
+                        .collect(Collectors.toMap(ProductCategoryEntity::getId, ProductCategoryEntity::getName, (a, b) -> a));
+        Map<Long, String> result = new LinkedHashMap<>();
+        for (Long productId : productIds) {
+            ProductEntity product = productsById.get(productId);
+            if (product == null || product.getCategoryId() == null) {
+                continue;
+            }
+            String name = categoryNames.get(product.getCategoryId());
+            if (name != null && !name.isBlank()) {
+                result.put(productId, name);
+            }
+        }
+        return result;
     }
 
     private KioskPosSaleResponse.InvoiceInfo buildInvoiceInfo(KioskSaleEntity sale) {

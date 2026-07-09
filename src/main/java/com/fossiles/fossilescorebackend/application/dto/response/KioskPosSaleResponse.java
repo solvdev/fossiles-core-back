@@ -95,6 +95,8 @@ public class KioskPosSaleResponse {
         private String productName;
         private Long colorId;
         private String colorName;
+        /** Categoría / material para reportes (ej. Cuero, Empaque). */
+        private String categoryName;
         private BigDecimal quantity;
         private BigDecimal unitPrice;
         private BigDecimal lineTotal;

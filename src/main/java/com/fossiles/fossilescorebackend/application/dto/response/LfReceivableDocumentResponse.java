@@ -14,6 +14,12 @@ import java.time.LocalDate;
 @AllArgsConstructor
 public class LfReceivableDocumentResponse {
     private Long chargeEntryId;
+    private Long customerId;
+    private String customerName;
+    private String legacyCode;
+    private String nit;
+    private String routeLocationCode;
+    private String routeLocationLabel;
     private Long productionOrderId;
     private Long partialReleaseId;
     private Long productShipmentId;
@@ -21,9 +27,14 @@ public class LfReceivableDocumentResponse {
     private String orderKind;
     private String invoiceNumber;
     private String documentNumber;
+    private String vendorShipmentNumber;
     private String partialReleaseLabel;
     private LocalDate dueDate;
+    private LocalDate chargeDate;
+    /** Monto original del cargo (CARGOS). */
     private BigDecimal chargeAmount;
+    /** Abonos + notas de crédito + devoluciones aplicadas al cargo. */
+    private BigDecimal appliedCredits;
     private BigDecimal balanceDue;
     private String chargeStatus;
 }
