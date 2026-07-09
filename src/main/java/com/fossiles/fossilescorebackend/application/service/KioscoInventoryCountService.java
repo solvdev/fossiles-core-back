@@ -47,6 +47,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.ToIntFunction;
 import java.util.stream.Collectors;
 
@@ -63,6 +64,8 @@ public class KioscoInventoryCountService {
     private static final List<String> COUNT_LOCATION_KEYS = List.of("V1", "V2", "V3", "V4", "V5", "V6", "V7", "E", "BO");
     private static final List<String> CINCHO_SIZE_LOCATION_KEYS = List.of("E", "BO");
     private static final String UNCATEGORIZED_LABEL = "Sin categoría";
+    private static final String PACKAGING_CATEGORY_KEY = "PACKAGING";
+    private static final String PACKAGING_CATEGORY_NAME = "Empaques";
 
     /** Diferencia absoluta minima (unidades) para considerar un producto como discrepancia relevante. */
     public static final int DIFF_ALERT_THRESHOLD = 3;
@@ -310,11 +313,8 @@ public class KioscoInventoryCountService {
             }
 
             ProductEntity product = productsById.get(kardexRow.getProductId());
-            Long categoryId = product != null ? product.getCategoryId() : null;
-            String categoryKey = categoryId != null ? String.valueOf(categoryId) : "NONE";
-            String categoryName = categoryId != null
-                    ? Optional.ofNullable(categoriesById.get(categoryId)).map(ProductCategoryEntity::getName).orElse(UNCATEGORIZED_LABEL)
-                    : UNCATEGORIZED_LABEL;
+            String categoryKey = resolveDisplayCategoryKey(product, kardexRow.getProductCode(), categoriesById);
+            String categoryName = resolveDisplayCategoryName(categoryKey, categoriesById);
             categoryNameByKey.putIfAbsent(categoryKey, categoryName);
 
             KioscoPhysicalCountItemEntity item = itemsByKey.get(itemKey(kardexRow.getProductId(), kardexRow.getColorId()));
@@ -372,8 +372,11 @@ public class KioscoInventoryCountService {
                     .total(total)
                     .diferencia(inventarioFinal - total)
                     .build();
-            allRows.add(row);
-            rowsByCategoryKey.computeIfAbsent(categoryKey, k -> new ArrayList<>()).add(row);
+            for (KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow displayRow
+                    : expandRowsForDisplay(row, product)) {
+                allRows.add(displayRow);
+                rowsByCategoryKey.computeIfAbsent(categoryKey, k -> new ArrayList<>()).add(displayRow);
+            }
         }
 
         List<String> orderedCategoryKeys = new ArrayList<>(rowsByCategoryKey.keySet());
@@ -385,7 +388,7 @@ public class KioscoInventoryCountService {
         for (String key : orderedCategoryKeys) {
             List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> rows = rowsByCategoryKey.get(key);
             categories.add(KioscoPhysicalCountReportResponse.KioscoPhysicalCountCategoryGroup.builder()
-                    .categoryId("NONE".equals(key) ? null : Long.valueOf(key))
+                    .categoryId(resolveDisplayCategoryId(key))
                     .categoryName(categoryNameByKey.get(key))
                     .rows(rows)
                     .subtotal(sumRows(rows))
@@ -615,6 +618,277 @@ public class KioscoInventoryCountService {
         } catch (NumberFormatException ignored) {
             return left.compareToIgnoreCase(right);
         }
+    }
+
+    private String resolveDisplayCategoryKey(
+            ProductEntity product,
+            String productCode,
+            Map<Long, ProductCategoryEntity> categoriesById
+    ) {
+        if (ProductCinchoType.isPackagingProductCode(productCode)) {
+            return PACKAGING_CATEGORY_KEY;
+        }
+        Long categoryId = product != null ? product.getCategoryId() : null;
+        if (categoryId == null) {
+            return "NONE";
+        }
+        ProductCategoryEntity category = categoriesById.get(categoryId);
+        if (category != null && isWalletCategory(category.getName()) && product != null) {
+            String audience = ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory());
+            return "WALLET:" + categoryId + ":" + audience;
+        }
+        return String.valueOf(categoryId);
+    }
+
+    private String resolveDisplayCategoryName(
+            String categoryKey,
+            Map<Long, ProductCategoryEntity> categoriesById
+    ) {
+        if (PACKAGING_CATEGORY_KEY.equals(categoryKey)) {
+            return PACKAGING_CATEGORY_NAME;
+        }
+        if ("NONE".equals(categoryKey)) {
+            return UNCATEGORIZED_LABEL;
+        }
+        if (categoryKey.startsWith("WALLET:")) {
+            String[] parts = categoryKey.split(":");
+            Long categoryId = Long.parseLong(parts[1]);
+            String audience = parts.length > 2 ? parts[2] : ProductAudienceCategory.UNISEX;
+            String categoryName = Optional.ofNullable(categoriesById.get(categoryId))
+                    .map(ProductCategoryEntity::getName)
+                    .orElse(UNCATEGORIZED_LABEL);
+            return categoryName + " — " + resolveAudienceLabel(audience);
+        }
+        Long categoryId = Long.parseLong(categoryKey);
+        return Optional.ofNullable(categoriesById.get(categoryId))
+                .map(ProductCategoryEntity::getName)
+                .orElse(UNCATEGORIZED_LABEL);
+    }
+
+    private Long resolveDisplayCategoryId(String categoryKey) {
+        if (PACKAGING_CATEGORY_KEY.equals(categoryKey) || "NONE".equals(categoryKey)) {
+            return null;
+        }
+        if (categoryKey.startsWith("WALLET:")) {
+            return Long.parseLong(categoryKey.split(":")[1]);
+        }
+        return Long.valueOf(categoryKey);
+    }
+
+    private boolean isWalletCategory(String categoryName) {
+        if (categoryName == null || categoryName.isBlank()) {
+            return false;
+        }
+        return categoryName.toUpperCase(Locale.ROOT).contains("BILLETERA");
+    }
+
+    private String resolveAudienceLabel(String audience) {
+        if (ProductAudienceCategory.DAMA.equals(audience)) {
+            return "Dama";
+        }
+        if (ProductAudienceCategory.CABALLERO.equals(audience)) {
+            return "Caballero";
+        }
+        return "Unisex";
+    }
+
+    private List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> expandRowsForDisplay(
+            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
+            ProductEntity product
+    ) {
+        if (!shouldExpandRowBySize(product, base)) {
+            return List.of(base);
+        }
+        List<String> sizeKeys = collectSizeKeysForRow(base);
+        if (sizeKeys.isEmpty()) {
+            return List.of(base);
+        }
+        List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> expanded = new ArrayList<>();
+        for (int i = 0; i < sizeKeys.size(); i++) {
+            expanded.add(buildExpandedRowForSize(base, product, sizeKeys.get(i), i == 0));
+        }
+        return expanded;
+    }
+
+    private boolean shouldExpandRowBySize(
+            ProductEntity product,
+            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base
+    ) {
+        if (base.isPackaging()) {
+            return false;
+        }
+        if (!hasSizeBreakdown(base)) {
+            return false;
+        }
+        return isCinchoForSizeExpansion(product, base);
+    }
+
+    private boolean hasSizeBreakdown(KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base) {
+        if (base.getSystemSizes() != null && !base.getSystemSizes().isEmpty()) {
+            return true;
+        }
+        if (base.getPhysicalSizes() != null && !base.getPhysicalSizes().isEmpty()) {
+            return true;
+        }
+        return base.getPhysicalSizesByLocation() != null && !base.getPhysicalSizesByLocation().isEmpty();
+    }
+
+    private boolean isCinchoForSizeExpansion(
+            ProductEntity product,
+            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base
+    ) {
+        if (product != null && CinchoProductUtils.isFossCinchoProduct(product)) {
+            return true;
+        }
+        if (base.getCinchoType() != null) {
+            return true;
+        }
+        if (product != null && ProductCinchoType.normalizeCinchoType(product.getCinchoType()) != null) {
+            return true;
+        }
+        return product != null && CinchoProductUtils.isMesaCinchosProduct(product);
+    }
+
+    private List<String> collectSizeKeysForRow(KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base) {
+        Set<String> keys = new TreeSet<>(this::compareSizeKeys);
+        if (base.getSystemSizes() != null) {
+            keys.addAll(base.getSystemSizes().keySet());
+        }
+        if (base.getPhysicalSizes() != null) {
+            keys.addAll(base.getPhysicalSizes().keySet());
+        }
+        if (base.getPhysicalSizesByLocation() != null) {
+            for (Map<String, Integer> locSizes : base.getPhysicalSizesByLocation().values()) {
+                if (locSizes != null) {
+                    keys.addAll(locSizes.keySet());
+                }
+            }
+        }
+        return new ArrayList<>(keys);
+    }
+
+    private KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow buildExpandedRowForSize(
+            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
+            ProductEntity product,
+            String size,
+            boolean includeKardexDetail
+    ) {
+        int sysQty = base.getSystemSizes() != null ? base.getSystemSizes().getOrDefault(size, 0) : 0;
+        Map<String, Integer> counts = resolveCountsForSize(base, product, size);
+        int total = resolvePhysicalTotalForSize(base, product, size, counts);
+        int inventarioFinal = sysQty;
+
+        Map<String, Integer> singleSystemSize = sysQty > 0 ? Map.of(size, sysQty) : null;
+        Map<String, Integer> singlePhysicalSize = null;
+        if (base.getPhysicalSizes() != null && base.getPhysicalSizes().containsKey(size)) {
+            singlePhysicalSize = Map.of(size, base.getPhysicalSizes().get(size));
+        }
+
+        return base.toBuilder()
+                .sizeLabel(size)
+                .sizesSummary(size)
+                .physicalSizesSummary(String.valueOf(total))
+                .systemSizes(singleSystemSize)
+                .physicalSizes(singlePhysicalSize)
+                .physicalSizesByLocation(buildSingleSizeByLocation(base.getPhysicalSizesByLocation(), size))
+                .inventarioInicial(includeKardexDetail ? base.getInventarioInicial() : 0)
+                .comprasAjustes(includeKardexDetail ? base.getComprasAjustes() : 0)
+                .anulacionCompras(includeKardexDetail ? base.getAnulacionCompras() : 0)
+                .entradas(includeKardexDetail ? base.getEntradas() : 0)
+                .ventas(includeKardexDetail ? base.getVentas() : 0)
+                .anulacionVenta(includeKardexDetail ? base.getAnulacionVenta() : 0)
+                .salida(includeKardexDetail ? base.getSalida() : 0)
+                .inventarioFinal(inventarioFinal)
+                .counts(counts)
+                .total(total)
+                .diferencia(inventarioFinal - total)
+                .build();
+    }
+
+    private Map<String, Integer> resolveCountsForSize(
+            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
+            ProductEntity product,
+            String size
+    ) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        boolean foss = CinchoProductUtils.isFossCinchoProduct(product);
+
+        if (foss && base.getPhysicalSizesByLocation() != null) {
+            for (String loc : CINCHO_SIZE_LOCATION_KEYS) {
+                Map<String, Integer> locSizes = base.getPhysicalSizesByLocation().get(loc);
+                counts.put(loc, locSizes != null ? locSizes.getOrDefault(size, 0) : 0);
+            }
+            for (String key : COUNT_LOCATION_KEYS) {
+                counts.putIfAbsent(key, 0);
+            }
+            return counts;
+        }
+
+        int physicalForSize = base.getPhysicalSizes() != null
+                ? base.getPhysicalSizes().getOrDefault(size, 0) : 0;
+        if (physicalForSize > 0) {
+            for (String key : COUNT_LOCATION_KEYS) {
+                counts.put(key, "E".equals(key) ? physicalForSize : 0);
+            }
+            return counts;
+        }
+
+        Map<String, Integer> baseCounts = base.getCounts() != null ? base.getCounts() : Map.of();
+        if (collectSizeKeysForRow(base).size() == 1) {
+            for (String key : COUNT_LOCATION_KEYS) {
+                counts.put(key, baseCounts.getOrDefault(key, 0));
+            }
+            return counts;
+        }
+
+        for (String key : COUNT_LOCATION_KEYS) {
+            counts.put(key, 0);
+        }
+        return counts;
+    }
+
+    private int resolvePhysicalTotalForSize(
+            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
+            ProductEntity product,
+            String size,
+            Map<String, Integer> counts
+    ) {
+        if (CinchoProductUtils.isFossCinchoProduct(product) && base.getPhysicalSizesByLocation() != null) {
+            int vitrine = Optional.ofNullable(base.getPhysicalSizesByLocation().get("E"))
+                    .map(m -> m.getOrDefault(size, 0)).orElse(0);
+            int warehouse = Optional.ofNullable(base.getPhysicalSizesByLocation().get("BO"))
+                    .map(m -> m.getOrDefault(size, 0)).orElse(0);
+            if (vitrine + warehouse > 0) {
+                return vitrine + warehouse;
+            }
+        }
+        if (base.getPhysicalSizes() != null) {
+            int physical = base.getPhysicalSizes().getOrDefault(size, 0);
+            if (physical > 0) {
+                return physical;
+            }
+        }
+        return counts.values().stream().mapToInt(value -> value != null ? value : 0).sum();
+    }
+
+    private Map<String, Map<String, Integer>> buildSingleSizeByLocation(
+            Map<String, Map<String, Integer>> byLocation,
+            String size
+    ) {
+        if (byLocation == null) {
+            return null;
+        }
+        Map<String, Map<String, Integer>> result = new LinkedHashMap<>();
+        for (String loc : CINCHO_SIZE_LOCATION_KEYS) {
+            Map<String, Integer> locSizes = byLocation.get(loc);
+            if (locSizes != null && locSizes.containsKey(size)) {
+                int qty = locSizes.get(size);
+                if (qty > 0) {
+                    result.put(loc, Map.of(size, qty));
+                }
+            }
+        }
+        return result.isEmpty() ? null : result;
     }
 
     private String resolveUsername(Long userId) {

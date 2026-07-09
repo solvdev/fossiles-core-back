@@ -77,6 +77,8 @@ public class KioscoPhysicalCountReportResponse {
         private String sizesSummary;
         /** Texto legible del conteo fisico por talla. */
         private String physicalSizesSummary;
+        /** Talla cuando la fila representa un desglose cincho (una fila por talla y color). */
+        private String sizeLabel;
         private int inventarioInicial;
         private int comprasAjustes;
         private int anulacionCompras;

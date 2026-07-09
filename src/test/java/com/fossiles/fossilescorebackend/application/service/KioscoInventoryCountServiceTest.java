@@ -442,6 +442,106 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
+    void buildReport_agrupaEmpaquesEnCategoriaPropia() throws Exception {
+        Long packagingProductId = 31L;
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(packagingProductId).code("SUM-01").name("Bolsa").categoryId(categoryId).build()
+        ));
+        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(
+                KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(packagingProductId)
+                        .productCode("SUM-01")
+                        .productName("Bolsa")
+                        .inventarioFinal(20)
+                        .build()
+        ));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+
+        assertThat(report.getCategories()).hasSize(1);
+        assertThat(report.getCategories().get(0).getCategoryName()).isEqualTo("Empaques");
+        assertThat(report.getCategories().get(0).getRows().get(0).isPackaging()).isTrue();
+    }
+
+    @Test
+    void buildReport_separaBilleterasPorPublico() throws Exception {
+        Long walletCategoryId = 80L;
+        Long damaProductId = 32L;
+        Long cabProductId = 33L;
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(damaProductId).code("B-1").name("Billetera A").categoryId(walletCategoryId)
+                        .audienceCategory("DAMA").build(),
+                ProductEntity.builder().id(cabProductId).code("B-2").name("Billetera B").categoryId(walletCategoryId)
+                        .audienceCategory("CABALLERO").build()
+        ));
+        when(productCategoryRepository.findAllById(any())).thenReturn(List.of(
+                ProductCategoryEntity.builder().id(walletCategoryId).code("BILL").name("Billeteras").build()
+        ));
+        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(
+                KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(damaProductId).productCode("B-1").productName("Billetera A")
+                        .colorId(colorId).colorName("Negro").inventarioFinal(5).build(),
+                KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(cabProductId).productCode("B-2").productName("Billetera B")
+                        .colorId(colorId + 1).colorName("Cafe").inventarioFinal(3).build()
+        ));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+
+        assertThat(report.getCategories()).hasSize(2);
+        assertThat(report.getCategories().stream().map(c -> c.getCategoryName()))
+                .containsExactlyInAnyOrder("Billeteras — Dama", "Billeteras — Caballero");
+    }
+
+    @Test
+    void buildReport_expandeCinchosPorTallaYColor() throws Exception {
+        Long fossProductId = 34L;
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(fossProductId).code("FOSS-100").name("Cincho casual")
+                        .categoryId(categoryId).cinchoType("CASUAL").build()
+        ));
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .productId(fossProductId)
+                        .colorId(colorId)
+                        .sizesData("{\"28\":2,\"30\":3}")
+                        .build()
+        ));
+        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(
+                KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(fossProductId).productCode("FOSS-100").productName("Cincho casual")
+                        .colorId(colorId).colorName("Negro").inventarioFinal(10).build()
+        ));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+
+        var rows = report.getCategories().get(0).getRows();
+        assertThat(rows).hasSize(2);
+        assertThat(rows.stream().map(r -> r.getSizeLabel())).containsExactly("28", "30");
+        assertThat(rows.get(0).getInventarioFinal()).isEqualTo(2);
+        assertThat(rows.get(1).getInventarioFinal()).isEqualTo(3);
+        assertThat(report.getTotalGeneral().getInventarioFinal()).isEqualTo(5);
+    }
+
+    @Test
     void upsertItems_falla_siConteoEstaContado() {
         KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
                 .id(countId)
