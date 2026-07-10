@@ -58,7 +58,7 @@ public class KioscoPhysicalCountReportResponse {
     }
 
     @Data
-    @Builder
+    @Builder(toBuilder = true)
     @NoArgsConstructor
     @AllArgsConstructor
     public static class KioscoPhysicalCountRow {

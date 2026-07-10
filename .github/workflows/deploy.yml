@@ -25,48 +25,57 @@ jobs:
           java-version: '21'
           cache: gradle
 
+      # Importante: pipefail. Sin eso, `cmd | tee` reporta éxito aunque cmd falle
+      # (Gradle compile error → Discord "Deploy exitoso" con JAR viejo en el server).
       - name: Build JAR (bootJar, sin tests)
         id: build
         run: |
-          { chmod +x ./gradlew
-            ./gradlew clean bootJar -x test
-          } 2>&1 | tee -a /tmp/deploy.log
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean bootJar -x test 2>&1 | tee -a /tmp/deploy.log
+          test -f build/libs/fossiles-core-backend.jar
+          echo "JAR OK: $(ls -lh build/libs/fossiles-core-backend.jar)"
 
       - name: Setup SSH key
         id: ssh_setup
         run: |
-          { mkdir -p ~/.ssh
-            echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-            chmod 600 ~/.ssh/deploy_key
-            ssh-keyscan -H ${{ secrets.BACK_HOST }} >> ~/.ssh/known_hosts
-          } 2>&1 | tee -a /tmp/deploy.log
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.BACK_HOST }} >> ~/.ssh/known_hosts
+          echo "SSH key lista" | tee -a /tmp/deploy.log
 
       - name: Detener servicio antes de transferir
         id: stop_service
         run: |
-          { ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
-              "sudo systemctl stop fossiles-core-backend.service"
-          } 2>&1 | tee -a /tmp/deploy.log
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
+            "sudo systemctl stop fossiles-core-backend.service" 2>&1 | tee -a /tmp/deploy.log
 
       - name: Transferir JAR (rsync)
         id: transfer
         run: |
-          { rsync -avz -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
-              build/libs/fossiles-core-backend.jar \
-              ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }}:/backs/fossiles-core-backend.jar
-          } 2>&1 | tee -a /tmp/deploy.log
+          set -euo pipefail
+          test -f build/libs/fossiles-core-backend.jar
+          rsync -avz -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            build/libs/fossiles-core-backend.jar \
+            ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }}:/backs/fossiles-core-backend.jar \
+            2>&1 | tee -a /tmp/deploy.log
 
       - name: Iniciar servicio
         id: start_service
         run: |
-          { ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
-              "sudo systemctl start fossiles-core-backend.service"
-          } 2>&1 | tee -a /tmp/deploy.log
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
+            "sudo systemctl start fossiles-core-backend.service" 2>&1 | tee -a /tmp/deploy.log
 
       - name: Verificar estado del servicio
         id: verify
         run: |
-          { sleep 15
+          set -euo pipefail
+          {
+            sleep 15
             STATUS=$(ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ secrets.BACK_HOST }} \
               "systemctl is-active fossiles-core-backend.service || true")
             echo "Estado: $STATUS"
@@ -85,24 +94,45 @@ jobs:
           DURATION=$(( $(date +%s) - ${DEPLOY_START:-$(date +%s)} ))
           MIN=$(( DURATION / 60 )); SEC=$(( DURATION % 60 ))
 
-          if [ "${{ job.status }}" = "success" ]; then
+          # job.status + outcomes de cada paso (por si algún step se marca raro)
+          BUILD_OUT="${{ steps.build.outcome }}"
+          SSH_OUT="${{ steps.ssh_setup.outcome }}"
+          STOP_OUT="${{ steps.stop_service.outcome }}"
+          TRANSFER_OUT="${{ steps.transfer.outcome }}"
+          START_OUT="${{ steps.start_service.outcome }}"
+          VERIFY_OUT="${{ steps.verify.outcome }}"
+
+          DEPLOY_OK=true
+          PASO_FALLIDO="-"
+          for par in \
+            "Build JAR:$BUILD_OUT" \
+            "Setup SSH:$SSH_OUT" \
+            "Detener servicio:$STOP_OUT" \
+            "Transferir JAR:$TRANSFER_OUT" \
+            "Iniciar servicio:$START_OUT" \
+            "Verificar servicio:$VERIFY_OUT"
+          do
+            nombre="${par%%:*}"
+            estado="${par##*:}"
+            if [ "$estado" = "failure" ] || [ "$estado" = "cancelled" ]; then
+              DEPLOY_OK=false
+              PASO_FALLIDO="$nombre"
+            fi
+          done
+          if [ "${{ job.status }}" != "success" ]; then
+            DEPLOY_OK=false
+          fi
+          # Si el build ni corrió o quedó skipped tras un fallo previo, no reportar éxito
+          if [ "$BUILD_OUT" != "success" ]; then
+            DEPLOY_OK=false
+            [ "$PASO_FALLIDO" = "-" ] && PASO_FALLIDO="Build JAR"
+          fi
+
+          if [ "$DEPLOY_OK" = true ]; then
             EMOJI="✅"; COLOR=3066993; TITULO="Deploy exitoso"
           else
             EMOJI="❌"; COLOR=15158332; TITULO="Deploy fallido"
           fi
-
-          PASO_FALLIDO="-"
-          for par in \
-            "Build JAR:${{ steps.build.outcome }}" \
-            "Setup SSH:${{ steps.ssh_setup.outcome }}" \
-            "Detener servicio:${{ steps.stop_service.outcome }}" \
-            "Transferir JAR:${{ steps.transfer.outcome }}" \
-            "Iniciar servicio:${{ steps.start_service.outcome }}" \
-            "Verificar servicio:${{ steps.verify.outcome }}"
-          do
-            nombre="${par%%:*}"; estado="${par##*:}"
-            [ "$estado" = "failure" ] && PASO_FALLIDO="$nombre"
-          done
 
           ERR_LOG=$(tail -c 3000 /tmp/deploy.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
           [ -z "$ERR_LOG" ] && ERR_LOG="(sin logs capturados)"
@@ -112,7 +142,7 @@ jobs:
           COMMIT_CORTO="${{ github.sha }}"
           COMMIT_CORTO="${COMMIT_CORTO:0:7}"
 
-          if [ "${{ job.status }}" = "success" ]; then
+          if [ "$DEPLOY_OK" = true ]; then
             PAYLOAD=$(jq -n \
               --arg titulo "$EMOJI $TITULO — ${{ github.repository }}" \
               --arg url "$RUN_URL" \
@@ -145,6 +175,9 @@ jobs:
               --arg autor "${{ github.actor }}" \
               --arg paso "$PASO_FALLIDO" \
               --arg err "$ERR_LOG" \
+              --arg build "$BUILD_OUT" \
+              --arg transfer "$TRANSFER_OUT" \
+              --arg verify "$VERIFY_OUT" \
               '{embeds: [{
                 title: $titulo, url: $url, color: $color,
                 fields: [
@@ -152,7 +185,8 @@ jobs:
                   {name: "Paso que falló", value: $paso, inline: true},
                   {name: "Autor", value: $autor, inline: true},
                   {name: "Commit", value: ("[`" + $commit + "`](" + $commiturl + ")"), inline: false},
-                  {name: "Error", value: ("```\n" + ($err | .[0:950]) + "\n```"), inline: false}
+                  {name: "Outcomes", value: ("build=" + $build + " · transfer=" + $transfer + " · verify=" + $verify), inline: false},
+                  {name: "Error", value: ("```\n" + ($err | .[0:900]) + "\n```"), inline: false}
                 ],
                 timestamp: (now | todate)
               }]}')
