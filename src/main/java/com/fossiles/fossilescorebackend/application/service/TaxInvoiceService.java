@@ -1295,19 +1295,17 @@ public class TaxInvoiceService {
     }
 
     /**
-     * Ventas en línea y emisión manual usan CUEROGLAM establecimiento 1 (bodega central),
-     * salvo override explícito en el documento.
+     * Ventas en línea usan CUEROGLAM establecimiento FEL 1 (bodega central) → FCAM.
+     * Siempre fija código "1" (no el default de properties de otros flujos).
      */
     private void enrichEmitterForCueroGlamCentral(TaxInvoiceDocument document) {
         if (document == null) {
             return;
         }
-        String defaultCode = firstNonBlank(properties.getCodigoEstablecimiento(), "1");
-        locationRepository.findFirstByFelEstablishmentCode(defaultCode)
+        final String centralCode = "1";
+        locationRepository.findFirstByFelEstablishmentCode(centralCode)
                 .ifPresent(location -> applyLocationEmitter(document, location));
-        if (isBlank(document.getEmitterEstablishmentCode())) {
-            document.setEmitterEstablishmentCode(defaultCode);
-        }
+        document.setEmitterEstablishmentCode(centralCode);
         if (isBlank(document.getEmitterCommercialName())) {
             document.setEmitterCommercialName(properties.getNombreComercial());
         }
