@@ -27,4 +27,20 @@ public interface KioskCashSessionRepository extends JpaRepository<KioskCashSessi
             @Param("startAt") LocalDateTime startAt,
             @Param("endAt") LocalDateTime endAt
     );
+
+    @Query("""
+            SELECT s FROM KioskCashSessionEntity s
+            WHERE s.status = :status
+              AND s.closedAt IS NOT NULL
+              AND s.closedAt >= :startAt
+              AND s.closedAt < :endAt
+              AND s.kioskLocationId IN :kioskIds
+            ORDER BY s.closedAt DESC
+            """)
+    List<KioskCashSessionEntity> findClosedSessionsForHistory(
+            @Param("status") String status,
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt,
+            @Param("kioskIds") List<Long> kioskIds
+    );
 }

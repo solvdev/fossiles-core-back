@@ -18,6 +18,8 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRe
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashExpenseResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionDailySummaryResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCashCloseReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionHistoryItemResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCustomerProfileResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskExchangeCompleteResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskExchangePreviewResponse;
@@ -284,6 +286,22 @@ public class KioskPosController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate
     ) throws BusinessException {
         return ResponseEntity.ok(kioskPosService.getCashSessionDailySummaries(kioskLocationId, startDate, endDate));
+    }
+
+    @GetMapping("/cash-session/history")
+    public ResponseEntity<List<KioskCashSessionHistoryItemResponse>> getCashSessionHistory(
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.getCashSessionHistory(kioskLocationId, startDate, endDate));
+    }
+
+    @GetMapping("/cash-session/{id}/close-report")
+    public ResponseEntity<KioskCashCloseReportResponse> getCashCloseReport(
+            @PathVariable Long id
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.getCashCloseReport(id));
     }
 
     @GetMapping("/exchanges")

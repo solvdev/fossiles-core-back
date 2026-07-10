@@ -14,6 +14,8 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionTi
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashExpenseResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionDailySummaryResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCashCloseReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionHistoryItemResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPendingDepositSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosContextResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCustomerProfileResponse;
@@ -2744,6 +2746,295 @@ public class KioskPosService {
                             .build();
                 })
                 .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public KioskCashCloseReportResponse getCashCloseReport(Long sessionId)
+            throws BusinessException, ResourceNotFoundException {
+        UserEntity user = getCurrentUserOrThrow();
+        KioskCashSessionEntity session = kioskCashSessionRepository.findById(sessionId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioskCashSession", sessionId));
+        if (!CASH_SESSION_CLOSED.equalsIgnoreCase(safeTrim(session.getStatus()))) {
+            throw new BusinessException("El reporte de cierre solo está disponible para cajas cerradas.");
+        }
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        LocationEntity kiosk = resolveTargetKiosk(resolveAvailableKiosks(user, admin), session.getKioskLocationId());
+        return buildCashCloseReport(session, kiosk, user);
+    }
+
+    @Transactional(readOnly = true)
+    public List<KioskCashSessionHistoryItemResponse> getCashSessionHistory(
+            Long kioskLocationId,
+            LocalDate startDate,
+            LocalDate endDate
+    ) throws BusinessException {
+        UserEntity user = getCurrentUserOrThrow();
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        List<LocationEntity> available = resolveAvailableKiosks(user, admin);
+        List<Long> kioskIds;
+        if (kioskLocationId != null) {
+            LocationEntity target = resolveTargetKiosk(available, kioskLocationId);
+            kioskIds = List.of(target.getId());
+        } else {
+            kioskIds = available.stream().map(LocationEntity::getId).filter(Objects::nonNull).toList();
+        }
+        if (kioskIds.isEmpty()) {
+            return List.of();
+        }
+        LocalDate start = startDate != null ? startDate : GuatemalaDateTime.today().withDayOfMonth(1);
+        LocalDate end = endDate != null ? endDate : GuatemalaDateTime.today();
+        if (end.isBefore(start)) {
+            throw new BusinessException("La fecha final no puede ser anterior a la inicial.");
+        }
+        LocalDateTime startAt = start.atStartOfDay();
+        LocalDateTime endAt = end.plusDays(1).atStartOfDay();
+        List<KioskCashSessionEntity> sessions = kioskCashSessionRepository.findClosedSessionsForHistory(
+                CASH_SESSION_CLOSED, startAt, endAt, kioskIds);
+        Map<Long, LocationEntity> kiosksById = available.stream()
+                .filter(k -> k.getId() != null)
+                .collect(Collectors.toMap(LocationEntity::getId, k -> k, (a, b) -> a));
+        return sessions.stream()
+                .map(session -> toCashSessionHistoryItem(session, kiosksById.get(session.getKioskLocationId())))
+                .collect(Collectors.toList());
+    }
+
+    private KioskCashCloseReportResponse buildCashCloseReport(
+            KioskCashSessionEntity session,
+            LocationEntity kiosk,
+            UserEntity generatedBy
+    ) {
+        List<KioskSaleEntity> sales = kioskSaleRepository.findByCashSessionIdOrderBySoldAtAsc(session.getId());
+        List<KioskCashExpenseEntity> expenses = kioskCashExpenseRepository
+                .findByCashSessionIdOrderByCreatedAtAscIdAsc(session.getId());
+
+        BigDecimal cashTotal = BigDecimal.ZERO;
+        BigDecimal cardTotal = BigDecimal.ZERO;
+        BigDecimal salesSubtotal = BigDecimal.ZERO;
+        List<KioskCashCloseReportResponse.SaleLine> saleLines = new ArrayList<>();
+        List<String> depositSlips = new ArrayList<>();
+
+        for (KioskSaleEntity sale : sales) {
+            if (isVoidSale(sale)) {
+                continue;
+            }
+            BigDecimal amount = safeAmount(sale.getTotalAmount()).setScale(2, RoundingMode.HALF_UP);
+            salesSubtotal = salesSubtotal.add(amount);
+            String method = safeTrim(sale.getPaymentMethod()).toUpperCase(Locale.ROOT);
+            if ("EFECTIVO".equals(method)) {
+                cashTotal = cashTotal.add(amount);
+            } else if ("TARJETA".equals(method) || "TRANSFERENCIA".equals(method)) {
+                cardTotal = cardTotal.add(amount);
+            } else if ("MIXTO".equals(method)) {
+                cashTotal = cashTotal.add(safeAmount(sale.getCashAmount()));
+                cardTotal = cardTotal.add(safeAmount(sale.getCardAmount()));
+            } else {
+                cashTotal = cashTotal.add(amount);
+            }
+            if (sale.getDepositSlipNumber() != null && !sale.getDepositSlipNumber().isBlank()) {
+                depositSlips.add(sale.getDepositSlipNumber().trim());
+            }
+            saleLines.add(KioskCashCloseReportResponse.SaleLine.builder()
+                    .saleId(sale.getId())
+                    .saleNumber(sale.getSaleNumber())
+                    .invoiceNumber(resolveSaleInvoiceNumber(sale))
+                    .paymentMethod(method)
+                    .paymentLabel(buildPaymentLabel(sale, method))
+                    .paymentKind(resolvePaymentKind(method))
+                    .amount(amount)
+                    .soldAt(sale.getSoldAt())
+                    .build());
+        }
+
+        BigDecimal disbursementsTotal = BigDecimal.ZERO;
+        List<KioskCashCloseReportResponse.DisbursementLine> disbursementLines = new ArrayList<>();
+        for (KioskCashExpenseEntity expense : expenses) {
+            BigDecimal amount = safeAmount(expense.getAmount()).setScale(2, RoundingMode.HALF_UP);
+            disbursementsTotal = disbursementsTotal.add(amount);
+            disbursementLines.add(KioskCashCloseReportResponse.DisbursementLine.builder()
+                    .id(expense.getId())
+                    .description(expense.getDescription())
+                    .amount(amount)
+                    .createdAt(expense.getCreatedAt())
+                    .build());
+        }
+        disbursementsTotal = disbursementsTotal.setScale(2, RoundingMode.HALF_UP);
+        cashTotal = cashTotal.setScale(2, RoundingMode.HALF_UP);
+        cardTotal = cardTotal.setScale(2, RoundingMode.HALF_UP);
+        salesSubtotal = salesSubtotal.setScale(2, RoundingMode.HALF_UP);
+
+        BigDecimal opening = session.getOpeningAmount() != null
+                ? session.getOpeningAmount().setScale(2, RoundingMode.HALF_UP)
+                : CASH_OPENING_AMOUNT;
+        BigDecimal depositAmount = cashTotal.subtract(disbursementsTotal).setScale(2, RoundingMode.HALF_UP);
+        if (depositAmount.compareTo(BigDecimal.ZERO) < 0) {
+            depositAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal totalCash = disbursementsTotal.add(depositAmount).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal closeAmount = opening.add(cardTotal).add(totalCash).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal salesDayTotal = closeAmount.subtract(opening).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal salesMinusDisbursements = salesSubtotal.subtract(disbursementsTotal).setScale(2, RoundingMode.HALF_UP);
+
+        String depositDetail;
+        if (depositSlips.isEmpty()) {
+            depositDetail = "Sin boleta registrada";
+        } else {
+            depositDetail = "No. documento: " + String.join(", ", depositSlips);
+        }
+
+        UserEntity openedBy = session.getOpenedByUserId() != null
+                ? userRepository.findById(session.getOpenedByUserId()).orElse(null)
+                : null;
+        UserEntity closedBy = session.getClosedByUserId() != null
+                ? userRepository.findById(session.getClosedByUserId()).orElse(null)
+                : null;
+
+        return KioskCashCloseReportResponse.builder()
+                .sessionId(session.getId())
+                .kioskLocationId(session.getKioskLocationId())
+                .kioskCode(kiosk != null ? kiosk.getCode() : null)
+                .kioskName(kiosk != null ? kiosk.getName() : null)
+                .openedByName(openedBy != null ? buildUserFullName(openedBy) : null)
+                .closedByName(closedBy != null ? buildUserFullName(closedBy) : null)
+                .generatedByName(generatedBy != null ? buildUserFullName(generatedBy) : null)
+                .openedAt(session.getOpenedAt())
+                .closedAt(session.getClosedAt())
+                .generatedAt(GuatemalaDateTime.now())
+                .openingAmount(opening)
+                .cashSalesTotal(cashTotal)
+                .cardSalesTotal(cardTotal)
+                .salesSubtotal(salesSubtotal)
+                .disbursementsTotal(disbursementsTotal)
+                .salesMinusDisbursements(salesMinusDisbursements)
+                .depositAmount(depositAmount)
+                .depositDetail(depositDetail)
+                .totalCash(totalCash)
+                .closeAmount(closeAmount)
+                .salesDayTotal(salesDayTotal)
+                .countedCash(session.getCountedCash())
+                .expectedCash(session.getExpectedCash())
+                .variance(session.getVariance())
+                .sales(saleLines)
+                .disbursements(disbursementLines)
+                .build();
+    }
+
+    private KioskCashSessionHistoryItemResponse toCashSessionHistoryItem(
+            KioskCashSessionEntity session,
+            LocationEntity kiosk
+    ) {
+        List<KioskSaleEntity> sales = kioskSaleRepository.findByCashSessionIdOrderBySoldAtAsc(session.getId());
+        int salesCount = 0;
+        BigDecimal salesTotal = BigDecimal.ZERO;
+        BigDecimal cashTotal = BigDecimal.ZERO;
+        BigDecimal cardTotal = BigDecimal.ZERO;
+        for (KioskSaleEntity sale : sales) {
+            if (isVoidSale(sale)) {
+                continue;
+            }
+            salesCount++;
+            BigDecimal amount = safeAmount(sale.getTotalAmount());
+            salesTotal = salesTotal.add(amount);
+            String method = safeTrim(sale.getPaymentMethod()).toUpperCase(Locale.ROOT);
+            if ("EFECTIVO".equals(method)) {
+                cashTotal = cashTotal.add(amount);
+            } else if ("TARJETA".equals(method) || "TRANSFERENCIA".equals(method)) {
+                cardTotal = cardTotal.add(amount);
+            } else if ("MIXTO".equals(method)) {
+                cashTotal = cashTotal.add(safeAmount(sale.getCashAmount()));
+                cardTotal = cardTotal.add(safeAmount(sale.getCardAmount()));
+            }
+        }
+        UserEntity openedBy = session.getOpenedByUserId() != null
+                ? userRepository.findById(session.getOpenedByUserId()).orElse(null)
+                : null;
+        UserEntity closedBy = session.getClosedByUserId() != null
+                ? userRepository.findById(session.getClosedByUserId()).orElse(null)
+                : null;
+        return KioskCashSessionHistoryItemResponse.builder()
+                .sessionId(session.getId())
+                .kioskLocationId(session.getKioskLocationId())
+                .kioskCode(kiosk != null ? kiosk.getCode() : null)
+                .kioskName(kiosk != null ? kiosk.getName() : null)
+                .openedByName(openedBy != null ? buildUserFullName(openedBy) : null)
+                .closedByName(closedBy != null ? buildUserFullName(closedBy) : null)
+                .openedAt(session.getOpenedAt())
+                .closedAt(session.getClosedAt())
+                .salesCount(salesCount)
+                .salesTotal(salesTotal.setScale(2, RoundingMode.HALF_UP))
+                .cashSalesTotal(cashTotal.setScale(2, RoundingMode.HALF_UP))
+                .cardSalesTotal(cardTotal.setScale(2, RoundingMode.HALF_UP))
+                .disbursementsTotal(sumCashExpenses(session.getId()))
+                .openingAmount(session.getOpeningAmount())
+                .countedCash(session.getCountedCash())
+                .expectedCash(session.getExpectedCash())
+                .variance(session.getVariance())
+                .build();
+    }
+
+    private String resolveSaleInvoiceNumber(KioskSaleEntity sale) {
+        String internal = taxInvoiceService.getInternalNumber(sale.getInvoiceId());
+        if (internal != null && !internal.isBlank()) {
+            return internal.trim();
+        }
+        String serie = safeTrim(sale.getFelSerie());
+        String numero = safeTrim(sale.getFelNumero());
+        if (!serie.isBlank() && !numero.isBlank()) {
+            return serie + "-" + numero;
+        }
+        if (!serie.isBlank()) {
+            return serie;
+        }
+        if (!numero.isBlank()) {
+            return numero;
+        }
+        return "—";
+    }
+
+    private static String resolvePaymentKind(String method) {
+        if ("EFECTIVO".equals(method)) {
+            return "CASH";
+        }
+        if ("TARJETA".equals(method) || "TRANSFERENCIA".equals(method)) {
+            return "CARD";
+        }
+        if ("MIXTO".equals(method)) {
+            return "MIXED";
+        }
+        return "OTHER";
+    }
+
+    private String buildPaymentLabel(KioskSaleEntity sale, String method) {
+        if ("EFECTIVO".equals(method)) {
+            return "EFECTIVO";
+        }
+        if ("MIXTO".equals(method)) {
+            String cardPart = buildCardPaymentLabel(sale);
+            return "MIXTO · EFECTIVO " + formatMoneyPlain(sale.getCashAmount())
+                    + " / " + cardPart;
+        }
+        if ("TARJETA".equals(method) || "TRANSFERENCIA".equals(method)) {
+            return buildCardPaymentLabel(sale);
+        }
+        return method.isBlank() ? "—" : method;
+    }
+
+    private String buildCardPaymentLabel(KioskSaleEntity sale) {
+        String auth = safeTrim(sale.getCardAuthNumber());
+        String last4 = safeTrim(sale.getCardLast4());
+        if (!auth.isBlank() && !last4.isBlank()) {
+            return "No. Boucher: " + auth + ", No. Tarjeta: " + last4;
+        }
+        if (!auth.isBlank()) {
+            return "No. Boucher: " + auth;
+        }
+        if (!last4.isBlank()) {
+            return "No. Tarjeta: " + last4;
+        }
+        return "TARJETA";
+    }
+
+    private String formatMoneyPlain(BigDecimal value) {
+        return "Q" + safeAmount(value).setScale(2, RoundingMode.HALF_UP).toPlainString();
     }
 
     private BigDecimal sumCashSales(List<KioskSaleEntity> sales) {
