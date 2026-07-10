@@ -106,6 +106,7 @@ public class TaxInvoiceService {
         assertNoCertifiedInvoice("KIOSK_SALE", sale.getId());
         TaxInvoiceDocument document = kioskSaleInvoiceMapper.fromSale(sale);
         enrichEmitterFromKioskLocation(document, sale.getKioskLocationId());
+        applyDocumentTypeByEstablishment(document);
         validateDocument(document);
         TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, sale.getCreatedBy(), sale.getKioskLocationId());
         certify(invoice, document, false);
@@ -215,6 +216,7 @@ public class TaxInvoiceService {
 
         TaxInvoiceDocument document = kioskSaleInvoiceMapper.fromSale(sale);
         enrichEmitterFromKioskLocation(document, sale.getKioskLocationId());
+        applyDocumentTypeByEstablishment(document);
         validateDocument(document);
 
         TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, sale.getCreatedBy(), sale.getKioskLocationId());
@@ -414,6 +416,7 @@ public class TaxInvoiceService {
 
         TaxInvoiceDocument document = onlineSaleInvoiceMapper.fromSale(sale);
         enrichEmitterForCueroGlamCentral(document);
+        applyDocumentTypeByEstablishment(document);
         enrichReceptorFromLookup(document);
         validateDocument(document);
 
@@ -440,6 +443,7 @@ public class TaxInvoiceService {
             throw new BusinessException("La ubicación seleccionada no existe.");
         }
         enrichEmitterFromKioskLocation(document, request.getLocationId());
+        applyDocumentTypeByEstablishment(document);
         assertEmitterConfigured(document);
         assertInternalSeriesConfigured(request.getLocationId(), document);
         enrichReceptorFromLookup(document);
@@ -492,6 +496,7 @@ public class TaxInvoiceService {
 
         TaxInvoiceDocument document = kioskSaleInvoiceMapper.fromSale(sale);
         enrichEmitterFromKioskLocation(document, request.getLocationId());
+        applyDocumentTypeByEstablishment(document);
         assertEmitterConfigured(document);
         assertInternalSeriesConfigured(request.getLocationId(), document);
         enrichReceptorFromLookup(document);
@@ -647,6 +652,7 @@ public class TaxInvoiceService {
             onlineSaleRepository.save(sale);
             TaxInvoiceDocument document = onlineSaleInvoiceMapper.fromSale(sale);
             enrichEmitterForCueroGlamCentral(document);
+            applyDocumentTypeByEstablishment(document);
             enrichReceptorFromLookup(document);
             return document;
         }
@@ -655,16 +661,20 @@ public class TaxInvoiceService {
                     .orElseThrow(() -> new ResourceNotFoundException("KioskSale", invoice.getSourceId()));
             TaxInvoiceDocument document = kioskSaleInvoiceMapper.fromSale(sale);
             enrichEmitterFromKioskLocation(document, sale.getKioskLocationId());
+            applyDocumentTypeByEstablishment(document);
             return document;
         }
-        return toDocument(invoice);
+        TaxInvoiceDocument existing = toDocument(invoice);
+        applyDocumentTypeByEstablishment(existing);
+        return existing;
     }
 
     private void syncInvoiceFromDocument(TaxInvoiceEntity invoice, TaxInvoiceDocument document) {
-        // El número de control interno y el tipo de documento ya quedaron fijados al crear el
-        // borrador; un reintento debe certificar el mismo documento, no generar uno nuevo.
+        // El número de control interno ya quedó fijado al crear el borrador.
+        // El tipo FACT/FCAM se recalcula por establecimiento (est. 1 = FCAM).
         document.setInternalNumber(invoice.getInternalNumber());
-        document.setDocumentType(invoice.getDocumentType());
+        applyDocumentTypeByEstablishment(document);
+        invoice.setDocumentType(document.getDocumentType());
         invoice.setCustomerTaxId(normalizeTaxId(document.getCustomerTaxId()));
         invoice.setCustomerName(document.getCustomerName());
         invoice.setAddress(document.getAddress());
@@ -911,6 +921,7 @@ public class TaxInvoiceService {
             Long locationIdForSeries
     ) {
         BigDecimal taxAmount = sumTax(document);
+        applyDocumentTypeByEstablishment(document);
         String documentType = resolveDocumentType(document.getDocumentType());
         document.setDocumentType(documentType);
         TaxInvoiceEntity invoice = TaxInvoiceEntity.builder()
@@ -1340,17 +1351,23 @@ public class TaxInvoiceService {
         return fallback == null ? "" : fallback.trim();
     }
 
+    private void applyDocumentTypeByEstablishment(TaxInvoiceDocument document) {
+        if (document == null) {
+            return;
+        }
+        String establishmentCode = firstNonBlank(
+                document.getEmitterEstablishmentCode(),
+                properties.getCodigoEstablecimiento());
+        document.setDocumentType(
+                FelFactXmlBuilder.resolveEmissionDocumentType(document.getDocumentType(), establishmentCode));
+    }
+
     private void validateDocument(TaxInvoiceDocument document) throws BusinessException {
         if (document.getLines() == null || document.getLines().isEmpty()) {
             throw new BusinessException("La factura debe tener al menos una línea.");
         }
         if (document.getTotalAmount() == null || document.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("El total de la factura debe ser mayor a cero.");
-        }
-        if ("FCAM".equalsIgnoreCase(safe(document.getDocumentType()))) {
-            throw new BusinessException(
-                    "Factura Cambiaria (FCAM) requiere el complemento de Abonos exigido por SAT, "
-                            + "que aún no está implementado. Emite como Factura (FACT) por ahora.");
         }
     }
 

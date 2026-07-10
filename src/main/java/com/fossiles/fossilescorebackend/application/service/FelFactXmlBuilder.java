@@ -111,12 +111,14 @@ public class FelFactXmlBuilder {
         String adendaXml = buildAdendaXml(document.getInternalNumber());
         BigDecimal granTotal = granTotalFromLines.setScale(2, RoundingMode.HALF_UP);
 
-        String documentType = firstNonBlank(document.getDocumentType(), properties.getDocumentType());
-        String establishmentCode = firstNonBlank(document.getEmitterEstablishmentCode(), properties.getCodigoEstablecimiento());
+        String establishmentCode = firstNonBlank(
+                document.getEmitterEstablishmentCode(), properties.getCodigoEstablecimiento());
+        String documentType = resolveEmissionDocumentType(document.getDocumentType(), establishmentCode);
         String commercialName = firstNonBlank(document.getEmitterCommercialName(), credentials.nombreComercial());
         String addressLine = firstNonBlank(document.getEmitterAddressLine(), credentials.direccion());
         String municipio = firstNonBlank(document.getEmitterMunicipio(), credentials.municipio());
         String departamento = firstNonBlank(document.getEmitterDepartamento(), credentials.departamento());
+        String complementosXml = buildFcamAbonosComplemento(documentType, granTotal, emission);
 
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -153,6 +155,7 @@ public class FelFactXmlBuilder {
                           </dte:TotalImpuestos>
                           <dte:GranTotal>%s</dte:GranTotal>
                         </dte:Totales>
+                        %s
                       </dte:DatosEmision>
                     </dte:DTE>
                     %s
@@ -180,8 +183,53 @@ public class FelFactXmlBuilder {
                 itemsXml,
                 fmt(totalIva.setScale(2, RoundingMode.HALF_UP)),
                 fmt(granTotal),
+                complementosXml,
                 adendaXml
         );
+    }
+
+    /**
+     * Establecimiento FEL "1" (CUEROGLAM central) emite Factura Cambiaria (FCAM).
+     * El resto de establecimientos emiten Factura (FACT).
+     */
+    static boolean isFcamEstablishment(String establishmentCode) {
+        return "1".equals(safe(establishmentCode));
+    }
+
+    static String resolveEmissionDocumentType(String requestedType, String establishmentCode) {
+        if (isFcamEstablishment(establishmentCode)) {
+            return "FCAM";
+        }
+        String requested = safe(requestedType).toUpperCase(Locale.ROOT);
+        if ("FCAM".equals(requested) || "FACT".equals(requested)) {
+            return requested;
+        }
+        return "FACT";
+    }
+
+    /**
+     * Complemento requerido por SAT para FCAM (catálogo 2 — AbonosFacturaCambiaria).
+     * Un abono por el GranTotal con vencimiento = fecha de emisión (contado / título al día).
+     */
+    private String buildFcamAbonosComplemento(
+            String documentType, BigDecimal granTotal, ZonedDateTime emission) {
+        if (!"FCAM".equalsIgnoreCase(safe(documentType))) {
+            return "";
+        }
+        String dueDate = emission.toLocalDate().toString();
+        return """
+                <dte:Complementos>
+                  <dte:Complemento IDComplemento="AbonosFacturaCambiaria" NombreComplemento="AbonosFacturaCambiaria" URIComplemento="http://www.sat.gob.gt/dte/fel/CompCambiaria/0.1.0">
+                    <cfc:AbonosFacturaCambiaria xmlns:cfc="http://www.sat.gob.gt/dte/fel/CompCambiaria/0.1.0" Version="1">
+                      <cfc:Abono>
+                        <cfc:NumeroAbono>1</cfc:NumeroAbono>
+                        <cfc:FechaVencimiento>%s</cfc:FechaVencimiento>
+                        <cfc:MontoAbono>%s</cfc:MontoAbono>
+                      </cfc:Abono>
+                    </cfc:AbonosFacturaCambiaria>
+                  </dte:Complemento>
+                </dte:Complementos>
+                """.formatted(dueDate, fmt(granTotal));
     }
 
     /**

@@ -20,10 +20,13 @@ class FelFactXmlBuilderTest {
         props.setNombreComercial("FOSSILES");
         props.setDireccion("Zona 10 Guatemala");
         props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
 
         TaxInvoiceDocument document = TaxInvoiceDocument.builder()
                 .transactionId("POS-20260101-001")
                 .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
+                .documentType("FACT")
+                .emitterEstablishmentCode("2")
                 .customerTaxId("CF")
                 .customerName("CONSUMIDOR FINAL")
                 .subtotal(new BigDecimal("100.00"))
@@ -41,6 +44,7 @@ class FelFactXmlBuilderTest {
         String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
 
         assertThat(xml).contains("Tipo=\"FACT\"");
+        assertThat(xml).doesNotContain("AbonosFacturaCambiaria");
         assertThat(xml).contains("IDReceptor=\"CF\"");
         assertThat(xml).contains("NombreReceptor=\"CONSUMIDOR FINAL\"");
         assertThat(xml).contains("CorreoReceptor=\"\"");
@@ -86,6 +90,7 @@ class FelFactXmlBuilderTest {
         props.setNombreEmisor("CUEROGLAM, SOCIEDAD ANONIMA");
         props.setNombreComercial("CUEROGLAM");
         props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("9");
 
         TaxInvoiceDocument document = TaxInvoiceDocument.builder()
                 .emitterEstablishmentCode("9")
@@ -121,8 +126,10 @@ class FelFactXmlBuilderTest {
         props.setNitEmisor("123456789");
         props.setNombreEmisor("FOSSILES SA");
         props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
 
         TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .emitterEstablishmentCode("2")
                 .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
                 .customerTaxId("1234567-8")
                 .customerName("CLIENTE PRUEBA")
@@ -151,8 +158,10 @@ class FelFactXmlBuilderTest {
         props.setNombreEmisor("CUEROGLAM, SOCIEDAD ANONIMA");
         props.setNombreComercial("CUEROGLAM");
         props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
 
         TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .emitterEstablishmentCode("2")
                 .issuedAt(LocalDateTime.of(2026, 6, 17, 10, 30))
                 .customerTaxId("CF")
                 .customerName("CONSUMIDOR FINAL")
@@ -181,8 +190,10 @@ class FelFactXmlBuilderTest {
         props.setNitEmisor("123456789");
         props.setNombreEmisor("FOSSILES SA");
         props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
 
         TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .emitterEstablishmentCode("2")
                 .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
                 .internalNumber("A45-241")
                 .customerTaxId("CF")
@@ -208,5 +219,42 @@ class FelFactXmlBuilderTest {
         int satClose = xml.indexOf("</dte:SAT>");
         assertThat(adendaOpen).isGreaterThan(dteClose);
         assertThat(adendaOpen).isLessThan(satClose);
+    }
+
+    @Test
+    void establishmentOneEmitsFcamWithAbonosComplemento() {
+        FelEmissionProperties props = new FelEmissionProperties();
+        props.setNitEmisor("11700874K");
+        props.setNombreEmisor("CUEROGLAM, SOCIEDAD ANONIMA");
+        props.setNombreComercial("CUEROGLAM");
+        props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("1");
+
+        TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .emitterEstablishmentCode("1")
+                .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
+                .customerTaxId("CF")
+                .customerName("CONSUMIDOR FINAL")
+                .subtotal(new BigDecimal("100.00"))
+                .totalAmount(new BigDecimal("100.00"))
+                .lines(List.of(
+                        TaxInvoiceDocument.Line.builder()
+                                .description("Producto central")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("100.00"))
+                                .lineTotal(new BigDecimal("100.00"))
+                                .build()
+                ))
+                .build();
+
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
+
+        assertThat(xml).contains("Tipo=\"FCAM\"");
+        assertThat(xml).contains("CodigoEstablecimiento=\"1\"");
+        assertThat(xml).contains("AbonosFacturaCambiaria");
+        assertThat(xml).contains("<cfc:NumeroAbono>1</cfc:NumeroAbono>");
+        assertThat(xml).contains("<cfc:FechaVencimiento>2026-01-15</cfc:FechaVencimiento>");
+        assertThat(xml).contains("<cfc:MontoAbono>100.00</cfc:MontoAbono>");
+        assertThat(xml).contains("<dte:GranTotal>100.00</dte:GranTotal>");
     }
 }
