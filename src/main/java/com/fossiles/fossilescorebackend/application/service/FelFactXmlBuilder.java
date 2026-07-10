@@ -114,10 +114,12 @@ public class FelFactXmlBuilder {
         String establishmentCode = firstNonBlank(
                 document.getEmitterEstablishmentCode(), properties.getCodigoEstablecimiento());
         String documentType = resolveEmissionDocumentType(document.getDocumentType(), establishmentCode);
+        document.setDocumentType(documentType);
         String commercialName = firstNonBlank(document.getEmitterCommercialName(), credentials.nombreComercial());
         String addressLine = firstNonBlank(document.getEmitterAddressLine(), credentials.direccion());
         String municipio = firstNonBlank(document.getEmitterMunicipio(), credentials.municipio());
         String departamento = firstNonBlank(document.getEmitterDepartamento(), credentials.departamento());
+        // FCAM: abono único quemado (1 / total factura / fecha GT de facturación)
         String complementosXml = buildFcamAbonosComplemento(documentType, granTotal, emission);
 
         return """
@@ -208,18 +210,29 @@ public class FelFactXmlBuilder {
     }
 
     /**
-     * Complemento requerido por SAT para FCAM (catálogo 2 — AbonosFacturaCambiaria).
-     * Un abono por el GranTotal con vencimiento = fecha de emisión (contado / título al día).
+     * Complemento requerido por SAT para FCAM.
+     * Valores fijos de negocio:
+     * - NumeroAbono = 1
+     * - MontoAbono = total de la factura (GranTotal)
+     * - FechaVencimiento = fecha de facturación en zona Guatemala (yyyy-MM-dd)
      */
     private String buildFcamAbonosComplemento(
-            String documentType, BigDecimal granTotal, ZonedDateTime emission) {
+            String documentType, BigDecimal invoiceTotal, ZonedDateTime emissionGuatemala) {
         if (!"FCAM".equalsIgnoreCase(safe(documentType))) {
             return "";
         }
-        String dueDate = emission.toLocalDate().toString();
+        BigDecimal montoAbono = nz(invoiceTotal).setScale(2, RoundingMode.HALF_UP);
+        if (montoAbono.compareTo(BigDecimal.ZERO) <= 0) {
+            return "";
+        }
+        ZonedDateTime emission = emissionGuatemala != null
+                ? emissionGuatemala.withZoneSameInstant(GUATEMALA)
+                : ZonedDateTime.now(GUATEMALA);
+        String fechaVencimiento = emission.toLocalDate().toString();
+        // Atributos alineados a ejemplos FEL (INFILE/Megaprint): IDComplemento=1, NombreComplemento=Abono
         return """
                 <dte:Complementos>
-                  <dte:Complemento IDComplemento="AbonosFacturaCambiaria" NombreComplemento="AbonosFacturaCambiaria" URIComplemento="http://www.sat.gob.gt/dte/fel/CompCambiaria/0.1.0">
+                  <dte:Complemento IDComplemento="1" NombreComplemento="Abono" URIComplemento="http://www.sat.gob.gt/dte/fel/CompCambiaria/0.1.0">
                     <cfc:AbonosFacturaCambiaria xmlns:cfc="http://www.sat.gob.gt/dte/fel/CompCambiaria/0.1.0" Version="1">
                       <cfc:Abono>
                         <cfc:NumeroAbono>1</cfc:NumeroAbono>
@@ -229,7 +242,7 @@ public class FelFactXmlBuilder {
                     </cfc:AbonosFacturaCambiaria>
                   </dte:Complemento>
                 </dte:Complementos>
-                """.formatted(dueDate, fmt(granTotal));
+                """.formatted(fechaVencimiento, fmt(montoAbono));
     }
 
     /**

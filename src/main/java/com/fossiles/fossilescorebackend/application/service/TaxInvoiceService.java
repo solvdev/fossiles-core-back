@@ -1153,6 +1153,7 @@ public class TaxInvoiceService {
             if (invoice.getInternalNumber() != null && !invoice.getInternalNumber().isBlank()) {
                 document.setInternalNumber(invoice.getInternalNumber());
             }
+            applyDocumentTypeByEstablishment(document);
             String unsignedXml = factXmlBuilder.buildUnsignedXml(document, credentials);
             String signedXml = signerService.signXml(unsignedXml, transactionId, credentials);
             FelCertificationResult result = certificationService.certifySignedXml(signedXml, transactionId, credentials);

@@ -251,6 +251,9 @@ class FelFactXmlBuilderTest {
 
         assertThat(xml).contains("Tipo=\"FCAM\"");
         assertThat(xml).contains("CodigoEstablecimiento=\"1\"");
+        assertThat(xml).contains("NombreComplemento=\"Abono\"");
+        assertThat(xml).contains("IDComplemento=\"1\"");
+        assertThat(xml).contains("URIComplemento=\"http://www.sat.gob.gt/dte/fel/CompCambiaria/0.1.0\"");
         assertThat(xml).contains("AbonosFacturaCambiaria");
         assertThat(xml).contains("<cfc:NumeroAbono>1</cfc:NumeroAbono>");
         assertThat(xml).contains("<cfc:FechaVencimiento>2026-01-15</cfc:FechaVencimiento>");
