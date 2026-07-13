@@ -307,11 +307,11 @@ public class TaskOrganizerService {
                     .build());
         }
 
-        if (baseHours > ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY + EPSILON) {
+        if (baseHours > ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP + EPSILON) {
             throw new BusinessException(String.format(Locale.ROOT,
-                    "La carga base de la tarea (%.2f h) excede el cupo de %.1f horas. "
+                    "La carga base de la tarea (%.2f h) excede el máximo de %.1f horas. "
                             + "Divida los productos en otra tarea o márquelos como extra OPL.",
-                    baseHours, ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY));
+                    baseHours, ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP));
         }
 
         TaskItemEntity primary = itemsToSave.get(0);

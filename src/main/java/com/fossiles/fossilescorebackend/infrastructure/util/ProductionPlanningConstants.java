@@ -11,8 +11,15 @@ import java.util.Locale;
  */
 public final class ProductionPlanningConstants {
 
-    /** Cupo de horas base por mesa y día. */
+    /** Cupo de horas base por mesa y día (guía/objetivo — algoritmos automáticos de generación clásica). */
     public static final double MAX_HOURS_PER_DESK_PER_DAY = 4.0;
+
+    /**
+     * Tope duro al crear una tarea manual en el Organizador: 4h es lo ideal, pero se permite
+     * hasta este límite para que el usuario decida cuánto mandar según la carga real del día.
+     * Por encima de esto sí se bloquea la creación.
+     */
+    public static final double MAX_HOURS_PER_TASK_HARD_CAP = 5.0;
 
     /** Horas por unidad cuando el producto no tiene prd_time configurado. */
     public static final double DEFAULT_PRD_TIME_PER_UNIT = 0.1;
