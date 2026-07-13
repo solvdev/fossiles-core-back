@@ -45,7 +45,9 @@ public class TaskOrganizerService {
     // ==================== LISTADO PARA EL ORGANIZADOR ====================
 
     /**
-     * OPs activas con ítems que aún tienen cantidad restante sin tarea.
+     * OPs activas del filtro (OPL / regulares / todas), con todos sus ítems no-cincho.
+     * Incluye líneas ya totalmente asignadas (restante 0) para que OPL y demás se vean
+     * aunque ya tengan tareas (p. ej. sin mesa); "Agregar" solo aplica si restante &gt; 0.
      *
      * @param type   OPL (solo venta en línea), REGULAR (todo lo demás) o ALL/null
      * @param search filtro por código de OP o nombre de cliente (contains, case-insensitive)
@@ -93,11 +95,11 @@ public class TaskOrganizerService {
             List<OrganizerProductionOrderResponse.OrganizerItemResponse> itemRows = new ArrayList<>();
             for (ProductionOrderItemEntity item : itemsByOrder.getOrDefault(po.getId(), List.of())) {
                 int total = ProductionOrderItemQuantityHelper.effectiveQuantityForBom(item);
-                int assigned = assignedByItemId.getOrDefault(item.getId(), 0);
-                int remaining = total - assigned;
-                if (remaining <= 0) {
+                if (total <= 0) {
                     continue;
                 }
+                int assigned = assignedByItemId.getOrDefault(item.getId(), 0);
+                int remaining = Math.max(0, total - assigned);
 
                 ProductEntity product = item.getProductId() != null
                         ? productRepository.findById(item.getProductId()).orElse(null)
@@ -394,7 +396,14 @@ public class TaskOrganizerService {
     }
 
     private static boolean isOnlineSaleOrder(ProductionOrderEntity po) {
-        return po != null && "VENTA_EN_LINEA".equals(String.valueOf(po.getOrderType()).trim().toUpperCase(Locale.ROOT));
+        if (po == null) {
+            return false;
+        }
+        if ("VENTA_EN_LINEA".equals(String.valueOf(po.getOrderType()).trim().toUpperCase(Locale.ROOT))) {
+            return true;
+        }
+        String code = po.getCode() == null ? "" : po.getCode().trim().toUpperCase(Locale.ROOT);
+        return code.startsWith("OPL-") || code.startsWith("OPL");
     }
 
     private static boolean isCinchoOrderType(String orderType) {

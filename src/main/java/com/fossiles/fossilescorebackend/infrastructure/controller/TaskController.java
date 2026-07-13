@@ -110,8 +110,8 @@ public class TaskController {
     }
 
     /**
-     * Backlog del organizador: tareas PENDING atrasadas (fecha pasada) o sin fecha,
-     * con o sin mesa, para retomarlas y reprogramarlas.
+     * Backlog del organizador: tareas PENDING atrasadas, sin fecha, o sin mesa
+     * (aunque la fecha sea hoy), para retomarlas y reprogramarlas.
      */
     @GetMapping("/organizer/backlog")
     public ResponseEntity<List<TaskResponse>> getPendingBacklog() {
