@@ -167,6 +167,11 @@ public class TaskOrganizerService {
             throw new BusinessException("Debe agregar al menos un producto a la tarea.");
         }
 
+        if (!ProductionPlanningConstants.isWorkday(request.getScheduledDate())) {
+            throw new BusinessException("Solo se puede programar de lunes a viernes: "
+                    + request.getScheduledDate() + " es fin de semana.");
+        }
+
         ProductionOrderEntity headerOrder = productionOrderRepository.findById(request.getProductionOrderId())
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", request.getProductionOrderId()));
         assertOrderReadyForTasks(headerOrder);
@@ -320,6 +325,17 @@ public class TaskOrganizerService {
         }
 
         return task;
+    }
+
+    /**
+     * "Limpiar mesas": libera mesa y fecha de todas las tareas PENDING para reorganizar
+     * desde cero (arrastrar de nuevo en el tablero). No toca tareas ya iniciadas/terminadas.
+     *
+     * @return cantidad de tareas liberadas
+     */
+    @Transactional
+    public int clearAllPendingDeskAssignments() {
+        return taskRepository.clearAllPendingDeskAssignments();
     }
 
     // ==================== HELPERS ====================

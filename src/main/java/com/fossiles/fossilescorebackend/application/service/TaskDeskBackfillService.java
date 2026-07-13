@@ -44,6 +44,9 @@ public class TaskDeskBackfillService {
         if (freedDesk < 1 || freedDesk > maxConfigured) {
             return;
         }
+        if (!ProductionPlanningConstants.isWorkday(anchorDate)) {
+            return; // solo se trabaja lunes a viernes; no rellenar mesas en fin de semana
+        }
 
         List<TaskEntity> pool = taskRepository.findPendingAndInProgressOrdered();
 

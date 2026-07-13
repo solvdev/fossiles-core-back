@@ -36,6 +36,16 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
             """)
     List<TaskEntity> findPendingBacklog(@Param("today") LocalDate today);
 
+    /**
+     * "Limpiar mesas": libera mesa y fecha de TODAS las tareas PENDING (nunca toca
+     * IN_PROGRESS/AWAITING_WAREHOUSE/COMPLETED/CANCELLED) para reorganizar desde cero.
+     * También corrige tareas que hubieran quedado con fecha de fin de semana.
+     */
+    @Modifying
+    @Transactional
+    @Query("UPDATE TaskEntity t SET t.desk = NULL, t.scheduledDate = NULL WHERE t.status = 'PENDING'")
+    int clearAllPendingDeskAssignments();
+
     @Query("SELECT t FROM TaskEntity t WHERE t.status IN ('PENDING', 'IN_PROGRESS') ORDER BY t.scheduledDate, t.priority, t.deliveryDate")
     List<TaskEntity> findActiveTasksOrdered();
 

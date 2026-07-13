@@ -1,5 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.util;
 
+import java.time.DayOfWeek;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 
@@ -29,5 +31,14 @@ public final class ProductionPlanningConstants {
     public static boolean canOvercapDeskDay(String orderType) {
         String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase(Locale.ROOT);
         return "VENTA_EN_LINEA".equals(normalizedType) || "CLIENTE_KIOSKO".equals(normalizedType);
+    }
+
+    /** Solo se trabaja de lunes a viernes: ninguna tarea debe programarse sábado/domingo. */
+    public static boolean isWorkday(LocalDate date) {
+        if (date == null) {
+            return true; // sin fecha = "sin asignar", válido
+        }
+        DayOfWeek dow = date.getDayOfWeek();
+        return dow != DayOfWeek.SATURDAY && dow != DayOfWeek.SUNDAY;
     }
 }

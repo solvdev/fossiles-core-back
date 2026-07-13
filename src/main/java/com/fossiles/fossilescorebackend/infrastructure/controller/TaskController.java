@@ -121,6 +121,21 @@ public class TaskController {
         return ResponseEntity.ok(tasks);
     }
 
+    /**
+     * "Limpiar mesas": libera mesa y fecha de todas las tareas PENDING para que el
+     * usuario reorganice el tablero desde cero. No afecta tareas IN_PROGRESS/COMPLETED.
+     */
+    @PostMapping("/organizer/clear-desks")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> clearAllDesks() {
+        int cleared = taskOrganizerService.clearAllPendingDeskAssignments();
+        return ResponseEntity.ok(Map.of(
+                "clearedTasks", cleared,
+                "message", cleared > 0
+                        ? cleared + " tarea(s) liberada(s) de su mesa/fecha."
+                        : "No había tareas pendientes con mesa/fecha asignada."));
+    }
+
     @GetMapping("/{id:\\d+}")
     public ResponseEntity<TaskResponse> getById(@PathVariable Long id) throws ResourceNotFoundException {
         TaskEntity entity = taskRepository.findById(id)
@@ -494,9 +509,12 @@ public class TaskController {
         }
 
         // Cargas iniciales: solo IN_PROGRESS (PENDING se replantea completo según cola).
+        // Solo se trabaja lunes a viernes: los fines de semana no entran al mapa, por lo que
+        // nunca se eligen como destino (loads==null -> continue en el loop de asignación).
         Map<LocalDate, Map<Integer, Double>> loadsByDate = new HashMap<>();
         for (int d = 0; d < days; d++) {
             LocalDate date = startDate.plusDays(d);
+            if (!ProductionPlanningConstants.isWorkday(date)) continue;
             Map<Integer, Double> m = new HashMap<>();
             for (int desk = 1; desk <= activeDesks; desk++) m.put(desk, 0.0);
             loadsByDate.put(date, m);
@@ -745,6 +763,9 @@ public class TaskController {
             } catch (Exception e) {
                 throw new BusinessException("targetDate inválida (use yyyy-MM-dd)");
             }
+        }
+        if (!ProductionPlanningConstants.isWorkday(targetDate)) {
+            throw new BusinessException("Solo se puede mover a mesa de lunes a viernes: " + targetDate + " es fin de semana.");
         }
 
         Integer targetDesk = req.targetDesk();
@@ -1058,13 +1079,14 @@ public class TaskController {
 
         if (body.containsKey("scheduledDate")) {
             String dateStr = (String) body.get("scheduledDate");
-            entity.setScheduledDate(dateStr != null && !dateStr.isEmpty() ? LocalDate.parse(dateStr) : null);
+            LocalDate scheduledDate = dateStr != null && !dateStr.isEmpty() ? LocalDate.parse(dateStr) : null;
+            if (!ProductionPlanningConstants.isWorkday(scheduledDate)) {
+                throw new BusinessException("Solo se puede programar de lunes a viernes: " + scheduledDate + " es fin de semana.");
+            }
+            entity.setScheduledDate(scheduledDate);
         }
         if (body.containsKey("desk")) {
             Object deskVal = body.get("desk");
-            if (deskVal != null && !Boolean.TRUE.equals(entity.getDieCutReady())) {
-                throw new BusinessException("No se puede asignar mesa sin troquelado.");
-            }
             entity.setDesk(deskVal != null ? Integer.parseInt(deskVal.toString()) : null);
         }
         if (body.containsKey("deliveryDate")) {
