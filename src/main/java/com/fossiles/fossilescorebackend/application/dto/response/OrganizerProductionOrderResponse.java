@@ -54,5 +54,20 @@ public class OrganizerProductionOrderResponse {
         /** Desglose de tallas de la OP (informativo). */
         private Map<String, Integer> sizes;
         private String observations;
+        /** Tareas no canceladas que ya cubren este ítem (mesa / fecha). */
+        private List<OrganizerItemAssignment> assignments;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class OrganizerItemAssignment {
+        private Long taskId;
+        private String taskCode;
+        private Integer desk;
+        private LocalDate scheduledDate;
+        private Integer quantity;
+        private String status;
     }
 }

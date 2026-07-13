@@ -89,6 +89,7 @@ public class TaskOrganizerService {
         }
 
         Map<Long, Integer> assignedByItemId = taskItemRepository.assignedQuantityMap(allItemIds);
+        Map<Long, List<Object[]>> assignmentRowsByItemId = taskItemRepository.assignmentRowsByItemId(allItemIds);
 
         List<OrganizerProductionOrderResponse> out = new ArrayList<>();
         for (ProductionOrderEntity po : orders) {
@@ -115,6 +116,24 @@ public class TaskOrganizerService {
                     colorName = colorRepository.findById(item.getColorId()).map(ColorEntity::getName).orElse(null);
                 }
 
+                List<OrganizerProductionOrderResponse.OrganizerItemAssignment> assignments = new ArrayList<>();
+                for (Object[] row : assignmentRowsByItemId.getOrDefault(item.getId(), List.of())) {
+                    Long taskId = (Long) row[1];
+                    String taskCode = row[2] != null ? String.valueOf(row[2]) : null;
+                    Integer desk = row[3] != null ? ((Number) row[3]).intValue() : null;
+                    LocalDate scheduledDate = (LocalDate) row[4];
+                    Integer qty = row[5] != null ? ((Number) row[5]).intValue() : null;
+                    String status = row[6] != null ? String.valueOf(row[6]) : null;
+                    assignments.add(OrganizerProductionOrderResponse.OrganizerItemAssignment.builder()
+                            .taskId(taskId)
+                            .taskCode(taskCode)
+                            .desk(desk)
+                            .scheduledDate(scheduledDate)
+                            .quantity(qty)
+                            .status(status)
+                            .build());
+                }
+
                 itemRows.add(OrganizerProductionOrderResponse.OrganizerItemResponse.builder()
                         .productionOrderItemId(item.getId())
                         .productId(item.getProductId())
@@ -128,6 +147,7 @@ public class TaskOrganizerService {
                         .prdTimePerUnit(resolvePrdTimePerUnit(product))
                         .sizes(parseSizes(item.getSizesData()))
                         .observations(item.getObservations())
+                        .assignments(assignments)
                         .build());
             }
 

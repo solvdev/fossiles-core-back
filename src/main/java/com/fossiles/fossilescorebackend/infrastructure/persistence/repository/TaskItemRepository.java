@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -48,6 +49,31 @@ public interface TaskItemRepository extends JpaRepository<TaskItemEntity, Long> 
         }
         return out;
     }
+    @Query("""
+            SELECT ti.productionOrderItemId, t.id, t.code, t.desk, t.scheduledDate, ti.quantity, t.status
+            FROM TaskItemEntity ti, TaskEntity t
+            WHERE t.id = ti.taskId
+              AND ti.productionOrderItemId IN :itemIds
+              AND t.status <> 'CANCELLED'
+            ORDER BY ti.productionOrderItemId ASC, t.scheduledDate ASC NULLS LAST, t.id ASC
+            """)
+    List<Object[]> findAssignmentRowsByItemIds(@Param("itemIds") Collection<Long> itemIds);
+
+    default Map<Long, List<Object[]>> assignmentRowsByItemId(Collection<Long> itemIds) {
+        Map<Long, List<Object[]>> out = new HashMap<>();
+        if (itemIds == null || itemIds.isEmpty()) {
+            return out;
+        }
+        for (Object[] row : findAssignmentRowsByItemIds(itemIds)) {
+            Long itemId = (Long) row[0];
+            if (itemId == null) {
+                continue;
+            }
+            out.computeIfAbsent(itemId, k -> new ArrayList<>()).add(row);
+        }
+        return out;
+    }
+
     boolean existsByProductionOrderItemIdAndDaySaleExtraTrue(Long productionOrderItemId);
     List<TaskItemEntity> findByProductionOrderItemIdInAndDaySaleExtraTrue(List<Long> productionOrderItemIds);
     List<TaskItemEntity> findByDaySaleExtraTrue();
