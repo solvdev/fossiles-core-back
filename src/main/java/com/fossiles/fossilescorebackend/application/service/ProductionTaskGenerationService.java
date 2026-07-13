@@ -1,10 +1,10 @@
 package com.fossiles.fossilescorebackend.application.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import lombok.Builder;
@@ -24,24 +24,19 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ProductionTaskGenerationService {
 
-    private static final double MAX_HOURS_PER_DESK_PER_DAY = 4.0;
-    private static final double DEFAULT_PRD_TIME_PER_UNIT = 0.1;
-    private static final int MAX_DESKS = 12;
-    private static final List<String> DESKS_COUNT_CONFIG_KEYS = List.of(
-            "MANUFACTURING_NUMBER_OF_TABLES",
-            "PRODUCTION_TABLES_COUNT"
-    );
+    private static final double MAX_HOURS_PER_DESK_PER_DAY = ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY;
+    private static final double DEFAULT_PRD_TIME_PER_UNIT = ProductionPlanningConstants.DEFAULT_PRD_TIME_PER_UNIT;
+    private static final int MAX_DESKS = ProductionPlanningConstants.MAX_DESKS;
+    private static final List<String> DESKS_COUNT_CONFIG_KEYS = ProductionPlanningConstants.DESKS_COUNT_CONFIG_KEYS;
 
     private final TaskRepository taskRepository;
     private final TaskItemRepository taskItemRepository;
     private final ProductionOrderRepository productionOrderRepository;
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final ProductRepository productRepository;
-    private final DocumentSeriesRepository documentSeriesRepository;
     private final SystemConfigRepository systemConfigRepository;
     private final ColorRepository colorRepository;
-
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final TaskCodeGenerator taskCodeGenerator;
 
     @Transactional
     public List<TaskEntity> generateTasks(long productionOrderId, boolean forceRegenerate)
@@ -94,7 +89,7 @@ public class ProductionTaskGenerationService {
             TaskChunk primary = group.get(0);
 
             TaskEntity.TaskEntityBuilder builder = TaskEntity.builder()
-                    .code(generateTaskCode())
+                    .code(taskCodeGenerator.generateTaskCode())
                     .productionOrderId(primary.getProductionOrderId())
                     .productionOrderCode(primary.getProductionOrderCode())
                     .productionOrderItemId(primary.getProductionOrderItemId())
@@ -206,7 +201,7 @@ public class ProductionTaskGenerationService {
         int totalPieces = items.stream().mapToInt(this::calculateItemTotalQuantity).sum();
 
         TaskEntity task = taskRepository.save(TaskEntity.builder()
-                .code(generateTaskCode())
+                .code(taskCodeGenerator.generateTaskCode())
                 .productionOrderId(po.getId())
                 .productionOrderCode(po.getCode())
                 .quantity(totalPieces)
@@ -305,7 +300,7 @@ public class ProductionTaskGenerationService {
             TaskChunk primary = group.get(0);
 
             TaskEntity.TaskEntityBuilder builder = TaskEntity.builder()
-                    .code(generateTaskCode())
+                    .code(taskCodeGenerator.generateTaskCode())
                     .productionOrderId(primary.getProductionOrderId())
                     .productionOrderCode(primary.getProductionOrderCode())
                     .productionOrderItemId(primary.getProductionOrderItemId())
@@ -394,7 +389,17 @@ public class ProductionTaskGenerationService {
                 .filter(Objects::nonNull)
                 .anyMatch(orderId -> !Objects.equals(orderId, productionOrderId));
 
-        if (!hasInProgress && !hasMixedOrders) {
+        // Ítems cubiertos parcialmente (0 < asignado < total): tareas armadas a mano en el
+        // organizador que un regenerate borraría. Exigir force explícito.
+        List<ProductionOrderItemEntity> orderItems = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
+        Map<Long, Integer> assignedByItemId = taskItemRepository.assignedQuantityMap(
+                orderItems.stream().map(ProductionOrderItemEntity::getId).filter(Objects::nonNull).toList());
+        boolean hasPartialQuantities = orderItems.stream().anyMatch(item -> {
+            int assigned = assignedByItemId.getOrDefault(item.getId(), 0);
+            return assigned > 0 && assigned < calculateItemTotalQuantity(item);
+        });
+
+        if (!hasInProgress && !hasMixedOrders && !hasPartialQuantities) {
             return new RegenerationRisk(false, "");
         }
 
@@ -403,7 +408,10 @@ public class ProductionTaskGenerationService {
             sb.append("Hay tareas IN_PROGRESS/COMPLETED. ");
         }
         if (hasMixedOrders) {
-            sb.append("Hay tareas mixtas con otras órdenes.");
+            sb.append("Hay tareas mixtas con otras órdenes. ");
+        }
+        if (hasPartialQuantities) {
+            sb.append("Hay ítems con cantidades cubiertas parcialmente por tareas (organizador).");
         }
         return new RegenerationRisk(true, sb.toString().trim());
     }
@@ -434,8 +442,16 @@ public class ProductionTaskGenerationService {
             boolean skipAlreadyPlannedItems) {
         List<TaskChunk> chunks = new ArrayList<>();
 
+        // Cantidad ya cubierta por tareas activas (modelo de restantes: permite parciales del organizador).
+        Map<Long, Integer> assignedByItemId = skipAlreadyPlannedItems
+                ? taskItemRepository.assignedQuantityMap(
+                        items.stream().map(ProductionOrderItemEntity::getId).filter(Objects::nonNull).toList())
+                : Map.of();
+
         for (ProductionOrderItemEntity item : items) {
-            if (skipAlreadyPlannedItems && taskItemRepository.existsByProductionOrderItemId(item.getId())) {
+            int totalQuantity = calculateItemTotalQuantity(item);
+            int remainingQty = totalQuantity - assignedByItemId.getOrDefault(item.getId(), 0);
+            if (remainingQty <= 0) {
                 continue;
             }
 
@@ -457,8 +473,6 @@ public class ProductionTaskGenerationService {
                     ? product.getPrdTime()
                     : DEFAULT_PRD_TIME_PER_UNIT;
 
-            int totalQuantity = calculateItemTotalQuantity(item);
-            int remainingQty = totalQuantity;
             while (remainingQty > 0) {
                 int maxUnitsPerBlock = (int) Math.floor(MAX_HOURS_PER_DESK_PER_DAY / prdTimePerUnit);
                 if (maxUnitsPerBlock <= 0) maxUnitsPerBlock = 1;
@@ -563,19 +577,7 @@ public class ProductionTaskGenerationService {
     }
 
     private int calculateItemTotalQuantity(ProductionOrderItemEntity item) {
-        int total = 0;
-        if (item.getQuantity() != null) {
-            total += item.getQuantity();
-        }
-        if (item.getSizesData() != null && !item.getSizesData().isEmpty()) {
-            try {
-                Map<String, Integer> sizes = objectMapper.readValue(item.getSizesData(),
-                        new TypeReference<Map<String, Integer>>() {});
-                total += sizes.values().stream().mapToInt(Integer::intValue).sum();
-            } catch (Exception ignored) {
-            }
-        }
-        return Math.max(total, 1);
+        return ProductionOrderItemQuantityHelper.effectiveQuantityForBom(item);
     }
 
     private record DesksCountResolution(int count, String resolvedKey, boolean isDefault) {}
@@ -612,30 +614,6 @@ public class ProductionTaskGenerationService {
                 .mapToDouble(Double::doubleValue)
                 .sum();
         return Math.max(total - extra, 0.0);
-    }
-
-    private String generateTaskCode() throws BusinessException {
-        String documentType = "TASK";
-        String series = "TK";
-
-        DocumentSeriesEntity seriesEntity = documentSeriesRepository
-                .findByDocumentTypeAndSeriesForUpdate(documentType, series)
-                .orElseGet(() -> {
-                    DocumentSeriesEntity newSeries = DocumentSeriesEntity.builder()
-                            .documentType(documentType)
-                            .series(series)
-                            .currentCorrelative(0L)
-                            .status("active")
-                            .description("Serie automática para tareas de producción")
-                            .build();
-                    return documentSeriesRepository.save(newSeries);
-                });
-
-        documentSeriesRepository.incrementCorrelative(seriesEntity.getId());
-        seriesEntity.setCurrentCorrelative(seriesEntity.getCurrentCorrelative() + 1);
-        documentSeriesRepository.save(seriesEntity);
-
-        return String.format("%s-%05d", series, seriesEntity.getCurrentCorrelative());
     }
 
     @Builder

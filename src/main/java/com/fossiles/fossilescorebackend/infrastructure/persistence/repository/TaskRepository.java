@@ -27,6 +27,15 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     /** Tareas sin mesa pero con fecha (cola / pendiente de asignar). */
     List<TaskEntity> findByDeskIsNullAndScheduledDate(LocalDate scheduledDate);
 
+    /** Backlog del organizador: PENDING atrasadas (fecha pasada) o sin fecha, con o sin mesa. */
+    @Query("""
+            SELECT t FROM TaskEntity t
+            WHERE t.status = 'PENDING'
+              AND (t.scheduledDate IS NULL OR t.scheduledDate < :today)
+            ORDER BY t.scheduledDate ASC NULLS FIRST, COALESCE(t.priority, 9999), t.id
+            """)
+    List<TaskEntity> findPendingBacklog(@Param("today") LocalDate today);
+
     @Query("SELECT t FROM TaskEntity t WHERE t.status IN ('PENDING', 'IN_PROGRESS') ORDER BY t.scheduledDate, t.priority, t.deliveryDate")
     List<TaskEntity> findActiveTasksOrdered();
 

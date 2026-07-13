@@ -1,8 +1,10 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.CreateManualTaskRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.PlanWindowRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DistributionQueueProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialsTaskViewResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.OrganizerProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaskResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaskTicketResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -10,10 +12,13 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.application.service.MaterialConsumptionService;
 import com.fossiles.fossilescorebackend.application.service.ProductionTaskGenerationService;
 import com.fossiles.fossilescorebackend.application.service.ProductionTaskLifecycleService;
+import com.fossiles.fossilescorebackend.application.service.TaskCodeGenerator;
 import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillService;
+import com.fossiles.fossilescorebackend.application.service.TaskOrganizerService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -36,13 +41,10 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class TaskController {
 
-    private static final double MAX_HOURS_PER_DESK_PER_DAY = 4.0;
-    private static final double DEFAULT_PRD_TIME_PER_UNIT = 0.1; // hours per unit if not configured
-    private static final int MAX_DESKS = 12;
-    private static final List<String> DESKS_COUNT_CONFIG_KEYS = List.of(
-            "MANUFACTURING_NUMBER_OF_TABLES",
-            "PRODUCTION_TABLES_COUNT"
-    );
+    private static final double MAX_HOURS_PER_DESK_PER_DAY = ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY;
+    private static final double DEFAULT_PRD_TIME_PER_UNIT = ProductionPlanningConstants.DEFAULT_PRD_TIME_PER_UNIT;
+    private static final int MAX_DESKS = ProductionPlanningConstants.MAX_DESKS;
+    private static final List<String> DESKS_COUNT_CONFIG_KEYS = ProductionPlanningConstants.DESKS_COUNT_CONFIG_KEYS;
     private static final ZoneId GUATEMALA_ZONE = ZoneId.of("America/Guatemala");
     private static final DateTimeFormatter HOUR_MINUTE_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
 
@@ -60,6 +62,8 @@ public class TaskController {
     private final LeatherMovementRepository leatherMovementRepository;
     private final MaterialConsumptionService materialConsumptionService;
     private final ProductionTaskGenerationService productionTaskGenerationService;
+    private final TaskCodeGenerator taskCodeGenerator;
+    private final TaskOrganizerService taskOrganizerService;
     private final TaskDeskBackfillService taskDeskBackfillService;
     private final ProductionTaskLifecycleService productionTaskLifecycleService;
     private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
@@ -76,14 +80,55 @@ public class TaskController {
         return ResponseEntity.ok(tasks);
     }
 
-    @GetMapping("/{id}")
+    // ==================== ORGANIZADOR DE TAREAS ====================
+    // Rutas literales ANTES de /{id}, para que "backlog"/"organizer" no choquen con el path variable.
+
+    /**
+     * OPs activas con ítems que aún tienen cantidad restante sin tarea, para armar
+     * tareas manualmente en el Organizador.
+     *
+     * @param type OPL (venta en línea), REGULAR (las demás) o ALL
+     */
+    @GetMapping("/organizer/orders")
+    public ResponseEntity<List<OrganizerProductionOrderResponse>> getOrganizerOrders(
+            @RequestParam(name = "type", defaultValue = "ALL") String type,
+            @RequestParam(name = "search", required = false) String search) {
+        return ResponseEntity.ok(taskOrganizerService.getOrganizerOrders(type, search));
+    }
+
+    /**
+     * Crea una tarea manual con cantidades (parciales o totales) de ítems de OP.
+     * La tarea nace PENDING; sin mesa/fecha aparece como "Sin asignar" en el tablero.
+     */
+    @PostMapping("/organizer/manual")
+    public ResponseEntity<TaskResponse> createManualTask(
+            @RequestBody CreateManualTaskRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        TaskEntity task = taskOrganizerService.createManualTask(request);
+        return ResponseEntity.ok(toResponse(task));
+    }
+
+    /**
+     * Backlog del organizador: tareas PENDING atrasadas (fecha pasada) o sin fecha,
+     * con o sin mesa, para retomarlas y reprogramarlas.
+     */
+    @GetMapping("/organizer/backlog")
+    public ResponseEntity<List<TaskResponse>> getPendingBacklog() {
+        LocalDate today = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDate();
+        List<TaskResponse> tasks = taskRepository.findPendingBacklog(today).stream()
+                .map(this::toResponse)
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(tasks);
+    }
+
+    @GetMapping("/{id:\\d+}")
     public ResponseEntity<TaskResponse> getById(@PathVariable Long id) throws ResourceNotFoundException {
         TaskEntity entity = taskRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
         return ResponseEntity.ok(toResponse(entity));
     }
 
-    @GetMapping("/{id}/ticket")
+    @GetMapping("/{id:\\d+}/ticket")
     public ResponseEntity<TaskTicketResponse> getTicket(@PathVariable Long id) throws ResourceNotFoundException {
         TaskEntity task = taskRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
@@ -539,7 +584,7 @@ public class TaskController {
                         + " (horizonte " + days + " día(s))."));
     }
 
-    @PutMapping("/{id}/status")
+    @PutMapping("/{id:\\d+}/status")
     @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<TaskResponse> updateStatus(@PathVariable Long id, @RequestBody Map<String, String> body)
             throws ResourceNotFoundException, BusinessException {
@@ -624,7 +669,7 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(updated));
     }
 
-    @PutMapping("/{id}/started-at")
+    @PutMapping("/{id:\\d+}/started-at")
     public ResponseEntity<TaskResponse> updateStartedAt(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity entity = taskRepository.findById(id)
@@ -797,7 +842,7 @@ public class TaskController {
         return taskRepository.save(dest);
     }
 
-    @PutMapping("/{id}/waste")
+    @PutMapping("/{id:\\d+}/waste")
     public ResponseEntity<TaskResponse> updateWaste(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException {
         TaskEntity entity = taskRepository.findById(id)
@@ -814,7 +859,7 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(updated));
     }
 
-    @PutMapping("/{id}/leather-delivery")
+    @PutMapping("/{id:\\d+}/leather-delivery")
     public ResponseEntity<TaskResponse> setLeatherDelivery(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity entity = taskRepository.findById(id)
@@ -845,7 +890,7 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(updated));
     }
 
-    @PutMapping("/{id}/leather-delivery/item/{taskItemId}")
+    @PutMapping("/{id:\\d+}/leather-delivery/item/{taskItemId}")
     public ResponseEntity<TaskResponse> setTaskItemLeatherDelivery(
             @PathVariable Long id,
             @PathVariable Long taskItemId,
@@ -878,7 +923,7 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(updated));
     }
 
-    @PutMapping("/{id}/materials-delivery")
+    @PutMapping("/{id:\\d+}/materials-delivery")
     public ResponseEntity<TaskResponse> setMaterialsDelivery(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity entity = taskRepository.findById(id)
@@ -947,7 +992,7 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(updated));
     }
 
-    @PutMapping("/{id}/materials-delivery/item/{taskItemId}")
+    @PutMapping("/{id:\\d+}/materials-delivery/item/{taskItemId}")
     public ResponseEntity<TaskResponse> setTaskItemMaterialsDelivery(
             @PathVariable Long id,
             @PathVariable Long taskItemId,
@@ -1005,7 +1050,7 @@ public class TaskController {
         return ResponseEntity.ok(response);
     }
 
-    @PutMapping("/{id}/schedule")
+    @PutMapping("/{id:\\d+}/schedule")
     public ResponseEntity<TaskResponse> scheduleTask(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity entity = taskRepository.findById(id)
@@ -1032,7 +1077,7 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(updated));
     }
 
-    @GetMapping("/{id}/day-sale-candidates")
+    @GetMapping("/{id:\\d+}/day-sale-candidates")
     @Transactional(readOnly = true)
     public ResponseEntity<List<Map<String, Object>>> getDaySaleCandidates(@PathVariable Long id)
             throws ResourceNotFoundException {
@@ -1131,7 +1176,7 @@ public class TaskController {
         return ResponseEntity.ok(rows);
     }
 
-    @PutMapping("/{id}/day-sale-items")
+    @PutMapping("/{id:\\d+}/day-sale-items")
     @Transactional
     public ResponseEntity<TaskResponse> addDaySaleItemsToTask(
             @PathVariable Long id,
@@ -1215,7 +1260,7 @@ public class TaskController {
 
     // ==================== DIE-CUT (TROQUELADO) ====================
 
-    @PutMapping("/{id}/die-cut")
+    @PutMapping("/{id:\\d+}/die-cut")
     public ResponseEntity<TaskResponse> toggleDieCut(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity entity = taskRepository.findById(id)
@@ -1270,7 +1315,7 @@ public class TaskController {
         return ResponseEntity.ok(responses);
     }
 
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/{id:\\d+}")
     @Transactional
     public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException {
         TaskEntity entity = taskRepository.findById(id).orElse(null);
@@ -1367,7 +1412,7 @@ public class TaskController {
     /**
      * Marca o desmarca una línea de la receta (BOM) como preparada/despachada para un ítem de tarea.
      */
-    @PutMapping("/{taskId}/materials-pick/item/{taskItemId}/material/{materialId}")
+    @PutMapping("/{taskId:\\d+}/materials-pick/item/{taskItemId}/material/{materialId}")
     @Transactional
     public ResponseEntity<Map<String, Object>> setTaskItemMaterialPick(
             @PathVariable Long taskId,
@@ -1705,21 +1750,7 @@ public class TaskController {
      * Calculate total quantity for an item (including sizes for CINCHOS type).
      */
     private int calculateItemTotalQuantity(ProductionOrderItemEntity item) {
-        int total = 0;
-        if (item.getQuantity() != null) {
-            total += item.getQuantity();
-        }
-        if (item.getSizesData() != null && !item.getSizesData().isEmpty()) {
-            try {
-                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                Map<String, Integer> sizes = mapper.readValue(item.getSizesData(),
-                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Integer>>() {});
-                total += sizes.values().stream().mapToInt(Integer::intValue).sum();
-            } catch (Exception e) {
-                // Ignore parse errors
-            }
-        }
-        return Math.max(total, 1);
+        return ProductionOrderItemQuantityHelper.effectiveQuantityForBom(item);
     }
 
     private record DesksCountResolution(int count, String resolvedKey, boolean isDefault) {}
@@ -1769,27 +1800,7 @@ public class TaskController {
     }
 
     private String generateTaskCode() throws BusinessException {
-        String documentType = "TASK";
-        String series = "TK";
-
-        DocumentSeriesEntity seriesEntity = documentSeriesRepository
-                .findByDocumentTypeAndSeriesForUpdate(documentType, series)
-                .orElseGet(() -> {
-                    DocumentSeriesEntity newSeries = DocumentSeriesEntity.builder()
-                            .documentType(documentType)
-                            .series(series)
-                            .currentCorrelative(0L)
-                            .status("active")
-                            .description("Serie automática para tareas de producción")
-                            .build();
-                    return documentSeriesRepository.save(newSeries);
-                });
-
-        documentSeriesRepository.incrementCorrelative(seriesEntity.getId());
-        seriesEntity.setCurrentCorrelative(seriesEntity.getCurrentCorrelative() + 1);
-        documentSeriesRepository.save(seriesEntity);
-
-        return String.format("%s-%05d", series, seriesEntity.getCurrentCorrelative());
+        return taskCodeGenerator.generateTaskCode();
     }
 
     private boolean isValidStatus(String status) {
@@ -2258,8 +2269,7 @@ public class TaskController {
     }
 
     private static boolean canOvercapDeskDay(String orderType) {
-        String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase(Locale.ROOT);
-        return "VENTA_EN_LINEA".equals(normalizedType) || "CLIENTE_KIOSKO".equals(normalizedType);
+        return ProductionPlanningConstants.canOvercapDeskDay(orderType);
     }
 
     /** Productos cincho de venta en línea (código FOSS...); no entran al selector de venta del día del centro. */

@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskIt
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,7 +25,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class TaskDeskBackfillService {
 
-    private static final double MAX_HOURS_PER_DESK_PER_DAY = 4.0;
+    private static final double MAX_HOURS_PER_DESK_PER_DAY = ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY;
 
     private final TaskRepository taskRepository;
     private final TaskItemRepository taskItemRepository;
@@ -186,8 +187,7 @@ public class TaskDeskBackfillService {
     }
 
     private boolean canOvercapDeskDay(String orderType) {
-        String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase(Locale.ROOT);
-        return "VENTA_EN_LINEA".equals(normalizedType) || "CLIENTE_KIOSKO".equals(normalizedType);
+        return ProductionPlanningConstants.canOvercapDeskDay(orderType);
     }
 
     private double sumHoursAssignedToDeskDay(List<TaskEntity> pool, int desk, LocalDate date) {
