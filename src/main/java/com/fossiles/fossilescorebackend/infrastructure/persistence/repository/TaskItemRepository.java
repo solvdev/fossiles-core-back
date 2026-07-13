@@ -50,7 +50,7 @@ public interface TaskItemRepository extends JpaRepository<TaskItemEntity, Long> 
         return out;
     }
     @Query("""
-            SELECT ti.productionOrderItemId, t.id, t.code, t.desk, t.scheduledDate, ti.quantity, t.status
+            SELECT ti.productionOrderItemId, t.id, t.code, t.desk, t.scheduledDate, ti.quantity, t.status, ti.id
             FROM TaskItemEntity ti, TaskEntity t
             WHERE t.id = ti.taskId
               AND ti.productionOrderItemId IN :itemIds

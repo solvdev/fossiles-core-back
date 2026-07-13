@@ -124,6 +124,7 @@ public class TaskOrganizerService {
                     LocalDate scheduledDate = (LocalDate) row[4];
                     Integer qty = row[5] != null ? ((Number) row[5]).intValue() : null;
                     String status = row[6] != null ? String.valueOf(row[6]) : null;
+                    Long taskItemId = (Long) row[7];
                     assignments.add(OrganizerProductionOrderResponse.OrganizerItemAssignment.builder()
                             .taskId(taskId)
                             .taskCode(taskCode)
@@ -131,6 +132,7 @@ public class TaskOrganizerService {
                             .scheduledDate(scheduledDate)
                             .quantity(qty)
                             .status(status)
+                            .taskItemId(taskItemId)
                             .build());
                 }
 

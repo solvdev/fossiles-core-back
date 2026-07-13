@@ -69,5 +69,7 @@ public class OrganizerProductionOrderResponse {
         private LocalDate scheduledDate;
         private Integer quantity;
         private String status;
+        /** Id del task_item — requerido para mover/asignar mesa vía PUT /tasks/move-item. */
+        private Long taskItemId;
     }
 }
