@@ -46,6 +46,15 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     @Query("UPDATE TaskEntity t SET t.desk = NULL, t.scheduledDate = NULL WHERE t.status = 'PENDING'")
     int clearAllPendingDeskAssignments();
 
+    /**
+     * "Reiniciar tareas del día": libera solo la mesa (conserva la fecha) de las PENDING
+     * programadas en esa fecha, para reorganizar el tablero de ese día sin tocar otros días.
+     */
+    @Modifying
+    @Transactional
+    @Query("UPDATE TaskEntity t SET t.desk = NULL WHERE t.status = 'PENDING' AND t.scheduledDate = :date")
+    int clearPendingDeskAssignmentsForDate(@Param("date") LocalDate date);
+
     @Query("SELECT t FROM TaskEntity t WHERE t.status IN ('PENDING', 'IN_PROGRESS') ORDER BY t.scheduledDate, t.priority, t.deliveryDate")
     List<TaskEntity> findActiveTasksOrdered();
 

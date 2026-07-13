@@ -17,6 +17,7 @@ import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillServ
 import com.fossiles.fossilescorebackend.application.service.TaskOrganizerService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
@@ -122,18 +123,26 @@ public class TaskController {
     }
 
     /**
-     * "Limpiar mesas": libera mesa y fecha de todas las tareas PENDING para que el
-     * usuario reorganice el tablero desde cero. No afecta tareas IN_PROGRESS/COMPLETED.
+     * "Limpiar mesas": libera mesa de las tareas PENDING para que el usuario reorganice
+     * el tablero. No afecta tareas IN_PROGRESS/COMPLETED.
+     *
+     * @param date si se indica, solo libera la mesa de las tareas PENDING programadas ese
+     *             día (mantiene su fecha: "reiniciar tareas del día"). Sin fecha, libera
+     *             mesa Y fecha de TODAS las PENDING (reset completo para reorganizar todo).
      */
     @PostMapping("/organizer/clear-desks")
     @Transactional
-    public ResponseEntity<Map<String, Object>> clearAllDesks() {
-        int cleared = taskOrganizerService.clearAllPendingDeskAssignments();
+    public ResponseEntity<Map<String, Object>> clearAllDesks(
+            @RequestParam(name = "date", required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        int cleared = date != null
+                ? taskOrganizerService.clearPendingDeskAssignmentsForDate(date)
+                : taskOrganizerService.clearAllPendingDeskAssignments();
+        String scope = date != null ? " del " + date : " de su mesa/fecha";
         return ResponseEntity.ok(Map.of(
                 "clearedTasks", cleared,
                 "message", cleared > 0
-                        ? cleared + " tarea(s) liberada(s) de su mesa/fecha."
-                        : "No había tareas pendientes con mesa/fecha asignada."));
+                        ? cleared + " tarea(s) liberada(s)" + scope + "."
+                        : "No había tareas pendientes con mesa asignada" + (date != null ? " ese día." : ".")));
     }
 
     @GetMapping("/{id:\\d+}")
@@ -1163,7 +1172,7 @@ public class TaskController {
             double estimatedHours = roundHours(qty * prdTimePerUnit);
             ProductionOrderEntity order = orderById.get(poi.getProductionOrderId());
 
-            if (isFossCinchosProductCode(product != null ? product.getCode() : null)) {
+            if (CinchoProductUtils.isCinchoLineForProduction(product)) {
                 continue;
             }
 
@@ -1237,8 +1246,8 @@ public class TaskController {
             ProductEntity product = selected.getProductId() != null
                     ? productRepository.findById(selected.getProductId()).orElse(null)
                     : null;
-            if (isFossCinchosProductCode(product != null ? product.getCode() : null)) {
-                throw new BusinessException("Los productos cincho FOSS se gestionan en la vista de Cinchos, no como extra de venta del día.");
+            if (CinchoProductUtils.isCinchoLineForProduction(product)) {
+                throw new BusinessException("Los productos cincho se gestionan en la vista de Cinchos, no como extra de venta del día.");
             }
             String colorName = null;
             if (selected.getColorId() != null) {
@@ -2292,12 +2301,6 @@ public class TaskController {
 
     private static boolean canOvercapDeskDay(String orderType) {
         return ProductionPlanningConstants.canOvercapDeskDay(orderType);
-    }
-
-    /** Productos cincho de venta en línea (código FOSS...); no entran al selector de venta del día del centro. */
-    private boolean isFossCinchosProductCode(String productCode) {
-        String c = String.valueOf(productCode == null ? "" : productCode).trim().toUpperCase(Locale.ROOT);
-        return c.startsWith("FOSS");
     }
 
     private void mergeSchedulingPrioritiesFromRequest(Map<String, Integer> schedulingPriorities) {

@@ -174,7 +174,7 @@ public class ProductionCinchoDayStatusService {
             ProductEntity product = item.getProductId() != null
                     ? productRepository.findById(item.getProductId()).orElse(null)
                     : null;
-            if (!CinchoProductUtils.isMesaCinchosProduct(product)) {
+            if (!CinchoProductUtils.isMesaCinchosLineForProduction(product)) {
                 throw new BusinessException("El ítem no es cincho ni pulsera de mesa cinchos.");
             }
         }

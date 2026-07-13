@@ -15,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -101,8 +102,9 @@ public class TaskOrganizerService {
                 ProductEntity product = item.getProductId() != null
                         ? productRepository.findById(item.getProductId()).orElse(null)
                         : null;
-                // Cinchos FOSS van a la mesa cinchos, no al centro de producción.
-                if (!isCinchoOrderType(po.getOrderType()) && CinchoProductUtils.isFossCinchoProduct(product)) {
+                // Cinchos (cinchoType explícito o nombre) van a la mesa cinchos, no al centro de
+                // producción. El prefijo de código FOSS por sí solo NO cuenta (ver isCinchoLineForProduction).
+                if (!isCinchoOrderType(po.getOrderType()) && CinchoProductUtils.isCinchoLineForProduction(product)) {
                     continue;
                 }
 
@@ -236,8 +238,8 @@ public class TaskOrganizerService {
             ProductEntity product = item.getProductId() != null
                     ? productRepository.findById(item.getProductId()).orElse(null)
                     : null;
-            if (CinchoProductUtils.isFossCinchoProduct(product)) {
-                throw new BusinessException("Los productos cincho FOSS se gestionan en la vista de Cinchos.");
+            if (CinchoProductUtils.isCinchoLineForProduction(product)) {
+                throw new BusinessException("Los productos cincho se gestionan en la vista de Cinchos.");
             }
 
             int total = ProductionOrderItemQuantityHelper.effectiveQuantityForBom(item);
@@ -336,6 +338,21 @@ public class TaskOrganizerService {
     @Transactional
     public int clearAllPendingDeskAssignments() {
         return taskRepository.clearAllPendingDeskAssignments();
+    }
+
+    /**
+     * "Reiniciar tareas del día": libera solo la mesa (conserva la fecha) de las tareas
+     * PENDING programadas ese día, para reorganizar el tablero de ese día sin afectar
+     * la planificación de otros días.
+     *
+     * @return cantidad de tareas liberadas
+     */
+    @Transactional
+    public int clearPendingDeskAssignmentsForDate(LocalDate date) {
+        if (date == null) {
+            throw new IllegalArgumentException("date es requerida");
+        }
+        return taskRepository.clearPendingDeskAssignmentsForDate(date);
     }
 
     // ==================== HELPERS ====================

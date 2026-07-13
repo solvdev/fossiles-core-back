@@ -459,7 +459,7 @@ public class ProductionTaskGenerationService {
                     ? productRepository.findById(item.getProductId()).orElse(null)
                     : null;
 
-            if (!isCinchoOrderType(order.getOrderType()) && CinchoProductUtils.isFossCinchoProduct(product)) {
+            if (!isCinchoOrderType(order.getOrderType()) && CinchoProductUtils.isCinchoLineForProduction(product)) {
                 continue;
             }
 
