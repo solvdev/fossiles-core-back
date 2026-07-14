@@ -24,6 +24,8 @@ public class KioscoMovementResponse {
     private String colorName;
     private KioscoMovementType movementType;
     private Integer quantity;
+    /** Talla del movimiento si aplica (p. ej. recepción de envío FOSS). */
+    private String sizeKey;
     private Integer stockBefore;
     private Integer stockAfter;
     private Long referenceId;

@@ -1130,6 +1130,103 @@ public class KioscoInventoryService {
         return rows;
     }
 
+    /**
+     * Totales de kardex del periodo por {@code kiosco_stock_id} y talla ({@code size_key}).
+     * La clave de talla vacía ({@code ""}) agrupa movimientos históricos sin talla.
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, Map<String, SizeKardexBucket>> buildKardexByStockAndSize(
+            Long locationId, LocalDate from, LocalDate to
+    ) throws BusinessException, ResourceNotFoundException {
+        if (from == null || to == null) {
+            throw new BusinessException("Debes indicar el rango de fechas (from y to).");
+        }
+        if (from.isAfter(to)) {
+            throw new BusinessException("La fecha inicial no puede ser posterior a la fecha final.");
+        }
+        validateLocationIsKiosk(locationId);
+
+        LocalDateTime fromDt = from.atStartOfDay();
+        LocalDateTime toDtExclusive = to.plusDays(1).atStartOfDay();
+
+        Map<Long, Map<String, KardexAccumulator>> accByStockAndSize = new LinkedHashMap<>();
+        for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBetween(
+                locationId, fromDt, toDtExclusive)) {
+            if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
+                continue;
+            }
+            int delta = movementSignedDelta(m);
+            if (delta == 0) {
+                continue;
+            }
+            String sizeKey = ProductInventorySizesJson.normalizeKey(m.getSizeKey());
+            accByStockAndSize
+                    .computeIfAbsent(m.getKioscoStockId(), k -> new LinkedHashMap<>())
+                    .computeIfAbsent(sizeKey, k -> new KardexAccumulator())
+                    .apply(m.getMovementType(), delta);
+        }
+
+        Map<Long, Map<String, SizeKardexBucket>> out = new LinkedHashMap<>();
+        for (Map.Entry<Long, Map<String, KardexAccumulator>> stockEntry : accByStockAndSize.entrySet()) {
+            Map<String, SizeKardexBucket> bySize = new LinkedHashMap<>();
+            for (Map.Entry<String, KardexAccumulator> sizeEntry : stockEntry.getValue().entrySet()) {
+                bySize.put(sizeEntry.getKey(), SizeKardexBucket.from(sizeEntry.getValue()));
+            }
+            out.put(stockEntry.getKey(), bySize);
+        }
+        return out;
+    }
+
+    /** Totales de kardex por talla (columnas del conteo/kardex). */
+    public static final class SizeKardexBucket {
+        public final int comprasAjustes;
+        public final int anulacionCompras;
+        public final int entradas;
+        public final int ventas;
+        public final int anulacionVenta;
+        public final int salida;
+
+        private SizeKardexBucket(
+                int comprasAjustes, int anulacionCompras, int entradas,
+                int ventas, int anulacionVenta, int salida
+        ) {
+            this.comprasAjustes = comprasAjustes;
+            this.anulacionCompras = anulacionCompras;
+            this.entradas = entradas;
+            this.ventas = ventas;
+            this.anulacionVenta = anulacionVenta;
+            this.salida = salida;
+        }
+
+        public static SizeKardexBucket of(
+                int comprasAjustes, int anulacionCompras, int entradas,
+                int ventas, int anulacionVenta, int salida
+        ) {
+            return new SizeKardexBucket(
+                    comprasAjustes, anulacionCompras, entradas, ventas, anulacionVenta, salida);
+        }
+
+        static SizeKardexBucket from(KardexAccumulator acc) {
+            return new SizeKardexBucket(
+                    acc.comprasAjustes, acc.anulacionCompras, acc.entradas,
+                    acc.ventas, acc.anulacionVenta, acc.salida);
+        }
+
+        public static SizeKardexBucket empty() {
+            return new SizeKardexBucket(0, 0, 0, 0, 0, 0);
+        }
+
+        public boolean isEmpty() {
+            return comprasAjustes == 0 && anulacionCompras == 0 && entradas == 0
+                    && ventas == 0 && anulacionVenta == 0 && salida == 0;
+        }
+
+        /** Neto del periodo (suma algebraica de columnas kardex). */
+        public int netDelta() {
+            return comprasAjustes - anulacionCompras + entradas - ventas + anulacionVenta - salida;
+        }
+    }
+
     private Map<Long, Integer> computeBalanceByStockId(Long locationId, LocalDateTime cutoffExclusive) {
         Map<Long, Integer> balanceByStockId = new LinkedHashMap<>();
         for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(
@@ -1479,7 +1576,8 @@ public class KioscoInventoryService {
                 userId,
                 originLocationId,
                 destinationLocationId,
-                physicalSlipNumber
+                physicalSlipNumber,
+                sizeKey
         );
 
         if (syncLegacy && affectsStock) {
@@ -1551,6 +1649,38 @@ public class KioscoInventoryService {
                 userId,
                 originLocationId,
                 destinationLocationId,
+                null,
+                null
+        );
+    }
+
+    private void saveMovement(
+            KioscoStockEntity stock,
+            KioscoMovementType movementType,
+            Integer quantity,
+            Integer stockBefore,
+            Integer stockAfter,
+            Long referenceId,
+            String reason,
+            boolean affectsStock,
+            Long userId,
+            Long originLocationId,
+            Long destinationLocationId,
+            String physicalSlipNumber
+    ) {
+        saveMovement(
+                stock,
+                movementType,
+                quantity,
+                stockBefore,
+                stockAfter,
+                referenceId,
+                reason,
+                affectsStock,
+                userId,
+                originLocationId,
+                destinationLocationId,
+                physicalSlipNumber,
                 null
         );
     }
@@ -1567,13 +1697,16 @@ public class KioscoInventoryService {
             Long userId,
             Long originLocationId,
             Long destinationLocationId,
-            String physicalSlipNumber
+            String physicalSlipNumber,
+            String sizeKey
     ) {
         String normalizedSlip = normalizePhysicalSlipNumber(physicalSlipNumber);
+        String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
         KioscoMovementEntity movement = KioscoMovementEntity.builder()
                 .kioscoStockId(stock.getId())
                 .movementType(movementType)
                 .quantity(quantity)
+                .sizeKey(normalizedSize.isEmpty() ? null : normalizedSize)
                 .stockBefore(stockBefore)
                 .stockAfter(stockAfter)
                 .referenceId(referenceId)
@@ -1793,6 +1926,7 @@ public class KioscoInventoryService {
                 .colorName(color != null ? color.getName() : null)
                 .movementType(entity.getMovementType())
                 .quantity(entity.getQuantity())
+                .sizeKey(entity.getSizeKey())
                 .stockBefore(entity.getStockBefore())
                 .stockAfter(entity.getStockAfter())
                 .referenceId(entity.getReferenceId())

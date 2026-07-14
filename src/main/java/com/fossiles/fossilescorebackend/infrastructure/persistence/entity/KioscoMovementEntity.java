@@ -41,6 +41,10 @@ public class KioscoMovementEntity {
     @Column(name = "quantity", nullable = false)
     private Integer quantity;
 
+    /** Talla del movimiento (envío FOSS, venta por talla, etc.). Null = agregado / histórico. */
+    @Column(name = "size_key", length = 40)
+    private String sizeKey;
+
     @Column(name = "stock_before", nullable = false)
     private Integer stockBefore;
 

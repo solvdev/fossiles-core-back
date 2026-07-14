@@ -309,6 +309,9 @@ public class KioscoInventoryCountService {
 
         List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows = kioscoInventoryService.buildKardexRows(
                 count.getLocationId(), count.getPeriodFrom(), kardexTo, true, balanceAsOf);
+        Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize =
+                kioscoInventoryService.buildKardexByStockAndSize(
+                        count.getLocationId(), count.getPeriodFrom(), kardexTo);
 
         Map<String, KioscoPhysicalCountItemEntity> itemsByKey = itemRepository.findByCountId(count.getId()).stream()
                 .collect(Collectors.toMap(i -> itemKey(i.getProductId(), i.getColorId()), i -> i, (a, b) -> a));
@@ -412,7 +415,7 @@ public class KioscoInventoryCountService {
                     .build();
             List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> displayRows = isSubcount
                     ? List.of(row)
-                    : expandRowsForDisplay(row, product);
+                    : expandRowsForDisplay(row, product, stock, kardexByStockAndSize);
             for (KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow displayRow : displayRows) {
                 allRows.add(displayRow);
                 rowsByCategoryKey.computeIfAbsent(categoryKey, k -> new ArrayList<>()).add(displayRow);
@@ -737,7 +740,9 @@ public class KioscoInventoryCountService {
 
     private List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> expandRowsForDisplay(
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
-            ProductEntity product
+            ProductEntity product,
+            KioscoStockEntity stock,
+            Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize
     ) {
         if (!shouldExpandRowBySize(product, base)) {
             return List.of(base);
@@ -746,11 +751,64 @@ public class KioscoInventoryCountService {
         if (sizeKeys.isEmpty()) {
             return List.of(base);
         }
+        Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex = stock != null
+                ? kardexByStockAndSize.getOrDefault(stock.getId(), Map.of())
+                : Map.of();
+        boolean hasSizedMovements = sizeKardex.entrySet().stream()
+                .anyMatch(e -> e.getKey() != null && !e.getKey().isBlank() && !e.getValue().isEmpty());
+        KioscoInventoryService.SizeKardexBucket unallocated =
+                sizeKardex.getOrDefault("", KioscoInventoryService.SizeKardexBucket.empty());
+
         List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> expanded = new ArrayList<>();
         for (int i = 0; i < sizeKeys.size(); i++) {
-            expanded.add(buildExpandedRowForSize(base, product, sizeKeys.get(i), i == 0));
+            String size = sizeKeys.get(i);
+            boolean first = i == 0;
+            KioscoInventoryService.SizeKardexBucket bucket;
+            if (hasSizedMovements) {
+                bucket = sizeKardex.getOrDefault(size, KioscoInventoryService.SizeKardexBucket.empty());
+                if (first && !unallocated.isEmpty()) {
+                    bucket = mergeBuckets(bucket, unallocated);
+                }
+            } else {
+                // Histórico sin size_key: preservar total en la primera talla (sin duplicar subtotales).
+                bucket = first ? bucketFromAggregateRow(base) : KioscoInventoryService.SizeKardexBucket.empty();
+            }
+            expanded.add(buildExpandedRowForSize(base, product, size, bucket));
         }
         return expanded;
+    }
+
+    private static KioscoInventoryService.SizeKardexBucket mergeBuckets(
+            KioscoInventoryService.SizeKardexBucket a,
+            KioscoInventoryService.SizeKardexBucket b
+    ) {
+        if (a == null || a.isEmpty()) {
+            return b != null ? b : KioscoInventoryService.SizeKardexBucket.empty();
+        }
+        if (b == null || b.isEmpty()) {
+            return a;
+        }
+        return KioscoInventoryService.SizeKardexBucket.of(
+                a.comprasAjustes + b.comprasAjustes,
+                a.anulacionCompras + b.anulacionCompras,
+                a.entradas + b.entradas,
+                a.ventas + b.ventas,
+                a.anulacionVenta + b.anulacionVenta,
+                a.salida + b.salida
+        );
+    }
+
+    private static KioscoInventoryService.SizeKardexBucket bucketFromAggregateRow(
+            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base
+    ) {
+        return KioscoInventoryService.SizeKardexBucket.of(
+                base.getComprasAjustes(),
+                base.getAnulacionCompras(),
+                base.getEntradas(),
+                base.getVentas(),
+                base.getAnulacionVenta(),
+                base.getSalida()
+        );
     }
 
     private boolean shouldExpandRowBySize(
@@ -814,12 +872,15 @@ public class KioscoInventoryCountService {
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
             ProductEntity product,
             String size,
-            boolean includeKardexDetail
+            KioscoInventoryService.SizeKardexBucket kardex
     ) {
         int sysQty = base.getSystemSizes() != null ? base.getSystemSizes().getOrDefault(size, 0) : 0;
         Map<String, Integer> counts = resolveCountsForSize(base, product, size);
         int total = resolvePhysicalTotalForSize(base, product, size, counts);
         int inventarioFinal = sysQty;
+        KioscoInventoryService.SizeKardexBucket bucket =
+                kardex != null ? kardex : KioscoInventoryService.SizeKardexBucket.empty();
+        int inventarioInicial = Math.max(0, inventarioFinal - bucket.netDelta());
 
         Map<String, Integer> singleSystemSize = sysQty > 0 ? Map.of(size, sysQty) : null;
         Map<String, Integer> singlePhysicalSize = null;
@@ -834,13 +895,13 @@ public class KioscoInventoryCountService {
                 .systemSizes(singleSystemSize)
                 .physicalSizes(singlePhysicalSize)
                 .physicalSizesByLocation(buildSingleSizeByLocation(base.getPhysicalSizesByLocation(), size))
-                .inventarioInicial(includeKardexDetail ? base.getInventarioInicial() : 0)
-                .comprasAjustes(includeKardexDetail ? base.getComprasAjustes() : 0)
-                .anulacionCompras(includeKardexDetail ? base.getAnulacionCompras() : 0)
-                .entradas(includeKardexDetail ? base.getEntradas() : 0)
-                .ventas(includeKardexDetail ? base.getVentas() : 0)
-                .anulacionVenta(includeKardexDetail ? base.getAnulacionVenta() : 0)
-                .salida(includeKardexDetail ? base.getSalida() : 0)
+                .inventarioInicial(inventarioInicial)
+                .comprasAjustes(bucket.comprasAjustes)
+                .anulacionCompras(bucket.anulacionCompras)
+                .entradas(bucket.entradas)
+                .ventas(bucket.ventas)
+                .anulacionVenta(bucket.anulacionVenta)
+                .salida(bucket.salida)
                 .inventarioFinal(inventarioFinal)
                 .counts(counts)
                 .total(total)
