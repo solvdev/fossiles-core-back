@@ -1156,8 +1156,8 @@ public class KioscoInventoryService {
         LocalDateTime toDtExclusive = to.plusDays(1).atStartOfDay();
 
         Map<Long, Map<String, KardexAccumulator>> accByStockAndSize = new LinkedHashMap<>();
-        // stockId -> shipmentIds relacionados a ENTRADAs sin talla (para desglosar desde el envío).
-        Map<Long, Set<Long>> shipmentIdsByStockWithoutSize = new LinkedHashMap<>();
+        // stockId -> shipmentIds relacionados a ENTRADAs (con o sin talla) para desglosar desde el envío.
+        Map<Long, Set<Long>> shipmentIdsByStock = new LinkedHashMap<>();
         Map<String, Long> shipmentIdByNumberCache = new HashMap<>();
         for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBetween(
                 locationId, fromDt, toDtExclusive)) {
@@ -1174,20 +1174,18 @@ public class KioscoInventoryService {
                     .computeIfAbsent(sizeKey, k -> new KardexAccumulator())
                     .apply(m.getMovementType(), delta);
 
-            // ENTRADA ligada a envío sin talla: el reporte usa product_shipment_detail (talla/color/qty).
-            if (m.getMovementType() == KioscoMovementType.ENTRADA
-                    && sizeKey.isEmpty()
-                    && delta > 0) {
+            // Cualquier ENTRADA ligada a envío: el reporte puede usar product_shipment_detail.
+            if (m.getMovementType() == KioscoMovementType.ENTRADA && delta > 0) {
                 Long shipmentId = resolveShipmentIdForEntradaMovement(m, shipmentIdByNumberCache);
                 if (shipmentId != null) {
-                    shipmentIdsByStockWithoutSize
+                    shipmentIdsByStock
                             .computeIfAbsent(m.getKioscoStockId(), k -> new LinkedHashSet<>())
                             .add(shipmentId);
                 }
             }
         }
 
-        applyEntradasFromRelatedShipmentDetails(accByStockAndSize, shipmentIdsByStockWithoutSize);
+        applyEntradasFromRelatedShipmentDetails(accByStockAndSize, shipmentIdsByStock);
 
         Map<Long, Map<String, SizeKardexBucket>> out = new LinkedHashMap<>();
         for (Map.Entry<Long, Map<String, KardexAccumulator>> stockEntry : accByStockAndSize.entrySet()) {
@@ -1201,18 +1199,19 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Desglosa Entradas sin {@code size_key} usando exactamente las líneas del envío relacionado:
-     * producto + color + size_label + cantidad recibida/enviada. Solo para reporte (no escribe DB).
+     * Desglosa Entradas por talla usando exactamente las líneas del envío relacionado
+     * (producto + color + size_label + cantidad). Solo reporte; no escribe DB.
+     * Evita que el stock por talla quede en Ini. cuando en realidad llegó por el envío.
      */
     private void applyEntradasFromRelatedShipmentDetails(
             Map<Long, Map<String, KardexAccumulator>> accByStockAndSize,
-            Map<Long, Set<Long>> shipmentIdsByStockWithoutSize
+            Map<Long, Set<Long>> shipmentIdsByStock
     ) {
-        if (shipmentIdsByStockWithoutSize == null || shipmentIdsByStockWithoutSize.isEmpty()) {
+        if (shipmentIdsByStock == null || shipmentIdsByStock.isEmpty()) {
             return;
         }
 
-        Set<Long> allShipmentIds = shipmentIdsByStockWithoutSize.values().stream()
+        Set<Long> allShipmentIds = shipmentIdsByStock.values().stream()
                 .flatMap(Set::stream)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -1228,23 +1227,18 @@ public class KioscoInventoryService {
         Map<Long, List<ProductShipmentDetailEntity>> detailsByShipment = details.stream()
                 .collect(Collectors.groupingBy(ProductShipmentDetailEntity::getShipmentId, LinkedHashMap::new, Collectors.toList()));
 
-        Map<Long, KioscoStockEntity> stocksById = kioscoStockRepository.findAllById(shipmentIdsByStockWithoutSize.keySet())
+        Map<Long, KioscoStockEntity> stocksById = kioscoStockRepository.findAllById(shipmentIdsByStock.keySet())
                 .stream()
                 .collect(Collectors.toMap(KioscoStockEntity::getId, s -> s, (a, b) -> a, LinkedHashMap::new));
 
-        for (Map.Entry<Long, Set<Long>> stockEntry : shipmentIdsByStockWithoutSize.entrySet()) {
+        for (Map.Entry<Long, Set<Long>> stockEntry : shipmentIdsByStock.entrySet()) {
             Long stockId = stockEntry.getKey();
             KioscoStockEntity stock = stocksById.get(stockId);
             Map<String, KardexAccumulator> bySize = accByStockAndSize.get(stockId);
             if (stock == null || bySize == null) {
                 continue;
             }
-            KardexAccumulator unallocated = bySize.get("");
-            if (unallocated == null || unallocated.entradas <= 0) {
-                continue;
-            }
 
-            // Cantidades exactas del envío: size_label -> qty (mismo producto y color del stock).
             Map<String, Integer> entradasBySizeFromShipment = new LinkedHashMap<>();
             for (Long shipmentId : stockEntry.getValue()) {
                 for (ProductShipmentDetailEntity detail : detailsByShipment.getOrDefault(shipmentId, List.of())) {
@@ -1273,26 +1267,41 @@ public class KioscoInventoryService {
                 continue;
             }
 
-            int shipmentTotal = entradasBySizeFromShipment.values().stream().mapToInt(Integer::intValue).sum();
-            int movementEntradas = unallocated.entradas;
+            KardexAccumulator unallocated = bySize.get("");
+            int unsizedEntradas = unallocated != null ? unallocated.entradas : 0;
 
-            int justAssigned = 0;
+            // Si el movimiento ya trae size_key, no dupliques: solo completa tallas sin Ent.
+            // Si todo está en "" (sin talla), sustituye por el desglose exacto del envío.
+            boolean allEntradasWereUnsized = unsizedEntradas > 0;
+            int sizedEntradasBefore = bySize.entrySet().stream()
+                    .filter(e -> e.getKey() != null && !e.getKey().isBlank())
+                    .mapToInt(e -> e.getValue().entradas)
+                    .sum();
+
+            int shipmentTotal = 0;
             for (Map.Entry<String, Integer> e : entradasBySizeFromShipment.entrySet()) {
+                String size = e.getKey();
                 int qty = e.getValue();
-                if (shipmentTotal != movementEntradas && shipmentTotal > 0) {
-                    qty = (int) Math.round((double) movementEntradas * e.getValue() / shipmentTotal);
-                }
                 if (qty <= 0) {
                     continue;
                 }
-                bySize.computeIfAbsent(e.getKey(), k -> new KardexAccumulator()).entradas += qty;
-                justAssigned += qty;
+                KardexAccumulator sizeAcc = bySize.computeIfAbsent(size, k -> new KardexAccumulator());
+                if (allEntradasWereUnsized && sizedEntradasBefore == 0) {
+                    // Caso típico FOSS: 1 ENTRADA agregada → poner Ent. por talla del envío.
+                    sizeAcc.entradas += qty;
+                    shipmentTotal += qty;
+                } else if (sizeAcc.entradas <= 0) {
+                    // Completa tallas que hoy caían en Ini. aunque el envío sí las traía.
+                    sizeAcc.entradas = qty;
+                    shipmentTotal += qty;
+                }
             }
 
-            int residue = movementEntradas - justAssigned;
-            unallocated.entradas = Math.max(0, residue);
-            if (unallocated.isEmpty()) {
-                bySize.remove("");
+            if (unallocated != null && unsizedEntradas > 0) {
+                unallocated.entradas = Math.max(0, unsizedEntradas - shipmentTotal);
+                if (unallocated.isEmpty()) {
+                    bySize.remove("");
+                }
             }
         }
     }
