@@ -948,7 +948,7 @@ public class KioscoInventoryCountService {
         }
 
         Map<String, Integer> baseCounts = base.getCounts() != null ? base.getCounts() : Map.of();
-        if (collectSizeKeysForRow(base).size() == 1) {
+        if (collectSizeKeysForRow(base, null).size() == 1) {
             for (String key : COUNT_LOCATION_KEYS) {
                 counts.put(key, baseCounts.getOrDefault(key, 0));
             }

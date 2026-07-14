@@ -32,14 +32,17 @@ public class LeatherInventoryEntity {
     private Long materialId;
 
     /** Cantidad actual disponible en pies cuadrados */
+    @Builder.Default
     @Column(name = "quantity_available", nullable = false, precision = 12, scale = 3)
     private BigDecimal quantityAvailable = BigDecimal.ZERO;
 
     /** Total recibido históricamente */
+    @Builder.Default
     @Column(name = "total_received", nullable = false, precision = 12, scale = 3)
     private BigDecimal totalReceived = BigDecimal.ZERO;
 
     /** Total entregado a producción históricamente */
+    @Builder.Default
     @Column(name = "total_delivered", nullable = false, precision = 12, scale = 3)
     private BigDecimal totalDelivered = BigDecimal.ZERO;
 
