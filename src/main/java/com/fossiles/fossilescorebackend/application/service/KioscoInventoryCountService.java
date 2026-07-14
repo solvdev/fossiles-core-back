@@ -747,13 +747,13 @@ public class KioscoInventoryCountService {
         if (!shouldExpandRowBySize(product, base)) {
             return List.of(base);
         }
-        List<String> sizeKeys = collectSizeKeysForRow(base);
-        if (sizeKeys.isEmpty()) {
-            return List.of(base);
-        }
         Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex = stock != null
                 ? kardexByStockAndSize.getOrDefault(stock.getId(), Map.of())
                 : Map.of();
+        List<String> sizeKeys = collectSizeKeysForRow(base, sizeKardex.keySet());
+        if (sizeKeys.isEmpty()) {
+            return List.of(base);
+        }
         boolean hasSizedMovements = sizeKardex.entrySet().stream()
                 .anyMatch(e -> e.getKey() != null && !e.getKey().isBlank() && !e.getValue().isEmpty());
         KioscoInventoryService.SizeKardexBucket unallocated =
@@ -770,7 +770,7 @@ public class KioscoInventoryCountService {
                     bucket = mergeBuckets(bucket, unallocated);
                 }
             } else {
-                // Histórico sin size_key: preservar total en la primera talla (sin duplicar subtotales).
+                // Histórico sin size_key ni desglose de envío: total en la primera talla.
                 bucket = first ? bucketFromAggregateRow(base) : KioscoInventoryService.SizeKardexBucket.empty();
             }
             expanded.add(buildExpandedRowForSize(base, product, size, bucket));
@@ -850,7 +850,10 @@ public class KioscoInventoryCountService {
         return product != null && CinchoProductUtils.isMesaCinchosProduct(product);
     }
 
-    private List<String> collectSizeKeysForRow(KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base) {
+    private List<String> collectSizeKeysForRow(
+            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
+            Set<String> extraSizeKeys
+    ) {
         Set<String> keys = new TreeSet<>(this::compareSizeKeys);
         if (base.getSystemSizes() != null) {
             keys.addAll(base.getSystemSizes().keySet());
@@ -862,6 +865,13 @@ public class KioscoInventoryCountService {
             for (Map<String, Integer> locSizes : base.getPhysicalSizesByLocation().values()) {
                 if (locSizes != null) {
                     keys.addAll(locSizes.keySet());
+                }
+            }
+        }
+        if (extraSizeKeys != null) {
+            for (String key : extraSizeKeys) {
+                if (key != null && !key.isBlank()) {
+                    keys.add(key);
                 }
             }
         }

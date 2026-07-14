@@ -20,6 +20,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryLocation;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryKardex;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentDetailEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.InventoryTransferRepository;
@@ -29,6 +30,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Lo
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductInventoryLocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductInventoryKardexRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentDetailRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
@@ -47,12 +49,15 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
@@ -85,6 +90,7 @@ public class KioscoInventoryService {
     private final ProductInventoryLocationRepository productInventoryLocationRepository;
     private final KioskInventoryGuard kioskInventoryGuard;
     private final ProductShipmentRepository productShipmentRepository;
+    private final ProductShipmentDetailRepository productShipmentDetailRepository;
     private final ProductInventoryKardexRepository productInventoryKardexRepository;
     private final InventoryTransferRepository inventoryTransferRepository;
     private final EntityManager entityManager;
@@ -1150,6 +1156,9 @@ public class KioscoInventoryService {
         LocalDateTime toDtExclusive = to.plusDays(1).atStartOfDay();
 
         Map<Long, Map<String, KardexAccumulator>> accByStockAndSize = new LinkedHashMap<>();
+        // stockId -> shipmentIds relacionados a ENTRADAs sin talla (para desglosar desde el envío).
+        Map<Long, Set<Long>> shipmentIdsByStockWithoutSize = new LinkedHashMap<>();
+        Map<String, Long> shipmentIdByNumberCache = new HashMap<>();
         for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBetween(
                 locationId, fromDt, toDtExclusive)) {
             if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
@@ -1164,7 +1173,21 @@ public class KioscoInventoryService {
                     .computeIfAbsent(m.getKioscoStockId(), k -> new LinkedHashMap<>())
                     .computeIfAbsent(sizeKey, k -> new KardexAccumulator())
                     .apply(m.getMovementType(), delta);
+
+            // ENTRADA ligada a envío sin talla: el reporte usa product_shipment_detail (talla/color/qty).
+            if (m.getMovementType() == KioscoMovementType.ENTRADA
+                    && sizeKey.isEmpty()
+                    && delta > 0) {
+                Long shipmentId = resolveShipmentIdForEntradaMovement(m, shipmentIdByNumberCache);
+                if (shipmentId != null) {
+                    shipmentIdsByStockWithoutSize
+                            .computeIfAbsent(m.getKioscoStockId(), k -> new LinkedHashSet<>())
+                            .add(shipmentId);
+                }
+            }
         }
+
+        applyEntradasFromRelatedShipmentDetails(accByStockAndSize, shipmentIdsByStockWithoutSize);
 
         Map<Long, Map<String, SizeKardexBucket>> out = new LinkedHashMap<>();
         for (Map.Entry<Long, Map<String, KardexAccumulator>> stockEntry : accByStockAndSize.entrySet()) {
@@ -1175,6 +1198,141 @@ public class KioscoInventoryService {
             out.put(stockEntry.getKey(), bySize);
         }
         return out;
+    }
+
+    /**
+     * Desglosa Entradas sin {@code size_key} usando exactamente las líneas del envío relacionado:
+     * producto + color + size_label + cantidad recibida/enviada. Solo para reporte (no escribe DB).
+     */
+    private void applyEntradasFromRelatedShipmentDetails(
+            Map<Long, Map<String, KardexAccumulator>> accByStockAndSize,
+            Map<Long, Set<Long>> shipmentIdsByStockWithoutSize
+    ) {
+        if (shipmentIdsByStockWithoutSize == null || shipmentIdsByStockWithoutSize.isEmpty()) {
+            return;
+        }
+
+        Set<Long> allShipmentIds = shipmentIdsByStockWithoutSize.values().stream()
+                .flatMap(Set::stream)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (allShipmentIds.isEmpty()) {
+            return;
+        }
+
+        List<ProductShipmentDetailEntity> details = productShipmentDetailRepository.findByShipmentIdIn(allShipmentIds);
+        if (details == null || details.isEmpty()) {
+            return;
+        }
+
+        Map<Long, List<ProductShipmentDetailEntity>> detailsByShipment = details.stream()
+                .collect(Collectors.groupingBy(ProductShipmentDetailEntity::getShipmentId, LinkedHashMap::new, Collectors.toList()));
+
+        Map<Long, KioscoStockEntity> stocksById = kioscoStockRepository.findAllById(shipmentIdsByStockWithoutSize.keySet())
+                .stream()
+                .collect(Collectors.toMap(KioscoStockEntity::getId, s -> s, (a, b) -> a, LinkedHashMap::new));
+
+        for (Map.Entry<Long, Set<Long>> stockEntry : shipmentIdsByStockWithoutSize.entrySet()) {
+            Long stockId = stockEntry.getKey();
+            KioscoStockEntity stock = stocksById.get(stockId);
+            Map<String, KardexAccumulator> bySize = accByStockAndSize.get(stockId);
+            if (stock == null || bySize == null) {
+                continue;
+            }
+            KardexAccumulator unallocated = bySize.get("");
+            if (unallocated == null || unallocated.entradas <= 0) {
+                continue;
+            }
+
+            // Cantidades exactas del envío: size_label -> qty (mismo producto y color del stock).
+            Map<String, Integer> entradasBySizeFromShipment = new LinkedHashMap<>();
+            for (Long shipmentId : stockEntry.getValue()) {
+                for (ProductShipmentDetailEntity detail : detailsByShipment.getOrDefault(shipmentId, List.of())) {
+                    if (detail == null || detail.getProductId() == null) {
+                        continue;
+                    }
+                    if (!Objects.equals(detail.getProductId(), stock.getProductId())) {
+                        continue;
+                    }
+                    if (!Objects.equals(detail.getColorId(), stock.getColorId())) {
+                        continue;
+                    }
+                    String size = ProductInventorySizesJson.normalizeKey(detail.getSizeLabel());
+                    if (size.isEmpty()) {
+                        continue;
+                    }
+                    int qty = resolveShipmentDetailReceivedQty(detail);
+                    if (qty <= 0) {
+                        continue;
+                    }
+                    entradasBySizeFromShipment.merge(size, qty, Integer::sum);
+                }
+            }
+
+            if (entradasBySizeFromShipment.isEmpty()) {
+                continue;
+            }
+
+            int shipmentTotal = entradasBySizeFromShipment.values().stream().mapToInt(Integer::intValue).sum();
+            int movementEntradas = unallocated.entradas;
+
+            int justAssigned = 0;
+            for (Map.Entry<String, Integer> e : entradasBySizeFromShipment.entrySet()) {
+                int qty = e.getValue();
+                if (shipmentTotal != movementEntradas && shipmentTotal > 0) {
+                    qty = (int) Math.round((double) movementEntradas * e.getValue() / shipmentTotal);
+                }
+                if (qty <= 0) {
+                    continue;
+                }
+                bySize.computeIfAbsent(e.getKey(), k -> new KardexAccumulator()).entradas += qty;
+                justAssigned += qty;
+            }
+
+            int residue = movementEntradas - justAssigned;
+            unallocated.entradas = Math.max(0, residue);
+            if (unallocated.isEmpty()) {
+                bySize.remove("");
+            }
+        }
+    }
+
+    private Long resolveShipmentIdForEntradaMovement(
+            KioscoMovementEntity movement,
+            Map<String, Long> shipmentIdByNumberCache
+    ) {
+        if (movement == null) {
+            return null;
+        }
+        if (movement.getReferenceId() != null) {
+            return movement.getReferenceId();
+        }
+        if (!isShipmentReceiptReason(movement.getReason())) {
+            return null;
+        }
+        String shipmentNumber = extractShipmentNumberFromReason(movement.getReason());
+        if (shipmentNumber == null || shipmentNumber.isBlank()) {
+            return null;
+        }
+        String cacheKey = shipmentNumber.trim().toUpperCase(Locale.ROOT);
+        if (shipmentIdByNumberCache.containsKey(cacheKey)) {
+            return shipmentIdByNumberCache.get(cacheKey);
+        }
+        Long id = productShipmentRepository.findByShipmentNumber(shipmentNumber.trim())
+                .map(ProductShipmentEntity::getId)
+                .orElse(null);
+        shipmentIdByNumberCache.put(cacheKey, id);
+        return id;
+    }
+
+    private static int resolveShipmentDetailReceivedQty(ProductShipmentDetailEntity detail) {
+        BigDecimal qty = detail.getQuantityReceived() != null
+                ? detail.getQuantityReceived()
+                : detail.getQuantity();
+        if (qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
+            return 0;
+        }
+        return qty.setScale(0, RoundingMode.HALF_UP).intValue();
     }
 
     /** Totales de kardex por talla (columnas del conteo/kardex). */
