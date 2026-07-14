@@ -276,6 +276,7 @@ public class CustomerAccountService {
         BigDecimal totalReturns = BigDecimal.ZERO;
         List<CustomerAccountStatementLineResponse> lines = new ArrayList<>();
         Map<Long, ChargeMeta> chargeMetaById = buildChargeMetaMap(allActive);
+        Map<Long, String> kindByOrderId = new HashMap<>();
 
         for (CustomerAccountEntryEntity entry : inRange) {
             boolean active = STATUS_ACTIVE.equalsIgnoreCase(entry.getStatus());
@@ -321,7 +322,7 @@ public class CustomerAccountService {
                     .partialReleaseId(entry.getPartialReleaseId())
                     .productShipmentId(entry.getProductShipmentId())
                     .vendorShipmentNumber(entry.getVendorShipmentNumber())
-                    .orderKind(entry.getOrderKind())
+                    .orderKind(resolveEntryOrderKind(entry, kindByOrderId))
                     .grossCollectedAmount(entry.getGrossCollectedAmount())
                     .paymentDiscountAmount(entry.getPaymentDiscountAmount())
                     .status(entry.getStatus())
@@ -424,7 +425,9 @@ public class CustomerAccountService {
                 .partialReleaseId(firstNonNull(request.getPartialReleaseId(), chargeTarget != null ? chargeTarget.getPartialReleaseId() : null))
                 .productShipmentId(firstNonNull(request.getProductShipmentId(), chargeTarget != null ? chargeTarget.getProductShipmentId() : null))
                 .vendorShipmentNumber(trimToNull(vendorShipmentNumber))
-                .orderKind(orderKind != null ? orderKind : chargeTarget != null ? chargeTarget.getOrderKind() : null)
+                .orderKind(orderKind != null
+                        ? orderKind
+                        : chargeTarget != null ? resolveEntryOrderKind(chargeTarget, new HashMap<>()) : null)
                 .status(STATUS_ACTIVE)
                 .createdBy(userId)
                 .updatedBy(userId)
@@ -822,10 +825,8 @@ public class CustomerAccountService {
             return;
         }
 
-        String orderKind = charge.getOrderKind();
-        if (orderKind == null && order != null) {
-            orderKind = resolveOrderKind(order);
-        }
+        // Prefer live classification so MARCAS → GCF even if entry was saved as OPV before.
+        String orderKind = order != null ? resolveOrderKind(order) : charge.getOrderKind();
         if (kindFilter != null && (orderKind == null || !kindFilter.equalsIgnoreCase(orderKind))) {
             return;
         }
@@ -1017,6 +1018,10 @@ public class CustomerAccountService {
         String partialLabel = resolvePartialReleaseLabel(charge.getPartialReleaseId());
         CustomerEntity customer = customerRepository.findById(charge.getCustomerId()).orElse(null);
         RouteMeta routeMeta = resolveRouteMeta(customer != null ? customer.getRouteLocationCode() : null);
+        ProductionOrderEntity order = charge.getProductionOrderId() != null
+                ? productionOrderRepository.findById(charge.getProductionOrderId()).orElse(null)
+                : null;
+        String orderKind = order != null ? resolveOrderKind(order) : charge.getOrderKind();
         return LfReceivableDocumentResponse.builder()
                 .chargeEntryId(charge.getId())
                 .customerId(charge.getCustomerId())
@@ -1029,7 +1034,7 @@ public class CustomerAccountService {
                 .partialReleaseId(charge.getPartialReleaseId())
                 .productShipmentId(charge.getProductShipmentId())
                 .orderCode(orderCode)
-                .orderKind(charge.getOrderKind())
+                .orderKind(orderKind)
                 .invoiceNumber(firstNonBlank(charge.getInvoiceNumber(), charge.getVendorShipmentNumber()))
                 .documentNumber(firstNonBlank(charge.getDocumentNumber(), orderCode, charge.getVendorShipmentNumber()))
                 .vendorShipmentNumber(charge.getVendorShipmentNumber())
@@ -1433,11 +1438,12 @@ public class CustomerAccountService {
     private KindSplit computeKindSplit(List<CustomerAccountEntryEntity> entries) {
         BigDecimal opv = BigDecimal.ZERO;
         BigDecimal opc = BigDecimal.ZERO;
+        Map<Long, String> kindByOrderId = new HashMap<>();
         for (CustomerAccountEntryEntity entry : entries) {
             if (!STATUS_ACTIVE.equalsIgnoreCase(entry.getStatus())) {
                 continue;
             }
-            String kind = entry.getOrderKind();
+            String kind = resolveEntryOrderKind(entry, kindByOrderId);
             if (kind == null) {
                 continue;
             }
@@ -1458,6 +1464,16 @@ public class CustomerAccountService {
         return new KindSplit(
                 opv.compareTo(BigDecimal.ZERO) > 0 ? opv.setScale(2, RoundingMode.HALF_UP) : BigDecimal.ZERO,
                 opc.compareTo(BigDecimal.ZERO) > 0 ? opc.setScale(2, RoundingMode.HALF_UP) : BigDecimal.ZERO);
+    }
+
+    private String resolveEntryOrderKind(CustomerAccountEntryEntity entry, Map<Long, String> kindByOrderId) {
+        if (entry.getProductionOrderId() != null) {
+            return kindByOrderId.computeIfAbsent(entry.getProductionOrderId(), id ->
+                    productionOrderRepository.findById(id)
+                            .map(this::resolveOrderKind)
+                            .orElse(entry.getOrderKind()));
+        }
+        return entry.getOrderKind();
     }
 
     private record KindSplit(BigDecimal opvDue, BigDecimal opcDue) {}
@@ -1801,7 +1817,9 @@ public class CustomerAccountService {
 
     private String classifyOrderKind(ProductionOrderEntity order) {
         String type = order.getOrderType() != null ? order.getOrderType().trim().toUpperCase(Locale.ROOT) : "";
-        if (isCinchoOrderType(type)) {
+        // GCF (OPC): cinchos y OPV de marcas (artículos con brandName / tipo MARCAS).
+        // Fossiles (OPV): resto de órdenes de venta LF.
+        if (isCinchoOrderType(type) || isMarcasOrderType(type)) {
             return "OPC";
         }
         return "OPV";
@@ -1811,6 +1829,10 @@ public class CustomerAccountService {
         return "CINCHOS".equals(orderType)
                 || "CINCHOS_FOSSILES".equals(orderType)
                 || "CINCHOS_MARCAS".equals(orderType);
+    }
+
+    private static boolean isMarcasOrderType(String orderType) {
+        return "MARCAS".equals(orderType);
     }
 
     private static boolean isDebitType(String entryType) {
@@ -1951,7 +1973,7 @@ public class CustomerAccountService {
                 .partialReleaseId(entity.getPartialReleaseId())
                 .productShipmentId(entity.getProductShipmentId())
                 .vendorShipmentNumber(entity.getVendorShipmentNumber())
-                .orderKind(entity.getOrderKind())
+                .orderKind(resolveEntryOrderKind(entity, new HashMap<>()))
                 .status(entity.getStatus())
                 .voidedAt(entity.getVoidedAt())
                 .voidedBy(entity.getVoidedBy())
