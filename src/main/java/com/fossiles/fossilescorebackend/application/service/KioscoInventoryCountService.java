@@ -356,7 +356,12 @@ public class KioscoInventoryCountService {
                     item != null ? item.getSizeLocationCountsData() : null);
 
             KioscoStockEntity stock = stockByKey.get(itemKey(kardexRow.getProductId(), kardexRow.getColorId()));
-            Map<String, Integer> systemSizes = resolveSystemSizesForReport(stock);
+            Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardexForStock = stock != null
+                    ? kardexByStockAndSize.getOrDefault(stock.getId(), Map.of())
+                    : Map.of();
+            // Incluir tallas con movimiento/envío en el periodo aunque el stock actual sea 0.
+            Map<String, Integer> systemSizes = enrichSizesWithMovementKeys(
+                    resolveSystemSizesForReport(stock), sizeKardexForStock);
             String sizesSummary = formatSizesSummary(systemSizes);
             String physicalSizesSummary = formatSizesSummary(physicalSizes);
 
@@ -585,7 +590,29 @@ public class KioscoInventoryCountService {
         if (hasAssignedColor(kardexRow)) {
             return true;
         }
-        return ProductCinchoType.isPackagingProductCode(kardexRow != null ? kardexRow.getProductCode() : null);
+        if (ProductCinchoType.isPackagingProductCode(kardexRow != null ? kardexRow.getProductCode() : null)) {
+            return true;
+        }
+        // Entradas de envío u otro movimiento del periodo: no depender solo de stock actual.
+        return hasKardexActivity(kardexRow);
+    }
+
+    private boolean hasKardexActivity(KioscoKardexReportResponse.KioscoKardexRow kardexRow) {
+        if (kardexRow == null) {
+            return false;
+        }
+        return safeInt(kardexRow.getInventarioInicial()) > 0
+                || safeInt(kardexRow.getInventarioFinal()) > 0
+                || safeInt(kardexRow.getComprasAjustes()) > 0
+                || safeInt(kardexRow.getAnulacionCompras()) > 0
+                || safeInt(kardexRow.getEntradas()) > 0
+                || safeInt(kardexRow.getVentas()) > 0
+                || safeInt(kardexRow.getAnulacionVenta()) > 0
+                || safeInt(kardexRow.getSalida()) > 0;
+    }
+
+    private static int safeInt(Integer value) {
+        return value != null ? value : 0;
     }
 
     private boolean hasAssignedColor(KioscoKardexReportResponse.KioscoKardexRow kardexRow) {
@@ -598,9 +625,34 @@ public class KioscoInventoryCountService {
 
     private Map<String, Integer> resolveSystemSizesForReport(KioscoStockEntity stock) {
         if (stock == null) {
-            return Map.of();
+            return new LinkedHashMap<>();
         }
-        return toSystemSizesMap(stock.getSizesData());
+        return new LinkedHashMap<>(toSystemSizesMap(stock.getSizesData()));
+    }
+
+    /**
+     * Agrega tallas que tuvieron kardex/envío en el periodo aunque {@code sizes_data} ya esté en 0.
+     */
+    private Map<String, Integer> enrichSizesWithMovementKeys(
+            Map<String, Integer> systemSizes,
+            Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex
+    ) {
+        Map<String, Integer> out = systemSizes != null ? new LinkedHashMap<>(systemSizes) : new LinkedHashMap<>();
+        if (sizeKardex == null || sizeKardex.isEmpty()) {
+            return out;
+        }
+        for (Map.Entry<String, KioscoInventoryService.SizeKardexBucket> e : sizeKardex.entrySet()) {
+            String size = e.getKey();
+            if (size == null || size.isBlank()) {
+                continue;
+            }
+            KioscoInventoryService.SizeKardexBucket bucket = e.getValue();
+            if (bucket == null || bucket.isEmpty()) {
+                continue;
+            }
+            out.putIfAbsent(size, 0);
+        }
+        return out;
     }
 
     private int computePhysicalCountTotal(
@@ -744,12 +796,12 @@ public class KioscoInventoryCountService {
             KioscoStockEntity stock,
             Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize
     ) {
-        if (!shouldExpandRowBySize(product, base)) {
-            return List.of(base);
-        }
         Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex = stock != null
                 ? kardexByStockAndSize.getOrDefault(stock.getId(), Map.of())
                 : Map.of();
+        if (!shouldExpandRowBySize(product, base, sizeKardex)) {
+            return List.of(base);
+        }
         List<String> sizeKeys = collectSizeKeysForRow(base, sizeKardex.keySet());
         if (sizeKeys.isEmpty()) {
             return List.of(base);
@@ -813,15 +865,26 @@ public class KioscoInventoryCountService {
 
     private boolean shouldExpandRowBySize(
             ProductEntity product,
-            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base
+            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
+            Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex
     ) {
         if (base.isPackaging()) {
             return false;
         }
-        if (!hasSizeBreakdown(base)) {
+        boolean hasSizes = hasSizeBreakdown(base) || hasSizedKardexActivity(sizeKardex);
+        if (!hasSizes) {
             return false;
         }
         return isCinchoForSizeExpansion(product, base);
+    }
+
+    private boolean hasSizedKardexActivity(Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex) {
+        if (sizeKardex == null || sizeKardex.isEmpty()) {
+            return false;
+        }
+        return sizeKardex.entrySet().stream()
+                .anyMatch(e -> e.getKey() != null && !e.getKey().isBlank()
+                        && e.getValue() != null && !e.getValue().isEmpty());
     }
 
     private boolean hasSizeBreakdown(KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base) {
