@@ -1,11 +1,13 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ProductInventoryLocationRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryTrasladoRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoConsolidatedReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoInventoryInitializeResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoKardexReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoStockResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoTrasladoBoletaResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
@@ -276,8 +278,15 @@ public class KioscoInventoryService {
             Long userId,
             String physicalSlipNumber
     ) throws BusinessException, ResourceNotFoundException {
-        return registrarTrasladoInternal(
-                locationOriginId, locationDestinationId, productId, colorId, quantity, userId, true, physicalSlipNumber);
+        return registrarTraslado(KioscoInventoryTrasladoRequest.builder()
+                .locationOriginId(locationOriginId)
+                .locationDestinationId(locationDestinationId)
+                .productId(productId)
+                .colorId(colorId)
+                .quantity(quantity)
+                .userId(userId)
+                .physicalSlipNumber(physicalSlipNumber)
+                .build());
     }
 
     public TrasladoResult registrarTraslado(
@@ -300,7 +309,216 @@ public class KioscoInventoryService {
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
-        return registrarTrasladoInternal(locationOriginId, locationDestinationId, productId, colorId, qty, userId, false, null);
+        return registrarTrasladoInternal(
+                locationOriginId, locationDestinationId, productId, colorId, qty, userId, false, null, null, null);
+    }
+
+    public TrasladoResult registrarTraslado(KioscoInventoryTrasladoRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        if (request == null) {
+            throw new BusinessException("La solicitud de traslado es obligatoria.");
+        }
+        List<KioscoInventoryTrasladoRequest.Item> items = resolveTrasladoItems(request);
+        if (items.isEmpty()) {
+            throw new BusinessException("Agrega al menos un producto al traslado.");
+        }
+        Long originId = request.getLocationOriginId();
+        Long destId = request.getLocationDestinationId();
+        if (Objects.equals(originId, destId)) {
+            throw new BusinessException("El origen y el destino deben ser distintos.");
+        }
+        Long resolvedUserId = resolveUserIdRequired(request.getUserId());
+        validateLocationIsKiosk(originId);
+        validateLocationIsKiosk(destId);
+
+        String slip = normalizePhysicalSlipNumber(request.getPhysicalSlipNumber());
+        if (slip == null) {
+            throw new BusinessException("Debes indicar el número de boleta física.");
+        }
+        ExistingTrasladoBoleta existing = resolveExistingTrasladoBoleta(slip, originId, destId);
+        Long transferReferenceId = existing != null && existing.referenceId() != null
+                ? existing.referenceId()
+                : generateTransferReferenceId();
+
+        LocationEntity fromLocation = locationRepository.findById(originId).orElse(null);
+        LocationEntity toLocation = locationRepository.findById(destId).orElse(null);
+        String trasladoReason = buildTransferReason(fromLocation, toLocation);
+
+        KioscoStockResponse lastOrigin = null;
+        KioscoStockResponse lastDestination = null;
+        for (KioscoInventoryTrasladoRequest.Item item : items) {
+            validateQuantity(item.getQuantity());
+            validateProduct(item.getProductId());
+            validateColor(item.getColorId());
+            String sizeKey = ProductInventorySizesJson.normalizeKey(item.getSizeKey());
+            String sizeKeyOrNull = sizeKey.isEmpty() ? null : sizeKey;
+
+            lastOrigin = applyStockMovement(
+                    originId,
+                    item.getProductId(),
+                    item.getColorId(),
+                    item.getQuantity(),
+                    transferReferenceId,
+                    originId,
+                    destId,
+                    resolvedUserId,
+                    KioscoMovementType.TRASLADO_SALIDA,
+                    -item.getQuantity(),
+                    true,
+                    trasladoReason,
+                    sizeKeyOrNull,
+                    true,
+                    slip
+            );
+            lastDestination = applyStockMovement(
+                    destId,
+                    item.getProductId(),
+                    item.getColorId(),
+                    item.getQuantity(),
+                    transferReferenceId,
+                    originId,
+                    destId,
+                    resolvedUserId,
+                    KioscoMovementType.TRASLADO_ENTRADA,
+                    item.getQuantity(),
+                    true,
+                    trasladoReason,
+                    sizeKeyOrNull,
+                    true,
+                    slip
+            );
+        }
+
+        return TrasladoResult.builder()
+                .referenceId(transferReferenceId)
+                .originStock(lastOrigin)
+                .destinationStock(lastDestination)
+                .appended(existing != null)
+                .lineCount(items.size())
+                .physicalSlipNumber(slip)
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public KioscoTrasladoBoletaResponse lookupTrasladoBoleta(String physicalSlipNumber)
+            throws BusinessException {
+        String slip = normalizePhysicalSlipNumber(physicalSlipNumber);
+        if (slip == null) {
+            throw new BusinessException("Indica el número de boleta física.");
+        }
+        List<KioscoMovementEntity> movements = kioscoMovementRepository.findByPhysicalSlipNumber(slip);
+        if (movements == null || movements.isEmpty()) {
+            return KioscoTrasladoBoletaResponse.builder()
+                    .exists(false)
+                    .physicalSlipNumber(slip)
+                    .lines(List.of())
+                    .build();
+        }
+        boolean onlyTraslado = movements.stream().allMatch(m ->
+                m.getMovementType() == KioscoMovementType.TRASLADO_SALIDA
+                        || m.getMovementType() == KioscoMovementType.TRASLADO_ENTRADA);
+        if (!onlyTraslado) {
+            throw new BusinessException(
+                    "La boleta ya está registrada en otro tipo de movimiento (no es un traslado entre kioskos).");
+        }
+        KioscoMovementEntity sample = movements.stream()
+                .filter(m -> m.getMovementType() == KioscoMovementType.TRASLADO_SALIDA)
+                .findFirst()
+                .orElse(movements.get(0));
+        Long originId = sample.getOriginLocationId();
+        Long destId = sample.getDestinationLocationId();
+        LocationEntity origin = resolveLocation(originId);
+        LocationEntity dest = resolveLocation(destId);
+
+        List<KioscoTrasladoBoletaResponse.Line> lines = new ArrayList<>();
+        for (KioscoMovementEntity m : movements) {
+            if (m.getMovementType() != KioscoMovementType.TRASLADO_SALIDA) {
+                continue;
+            }
+            KioscoStockEntity stock = m.getKioscoStock();
+            ProductEntity product = stock != null ? stock.getProduct() : null;
+            ColorEntity color = stock != null ? stock.getColor() : null;
+            lines.add(KioscoTrasladoBoletaResponse.Line.builder()
+                    .productId(stock != null ? stock.getProductId() : null)
+                    .productCode(product != null ? product.getCode() : null)
+                    .productName(product != null ? product.getName() : null)
+                    .colorId(stock != null ? stock.getColorId() : null)
+                    .colorName(color != null ? color.getName() : null)
+                    .sizeKey(m.getSizeKey())
+                    .quantity(m.getQuantity())
+                    .movementType(String.valueOf(m.getMovementType()))
+                    .build());
+        }
+
+        return KioscoTrasladoBoletaResponse.builder()
+                .exists(true)
+                .physicalSlipNumber(slip)
+                .referenceId(sample.getReferenceId())
+                .locationOriginId(originId)
+                .locationDestinationId(destId)
+                .locationOriginName(locationName(origin))
+                .locationDestinationName(locationName(dest))
+                .lines(lines)
+                .build();
+    }
+
+    private List<KioscoInventoryTrasladoRequest.Item> resolveTrasladoItems(KioscoInventoryTrasladoRequest request)
+            throws BusinessException {
+        if (request.getItems() != null && !request.getItems().isEmpty()) {
+            List<KioscoInventoryTrasladoRequest.Item> out = new ArrayList<>();
+            for (KioscoInventoryTrasladoRequest.Item item : request.getItems()) {
+                if (item == null || item.getProductId() == null) {
+                    continue;
+                }
+                if (item.getQuantity() == null || item.getQuantity() < 1) {
+                    throw new BusinessException("Cada línea del traslado debe tener cantidad mayor a cero.");
+                }
+                out.add(item);
+            }
+            return out;
+        }
+        if (request.getProductId() == null || request.getQuantity() == null) {
+            return List.of();
+        }
+        return List.of(KioscoInventoryTrasladoRequest.Item.builder()
+                .productId(request.getProductId())
+                .colorId(request.getColorId())
+                .quantity(request.getQuantity())
+                .sizeKey(request.getSizeKey())
+                .build());
+    }
+
+    private record ExistingTrasladoBoleta(Long referenceId, Long originId, Long destinationId) {}
+
+    /**
+     * Si la boleta ya existe como traslado entre los mismos kioskos, permite anexar productos.
+     * Si existe con otra ruta u otro tipo de movimiento, rechaza.
+     */
+    private ExistingTrasladoBoleta resolveExistingTrasladoBoleta(
+            String slip, Long originId, Long destinationId
+    ) throws BusinessException {
+        List<KioscoMovementEntity> existing = kioscoMovementRepository.findByPhysicalSlipNumber(slip);
+        if (existing == null || existing.isEmpty()) {
+            return null;
+        }
+        boolean onlyTraslado = existing.stream().allMatch(m ->
+                m.getMovementType() == KioscoMovementType.TRASLADO_SALIDA
+                        || m.getMovementType() == KioscoMovementType.TRASLADO_ENTRADA);
+        if (!onlyTraslado) {
+            throw new BusinessException(
+                    "El número de boleta física ya fue registrado en otro tipo de movimiento de inventario kiosko.");
+        }
+        KioscoMovementEntity sample = existing.stream()
+                .filter(m -> m.getMovementType() == KioscoMovementType.TRASLADO_SALIDA)
+                .findFirst()
+                .orElse(existing.get(0));
+        Long existingOrigin = sample.getOriginLocationId();
+        Long existingDest = sample.getDestinationLocationId();
+        if (!Objects.equals(existingOrigin, originId) || !Objects.equals(existingDest, destinationId)) {
+            throw new BusinessException(
+                    "La boleta ya pertenece a un traslado entre otros kioskos. Usa el mismo origen y destino para añadir productos.");
+        }
+        return new ExistingTrasladoBoleta(sample.getReferenceId(), existingOrigin, existingDest);
     }
 
     private TrasladoResult registrarTrasladoInternal(
@@ -311,66 +529,53 @@ public class KioscoInventoryService {
             Integer quantity,
             Long userId,
             boolean syncLegacy,
-            String physicalSlipNumber
+            String physicalSlipNumber,
+            String sizeKey,
+            Long reuseReferenceId
     ) throws BusinessException, ResourceNotFoundException {
-        validatePhysicalSlipNumber(physicalSlipNumber, syncLegacy);
-        validateQuantity(quantity);
-        if (Objects.equals(locationOriginId, locationDestinationId)) {
-            throw new BusinessException("El origen y el destino deben ser distintos.");
+        if (!syncLegacy) {
+            // Integración: sin boleta física, un solo ítem.
+            validateQuantity(quantity);
+            if (Objects.equals(locationOriginId, locationDestinationId)) {
+                throw new BusinessException("El origen y el destino deben ser distintos.");
+            }
+            Long resolvedUserId = resolveUserIdRequired(userId);
+            validateLocationIsKiosk(locationOriginId);
+            validateLocationIsKiosk(locationDestinationId);
+            validateProduct(productId);
+            validateColor(colorId);
+            Long transferReferenceId = reuseReferenceId != null ? reuseReferenceId : generateTransferReferenceId();
+            LocationEntity fromLocation = locationRepository.findById(locationOriginId).orElse(null);
+            LocationEntity toLocation = locationRepository.findById(locationDestinationId).orElse(null);
+            String trasladoReason = buildTransferReason(fromLocation, toLocation);
+            String sizeKeyOrNull = ProductInventorySizesJson.normalizeKey(sizeKey);
+            sizeKeyOrNull = sizeKeyOrNull.isEmpty() ? null : sizeKeyOrNull;
+            KioscoStockResponse origin = applyStockMovement(
+                    locationOriginId, productId, colorId, quantity, transferReferenceId,
+                    locationOriginId, locationDestinationId, resolvedUserId,
+                    KioscoMovementType.TRASLADO_SALIDA, -quantity, true, trasladoReason,
+                    sizeKeyOrNull, false, physicalSlipNumber);
+            KioscoStockResponse destination = applyStockMovement(
+                    locationDestinationId, productId, colorId, quantity, transferReferenceId,
+                    locationOriginId, locationDestinationId, resolvedUserId,
+                    KioscoMovementType.TRASLADO_ENTRADA, quantity, true, trasladoReason,
+                    sizeKeyOrNull, false, physicalSlipNumber);
+            return TrasladoResult.builder()
+                    .referenceId(transferReferenceId)
+                    .originStock(origin)
+                    .destinationStock(destination)
+                    .build();
         }
-        Long resolvedUserId = resolveUserIdRequired(userId);
-        validateLocationIsKiosk(locationOriginId);
-        validateLocationIsKiosk(locationDestinationId);
-        validateProduct(productId);
-        validateColor(colorId);
-
-        Long transferReferenceId = generateTransferReferenceId();
-
-        LocationEntity fromLocation = locationRepository.findById(locationOriginId).orElse(null);
-        LocationEntity toLocation = locationRepository.findById(locationDestinationId).orElse(null);
-        String trasladoReason = buildTransferReason(fromLocation, toLocation);
-
-        KioscoStockResponse origin = applyStockMovement(
-                locationOriginId,
-                productId,
-                colorId,
-                quantity,
-                transferReferenceId,
-                locationOriginId,
-                locationDestinationId,
-                resolvedUserId,
-                KioscoMovementType.TRASLADO_SALIDA,
-                -quantity,
-                true,
-                trasladoReason,
-                null,
-                syncLegacy,
-                physicalSlipNumber
-        );
-
-        KioscoStockResponse destination = applyStockMovement(
-                locationDestinationId,
-                productId,
-                colorId,
-                quantity,
-                transferReferenceId,
-                locationOriginId,
-                locationDestinationId,
-                resolvedUserId,
-                KioscoMovementType.TRASLADO_ENTRADA,
-                quantity,
-                true,
-                trasladoReason,
-                null,
-                syncLegacy,
-                physicalSlipNumber
-        );
-
-        return TrasladoResult.builder()
-                .referenceId(transferReferenceId)
-                .originStock(origin)
-                .destinationStock(destination)
-                .build();
+        return registrarTraslado(KioscoInventoryTrasladoRequest.builder()
+                .locationOriginId(locationOriginId)
+                .locationDestinationId(locationDestinationId)
+                .productId(productId)
+                .colorId(colorId)
+                .quantity(quantity)
+                .userId(userId)
+                .physicalSlipNumber(physicalSlipNumber)
+                .sizeKey(sizeKey)
+                .build());
     }
 
     public KioscoStockResponse registrarEntradaPorTransferenciaInventario(
@@ -2662,6 +2867,10 @@ public class KioscoInventoryService {
         private Long referenceId;
         private KioscoStockResponse originStock;
         private KioscoStockResponse destinationStock;
+        /** true si se agregaron ítems a una boleta de traslado ya existente. */
+        private Boolean appended;
+        private Integer lineCount;
+        private String physicalSlipNumber;
     }
 
     @lombok.Data

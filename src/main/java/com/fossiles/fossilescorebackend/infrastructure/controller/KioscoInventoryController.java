@@ -22,6 +22,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalC
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentReconcileResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentReconcilePreviewResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoStockResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoTrasladoBoletaResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.KioscoInventoryCountService;
@@ -123,15 +124,14 @@ public class KioscoInventoryController {
     public ResponseEntity<KioscoInventoryService.TrasladoResult> registrarTraslado(
             @Valid @RequestBody KioscoInventoryTrasladoRequest request
     ) throws BusinessException, ResourceNotFoundException {
-        return ResponseEntity.ok(kioscoInventoryService.registrarTraslado(
-                request.getLocationOriginId(),
-                request.getLocationDestinationId(),
-                request.getProductId(),
-                request.getColorId(),
-                request.getQuantity(),
-                request.getUserId(),
-                request.getPhysicalSlipNumber()
-        ));
+        return ResponseEntity.ok(kioscoInventoryService.registrarTraslado(request));
+    }
+
+    @GetMapping("/traslado/boleta")
+    public ResponseEntity<KioscoTrasladoBoletaResponse> lookupTrasladoBoleta(
+            @RequestParam("number") String number
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioscoInventoryService.lookupTrasladoBoleta(number));
     }
 
     @PostMapping("/{locationId}/merma")
