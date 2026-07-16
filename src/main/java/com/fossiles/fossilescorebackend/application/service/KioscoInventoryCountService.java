@@ -299,6 +299,8 @@ public class KioscoInventoryCountService {
             throws BusinessException, ResourceNotFoundException {
         boolean isSubcount = balanceAsOf != null;
         LocalDate kardexTo = isSubcount ? balanceAsOf : count.getPeriodTo();
+        // Fin. siempre al cierre del periodo/corte (replay de movimientos), no stock vivo.
+        LocalDate finAsOf = isSubcount ? balanceAsOf : count.getPeriodTo();
 
         Map<String, KioscoStockEntity> stockByKey = kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAsc(count.getLocationId()).stream()
@@ -308,7 +310,7 @@ public class KioscoInventoryCountService {
         }
 
         List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows = kioscoInventoryService.buildKardexRows(
-                count.getLocationId(), count.getPeriodFrom(), kardexTo, true, balanceAsOf);
+                count.getLocationId(), count.getPeriodFrom(), kardexTo, true, finAsOf);
         Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize =
                 kioscoInventoryService.buildKardexByStockAndSize(
                         count.getLocationId(), count.getPeriodFrom(), kardexTo);
@@ -375,9 +377,7 @@ public class KioscoInventoryCountService {
             }
 
             int inventarioFinal = kardexRow.getInventarioFinal();
-            if (!isSubcount && !systemSizes.isEmpty() && CinchoProductUtils.isFossCinchoProduct(product)) {
-                inventarioFinal = systemSizes.values().stream().mapToInt(Integer::intValue).sum();
-            }
+            // No sobrescribir Fin. con sizes_data vivo: debe cuadrar con el saldo al periodo/corte.
 
             Map<String, Integer> rowSystemSizes = isSubcount ? null : (systemSizes.isEmpty() ? null : systemSizes);
             String rowSizesSummary = isSubcount ? null : sizesSummary;
