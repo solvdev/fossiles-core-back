@@ -231,6 +231,7 @@ public class ProductController {
                 .categoryId(entity.getCategoryId())
                 .audienceCategory(ProductAudienceCategory.normalizeProductAudience(entity.getAudienceCategory()))
                 .cinchoType(ProductCinchoType.normalizeCinchoType(entity.getCinchoType()))
+                .cinchoForKids(Boolean.TRUE.equals(entity.getCinchoForKids()))
                 .prdTime(entity.getPrdTime())
                 .salePrice(entity.getSalePrice())
                 .discountedPrice(entity.getDiscountedPrice())
@@ -258,6 +259,9 @@ public class ProductController {
                 .categoryId(request.getCategoryId())
                 .audienceCategory(normalizeProductAudience(request.getAudienceCategory()))
                 .cinchoType(ProductCinchoType.normalizeCinchoType(request.getCinchoType()))
+                .cinchoForKids(
+                        ProductCinchoType.normalizeCinchoType(request.getCinchoType()) != null
+                                && Boolean.TRUE.equals(request.getCinchoForKids()))
                 .prdTime(roundedPrdTime)
                 .salePrice(request.getSalePrice())
                 .discountedPrice(request.getDiscountedPrice())
@@ -279,6 +283,11 @@ public class ProductController {
         if (request.getCinchoType() != null) {
             entity.setCinchoType(ProductCinchoType.normalizeCinchoType(
                     request.getCinchoType().isBlank() ? null : request.getCinchoType()));
+        }
+        if (request.getCinchoForKids() != null || request.getCinchoType() != null) {
+            boolean kids = Boolean.TRUE.equals(request.getCinchoForKids())
+                    && ProductCinchoType.normalizeCinchoType(entity.getCinchoType()) != null;
+            entity.setCinchoForKids(kids);
         }
         if (request.getPrdTime() != null) {
             // Redondear a 2 decimales

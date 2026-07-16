@@ -37,6 +37,11 @@ public class ProductEntity {
     @Column(name = "cincho_type", length = 20)
     private String cinchoType;
 
+    /** true = cincho de niño (solo cuando aplica cincho). */
+    @Column(name = "cincho_for_kids")
+    @Builder.Default
+    private Boolean cinchoForKids = false;
+
     @Column(name = "prd_time", columnDefinition = "NUMERIC(10,2)")
     private Double prdTime;
 

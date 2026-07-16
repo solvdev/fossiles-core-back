@@ -11,7 +11,9 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "product_shipment_detail",
-       uniqueConstraints = @UniqueConstraint(columnNames = {"shipment_id", "product_id", "color_id", "size_label"}))
+       uniqueConstraints = @UniqueConstraint(
+               name = "uq_shipment_detail_product_color_size_hw",
+               columnNames = {"shipment_id", "product_id", "color_id", "size_label", "hardware_condition"}))
 @Data
 @Builder
 @NoArgsConstructor
@@ -33,6 +35,10 @@ public class ProductShipmentDetailEntity {
     @Column(name = "size_label", nullable = false, length = 50, columnDefinition = "varchar(50) not null default ''")
     @Builder.Default
     private String sizeLabel = "";
+
+    /** NUEVO | VIEJO — herraje del producto enviado. */
+    @Column(name = "hardware_condition", length = 20)
+    private String hardwareCondition;
 
     @Column(name = "quantity", nullable = false, precision = 12, scale = 3)
     private BigDecimal quantity;

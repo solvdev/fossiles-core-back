@@ -12,6 +12,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
+import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.InventoryTransfer;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
@@ -994,6 +995,21 @@ public class KioscoInventoryService {
             String sizeKey,
             String receiptLineRef
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarEntradaDesdeIntegracion(
+                locationId, productId, colorId, quantity, referenceId, userId, sizeKey, receiptLineRef, null);
+    }
+
+    public KioscoStockResponse registrarEntradaDesdeIntegracion(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            BigDecimal quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String receiptLineRef,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
         Long originLocationId = null;
         Long destinationLocationId = locationId;
@@ -1013,7 +1029,7 @@ public class KioscoInventoryService {
             }
         }
 
-        return applyStockMovement(
+        KioscoStockResponse response = applyStockMovement(
                 locationId,
                 productId,
                 colorId,
@@ -1029,6 +1045,25 @@ public class KioscoInventoryService {
                 sizeKey,
                 false
         );
+        applyHardwareConditionToStock(locationId, productId, colorId, hardwareCondition);
+        return response;
+    }
+
+    private void applyHardwareConditionToStock(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            String hardwareCondition
+    ) {
+        String normalized = ProductHardwareCondition.normalize(hardwareCondition);
+        if (normalized == null || locationId == null || productId == null) {
+            return;
+        }
+        kioscoStockRepository.findByLocationIdAndProductIdAndColorId(locationId, productId, colorId)
+                .ifPresent(stock -> {
+                    stock.setHardwareCondition(normalized);
+                    kioscoStockRepository.save(stock);
+                });
     }
 
     public boolean hasShipmentReceiptLineApplied(Long locationId, Long shipmentId, String lineRef) {
@@ -2280,11 +2315,14 @@ public class KioscoInventoryService {
                 .productId(entity.getProductId())
                 .productCode(product != null ? product.getCode() : null)
                 .productName(product != null ? product.getName() : null)
+                .cinchoType(product != null ? ProductCinchoType.normalizeCinchoType(product.getCinchoType()) : null)
+                .cinchoForKids(product != null && Boolean.TRUE.equals(product.getCinchoForKids()))
                 .colorId(entity.getColorId())
                 .colorName(color != null ? color.getName() : null)
                 .currentStock(current)
                 .sizes(sizes)
                 .minimumStock(minimum)
+                .hardwareCondition(entity.getHardwareCondition())
                 .lowStock(current <= minimum)
                 .lastUpdatedAt(entity.getLastUpdatedAt())
                 .build();

@@ -42,6 +42,8 @@ public class ProductShipmentRequest {
 
         private Long colorId;
         private String size;
+        /** NUEVO | VIEJO */
+        private String hardwareCondition;
         
         @NotNull(message = "Quantity is required")
         private java.math.BigDecimal quantity;

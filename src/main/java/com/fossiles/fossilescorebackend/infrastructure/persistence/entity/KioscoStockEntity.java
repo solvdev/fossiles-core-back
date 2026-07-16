@@ -55,6 +55,10 @@ public class KioscoStockEntity {
     @Builder.Default
     private Integer minimumStock = 0;
 
+    /** NUEVO | VIEJO — herraje; se actualiza al recibir envíos de distribución. */
+    @Column(name = "hardware_condition", length = 20)
+    private String hardwareCondition;
+
     @Column(name = "last_updated_at", nullable = false)
     private LocalDateTime lastUpdatedAt;
 

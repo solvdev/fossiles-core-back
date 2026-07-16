@@ -19,6 +19,7 @@ public class ProductResponse {
     private Long categoryId;
     private String audienceCategory;
     private String cinchoType;
+    private Boolean cinchoForKids;
     private Double prdTime;
     private BigDecimal salePrice;
     private BigDecimal discountedPrice;

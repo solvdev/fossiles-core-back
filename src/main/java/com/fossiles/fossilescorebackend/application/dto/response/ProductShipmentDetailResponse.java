@@ -23,6 +23,8 @@ public class ProductShipmentDetailResponse {
     private Long colorId;
     private String colorName;
     private String size;
+    /** NUEVO | VIEJO */
+    private String hardwareCondition;
     private BigDecimal quantity;
     private BigDecimal quantityReceived;
     private BigDecimal quantityDifference;

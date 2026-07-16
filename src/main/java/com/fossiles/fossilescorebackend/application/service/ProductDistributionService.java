@@ -22,6 +22,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
+import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
@@ -1203,6 +1204,7 @@ public class ProductDistributionService {
                         .productId(line.getProductId())
                         .colorId(line.getColorId())
                         .sizeLabel(normalizeSize(line.getSize()))
+                        .hardwareCondition(normalizeHardwareCondition(line.getHardwareCondition()))
                         .quantity(line.getQuantity())
                         .build();
                 shipmentDetailRepository.save(detail);
@@ -3440,7 +3442,8 @@ public class ProductDistributionService {
                 shipment.getId(),
                 securityUtil.getCurrentUserId(),
                 sizeKeyForInventory,
-                lineRef);
+                lineRef,
+                detail.getHardwareCondition());
     }
 
     private void applyReceiptInventoryForDetail(
@@ -3496,7 +3499,8 @@ public class ProductDistributionService {
                 shipment.getId(),
                 securityUtil.getCurrentUserId(),
                 sizeKeyForInventory,
-                lineRef);
+                lineRef,
+                detail.getHardwareCondition());
         BigDecimal after = productInventoryService
                 .getInventoryByProductAndLocationAndColor(
                         detail.getProductId(), shipment.getLocationId(), detail.getColorId())
@@ -4091,6 +4095,7 @@ public class ProductDistributionService {
                 .colorId(entity.getColorId())
                 .colorName(colorName)
                 .size(entity.getSizeLabel())
+                .hardwareCondition(entity.getHardwareCondition())
                 .quantity(entity.getQuantity())
                 .quantityReceived(entity.getQuantityReceived())
                 .quantityDifference(entity.getQuantityDifference())
@@ -4109,6 +4114,11 @@ public class ProductDistributionService {
 
     private String normalizeSize(String size) {
         return size == null ? "" : size.trim().toUpperCase();
+    }
+
+    private String normalizeHardwareCondition(String value) {
+        String normalized = ProductHardwareCondition.normalize(value);
+        return normalized != null ? normalized : "";
     }
 
     private int extractTrailingSequence(String shipmentNumber) {

@@ -398,6 +398,8 @@ public class KioscoInventoryCountService {
                             ? ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory())
                             : ProductAudienceCategory.UNISEX)
                     .cinchoType(product != null ? ProductCinchoType.normalizeCinchoType(product.getCinchoType()) : null)
+                    .cinchoForKids(product != null && Boolean.TRUE.equals(product.getCinchoForKids()))
+                    .hardwareCondition(stock != null ? stock.getHardwareCondition() : null)
                     .packaging(ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()))
                     .productCategoryId(productCategoryId)
                     .productCategoryName(productCategoryName)

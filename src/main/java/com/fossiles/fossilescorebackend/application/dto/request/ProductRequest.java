@@ -31,6 +31,9 @@ public class ProductRequest {
     @Size(max = 20, message = "Cincho type must not exceed 20 characters")
     private String cinchoType;
 
+    /** true = cincho de niño */
+    private Boolean cinchoForKids;
+
     private Double prdTime;
 
     private BigDecimal salePrice;

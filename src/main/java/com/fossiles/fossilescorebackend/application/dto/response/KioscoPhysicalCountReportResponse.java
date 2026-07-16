@@ -71,6 +71,10 @@ public class KioscoPhysicalCountReportResponse {
         private String audienceCategory;
         /** CASUAL o REVERSIBLE */
         private String cinchoType;
+        /** true = cincho de niño */
+        private boolean cinchoForKids;
+        /** NUEVO | VIEJO desde stock kiosco */
+        private String hardwareCondition;
         /** true si el código del producto es empaque SUM- */
         private boolean packaging;
         /** Categoría de catálogo del producto (antes de agrupar empaques / billeteras). */
