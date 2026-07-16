@@ -29,6 +29,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPosContext
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosManagerDashboardResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromotionEstimateResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskDisbursementReportRowResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAvailabilityResponse;
@@ -212,18 +213,29 @@ public class KioskPosController {
     @GetMapping("/reports/general")
     public ResponseEntity<KioskPosReportsResponse> getGeneralReport(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false) String paymentKind
     ) throws BusinessException {
-        return ResponseEntity.ok(kioskPosService.getGeneralReport(startDate, endDate));
+        return ResponseEntity.ok(kioskPosService.getGeneralReport(startDate, endDate, paymentKind));
     }
 
     @GetMapping("/reports/general/sales")
     public ResponseEntity<List<KioskPosSaleResponse>> getGeneralSalesDetail(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false) String paymentKind
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.getGeneralSalesDetail(startDate, endDate, kioskLocationId, paymentKind));
+    }
+
+    @GetMapping("/reports/general/disbursements")
+    public ResponseEntity<List<KioskDisbursementReportRowResponse>> getGeneralDisbursements(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
             @RequestParam(required = false) Long kioskLocationId
     ) throws BusinessException {
-        return ResponseEntity.ok(kioskPosService.getGeneralSalesDetail(startDate, endDate, kioskLocationId));
+        return ResponseEntity.ok(kioskPosService.getGeneralDisbursements(startDate, endDate, kioskLocationId));
     }
 
     @GetMapping("/availability")

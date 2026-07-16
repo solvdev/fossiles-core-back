@@ -23,6 +23,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionR
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionTierResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosManagerDashboardResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromotionEstimateResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskDisbursementReportRowResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAvailabilityResponse;
@@ -1015,13 +1016,16 @@ public class KioskPosService {
     }
 
     @Transactional(readOnly = true)
-    public KioskPosReportsResponse getGeneralReport(LocalDate startDate, LocalDate endDate) throws BusinessException {
+    public KioskPosReportsResponse getGeneralReport(LocalDate startDate, LocalDate endDate, String paymentKind)
+            throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
         if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
             throw new BusinessException("Solo administradores o logística pueden ver el reporte general de kioskos.");
         }
+        String normalizedKind = normalizeReportPaymentKind(paymentKind);
         List<KioskSaleEntity> sales = findSalesByDateRange(startDate, endDate).stream()
                 .filter(KioskPosService::countsForProductionMetrics)
+                .filter(sale -> matchesReportPaymentKind(sale, normalizedKind))
                 .collect(Collectors.toList());
         return buildReportResponse(sales, startDate, endDate);
     }
@@ -1031,12 +1035,14 @@ public class KioskPosService {
     public List<KioskPosSaleResponse> getGeneralSalesDetail(
             LocalDate startDate,
             LocalDate endDate,
-            Long kioskLocationId
+            Long kioskLocationId,
+            String paymentKind
     ) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
         if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
             throw new BusinessException("Solo administradores o logística pueden exportar el reporte general de ventas.");
         }
+        String normalizedKind = normalizeReportPaymentKind(paymentKind);
         Map<Long, LocationEntity> kioskById = locationRepository.findAll().stream()
                 .filter(this::isKioskLocation)
                 .collect(Collectors.toMap(LocationEntity::getId, item -> item, (a, b) -> a));
@@ -1044,6 +1050,7 @@ public class KioskPosService {
         List<KioskSaleEntity> sales = findSalesByDateRange(startDate, endDate).stream()
                 .filter(KioskPosService::countsForProductionMetrics)
                 .filter(sale -> kioskLocationId == null || Objects.equals(sale.getKioskLocationId(), kioskLocationId))
+                .filter(sale -> matchesReportPaymentKind(sale, normalizedKind))
                 .sorted(Comparator
                         .comparing(KioskSaleEntity::getKioskLocationId, Comparator.nullsLast(Long::compareTo))
                         .thenComparing(KioskSaleEntity::getSoldAt, Comparator.nullsLast(Comparator.reverseOrder())))
@@ -1061,6 +1068,62 @@ public class KioskPosService {
             result.add(toSaleResponse(sale, kiosk, user));
         }
         return result;
+    }
+
+    @Transactional(readOnly = true)
+    public List<KioskDisbursementReportRowResponse> getGeneralDisbursements(
+            LocalDate startDate,
+            LocalDate endDate,
+            Long kioskLocationId
+    ) throws BusinessException {
+        UserEntity user = getCurrentUserOrThrow();
+        if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
+            throw new BusinessException("Solo administradores o logística pueden ver desembolsos de kioskos.");
+        }
+        LocalDate[] range = normalizeSaleDateRange(startDate, endDate);
+        LocalDate from = range[0] != null ? range[0] : GuatemalaDateTime.today();
+        LocalDate to = range[1] != null ? range[1] : from;
+        LocalDateTime startAt = from.atStartOfDay();
+        LocalDateTime endAt = to.plusDays(1).atStartOfDay();
+
+        List<KioskCashExpenseEntity> expenses = kioskCashExpenseRepository.findForReport(
+                startAt, endAt, kioskLocationId);
+
+        Set<Long> sessionIds = expenses.stream()
+                .map(KioskCashExpenseEntity::getCashSessionId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, KioskCashSessionEntity> sessionsById = kioskCashSessionRepository.findAllById(sessionIds).stream()
+                .collect(Collectors.toMap(KioskCashSessionEntity::getId, item -> item, (a, b) -> a));
+
+        Set<Long> kioskIds = sessionsById.values().stream()
+                .map(KioskCashSessionEntity::getKioskLocationId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, LocationEntity> kiosksById = locationRepository.findAllById(kioskIds).stream()
+                .collect(Collectors.toMap(LocationEntity::getId, item -> item, (a, b) -> a));
+
+        List<KioskDisbursementReportRowResponse> rows = new ArrayList<>();
+        for (KioskCashExpenseEntity expense : expenses) {
+            KioskCashSessionEntity session = sessionsById.get(expense.getCashSessionId());
+            LocationEntity kiosk = session != null ? kiosksById.get(session.getKioskLocationId()) : null;
+            UserEntity createdBy = expense.getCreatedByUserId() != null
+                    ? userRepository.findById(expense.getCreatedByUserId()).orElse(null)
+                    : null;
+            rows.add(KioskDisbursementReportRowResponse.builder()
+                    .id(expense.getId())
+                    .cashSessionId(expense.getCashSessionId())
+                    .kioskLocationId(session != null ? session.getKioskLocationId() : null)
+                    .kioskCode(kiosk != null ? kiosk.getCode() : "")
+                    .kioskName(kiosk != null ? kiosk.getName() : "Kiosko")
+                    .amount(safeAmount(expense.getAmount()).setScale(2, RoundingMode.HALF_UP))
+                    .description(expense.getDescription())
+                    .createdAt(expense.getCreatedAt())
+                    .createdByUserId(expense.getCreatedByUserId())
+                    .createdByName(buildUserFullName(createdBy))
+                    .build());
+        }
+        return rows;
     }
 
     @Transactional(readOnly = true)
@@ -3150,7 +3213,38 @@ public class KioskPosService {
         return userRepository.findById(soldByUserId).orElse(fallbackUser);
     }
 
+    private String normalizeReportPaymentKind(String paymentKind) throws BusinessException {
+        String normalized = normalizeText(paymentKind);
+        if (normalized.isBlank() || "ALL".equals(normalized) || "GENERAL".equals(normalized)) {
+            return null;
+        }
+        if ("CASH".equals(normalized) || "EFECTIVO".equals(normalized)) {
+            return "CASH";
+        }
+        if ("CARD".equals(normalized) || "TARJETA".equals(normalized)) {
+            return "CARD";
+        }
+        throw new BusinessException("Filtro de pago no válido. Use ALL, CASH o CARD.");
+    }
+
+    private boolean matchesReportPaymentKind(KioskSaleEntity sale, String paymentKind) {
+        if (paymentKind == null || paymentKind.isBlank()) {
+            return true;
+        }
+        String method = safeTrim(sale.getPaymentMethod()).toUpperCase(Locale.ROOT);
+        if ("CASH".equals(paymentKind)) {
+            return "EFECTIVO".equals(method) || "CASH".equals(method);
+        }
+        if ("CARD".equals(paymentKind)) {
+            return "TARJETA".equals(method) || "CARD".equals(method) || "TRANSFERENCIA".equals(method);
+        }
+        return true;
+    }
+
     private String buildUserFullName(UserEntity user) {
+        if (user == null) {
+            return "";
+        }
         String firstName = safeTrim(user.getFirstName());
         String lastName = safeTrim(user.getLastName());
         String fullName = (firstName + " " + lastName).trim();

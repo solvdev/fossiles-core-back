@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 
 public interface KioskCashExpenseRepository extends JpaRepository<KioskCashExpenseEntity, Long> {
@@ -17,4 +18,20 @@ public interface KioskCashExpenseRepository extends JpaRepository<KioskCashExpen
             WHERE e.cashSessionId = :sessionId
             """)
     BigDecimal sumAmountByCashSessionId(@Param("sessionId") Long sessionId);
+
+    @Query("""
+            SELECT e FROM KioskCashExpenseEntity e
+            WHERE e.createdAt >= :startAt
+              AND e.createdAt < :endAt
+              AND e.cashSessionId IN (
+                  SELECT s.id FROM KioskCashSessionEntity s
+                  WHERE (:kioskLocationId IS NULL OR s.kioskLocationId = :kioskLocationId)
+              )
+            ORDER BY e.createdAt ASC, e.id ASC
+            """)
+    List<KioskCashExpenseEntity> findForReport(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt,
+            @Param("kioskLocationId") Long kioskLocationId
+    );
 }
