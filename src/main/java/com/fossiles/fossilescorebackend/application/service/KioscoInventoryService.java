@@ -1404,9 +1404,8 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Desglosa Entradas por talla usando exactamente las líneas del envío relacionado
-     * (producto + color + size_label + cantidad). Solo reporte; no escribe DB.
-     * Evita que el stock por talla quede en Ini. cuando en realidad llegó por el envío.
+     * Solo cinchos: si la ENTRADA del envío quedó sin size_key (agregada), desglosa Ent. por talla
+     * desde product_shipment_detail. No toca otros productos: ahí Entradas salen solo de movimientos.
      */
     private void applyEntradasFromRelatedShipmentDetails(
             Map<Long, Map<String, KardexAccumulator>> accByStockAndSize,
@@ -1436,11 +1435,39 @@ public class KioscoInventoryService {
                 .stream()
                 .collect(Collectors.toMap(KioscoStockEntity::getId, s -> s, (a, b) -> a, LinkedHashMap::new));
 
+        Set<Long> productIds = stocksById.values().stream()
+                .map(KioscoStockEntity::getProductId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, ProductEntity> productsById = productIds.isEmpty()
+                ? Map.of()
+                : productRepository.findAllById(productIds).stream()
+                        .collect(Collectors.toMap(ProductEntity::getId, p -> p, (a, b) -> a));
+
         for (Map.Entry<Long, Set<Long>> stockEntry : shipmentIdsByStock.entrySet()) {
             Long stockId = stockEntry.getKey();
             KioscoStockEntity stock = stocksById.get(stockId);
             Map<String, KardexAccumulator> bySize = accByStockAndSize.get(stockId);
             if (stock == null || bySize == null) {
+                continue;
+            }
+
+            ProductEntity product = stock.getProduct() != null
+                    ? stock.getProduct()
+                    : productsById.get(stock.getProductId());
+            // Solo el caso cinchos sin ENTRADA por talla; no redistribuir el resto del catálogo.
+            if (!isCinchoNeedingShipmentEntradaBySize(product)) {
+                continue;
+            }
+
+            KardexAccumulator unallocated = bySize.get("");
+            int unsizedEntradas = unallocated != null ? unallocated.entradas : 0;
+            int sizedEntradasBefore = bySize.entrySet().stream()
+                    .filter(e -> e.getKey() != null && !e.getKey().isBlank())
+                    .mapToInt(e -> e.getValue().entradas)
+                    .sum();
+            // Si ya hay Ent. con size_key, respetar movimientos; no inventar desde el envío.
+            if (unsizedEntradas <= 0 || sizedEntradasBefore > 0) {
                 continue;
             }
 
@@ -1472,43 +1499,33 @@ public class KioscoInventoryService {
                 continue;
             }
 
-            KardexAccumulator unallocated = bySize.get("");
-            int unsizedEntradas = unallocated != null ? unallocated.entradas : 0;
-
-            // Si el movimiento ya trae size_key, no dupliques: solo completa tallas sin Ent.
-            // Si todo está en "" (sin talla), sustituye por el desglose exacto del envío.
-            boolean allEntradasWereUnsized = unsizedEntradas > 0;
-            int sizedEntradasBefore = bySize.entrySet().stream()
-                    .filter(e -> e.getKey() != null && !e.getKey().isBlank())
-                    .mapToInt(e -> e.getValue().entradas)
-                    .sum();
-
             int shipmentTotal = 0;
             for (Map.Entry<String, Integer> e : entradasBySizeFromShipment.entrySet()) {
-                String size = e.getKey();
                 int qty = e.getValue();
                 if (qty <= 0) {
                     continue;
                 }
-                KardexAccumulator sizeAcc = bySize.computeIfAbsent(size, k -> new KardexAccumulator());
-                if (allEntradasWereUnsized && sizedEntradasBefore == 0) {
-                    // Caso típico FOSS: 1 ENTRADA agregada → poner Ent. por talla del envío.
-                    sizeAcc.entradas += qty;
-                    shipmentTotal += qty;
-                } else if (sizeAcc.entradas <= 0) {
-                    // Completa tallas que hoy caían en Ini. aunque el envío sí las traía.
-                    sizeAcc.entradas = qty;
-                    shipmentTotal += qty;
-                }
+                KardexAccumulator sizeAcc = bySize.computeIfAbsent(e.getKey(), k -> new KardexAccumulator());
+                sizeAcc.entradas += qty;
+                shipmentTotal += qty;
             }
 
-            if (unallocated != null && unsizedEntradas > 0) {
-                unallocated.entradas = Math.max(0, unsizedEntradas - shipmentTotal);
-                if (unallocated.isEmpty()) {
-                    bySize.remove("");
-                }
+            unallocated.entradas = Math.max(0, unsizedEntradas - shipmentTotal);
+            if (unallocated.isEmpty()) {
+                bySize.remove("");
             }
         }
+    }
+
+    /** Cinchos FOSS/mesa: suelen tener ENTRADA agregada y tallas solo en el detalle del envío. */
+    private boolean isCinchoNeedingShipmentEntradaBySize(ProductEntity product) {
+        if (product == null) {
+            return false;
+        }
+        if (CinchoProductUtils.isFossCinchoProduct(product) || CinchoProductUtils.isMesaCinchosProduct(product)) {
+            return true;
+        }
+        return ProductCinchoType.normalizeCinchoType(product.getCinchoType()) != null;
     }
 
     private Long resolveShipmentIdForEntradaMovement(
