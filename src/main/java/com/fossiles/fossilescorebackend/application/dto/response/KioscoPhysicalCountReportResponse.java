@@ -100,6 +100,7 @@ public class KioscoPhysicalCountReportResponse {
         private Map<String, Integer> counts;
         private int total;
         /** inventarioFinal (sistema) - total (fisico). */
-        private int diferencia;
+    /** Diferencia = físico − sistema (+ sobrante, − faltante). */
+    private int diferencia;
     }
 }

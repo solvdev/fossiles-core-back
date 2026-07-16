@@ -416,7 +416,7 @@ public class KioscoInventoryCountService {
                     .inventarioFinal(inventarioFinal)
                     .counts(counts)
                     .total(total)
-                    .diferencia(inventarioFinal - total)
+                    .diferencia(total - inventarioFinal)
                     .build();
             List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> displayRows = isSubcount
                     ? List.of(row)
@@ -493,7 +493,10 @@ public class KioscoInventoryCountService {
                 .inventarioFinal(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getInventarioFinal))
                 .counts(totalCounts)
                 .total(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getTotal))
-                .diferencia(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getDiferencia))
+                .diferencia(
+                        sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getTotal)
+                                - sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getInventarioFinal)
+                )
                 .build();
     }
 
@@ -978,7 +981,7 @@ public class KioscoInventoryCountService {
                 .inventarioFinal(inventarioFinal)
                 .counts(counts)
                 .total(total)
-                .diferencia(inventarioFinal - total)
+                .diferencia(total - inventarioFinal)
                 .build();
     }
 
