@@ -902,6 +902,46 @@ class KioskPosServiceTest {
         assertThat(KioskPosService.isPendingDeposit(sale)).isFalse();
     }
 
+    @Test
+    void resolveCashAmountForDeposit_cashSaleUsesTotalNotAmountReceived() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .paymentMethod("EFECTIVO")
+                .totalAmount(new BigDecimal("100.00"))
+                .amountReceived(new BigDecimal("500.00"))
+                .cashAmount(new BigDecimal("500.00"))
+                .build();
+
+        assertThat(KioskPosService.resolveCashAmountForDeposit(sale)).isEqualByComparingTo("100.00");
+    }
+
+    @Test
+    void resolveCardAmountForReport_ignoresCardAmountOnCashSale() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .paymentMethod("EFECTIVO")
+                .totalAmount(new BigDecimal("100.00"))
+                .cardAmount(new BigDecimal("50.00"))
+                .build();
+
+        assertThat(KioskPosService.resolveCardAmountForReport(sale)).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void mainSheetPaymentParts_mixtoSumEqualsTotal() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .paymentMethod("MIXTO")
+                .totalAmount(new BigDecimal("200.00"))
+                .cashAmount(new BigDecimal("80.00"))
+                .cardAmount(new BigDecimal("120.00"))
+                .depositSlipNumber("DEP-1")
+                .build();
+
+        BigDecimal card = KioskPosService.resolveCardAmountForReport(sale);
+        BigDecimal cash = KioskPosService.resolveCashAmountForDeposit(sale);
+        assertThat(card).isEqualByComparingTo("120.00");
+        assertThat(cash).isEqualByComparingTo("80.00");
+        assertThat(card.add(cash)).isEqualByComparingTo("200.00");
+    }
+
     private void seedInventory(Long productId, int quantity) {
         inventoryRepository.save(ProductInventoryLocation.builder()
                 .productId(productId)

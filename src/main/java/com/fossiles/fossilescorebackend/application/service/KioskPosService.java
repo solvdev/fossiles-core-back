@@ -3624,20 +3624,15 @@ public class KioskPosService {
             return BigDecimal.ZERO;
         }
         String payment = normalizePaymentMethodStatic(sale.getPaymentMethod());
+        BigDecimal total = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
         if ("EFECTIVO".equals(payment)) {
-            if (sale.getCashAmount() != null && sale.getCashAmount().compareTo(BigDecimal.ZERO) > 0) {
-                return sale.getCashAmount();
-            }
-            if (sale.getAmountReceived() != null && sale.getAmountReceived().compareTo(BigDecimal.ZERO) > 0) {
-                return sale.getAmountReceived();
-            }
-            return sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
+            // El depósito corresponde al total facturado, no al efectivo recibido (puede incluir vuelto).
+            return total;
         }
         if ("MIXTO".equals(payment)) {
             if (sale.getCashAmount() != null && sale.getCashAmount().compareTo(BigDecimal.ZERO) > 0) {
-                return sale.getCashAmount();
+                return sale.getCashAmount().min(total);
             }
-            BigDecimal total = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
             BigDecimal card = sale.getCardAmount() != null ? sale.getCardAmount() : BigDecimal.ZERO;
             return total.subtract(card).max(BigDecimal.ZERO);
         }
@@ -3743,17 +3738,23 @@ public class KioskPosService {
         if (sale == null) {
             return BigDecimal.ZERO;
         }
-        if (sale.getCardAmount() != null && sale.getCardAmount().compareTo(BigDecimal.ZERO) > 0) {
-            return sale.getCardAmount();
-        }
         String payment = normalizePaymentMethodStatic(sale.getPaymentMethod());
+        BigDecimal total = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
         if ("TARJETA".equals(payment) || "CARD".equals(payment) || "TRANSFERENCIA".equals(payment)) {
-            return sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
+            if (sale.getCardAmount() != null && sale.getCardAmount().compareTo(BigDecimal.ZERO) > 0) {
+                return sale.getCardAmount().min(total);
+            }
+            return total;
         }
         if ("MIXTO".equals(payment)) {
-            BigDecimal total = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
-            if (sale.getCashAmount() != null && sale.getCashAmount().compareTo(BigDecimal.ZERO) > 0) {
-                return total.subtract(sale.getCashAmount()).max(BigDecimal.ZERO);
+            BigDecimal cashPart = sale.getCashAmount() != null && sale.getCashAmount().compareTo(BigDecimal.ZERO) > 0
+                    ? sale.getCashAmount().min(total)
+                    : BigDecimal.ZERO;
+            if (sale.getCardAmount() != null && sale.getCardAmount().compareTo(BigDecimal.ZERO) > 0) {
+                return sale.getCardAmount().min(total.subtract(cashPart).max(BigDecimal.ZERO));
+            }
+            if (cashPart.compareTo(BigDecimal.ZERO) > 0) {
+                return total.subtract(cashPart).max(BigDecimal.ZERO);
             }
         }
         return BigDecimal.ZERO;
