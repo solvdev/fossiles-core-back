@@ -90,6 +90,22 @@ public class KioscoPhysicalCountEntity {
     @Column(name = "main_sheet_certified_at")
     private LocalDateTime mainSheetCertifiedAt;
 
+    /** Hoja principal: INVENTARIO DIGITAL — inicio del rango. */
+    @Column(name = "main_sheet_inventory_from")
+    private LocalDate mainSheetInventoryFrom;
+
+    /** Hoja principal: INVENTARIO DIGITAL — fin del rango. */
+    @Column(name = "main_sheet_inventory_to")
+    private LocalDate mainSheetInventoryTo;
+
+    /** Hoja principal: VENTAS DEL — inicio del rango. */
+    @Column(name = "main_sheet_sales_from")
+    private LocalDate mainSheetSalesFrom;
+
+    /** Hoja principal: VENTAS DEL — fin del rango. */
+    @Column(name = "main_sheet_sales_to")
+    private LocalDate mainSheetSalesTo;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

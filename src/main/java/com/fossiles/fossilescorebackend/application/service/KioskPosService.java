@@ -1485,6 +1485,10 @@ public class KioskPosService {
                 .mainSheetCertifiedBy(safeTrim(count.getMainSheetCertifiedBy()))
                 .mainSheetReviewedBy(safeTrim(count.getMainSheetReviewedBy()))
                 .mainSheetCertifiedAt(count.getMainSheetCertifiedAt())
+                .mainSheetInventoryFrom(count.getMainSheetInventoryFrom())
+                .mainSheetInventoryTo(count.getMainSheetInventoryTo())
+                .mainSheetSalesFrom(count.getMainSheetSalesFrom())
+                .mainSheetSalesTo(count.getMainSheetSalesTo())
                 .dailySales(dailySales)
                 .build();
     }
@@ -1511,10 +1515,16 @@ public class KioskPosService {
 
         String certifiedBy = resolveMainSheetReviewerName(request.getCertifiedBy());
         String reviewedBy = resolveMainSheetReviewerName(request.getReviewedBy());
+        validateMainSheetDateRange("inventario digital", request.getInventoryFrom(), request.getInventoryTo());
+        validateMainSheetDateRange("ventas", request.getSalesFrom(), request.getSalesTo());
 
         count.setMainSheetCertifiedBy(certifiedBy);
         count.setMainSheetReviewedBy(reviewedBy);
         count.setMainSheetCertifiedAt(GuatemalaDateTime.now());
+        count.setMainSheetInventoryFrom(request.getInventoryFrom());
+        count.setMainSheetInventoryTo(request.getInventoryTo());
+        count.setMainSheetSalesFrom(request.getSalesFrom());
+        count.setMainSheetSalesTo(request.getSalesTo());
         kioscoPhysicalCountRepository.save(count);
         return getMainSheetReport(physicalCountId);
     }
@@ -1538,6 +1548,16 @@ public class KioskPosService {
             throw new BusinessException("Debes seleccionar un revisor válido de la lista.");
         }
         return normalized;
+    }
+
+    private static void validateMainSheetDateRange(String label, LocalDate from, LocalDate to)
+            throws BusinessException {
+        if (from == null || to == null) {
+            throw new BusinessException("Debes indicar el rango de fechas de " + label + ".");
+        }
+        if (from.isAfter(to)) {
+            throw new BusinessException("La fecha inicial no puede ser posterior a la final en " + label + ".");
+        }
     }
 
     static String normalizeMainSheetReviewerName(String rawName) {

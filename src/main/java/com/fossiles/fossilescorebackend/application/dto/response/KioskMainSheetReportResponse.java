@@ -42,6 +42,10 @@ public class KioskMainSheetReportResponse {
     private String mainSheetReviewedBy;
     /** INVENTARIO DIGITAL: fecha/hora de certificación. */
     private LocalDateTime mainSheetCertifiedAt;
+    private LocalDate mainSheetInventoryFrom;
+    private LocalDate mainSheetInventoryTo;
+    private LocalDate mainSheetSalesFrom;
+    private LocalDate mainSheetSalesTo;
 
     private List<DailySaleRow> dailySales;
 
