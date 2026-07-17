@@ -942,6 +942,21 @@ class KioskPosServiceTest {
         assertThat(card.add(cash)).isEqualByComparingTo("200.00");
     }
 
+    @Test
+    void resolveReportSaleAmount_cardUsesCardPartNotFullTotalForMixto() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .paymentMethod("MIXTO")
+                .totalAmount(new BigDecimal("200.00"))
+                .cashAmount(new BigDecimal("80.00"))
+                .cardAmount(new BigDecimal("120.00"))
+                .build();
+
+        assertThat(KioskPosService.resolveReportSaleAmount(sale, "CARD"))
+                .isEqualByComparingTo("120.00");
+        assertThat(KioskPosService.resolveReportSaleAmount(sale, null))
+                .isEqualByComparingTo("200.00");
+    }
+
     private void seedInventory(Long productId, int quantity) {
         inventoryRepository.save(ProductInventoryLocation.builder()
                 .productId(productId)

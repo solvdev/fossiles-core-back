@@ -1060,7 +1060,7 @@ public class KioskPosService {
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
         List<KioskSaleEntity> sales = findSalesByDateRangeForKiosk(kiosk.getId(), startDate, endDate);
-        return buildReportResponse(sales, startDate, endDate);
+        return buildReportResponse(sales, startDate, endDate, null);
     }
 
     @Transactional(readOnly = true)
@@ -1076,7 +1076,7 @@ public class KioskPosService {
                 .filter(KioskPosService::countsForProductionMetrics)
                 .filter(sale -> matchesReportPaymentKind(sale, normalizedKind))
                 .collect(Collectors.toList());
-        return buildReportResponse(sales, startDate, endDate);
+        return buildReportResponse(sales, startDate, endDate, normalizedKind);
     }
 
     /** Ventas detalladas (con ítems) para exportar REPORTE DE VENTAS desde admin. */
@@ -1302,11 +1302,8 @@ public class KioskPosService {
         LocalDate[] range = normalizeSaleDateRange(startDate, endDate);
         LocalDate from = range[0] != null ? range[0] : GuatemalaDateTime.today();
         LocalDate to = range[1] != null ? range[1] : from;
-        LocalDateTime startAt = from.atStartOfDay();
-        LocalDateTime endAt = to.plusDays(1).atStartOfDay();
 
-        List<KioskSaleEntity> sales = kioskSaleRepository.findForVoucherReport(
-                startAt, endAt, effectiveKioskId).stream()
+        List<KioskSaleEntity> sales = findSalesForReportBySaleDate(from, to, effectiveKioskId).stream()
                 .filter(KioskPosService::countsForProductionMetrics)
                 .filter(KioskPosService::qualifiesForVoucherReport)
                 .toList();
@@ -2628,7 +2625,31 @@ public class KioskPosService {
         return new LocalDate[] { from, to };
     }
 
-    private KioskPosReportsResponse buildReportResponse(List<KioskSaleEntity> sales, LocalDate startDate, LocalDate endDate) {
+    private List<KioskSaleEntity> findSalesForReportBySaleDate(
+            LocalDate from,
+            LocalDate to,
+            Long kioskLocationId
+    ) {
+        if (kioskLocationId != null) {
+            return kioskSaleRepository.findByKioskLocationIdAndSaleDateBetweenOrderBySoldAtDesc(
+                    kioskLocationId, from, to);
+        }
+        return kioskSaleRepository.findBySaleDateBetweenOrderBySoldAtDesc(from, to);
+    }
+
+    static BigDecimal resolveReportSaleAmount(KioskSaleEntity sale, String paymentKind) {
+        if ("CARD".equals(paymentKind)) {
+            return resolveCardAmountForReport(sale);
+        }
+        return sale != null && sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
+    }
+
+    private KioskPosReportsResponse buildReportResponse(
+            List<KioskSaleEntity> sales,
+            LocalDate startDate,
+            LocalDate endDate,
+            String paymentKind
+    ) {
         Set<Long> kioskIds = sales.stream()
                 .map(KioskSaleEntity::getKioskLocationId)
                 .filter(id -> id != null && id > 0)
@@ -2658,7 +2679,7 @@ public class KioskPosService {
                         .build();
             }
             BigDecimal saleItems = sale.getTotalItems() != null ? sale.getTotalItems() : BigDecimal.ZERO;
-            BigDecimal saleAmount = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
+            BigDecimal saleAmount = resolveReportSaleAmount(sale, paymentKind);
             current.setSalesCount(current.getSalesCount() + 1);
             current.setTotalItems(current.getTotalItems().add(saleItems));
             current.setTotalAmount(current.getTotalAmount().add(saleAmount));
@@ -3700,7 +3721,7 @@ public class KioskPosService {
             return "EFECTIVO".equals(method) || "CASH".equals(method);
         }
         if ("CARD".equals(paymentKind)) {
-            return "TARJETA".equals(method) || "CARD".equals(method) || "TRANSFERENCIA".equals(method);
+            return qualifiesForVoucherReport(sale);
         }
         return true;
     }
