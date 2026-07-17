@@ -24,6 +24,10 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionT
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosManagerDashboardResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromotionEstimateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskDisbursementReportRowResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDepositReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDepositReportRowResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskVoucherReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskVoucherReportRowResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAvailabilityResponse;
@@ -45,6 +49,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Locati
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductCategoryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryLocation;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaxInvoiceEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskCashExpenseRepository;
@@ -58,8 +63,11 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Lo
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductInventoryLocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaxInvoiceRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
+import com.fossiles.fossilescorebackend.infrastructure.config.KioskPosDepositReportProperties;
+import com.fossiles.fossilescorebackend.infrastructure.config.KioskPosVoucherReportProperties;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -117,6 +125,9 @@ public class KioskPosService {
     private final FelReceptorLookupService felReceptorLookupService;
     private final TaxInvoiceService taxInvoiceService;
     private final FelEmissionProperties felEmissionProperties;
+    private final KioskPosDepositReportProperties depositReportProperties;
+    private final KioskPosVoucherReportProperties voucherReportProperties;
+    private final TaxInvoiceRepository taxInvoiceRepository;
     private final KioscoInventoryService kioscoInventoryService;
 
     @Transactional(readOnly = true)
@@ -1132,6 +1143,190 @@ public class KioskPosService {
                     .build());
         }
         return rows;
+    }
+
+    @Transactional(readOnly = true)
+    public KioskBankDepositReportResponse getBankDeposits(
+            LocalDate startDate,
+            LocalDate endDate,
+            Long kioskLocationId
+    ) throws BusinessException {
+        UserEntity user = getCurrentUserOrThrow();
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+
+        Long effectiveKioskId;
+        if (admin) {
+            effectiveKioskId = kioskLocationId;
+        } else {
+            LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
+            effectiveKioskId = kiosk.getId();
+        }
+
+        LocalDate[] range = normalizeSaleDateRange(startDate, endDate);
+        LocalDate from = range[0] != null ? range[0] : GuatemalaDateTime.today();
+        LocalDate to = range[1] != null ? range[1] : from;
+        LocalDateTime startAt = from.atStartOfDay();
+        LocalDateTime endAt = to.plusDays(1).atStartOfDay();
+
+        List<KioskSaleEntity> sales = kioskSaleRepository.findForBankDepositReport(
+                startAt, endAt, effectiveKioskId);
+
+        Set<Long> kioskIds = sales.stream()
+                .map(KioskSaleEntity::getKioskLocationId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, LocationEntity> kiosksById = locationRepository.findAllById(kioskIds).stream()
+                .collect(Collectors.toMap(LocationEntity::getId, item -> item, (a, b) -> a));
+
+        Set<Long> userIds = new HashSet<>();
+        for (KioskSaleEntity sale : sales) {
+            if (sale.getDepositRecordedBy() != null) {
+                userIds.add(sale.getDepositRecordedBy());
+            }
+            if (sale.getSoldByUserId() != null) {
+                userIds.add(sale.getSoldByUserId());
+            }
+        }
+        Map<Long, UserEntity> usersById = userRepository.findAllById(userIds).stream()
+                .collect(Collectors.toMap(UserEntity::getId, item -> item, (a, b) -> a));
+
+        String accountNumber = safeTrim(depositReportProperties.getBankAccount());
+        String bankName = safeTrim(depositReportProperties.getBankName());
+        String accountName = safeTrim(depositReportProperties.getAccountName());
+
+        List<KioskBankDepositReportRowResponse> rows = new ArrayList<>();
+        for (KioskSaleEntity sale : sales) {
+            LocationEntity kiosk = kiosksById.get(sale.getKioskLocationId());
+            UserEntity recordedBy = sale.getDepositRecordedBy() != null
+                    ? usersById.get(sale.getDepositRecordedBy())
+                    : null;
+            UserEntity soldBy = sale.getSoldByUserId() != null
+                    ? usersById.get(sale.getSoldByUserId())
+                    : null;
+            String userName = buildUserFullName(recordedBy);
+            if (userName == null || userName.isBlank()) {
+                userName = buildUserFullName(soldBy);
+            }
+            LocalDateTime recordedAt = sale.getDepositRecordedAt() != null
+                    ? sale.getDepositRecordedAt()
+                    : sale.getSoldAt();
+            rows.add(KioskBankDepositReportRowResponse.builder()
+                    .id(sale.getId())
+                    .saleId(sale.getId())
+                    .accountNumber(accountNumber)
+                    .bankName(bankName)
+                    .documentNumber(safeTrim(sale.getDepositSlipNumber()))
+                    .amount(resolveCashAmountForDeposit(sale).setScale(2, RoundingMode.HALF_UP))
+                    .userName(userName)
+                    .description(buildBankDepositDescription(sale, kiosk))
+                    .recordedAt(recordedAt)
+                    .kioskLocationId(sale.getKioskLocationId())
+                    .kioskCode(kiosk != null ? kiosk.getCode() : "")
+                    .kioskName(kiosk != null ? kiosk.getName() : "Kiosko")
+                    .build());
+        }
+
+        return KioskBankDepositReportResponse.builder()
+                .accountNumber(accountNumber)
+                .accountName(accountName)
+                .bankName(bankName)
+                .rows(rows)
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public KioskVoucherReportResponse getVoucherReport(
+            LocalDate startDate,
+            LocalDate endDate,
+            Long kioskLocationId
+    ) throws BusinessException {
+        UserEntity user = getCurrentUserOrThrow();
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+
+        Long effectiveKioskId;
+        LocationEntity headerKiosk;
+        if (admin) {
+            effectiveKioskId = kioskLocationId;
+            headerKiosk = kioskLocationId != null
+                    ? locationRepository.findById(kioskLocationId).orElse(null)
+                    : null;
+        } else {
+            headerKiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
+            effectiveKioskId = headerKiosk.getId();
+        }
+
+        LocalDate[] range = normalizeSaleDateRange(startDate, endDate);
+        LocalDate from = range[0] != null ? range[0] : GuatemalaDateTime.today();
+        LocalDate to = range[1] != null ? range[1] : from;
+        LocalDateTime startAt = from.atStartOfDay();
+        LocalDateTime endAt = to.plusDays(1).atStartOfDay();
+
+        List<KioskSaleEntity> sales = kioskSaleRepository.findForVoucherReport(
+                startAt, endAt, effectiveKioskId).stream()
+                .filter(KioskPosService::countsForProductionMetrics)
+                .toList();
+
+        Set<Long> kioskIds = sales.stream()
+                .map(KioskSaleEntity::getKioskLocationId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, LocationEntity> kiosksById = locationRepository.findAllById(kioskIds).stream()
+                .collect(Collectors.toMap(LocationEntity::getId, item -> item, (a, b) -> a));
+
+        Set<Long> invoiceIds = sales.stream()
+                .map(KioskSaleEntity::getInvoiceId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, TaxInvoiceEntity> invoicesById = taxInvoiceRepository.findAllById(invoiceIds).stream()
+                .collect(Collectors.toMap(TaxInvoiceEntity::getId, item -> item, (a, b) -> a));
+
+        String cardBrand = safeTrim(voucherReportProperties.getDefaultCardBrand());
+        if (cardBrand.isBlank()) {
+            cardBrand = "VISA";
+        }
+
+        List<KioskVoucherReportRowResponse> rows = new ArrayList<>();
+        for (KioskSaleEntity sale : sales) {
+            LocationEntity kiosk = kiosksById.get(sale.getKioskLocationId());
+            String voucherNumber = safeTrim(sale.getCardAuthNumber());
+            String cardLast4 = safeTrim(sale.getCardLast4());
+            rows.add(KioskVoucherReportRowResponse.builder()
+                    .id(sale.getId())
+                    .saleId(sale.getId())
+                    .saleCode(String.valueOf(sale.getId()))
+                    .invoiceNumber(resolveSaleInvoiceLabel(sale, invoicesById))
+                    .cardBrand(cardBrand)
+                    .amount(resolveCardAmountForReport(sale).setScale(2, RoundingMode.HALF_UP))
+                    .voucherNumber(voucherNumber)
+                    .cardLast4(cardLast4)
+                    .description(buildVoucherDescription(voucherNumber, cardLast4))
+                    .soldAt(sale.getSoldAt())
+                    .kioskLocationId(sale.getKioskLocationId())
+                    .kioskCode(kiosk != null ? kiosk.getCode() : "")
+                    .kioskName(kiosk != null ? kiosk.getName() : "Kiosko")
+                    .build());
+        }
+
+        String headerKioskName;
+        String headerKioskCode = "";
+        if (headerKiosk != null) {
+            headerKioskName = headerKiosk.getName();
+            headerKioskCode = safeTrim(headerKiosk.getCode());
+        } else if (kioskIds.size() == 1) {
+            LocationEntity only = kiosksById.values().iterator().next();
+            headerKioskName = only.getName();
+            headerKioskCode = safeTrim(only.getCode());
+        } else {
+            headerKioskName = "TODOS LOS KIOSKOS";
+        }
+
+        return KioskVoucherReportResponse.builder()
+                .kioskName(headerKioskName)
+                .kioskCode(headerKioskCode)
+                .rows(rows)
+                .build();
     }
 
     @Transactional(readOnly = true)
@@ -3093,10 +3288,10 @@ public class KioskPosService {
         String auth = safeTrim(sale.getCardAuthNumber());
         String last4 = safeTrim(sale.getCardLast4());
         if (!auth.isBlank() && !last4.isBlank()) {
-            return "No. Boucher: " + auth + ", No. Tarjeta: " + last4;
+            return "No. Voucher: " + auth + ", No. Tarjeta: " + last4;
         }
         if (!auth.isBlank()) {
-            return "No. Boucher: " + auth;
+            return "No. Voucher: " + auth;
         }
         if (!last4.isBlank()) {
             return "No. Tarjeta: " + last4;
@@ -3247,6 +3442,69 @@ public class KioskPosService {
             return "TARJETA".equals(method) || "CARD".equals(method) || "TRANSFERENCIA".equals(method);
         }
         return true;
+    }
+
+    private String buildVoucherDescription(String voucherNumber, String cardLast4) {
+        String voucher = safeTrim(voucherNumber);
+        String last4 = safeTrim(cardLast4);
+        List<String> parts = new ArrayList<>();
+        if (!voucher.isBlank()) {
+            parts.add("No. Voucher: " + voucher);
+        }
+        if (!last4.isBlank()) {
+            parts.add("No. Tarjeta: " + last4);
+        }
+        return parts.isEmpty() ? "—" : String.join(", ", parts);
+    }
+
+    private String resolveSaleInvoiceLabel(KioskSaleEntity sale, Map<Long, TaxInvoiceEntity> invoicesById) {
+        if (sale == null) {
+            return "";
+        }
+        if (sale.getInvoiceId() != null && invoicesById.containsKey(sale.getInvoiceId())) {
+            String internal = safeTrim(invoicesById.get(sale.getInvoiceId()).getInternalNumber());
+            if (!internal.isBlank()) {
+                return internal;
+            }
+        }
+        String serie = safeTrim(sale.getFelSerie());
+        String numero = safeTrim(sale.getFelNumero());
+        if (!serie.isBlank() && !numero.isBlank()) {
+            return serie + "-" + numero;
+        }
+        return (serie + " " + numero).trim();
+    }
+
+    static BigDecimal resolveCardAmountForReport(KioskSaleEntity sale) {
+        if (sale == null) {
+            return BigDecimal.ZERO;
+        }
+        if (sale.getCardAmount() != null && sale.getCardAmount().compareTo(BigDecimal.ZERO) > 0) {
+            return sale.getCardAmount();
+        }
+        String payment = normalizePaymentMethodStatic(sale.getPaymentMethod());
+        if ("TARJETA".equals(payment) || "CARD".equals(payment) || "TRANSFERENCIA".equals(payment)) {
+            return sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
+        }
+        return BigDecimal.ZERO;
+    }
+
+    private String buildBankDepositDescription(KioskSaleEntity sale, LocationEntity kiosk) {
+        LocalDate saleDay = sale != null && sale.getSaleDate() != null
+                ? sale.getSaleDate()
+                : (sale != null && sale.getSoldAt() != null ? sale.getSoldAt().toLocalDate() : GuatemalaDateTime.today());
+        String dayLabel = saleDay.format(DateTimeFormatter.ofPattern("dd-MM-yyyy"));
+        String kioskLabel = kiosk != null ? safeTrim(kiosk.getName()) : "";
+        if (!kioskLabel.isBlank()) {
+            String shortName = kioskLabel
+                    .replaceAll("(?i)^Kiosco\\s+", "")
+                    .replaceAll("(?i)^CUEROGLAM\\s+", "")
+                    .trim();
+            if (!shortName.isBlank()) {
+                return "deposito del dia " + dayLabel + " " + shortName.toUpperCase(Locale.ROOT);
+            }
+        }
+        return "deposito del dia " + dayLabel;
     }
 
     private String buildUserFullName(UserEntity user) {

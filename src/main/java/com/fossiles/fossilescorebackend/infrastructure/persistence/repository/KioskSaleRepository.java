@@ -70,6 +70,46 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
     List<KioskSaleEntity> findPendingDepositsByKioskLocationId(@Param("kioskLocationId") Long kioskLocationId);
 
     @Query("""
+            SELECT s FROM KioskSaleEntity s
+            WHERE s.depositSlipNumber IS NOT NULL
+              AND TRIM(s.depositSlipNumber) <> ''
+              AND UPPER(TRIM(s.status)) = 'COMPLETED'
+              AND COALESCE(s.depositRecordedAt, s.soldAt) >= :startAt
+              AND COALESCE(s.depositRecordedAt, s.soldAt) < :endAt
+              AND (:kioskLocationId IS NULL OR s.kioskLocationId = :kioskLocationId)
+            ORDER BY COALESCE(s.depositRecordedAt, s.soldAt) ASC, s.id ASC
+            """)
+    List<KioskSaleEntity> findForBankDepositReport(
+            @Param("startAt") java.time.LocalDateTime startAt,
+            @Param("endAt") java.time.LocalDateTime endAt,
+            @Param("kioskLocationId") Long kioskLocationId
+    );
+
+    @Query("""
+            SELECT s FROM KioskSaleEntity s
+            WHERE UPPER(TRIM(s.status)) = 'COMPLETED'
+              AND COALESCE(s.cardAmount, 0) > 0
+              AND (
+                  UPPER(TRIM(s.paymentMethod)) IN ('TARJETA', 'CARD', 'TRANSFERENCIA')
+                  OR UPPER(TRIM(s.paymentMethod)) LIKE '%TARJETA%'
+                  OR UPPER(TRIM(s.paymentMethod)) LIKE '%CARD%'
+                  OR (
+                      UPPER(TRIM(s.paymentMethod)) IN ('MIXTO', 'MIXED')
+                      AND COALESCE(s.cardAmount, 0) > 0
+                  )
+              )
+              AND s.soldAt >= :startAt
+              AND s.soldAt < :endAt
+              AND (:kioskLocationId IS NULL OR s.kioskLocationId = :kioskLocationId)
+            ORDER BY s.soldAt ASC, s.id ASC
+            """)
+    List<KioskSaleEntity> findForVoucherReport(
+            @Param("startAt") java.time.LocalDateTime startAt,
+            @Param("endAt") java.time.LocalDateTime endAt,
+            @Param("kioskLocationId") Long kioskLocationId
+    );
+
+    @Query("""
             SELECT DISTINCT ks FROM KioskSaleEntity ks
             LEFT JOIN FETCH ks.items
             WHERE NOT EXISTS (

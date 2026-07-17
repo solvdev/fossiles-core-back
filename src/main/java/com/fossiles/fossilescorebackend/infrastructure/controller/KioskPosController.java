@@ -30,6 +30,8 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionR
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosManagerDashboardResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromotionEstimateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskDisbursementReportRowResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDepositReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskVoucherReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAvailabilityResponse;
@@ -236,6 +238,24 @@ public class KioskPosController {
             @RequestParam(required = false) Long kioskLocationId
     ) throws BusinessException {
         return ResponseEntity.ok(kioskPosService.getGeneralDisbursements(startDate, endDate, kioskLocationId));
+    }
+
+    @GetMapping("/reports/general/bank-deposits")
+    public ResponseEntity<KioskBankDepositReportResponse> getBankDeposits(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.getBankDeposits(startDate, endDate, kioskLocationId));
+    }
+
+    @GetMapping("/reports/general/vouchers")
+    public ResponseEntity<KioskVoucherReportResponse> getVoucherReport(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.getVoucherReport(startDate, endDate, kioskLocationId));
     }
 
     @GetMapping("/availability")

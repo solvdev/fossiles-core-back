@@ -117,6 +117,15 @@ fel.emission.departamento=GUATEMALA
 fel.emission.pais=GT
 fel.emission.document-type=FACT
 fel.emission.moneda=GTQ
+
+# Reporte de movimientos bancarios (depósitos de ventas en efectivo)
+kiosk-pos.deposit-report.bank-account=061-0016829-2
+kiosk-pos.deposit-report.account-name=CUEROGLAM, S.A.
+kiosk-pos.deposit-report.bank-name=Banco G&T Continental
+
+# Reporte de voucher (ventas con tarjeta)
+kiosk-pos.voucher-report.default-card-brand=VISA
+
 fel.emission.frases[0].tipo=1
 fel.emission.frases[0].escenario=1
 fel.emission.frases[1].tipo=4
