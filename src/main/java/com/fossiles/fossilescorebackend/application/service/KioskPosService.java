@@ -1170,7 +1170,10 @@ public class KioskPosService {
         LocalDateTime endAt = to.plusDays(1).atStartOfDay();
 
         List<KioskSaleEntity> sales = kioskSaleRepository.findForBankDepositReport(
-                startAt, endAt, effectiveKioskId);
+                startAt, endAt, effectiveKioskId).stream()
+                .filter(KioskPosService::countsForProductionMetrics)
+                .filter(KioskPosService::qualifiesForBankDepositReport)
+                .toList();
 
         Set<Long> kioskIds = sales.stream()
                 .map(KioskSaleEntity::getKioskLocationId)
@@ -1266,6 +1269,7 @@ public class KioskPosService {
         List<KioskSaleEntity> sales = kioskSaleRepository.findForVoucherReport(
                 startAt, endAt, effectiveKioskId).stream()
                 .filter(KioskPosService::countsForProductionMetrics)
+                .filter(KioskPosService::qualifiesForVoucherReport)
                 .toList();
 
         Set<Long> kioskIds = sales.stream()
@@ -3486,7 +3490,24 @@ public class KioskPosService {
         if ("TARJETA".equals(payment) || "CARD".equals(payment) || "TRANSFERENCIA".equals(payment)) {
             return sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
         }
+        if ("MIXTO".equals(payment)) {
+            BigDecimal total = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
+            if (sale.getCashAmount() != null && sale.getCashAmount().compareTo(BigDecimal.ZERO) > 0) {
+                return total.subtract(sale.getCashAmount()).max(BigDecimal.ZERO);
+            }
+        }
         return BigDecimal.ZERO;
+    }
+
+    static boolean qualifiesForVoucherReport(KioskSaleEntity sale) {
+        return resolveCardAmountForReport(sale).compareTo(BigDecimal.ZERO) > 0;
+    }
+
+    static boolean qualifiesForBankDepositReport(KioskSaleEntity sale) {
+        if (sale == null || safeTrimStatic(sale.getDepositSlipNumber()).isBlank()) {
+            return false;
+        }
+        return resolveCashAmountForDeposit(sale).compareTo(BigDecimal.ZERO) > 0;
     }
 
     private String buildBankDepositDescription(KioskSaleEntity sale, LocationEntity kiosk) {

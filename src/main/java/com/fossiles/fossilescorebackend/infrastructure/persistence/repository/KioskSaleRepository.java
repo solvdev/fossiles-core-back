@@ -74,6 +74,11 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             WHERE s.depositSlipNumber IS NOT NULL
               AND TRIM(s.depositSlipNumber) <> ''
               AND UPPER(TRIM(s.status)) = 'COMPLETED'
+              AND (
+                  UPPER(TRIM(s.paymentMethod)) IN ('EFECTIVO', 'CASH')
+                  OR UPPER(TRIM(s.paymentMethod)) LIKE '%EFECTIVO%'
+                  OR UPPER(TRIM(s.paymentMethod)) IN ('MIXTO', 'MIXED')
+              )
               AND COALESCE(s.depositRecordedAt, s.soldAt) >= :startAt
               AND COALESCE(s.depositRecordedAt, s.soldAt) < :endAt
               AND (:kioskLocationId IS NULL OR s.kioskLocationId = :kioskLocationId)
@@ -88,15 +93,12 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
     @Query("""
             SELECT s FROM KioskSaleEntity s
             WHERE UPPER(TRIM(s.status)) = 'COMPLETED'
-              AND COALESCE(s.cardAmount, 0) > 0
               AND (
                   UPPER(TRIM(s.paymentMethod)) IN ('TARJETA', 'CARD', 'TRANSFERENCIA')
                   OR UPPER(TRIM(s.paymentMethod)) LIKE '%TARJETA%'
                   OR UPPER(TRIM(s.paymentMethod)) LIKE '%CARD%'
-                  OR (
-                      UPPER(TRIM(s.paymentMethod)) IN ('MIXTO', 'MIXED')
-                      AND COALESCE(s.cardAmount, 0) > 0
-                  )
+                  OR UPPER(TRIM(s.paymentMethod)) IN ('MIXTO', 'MIXED')
+                  OR COALESCE(s.cardAmount, 0) > 0
               )
               AND s.soldAt >= :startAt
               AND s.soldAt < :endAt
