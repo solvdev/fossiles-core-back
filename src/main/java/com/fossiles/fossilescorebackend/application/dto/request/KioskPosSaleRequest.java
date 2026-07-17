@@ -32,6 +32,8 @@ public class KioskPosSaleRequest {
     private String cardAuthNumber;
     /** Últimos 4 dígitos de la tarjeta. */
     private String cardLast4;
+    /** Marca de tarjeta: VISA, MC o AMEX. */
+    private String cardBrand;
     private String notes;
     private String comments;
     private Long promotionId;

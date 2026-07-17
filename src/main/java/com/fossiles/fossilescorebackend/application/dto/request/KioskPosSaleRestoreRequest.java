@@ -42,6 +42,7 @@ public class KioskPosSaleRestoreRequest {
     private BigDecimal cardAmount;
     private String cardAuthNumber;
     private String cardLast4;
+    private String cardBrand;
     private String notes;
     private String comments;
     private String depositSlipNumber;

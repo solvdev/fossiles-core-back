@@ -91,6 +91,10 @@ public class KioskSaleEntity {
     @Column(name = "card_last4", length = 4)
     private String cardLast4;
 
+    /** Marca de tarjeta: VISA, MC, AMEX. */
+    @Column(name = "card_brand", length = 10)
+    private String cardBrand;
+
     @Column(name = "promotion_id")
     private Long promotionId;
 

@@ -105,6 +105,7 @@ public class KioskPosService {
     private static final String CASH_SESSION_CLOSED = "CLOSED";
     private static final String SALE_STATUS_VOID = "VOID";
     private static final Pattern CARD_LAST4_PATTERN = Pattern.compile("^\\d{4}$");
+    private static final Set<String> ALLOWED_CARD_BRANDS = Set.of("VISA", "MC", "AMEX");
     private static final Pattern POS_SALE_NUMBER_PATTERN = Pattern.compile("^POS-(\\d{8})-(\\d{4})$", Pattern.CASE_INSENSITIVE);
 
     private final SecurityUtil securityUtil;
@@ -278,7 +279,13 @@ public class KioskPosService {
         KioskCashSessionEntity openSession = requireOpenCashSession(kiosk.getId());
         LocalDate saleDate = request.getSaleDate() != null ? request.getSaleDate() : GuatemalaDateTime.today();
         String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod());
-        validateCardFields(normalizedPaymentMethod, request.getCardAmount(), request.getCardAuthNumber(), request.getCardLast4());
+        validateCardFields(
+                normalizedPaymentMethod,
+                request.getCardAmount(),
+                request.getCardAuthNumber(),
+                request.getCardLast4(),
+                request.getCardBrand()
+        );
 
         String normalizedTaxId = normalizeTaxId(request.getCustomerTaxId());
         if (normalizedTaxId != null && !"CF".equals(normalizedTaxId) && !isValidGuatemalaNit(normalizedTaxId)) {
@@ -398,6 +405,11 @@ public class KioskPosService {
                 .cardAmount(payment.cardAmount())
                 .cardAuthNumber(safeTrim(request.getCardAuthNumber()))
                 .cardLast4(safeTrim(request.getCardLast4()))
+                .cardBrand(resolveStoredCardBrand(
+                        normalizedPaymentMethod,
+                        payment.cardAmount(),
+                        request.getCardBrand()
+                ))
                 .promotionId(exchangeSale
                         ? null
                         : (promotion != null ? promotion.getId() : discountResolution.promotionId()))
@@ -501,7 +513,13 @@ public class KioskPosService {
         LocalDateTime soldAt = request.getSoldAt() != null ? request.getSoldAt() : saleDate.atTime(12, 0);
 
         String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod());
-        validateCardFields(normalizedPaymentMethod, request.getCardAmount(), request.getCardAuthNumber(), request.getCardLast4());
+        validateCardFields(
+                normalizedPaymentMethod,
+                request.getCardAmount(),
+                request.getCardAuthNumber(),
+                request.getCardLast4(),
+                request.getCardBrand()
+        );
 
         String normalizedTaxId = normalizeTaxId(request.getCustomerTaxId());
 
@@ -589,6 +607,11 @@ public class KioskPosService {
                 .cardAmount(payment.cardAmount())
                 .cardAuthNumber(safeTrim(request.getCardAuthNumber()))
                 .cardLast4(safeTrim(request.getCardLast4()))
+                .cardBrand(resolveStoredCardBrand(
+                        normalizedPaymentMethod,
+                        payment.cardAmount(),
+                        request.getCardBrand()
+                ))
                 .totalItems(totalItems)
                 .testSale(false)
                 .cashSessionId(null)
@@ -799,7 +822,13 @@ public class KioskPosService {
         }
 
         String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod());
-        validateCardFields(normalizedPaymentMethod, request.getCardAmount(), request.getCardAuthNumber(), request.getCardLast4());
+        validateCardFields(
+                normalizedPaymentMethod,
+                request.getCardAmount(),
+                request.getCardAuthNumber(),
+                request.getCardLast4(),
+                request.getCardBrand()
+        );
         BigDecimal totalAmount = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
         PaymentSnapshot payment = resolvePaymentSnapshot(
                 normalizedPaymentMethod,
@@ -814,9 +843,12 @@ public class KioskPosService {
         sale.setChangeAmount(payment.changeAmount());
         sale.setCashAmount(payment.cashAmount());
         sale.setCardAmount(payment.cardAmount());
-        boolean hasCardData = "TARJETA".equals(normalizedPaymentMethod) || "MIXTO".equals(normalizedPaymentMethod);
+        boolean hasCardData = requiresCardData(normalizedPaymentMethod, payment.cardAmount());
         sale.setCardAuthNumber(hasCardData ? safeTrim(request.getCardAuthNumber()) : "");
         sale.setCardLast4(hasCardData ? safeTrim(request.getCardLast4()) : "");
+        sale.setCardBrand(hasCardData
+                ? resolveStoredCardBrand(normalizedPaymentMethod, payment.cardAmount(), request.getCardBrand())
+                : "");
         KioskSaleEntity saved = kioskSaleRepository.save(sale);
         return toSaleResponse(saved, kiosk, user);
     }
@@ -1286,9 +1318,9 @@ public class KioskPosService {
         Map<Long, TaxInvoiceEntity> invoicesById = taxInvoiceRepository.findAllById(invoiceIds).stream()
                 .collect(Collectors.toMap(TaxInvoiceEntity::getId, item -> item, (a, b) -> a));
 
-        String cardBrand = safeTrim(voucherReportProperties.getDefaultCardBrand());
-        if (cardBrand.isBlank()) {
-            cardBrand = "VISA";
+        String defaultCardBrand = safeTrim(voucherReportProperties.getDefaultCardBrand());
+        if (defaultCardBrand.isBlank()) {
+            defaultCardBrand = "VISA";
         }
 
         List<KioskVoucherReportRowResponse> rows = new ArrayList<>();
@@ -1299,9 +1331,8 @@ public class KioskPosService {
             rows.add(KioskVoucherReportRowResponse.builder()
                     .id(sale.getId())
                     .saleId(sale.getId())
-                    .saleCode(String.valueOf(sale.getId()))
                     .invoiceNumber(resolveSaleInvoiceLabel(sale, invoicesById))
-                    .cardBrand(cardBrand)
+                    .cardBrand(resolveCardBrandForReport(sale, defaultCardBrand))
                     .amount(resolveCardAmountForReport(sale).setScale(2, RoundingMode.HALF_UP))
                     .voucherNumber(voucherNumber)
                     .cardLast4(cardLast4)
@@ -2000,11 +2031,13 @@ public class KioskPosService {
     }
 
     private void validateCardFields(
-            String paymentMethod, BigDecimal cardAmount, String cardAuthNumber, String cardLast4
+            String paymentMethod,
+            BigDecimal cardAmount,
+            String cardAuthNumber,
+            String cardLast4,
+            String cardBrand
     ) throws BusinessException {
-        boolean requiresCardData = "TARJETA".equals(paymentMethod)
-                || ("MIXTO".equals(paymentMethod) && cardAmount != null && cardAmount.compareTo(BigDecimal.ZERO) > 0);
-        if (!requiresCardData) {
+        if (!requiresCardData(paymentMethod, cardAmount)) {
             return;
         }
         if (safeTrim(cardAuthNumber).isBlank()) {
@@ -2013,6 +2046,49 @@ public class KioskPosService {
         if (!CARD_LAST4_PATTERN.matcher(safeTrim(cardLast4)).matches()) {
             throw new BusinessException("Los últimos 4 dígitos de la tarjeta deben ser 4 números.");
         }
+        if (safeTrim(cardBrand).isBlank()) {
+            throw new BusinessException("Debes indicar la marca de la tarjeta (VISA, MC o AMEX).");
+        }
+        normalizeCardBrand(cardBrand);
+    }
+
+    private boolean requiresCardData(String paymentMethod, BigDecimal cardAmount) {
+        return "TARJETA".equals(paymentMethod)
+                || ("MIXTO".equals(paymentMethod) && cardAmount != null && cardAmount.compareTo(BigDecimal.ZERO) > 0);
+    }
+
+    private String resolveStoredCardBrand(String paymentMethod, BigDecimal cardAmount, String cardBrand)
+            throws BusinessException {
+        if (!requiresCardData(paymentMethod, cardAmount)) {
+            return "";
+        }
+        return normalizeCardBrand(cardBrand);
+    }
+
+    private String normalizeCardBrand(String cardBrand) throws BusinessException {
+        String normalized = safeTrim(cardBrand).toUpperCase(Locale.ROOT);
+        if ("MASTERCARD".equals(normalized) || "MASTER".equals(normalized)) {
+            normalized = "MC";
+        }
+        if (!ALLOWED_CARD_BRANDS.contains(normalized)) {
+            throw new BusinessException("Marca de tarjeta no válida. Use VISA, MC o AMEX.");
+        }
+        return normalized;
+    }
+
+    static String resolveCardBrandForReport(KioskSaleEntity sale, String defaultBrand) {
+        if (sale == null) {
+            return safeTrimStatic(defaultBrand).isBlank() ? "VISA" : safeTrimStatic(defaultBrand).toUpperCase(Locale.ROOT);
+        }
+        String stored = safeTrimStatic(sale.getCardBrand()).toUpperCase(Locale.ROOT);
+        if ("MASTERCARD".equals(stored) || "MASTER".equals(stored)) {
+            stored = "MC";
+        }
+        if (ALLOWED_CARD_BRANDS.contains(stored)) {
+            return stored;
+        }
+        String fallback = safeTrimStatic(defaultBrand).toUpperCase(Locale.ROOT);
+        return fallback.isBlank() ? "VISA" : fallback;
     }
 
     private String inventoryKey(Long productId, Long colorId) {
@@ -2483,6 +2559,7 @@ public class KioskPosService {
                 .cardAmount(sale.getCardAmount())
                 .cardAuthNumber(sale.getCardAuthNumber())
                 .cardLast4(sale.getCardLast4())
+                .cardBrand(sale.getCardBrand())
                 .notes(sale.getNotes())
                 .comments(sale.getComments())
                 .promotionId(sale.getPromotionId())

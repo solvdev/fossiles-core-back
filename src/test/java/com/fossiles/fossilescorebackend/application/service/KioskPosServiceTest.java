@@ -253,6 +253,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("9876")
+                .cardBrand("VISA")
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
@@ -307,6 +308,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .promotionId(percentPromo.getId())
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
@@ -327,6 +329,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .promotionId(fixedPromo.getId())
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
@@ -401,6 +404,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .promotionId(created.getId())
                 .items(List.of(
                         item(damaProduct.getId(), negro.getId(), BigDecimal.ONE),
@@ -470,6 +474,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .promotionId(tieredPromo.getId())
                 .items(List.of(
                         item(damaProduct.getId(), negro.getId(), BigDecimal.ONE),
@@ -515,6 +520,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .items(List.of(item(caballeroProduct.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
@@ -556,6 +562,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .items(List.of(item(packaging.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
@@ -579,6 +586,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .manualDiscountPercent(new BigDecimal("10"))
                 .items(List.of(
                         item(wallet.getId(), negro.getId(), BigDecimal.ONE),
@@ -607,6 +615,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
@@ -635,6 +644,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .items(List.of(item(wallet.getId(), negro.getId(), new BigDecimal("2"))))
                 .build());
 
@@ -678,6 +688,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
@@ -722,6 +733,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .promotionId(damaPromo.getId())
                 .items(List.of(
                         item(damaProduct.getId(), negro.getId(), BigDecimal.ONE),
@@ -751,6 +763,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .promotionId(combo.getId())
                 .items(List.of(item(wallet.getId(), negro.getId(), new BigDecimal("2"))))
                 .build());
@@ -792,6 +805,7 @@ class KioskPosServiceTest {
                 .paymentMethod("TARJETA")
                 .cardAuthNumber("123456")
                 .cardLast4("1234")
+                .cardBrand("VISA")
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
