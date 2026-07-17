@@ -1067,8 +1067,9 @@ public class KioskPosService {
     public KioskPosReportsResponse getGeneralReport(LocalDate startDate, LocalDate endDate, String paymentKind)
             throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
-            throw new BusinessException("Solo administradores o logística pueden ver el reporte general de kioskos.");
+        if (!KioskAccessHelper.hasKioskReportsAccess(user)) {
+            throw new BusinessException(
+                    "Solo administradores, logística o contabilidad pueden ver el reporte general de kioskos.");
         }
         String normalizedKind = normalizeReportPaymentKind(paymentKind);
         List<KioskSaleEntity> sales = findSalesByDateRange(startDate, endDate).stream()
@@ -1087,8 +1088,9 @@ public class KioskPosService {
             String paymentKind
     ) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
-            throw new BusinessException("Solo administradores o logística pueden exportar el reporte general de ventas.");
+        if (!KioskAccessHelper.hasKioskReportsAccess(user)) {
+            throw new BusinessException(
+                    "Solo administradores, logística o contabilidad pueden exportar el reporte general de ventas.");
         }
         String normalizedKind = normalizeReportPaymentKind(paymentKind);
         Map<Long, LocationEntity> kioskById = locationRepository.findAll().stream()
@@ -1125,11 +1127,11 @@ public class KioskPosService {
             Long kioskLocationId
     ) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
-        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+        boolean globalReports = KioskAccessHelper.hasKioskReportsAccess(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, globalReports);
 
         Long effectiveKioskId;
-        if (admin) {
+        if (globalReports) {
             effectiveKioskId = kioskLocationId;
         } else {
             LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
@@ -1189,11 +1191,11 @@ public class KioskPosService {
             Long kioskLocationId
     ) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
-        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+        boolean globalReports = KioskAccessHelper.hasKioskReportsAccess(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, globalReports);
 
         Long effectiveKioskId;
-        if (admin) {
+        if (globalReports) {
             effectiveKioskId = kioskLocationId;
         } else {
             LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
@@ -1282,12 +1284,12 @@ public class KioskPosService {
             Long kioskLocationId
     ) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
-        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+        boolean globalReports = KioskAccessHelper.hasKioskReportsAccess(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, globalReports);
 
         Long effectiveKioskId;
         LocationEntity headerKiosk;
-        if (admin) {
+        if (globalReports) {
             effectiveKioskId = kioskLocationId;
             headerKiosk = kioskLocationId != null
                     ? locationRepository.findById(kioskLocationId).orElse(null)
@@ -1376,15 +1378,15 @@ public class KioskPosService {
             throw new BusinessException("Debes indicar el corte de conteo físico.");
         }
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
-        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+        boolean globalReports = KioskAccessHelper.hasKioskReportsAccess(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, globalReports);
 
         KioscoPhysicalCountEntity count = kioscoPhysicalCountRepository.findById(physicalCountId)
                 .orElseThrow(() -> new ResourceNotFoundException("KioscoPhysicalCount", physicalCountId));
 
         LocationEntity kiosk = locationRepository.findById(count.getLocationId())
                 .orElseThrow(() -> new ResourceNotFoundException("Location", count.getLocationId()));
-        if (!admin) {
+        if (!globalReports) {
             boolean allowed = availableKiosks.stream()
                     .anyMatch(item -> Objects.equals(item.getId(), kiosk.getId()));
             if (!allowed) {
@@ -3287,8 +3289,8 @@ public class KioskPosService {
         if (!CASH_SESSION_CLOSED.equalsIgnoreCase(safeTrim(session.getStatus()))) {
             throw new BusinessException("El reporte de cierre solo está disponible para cajas cerradas.");
         }
-        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
-        LocationEntity kiosk = resolveTargetKiosk(resolveAvailableKiosks(user, admin), session.getKioskLocationId());
+        boolean globalReports = KioskAccessHelper.hasKioskReportsAccess(user);
+        LocationEntity kiosk = resolveTargetKiosk(resolveAvailableKiosks(user, globalReports), session.getKioskLocationId());
         return buildCashCloseReport(session, kiosk, user);
     }
 
@@ -3299,8 +3301,8 @@ public class KioskPosService {
             LocalDate endDate
     ) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
-        List<LocationEntity> available = resolveAvailableKiosks(user, admin);
+        boolean globalReports = KioskAccessHelper.hasKioskReportsAccess(user);
+        List<LocationEntity> available = resolveAvailableKiosks(user, globalReports);
         List<Long> kioskIds;
         if (kioskLocationId != null) {
             LocationEntity target = resolveTargetKiosk(available, kioskLocationId);

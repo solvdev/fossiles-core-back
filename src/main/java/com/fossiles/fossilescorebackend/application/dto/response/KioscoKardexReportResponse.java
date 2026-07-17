@@ -51,6 +51,8 @@ public class KioscoKardexReportResponse {
         private int anulacionVenta;
         /** Devoluciones a oficina, traslados salientes entre sucursales y merma. */
         private int salida;
+        /** Subconjunto de salida: devoluciones a bodega / reintegros del periodo. */
+        private int salidaDevolucion;
         private int inventarioFinal;
     }
 }

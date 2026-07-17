@@ -99,11 +99,13 @@ public class KioscoPhysicalCountReportResponse {
         private int ventas;
         private int anulacionVenta;
         private int salida;
+        /** Devoluciones a bodega del periodo (subset de salida). */
+        private int salidaDevolucion;
         private int inventarioFinal;
         /** Conteo fisico por ubicacion: claves fijas V1..V7, E, BO. */
         private Map<String, Integer> counts;
         private int total;
-        /** Diferencia = físico − sistema (+ sobrante, − faltante). */
+        /** Diferencia = físico − sistema, descontando devoluciones a bodega aún en piso al contar. */
         private int diferencia;
         /** Observacion cuando hay diferencia (sobrante o faltante). */
         private String observation;

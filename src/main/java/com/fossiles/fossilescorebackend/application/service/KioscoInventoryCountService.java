@@ -468,10 +468,11 @@ public class KioscoInventoryCountService {
                     .ventas(kardexRow.getVentas())
                     .anulacionVenta(kardexRow.getAnulacionVenta())
                     .salida(kardexRow.getSalida())
+                    .salidaDevolucion(kardexRow.getSalidaDevolucion())
                     .inventarioFinal(inventarioFinal)
                     .counts(counts)
                     .total(total)
-                    .diferencia(total - inventarioFinal)
+                    .diferencia(computeDiferenciaConteo(total, inventarioFinal, kardexRow.getSalidaDevolucion()))
                     .build();
             Map<String, Integer> openingBalanceBySize = stock != null
                     ? openingBalanceByStockAndSize.getOrDefault(stock.getId(), Map.of())
@@ -550,13 +551,15 @@ public class KioscoInventoryCountService {
                 .ventas(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getVentas))
                 .anulacionVenta(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getAnulacionVenta))
                 .salida(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getSalida))
+                .salidaDevolucion(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getSalidaDevolucion))
                 .inventarioFinal(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getInventarioFinal))
                 .counts(totalCounts)
                 .total(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getTotal))
-                .diferencia(
-                        sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getTotal)
-                                - sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getInventarioFinal)
-                )
+                .diferencia(computeDiferenciaConteo(
+                        sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getTotal),
+                        sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getInventarioFinal),
+                        sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getSalidaDevolucion)
+                ))
                 .build();
     }
 
@@ -941,6 +944,7 @@ public class KioscoInventoryCountService {
             }
             row.setComprasAjustes(Math.max(0, row.getComprasAjustes() - qty));
             row.setSalida(row.getSalida() + qty);
+            row.setSalidaDevolucion(row.getSalidaDevolucion() + qty);
             break;
         }
 
@@ -949,7 +953,19 @@ public class KioscoInventoryCountService {
         String bucketKey = sizeKey == null || sizeKey.isBlank() ? "" : sizeKey;
         KioscoInventoryService.SizeKardexBucket current =
                 bySize.getOrDefault(bucketKey, KioscoInventoryService.SizeKardexBucket.empty());
-        bySize.put(bucketKey, current.plus(-qty, 0, 0, 0, 0, qty));
+        bySize.put(bucketKey, current.plus(-qty, 0, 0, 0, 0, qty, qty));
+    }
+
+    /**
+     * Físico − Fin., descontando devoluciones a bodega que siguen en piso al contar
+     * (registradas en Sal. pero aún no retiradas de vitrina/bodega kiosko).
+     */
+    static int computeDiferenciaConteo(int total, int inventarioFinal, int salidaDevolucion) {
+        int raw = total - inventarioFinal;
+        if (raw <= 0) {
+            return raw;
+        }
+        return Math.max(0, raw - Math.max(0, salidaDevolucion));
     }
 
     private static String safeTrim(String value) {
@@ -1006,7 +1022,8 @@ public class KioscoInventoryCountService {
                             unallocated.entradas,
                             unallocated.ventas,
                             unallocated.anulacionVenta,
-                            unallocated.salida
+                            unallocated.salida,
+                            unallocated.salidaDevolucion
                     );
                 }
             } else {
@@ -1042,7 +1059,8 @@ public class KioscoInventoryCountService {
                 base.getEntradas(),
                 base.getVentas(),
                 base.getAnulacionVenta(),
-                base.getSalida()
+                base.getSalida(),
+                base.getSalidaDevolucion()
         );
     }
 
@@ -1159,10 +1177,11 @@ public class KioscoInventoryCountService {
                 .ventas(bucket.ventas)
                 .anulacionVenta(bucket.anulacionVenta)
                 .salida(bucket.salida)
+                .salidaDevolucion(bucket.salidaDevolucion)
                 .inventarioFinal(inventarioFinal)
                 .counts(counts)
                 .total(total)
-                .diferencia(total - inventarioFinal)
+                .diferencia(computeDiferenciaConteo(total, inventarioFinal, bucket.salidaDevolucion))
                 .build(),
                 null,
                 sizeObservations != null ? sizeObservations.get(size) : null

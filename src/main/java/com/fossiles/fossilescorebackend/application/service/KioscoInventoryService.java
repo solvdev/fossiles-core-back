@@ -1428,6 +1428,7 @@ public class KioscoInventoryService {
                     .ventas(acc.ventas)
                     .anulacionVenta(acc.anulacionVenta)
                     .salida(acc.salida)
+                    .salidaDevolucion(acc.salidaDevolucion)
                     .inventarioFinal(finalBalance)
                     .build());
         }
@@ -1707,10 +1708,12 @@ public class KioscoInventoryService {
         public final int ventas;
         public final int anulacionVenta;
         public final int salida;
+        /** Solo devoluciones a bodega / reintegros (para cuadrar conteo si aún están en piso). */
+        public final int salidaDevolucion;
 
         private SizeKardexBucket(
                 int comprasAjustes, int anulacionCompras, int entradas,
-                int ventas, int anulacionVenta, int salida
+                int ventas, int anulacionVenta, int salida, int salidaDevolucion
         ) {
             this.comprasAjustes = comprasAjustes;
             this.anulacionCompras = anulacionCompras;
@@ -1718,29 +1721,37 @@ public class KioscoInventoryService {
             this.ventas = ventas;
             this.anulacionVenta = anulacionVenta;
             this.salida = salida;
+            this.salidaDevolucion = salidaDevolucion;
         }
 
         public static SizeKardexBucket of(
                 int comprasAjustes, int anulacionCompras, int entradas,
                 int ventas, int anulacionVenta, int salida
         ) {
+            return of(comprasAjustes, anulacionCompras, entradas, ventas, anulacionVenta, salida, 0);
+        }
+
+        public static SizeKardexBucket of(
+                int comprasAjustes, int anulacionCompras, int entradas,
+                int ventas, int anulacionVenta, int salida, int salidaDevolucion
+        ) {
             return new SizeKardexBucket(
-                    comprasAjustes, anulacionCompras, entradas, ventas, anulacionVenta, salida);
+                    comprasAjustes, anulacionCompras, entradas, ventas, anulacionVenta, salida, salidaDevolucion);
         }
 
         static SizeKardexBucket from(KardexAccumulator acc) {
             return new SizeKardexBucket(
                     acc.comprasAjustes, acc.anulacionCompras, acc.entradas,
-                    acc.ventas, acc.anulacionVenta, acc.salida);
+                    acc.ventas, acc.anulacionVenta, acc.salida, acc.salidaDevolucion);
         }
 
         public static SizeKardexBucket empty() {
-            return new SizeKardexBucket(0, 0, 0, 0, 0, 0);
+            return new SizeKardexBucket(0, 0, 0, 0, 0, 0, 0);
         }
 
         public boolean isEmpty() {
             return comprasAjustes == 0 && anulacionCompras == 0 && entradas == 0
-                    && ventas == 0 && anulacionVenta == 0 && salida == 0;
+                    && ventas == 0 && anulacionVenta == 0 && salida == 0 && salidaDevolucion == 0;
         }
 
         /** Neto del periodo (suma algebraica de columnas kardex). */
@@ -1750,13 +1761,20 @@ public class KioscoInventoryService {
 
         public SizeKardexBucket plus(int comprasDelta, int anulacionComprasDelta, int entradasDelta,
                 int ventasDelta, int anulacionVentaDelta, int salidaDelta) {
+            return plus(comprasDelta, anulacionComprasDelta, entradasDelta, ventasDelta, anulacionVentaDelta,
+                    salidaDelta, 0);
+        }
+
+        public SizeKardexBucket plus(int comprasDelta, int anulacionComprasDelta, int entradasDelta,
+                int ventasDelta, int anulacionVentaDelta, int salidaDelta, int salidaDevolucionDelta) {
             return new SizeKardexBucket(
                     comprasAjustes + comprasDelta,
                     anulacionCompras + anulacionComprasDelta,
                     entradas + entradasDelta,
                     ventas + ventasDelta,
                     anulacionVenta + anulacionVentaDelta,
-                    salida + salidaDelta
+                    salida + salidaDelta,
+                    salidaDevolucion + salidaDevolucionDelta
             );
         }
     }
@@ -1829,6 +1847,7 @@ public class KioscoInventoryService {
         private int ventas;
         private int anulacionVenta;
         private int salida;
+        private int salidaDevolucion;
 
         void apply(KioscoMovementType type, int delta) {
             switch (type) {
@@ -1859,7 +1878,14 @@ public class KioscoInventoryService {
                         anulacionVenta += delta;
                     }
                 }
-                case DEVOLUCION_DEPOSITO, TRASLADO_SALIDA, MERMA -> {
+                case DEVOLUCION_DEPOSITO -> {
+                    if (delta < 0) {
+                        int qty = -delta;
+                        salida += qty;
+                        salidaDevolucion += qty;
+                    }
+                }
+                case TRASLADO_SALIDA, MERMA -> {
                     if (delta < 0) {
                         salida += -delta;
                     }
