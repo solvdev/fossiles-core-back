@@ -20,4 +20,8 @@ public class KioscoPhysicalCountItemUpsertRequest {
     private Map<String, Integer> physicalSizes;
     /** Conteo FOSS por ubicacion cincho (E vitrina, BO bodega) y talla. */
     private Map<String, Map<String, Integer>> physicalSizesByLocation;
+    /** Observacion para filas sin desglose por talla. */
+    private String observation;
+    /** Observaciones por talla (cinchos expandidos). */
+    private Map<String, String> sizeObservations;
 }

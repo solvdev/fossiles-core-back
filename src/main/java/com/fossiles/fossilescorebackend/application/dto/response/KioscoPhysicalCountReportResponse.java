@@ -105,5 +105,7 @@ public class KioscoPhysicalCountReportResponse {
         private int total;
         /** Diferencia = físico − sistema (+ sobrante, − faltante). */
         private int diferencia;
+        /** Observacion cuando hay diferencia (sobrante o faltante). */
+        private String observation;
     }
 }

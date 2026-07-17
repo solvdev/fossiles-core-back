@@ -31,6 +31,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -120,6 +121,8 @@ class KioscoInventoryCountServiceTest {
                 .thenReturn(rows);
         when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to)))
                 .thenReturn(Map.of());
+        when(kioscoInventoryService.computeSizeBalanceByStockAndSize(eq(locationId), eq(from.atStartOfDay())))
+                .thenReturn(Map.of());
     }
 
     private void stubSubcountKardex(LocalDate asOf, List<KioscoKardexReportResponse.KioscoKardexRow> rows)
@@ -127,6 +130,8 @@ class KioscoInventoryCountServiceTest {
         when(kioscoInventoryService.buildKardexRows(eq(locationId), eq(from), eq(asOf), eq(true), eq(asOf)))
                 .thenReturn(rows);
         when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(asOf)))
+                .thenReturn(Map.of());
+        when(kioscoInventoryService.computeSizeBalanceByStockAndSize(eq(locationId), eq(from.atStartOfDay())))
                 .thenReturn(Map.of());
     }
 
@@ -544,6 +549,8 @@ class KioscoInventoryCountServiceTest {
                         .productId(fossProductId).productCode("FOSS-100").productName("Cincho casual")
                         .colorId(colorId).colorName("Negro").inventarioFinal(10).build()
         ));
+        when(kioscoInventoryService.computeSizeBalanceByStockAndSize(eq(locationId), eq(from.atStartOfDay())))
+                .thenReturn(Map.of(501L, Map.of("28", 2, "30", 3)));
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
         when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
             KioscoPhysicalCountEntity entity = inv.getArgument(0);
@@ -558,7 +565,54 @@ class KioscoInventoryCountServiceTest {
         assertThat(rows.stream().map(r -> r.getSizeLabel())).containsExactly("28", "30");
         assertThat(rows.get(0).getInventarioFinal()).isEqualTo(2);
         assertThat(rows.get(1).getInventarioFinal()).isEqualTo(3);
+        assertThat(rows.get(0).getInventarioInicial() + rows.get(0).getEntradas()).isEqualTo(rows.get(0).getInventarioFinal());
         assertThat(report.getTotalGeneral().getInventarioFinal()).isEqualTo(5);
+    }
+
+    @Test
+    void buildReport_kardexPorTallaCuadraIniMasMovimientosConFin() throws Exception {
+        Long fossProductId = 34L;
+        long stockId = 501L;
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(fossProductId).code("FOSS-5").name("Cincho Giorgio")
+                        .categoryId(categoryId).cinchoType("CASUAL").build()
+        ));
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .id(stockId)
+                        .locationId(locationId)
+                        .productId(fossProductId)
+                        .colorId(colorId)
+                        .sizesData("{\"34\":0}")
+                        .build()
+        ));
+        stubPrincipalKardex(List.of(
+                KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(fossProductId).productCode("FOSS-5").productName("Cincho Giorgio")
+                        .colorId(colorId).colorName("Cafe").inventarioFinal(0).build()
+        ));
+        when(kioscoInventoryService.computeSizeBalanceByStockAndSize(eq(locationId), eq(from.atStartOfDay())))
+                .thenReturn(Map.of(stockId, Map.of("34", 0)));
+        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to)))
+                .thenReturn(Map.of(
+                        stockId,
+                        Map.of("34", KioscoInventoryService.SizeKardexBucket.of(0, 0, 1, 0, 0, 0))
+                ));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+
+        var row = report.getCategories().get(0).getRows().get(0);
+        assertThat(row.getSizeLabel()).isEqualTo("34");
+        assertThat(row.getInventarioInicial()).isZero();
+        assertThat(row.getEntradas()).isEqualTo(1);
+        assertThat(row.getInventarioFinal()).isEqualTo(1);
+        assertThat(row.getInventarioInicial() + row.getEntradas()).isEqualTo(row.getInventarioFinal());
     }
 
     @Test

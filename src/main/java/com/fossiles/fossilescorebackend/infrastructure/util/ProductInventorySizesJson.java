@@ -186,6 +186,58 @@ public final class ProductInventorySizesJson {
         }
     }
 
+    /** JSON mapa string → string (p. ej. observaciones por talla). */
+    public static Map<String, String> parseStringMap(String json) {
+        if (json == null || json.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Map<String, Object> raw = MAPPER.readValue(json, new TypeReference<>() {});
+            Map<String, String> out = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> e : raw.entrySet()) {
+                if (e.getKey() == null || e.getValue() == null) {
+                    continue;
+                }
+                String k = normalizeKey(e.getKey());
+                if (k.isEmpty()) {
+                    continue;
+                }
+                String v = e.getValue().toString().trim();
+                if (!v.isEmpty()) {
+                    out.put(k, v);
+                }
+            }
+            return out;
+        } catch (JsonProcessingException e) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    public static String serializeStringMap(Map<String, String> values) {
+        if (values == null || values.isEmpty()) {
+            return null;
+        }
+        Map<String, String> cleaned = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : values.entrySet()) {
+            String k = normalizeKey(e.getKey());
+            if (k.isEmpty() || e.getValue() == null) {
+                continue;
+            }
+            String v = e.getValue().trim();
+            if (!v.isEmpty()) {
+                cleaned.put(k, v);
+            }
+        }
+        if (cleaned.isEmpty()) {
+            return null;
+        }
+        try {
+            return MAPPER.writeValueAsString(cleaned);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("No se pudo serializar string map", e);
+        }
+    }
+
     public static String serializeByLocation(Map<String, Map<String, BigDecimal>> byLocation) {
         if (byLocation == null || byLocation.isEmpty()) {
             return null;

@@ -154,7 +154,31 @@ public class KioscoInventoryCountService {
                 item.setSizeLocationCountsData(ProductInventorySizesJson.serializeByLocation(
                         normalizePhysicalSizesByLocation(req.getPhysicalSizesByLocation())));
             }
-            if (normalized == null && req.getPhysicalSizes() == null && req.getPhysicalSizesByLocation() == null) {
+            if (req.getObservation() != null) {
+                String trimmed = req.getObservation().trim();
+                item.setObservation(trimmed.isEmpty() ? null : trimmed);
+            }
+            if (req.getSizeObservations() != null) {
+                Map<String, String> merged = ProductInventorySizesJson.parseStringMap(item.getSizeObservationsData());
+                for (Map.Entry<String, String> entry : req.getSizeObservations().entrySet()) {
+                    String sizeKey = ProductInventorySizesJson.normalizeKey(entry.getKey());
+                    if (sizeKey.isEmpty()) {
+                        continue;
+                    }
+                    String value = entry.getValue() != null ? entry.getValue().trim() : "";
+                    if (value.isEmpty()) {
+                        merged.remove(sizeKey);
+                    } else {
+                        merged.put(sizeKey, value);
+                    }
+                }
+                item.setSizeObservationsData(ProductInventorySizesJson.serializeStringMap(merged));
+            }
+            boolean hasCountChanges = normalized != null
+                    || req.getPhysicalSizes() != null
+                    || req.getPhysicalSizesByLocation() != null;
+            boolean hasObservationChanges = req.getObservation() != null || req.getSizeObservations() != null;
+            if (!hasCountChanges && !hasObservationChanges) {
                 continue;
             }
             item.setUpdatedBy(userId);
@@ -314,6 +338,9 @@ public class KioscoInventoryCountService {
         Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize =
                 kioscoInventoryService.buildKardexByStockAndSize(
                         count.getLocationId(), count.getPeriodFrom(), kardexTo);
+        Map<Long, Map<String, Integer>> initialBalanceByStockAndSize =
+                kioscoInventoryService.computeSizeBalanceByStockAndSize(
+                        count.getLocationId(), count.getPeriodFrom().atStartOfDay());
 
         Map<String, KioscoPhysicalCountItemEntity> itemsByKey = itemRepository.findByCountId(count.getId()).stream()
                 .collect(Collectors.toMap(i -> itemKey(i.getProductId(), i.getColorId()), i -> i, (a, b) -> a));
@@ -366,6 +393,11 @@ public class KioscoInventoryCountService {
                     resolveSystemSizesForReport(stock), sizeKardexForStock);
             String sizesSummary = formatSizesSummary(systemSizes);
             String physicalSizesSummary = formatSizesSummary(physicalSizes);
+            String generalObservation = item != null && item.getObservation() != null
+                    ? item.getObservation().trim() : "";
+            Map<String, String> sizeObservations = item != null
+                    ? ProductInventorySizesJson.parseStringMap(item.getSizeObservationsData())
+                    : Map.of();
 
             Map<String, Integer> counts = new LinkedHashMap<>();
             int total = computePhysicalCountTotal(
@@ -420,9 +452,14 @@ public class KioscoInventoryCountService {
                     .total(total)
                     .diferencia(total - inventarioFinal)
                     .build();
+            Map<String, Integer> initialBalanceBySize = stock != null
+                    ? initialBalanceByStockAndSize.getOrDefault(stock.getId(), Map.of())
+                    : Map.of();
             List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> displayRows = isSubcount
-                    ? List.of(row)
-                    : expandRowsForDisplay(row, product, stock, kardexByStockAndSize);
+                    ? List.of(applyRowObservation(row, generalObservation, null))
+                    : expandRowsForDisplay(
+                            row, product, stock, kardexByStockAndSize, initialBalanceBySize,
+                            generalObservation, sizeObservations);
             for (KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow displayRow : displayRows) {
                 allRows.add(displayRow);
                 rowsByCategoryKey.computeIfAbsent(categoryKey, k -> new ArrayList<>()).add(displayRow);
@@ -799,17 +836,20 @@ public class KioscoInventoryCountService {
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
             ProductEntity product,
             KioscoStockEntity stock,
-            Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize
+            Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize,
+            Map<String, Integer> initialBalanceBySize,
+            String generalObservation,
+            Map<String, String> sizeObservations
     ) {
         Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex = stock != null
                 ? kardexByStockAndSize.getOrDefault(stock.getId(), Map.of())
                 : Map.of();
         if (!shouldExpandRowBySize(product, base, sizeKardex)) {
-            return List.of(base);
+            return List.of(applyRowObservation(base, generalObservation, null));
         }
         List<String> sizeKeys = collectSizeKeysForRow(base, sizeKardex.keySet());
         if (sizeKeys.isEmpty()) {
-            return List.of(base);
+            return List.of(applyRowObservation(base, generalObservation, null));
         }
         boolean hasSizedMovements = sizeKardex.entrySet().stream()
                 .anyMatch(e -> e.getKey() != null && !e.getKey().isBlank() && !e.getValue().isEmpty());
@@ -830,9 +870,26 @@ public class KioscoInventoryCountService {
                 // Histórico sin size_key ni desglose de envío: total en la primera talla.
                 bucket = first ? bucketFromAggregateRow(base) : KioscoInventoryService.SizeKardexBucket.empty();
             }
-            expanded.add(buildExpandedRowForSize(base, product, size, bucket));
+            int inventarioInicial = initialBalanceBySize.getOrDefault(size, 0);
+            if (first) {
+                inventarioInicial += initialBalanceBySize.getOrDefault("", 0);
+            }
+            expanded.add(buildExpandedRowForSize(
+                    base, product, size, bucket, inventarioInicial, sizeObservations));
         }
         return expanded;
+    }
+
+    private static KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow applyRowObservation(
+            KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow row,
+            String generalObservation,
+            String sizeObservation
+    ) {
+        String observation = sizeObservation != null ? sizeObservation : generalObservation;
+        if (observation == null || observation.isBlank()) {
+            return row;
+        }
+        return row.toBuilder().observation(observation.trim()).build();
     }
 
     private static KioscoInventoryService.SizeKardexBucket mergeBuckets(
@@ -950,23 +1007,24 @@ public class KioscoInventoryCountService {
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
             ProductEntity product,
             String size,
-            KioscoInventoryService.SizeKardexBucket kardex
+            KioscoInventoryService.SizeKardexBucket kardex,
+            int inventarioInicial,
+            Map<String, String> sizeObservations
     ) {
-        int sysQty = base.getSystemSizes() != null ? base.getSystemSizes().getOrDefault(size, 0) : 0;
         Map<String, Integer> counts = resolveCountsForSize(base, product, size);
         int total = resolvePhysicalTotalForSize(base, product, size, counts);
-        int inventarioFinal = sysQty;
         KioscoInventoryService.SizeKardexBucket bucket =
                 kardex != null ? kardex : KioscoInventoryService.SizeKardexBucket.empty();
-        int inventarioInicial = Math.max(0, inventarioFinal - bucket.netDelta());
+        int inventarioFinal = Math.max(0, inventarioInicial + bucket.netDelta());
 
-        Map<String, Integer> singleSystemSize = sysQty > 0 ? Map.of(size, sysQty) : null;
+        Map<String, Integer> singleSystemSize = inventarioFinal > 0 ? Map.of(size, inventarioFinal) : null;
         Map<String, Integer> singlePhysicalSize = null;
         if (base.getPhysicalSizes() != null && base.getPhysicalSizes().containsKey(size)) {
             singlePhysicalSize = Map.of(size, base.getPhysicalSizes().get(size));
         }
 
-        return base.toBuilder()
+        return applyRowObservation(
+                base.toBuilder()
                 .sizeLabel(size)
                 .sizesSummary(size)
                 .physicalSizesSummary(String.valueOf(total))
@@ -984,7 +1042,10 @@ public class KioscoInventoryCountService {
                 .counts(counts)
                 .total(total)
                 .diferencia(total - inventarioFinal)
-                .build();
+                .build(),
+                null,
+                sizeObservations != null ? sizeObservations.get(size) : null
+        );
     }
 
     private Map<String, Integer> resolveCountsForSize(

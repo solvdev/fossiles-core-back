@@ -1668,6 +1668,39 @@ public class KioscoInventoryService {
         return balanceByStockId;
     }
 
+    /**
+     * Saldo replay por {@code kiosco_stock_id} y talla ({@code size_key}) antes de {@code cutoffExclusive}.
+     * Clave de talla vacía ({@code ""}) agrupa movimientos históricos sin talla.
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, Map<String, Integer>> computeSizeBalanceByStockAndSize(
+            Long locationId,
+            LocalDateTime cutoffExclusive
+    ) throws BusinessException, ResourceNotFoundException {
+        validateLocationIsKiosk(locationId);
+        Map<Long, Map<String, Integer>> balanceByStockAndSize = new LinkedHashMap<>();
+        for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(
+                locationId, cutoffExclusive)) {
+            if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
+                continue;
+            }
+            int delta = movementSignedDelta(m);
+            if (delta == 0) {
+                continue;
+            }
+            String sizeKey = ProductInventorySizesJson.normalizeKey(m.getSizeKey());
+            Map<String, Integer> bySize = balanceByStockAndSize.computeIfAbsent(
+                    m.getKioscoStockId(), k -> new LinkedHashMap<>());
+            int running = bySize.getOrDefault(sizeKey, 0);
+            running += delta;
+            if (running < 0) {
+                running = 0;
+            }
+            bySize.put(sizeKey, running);
+        }
+        return balanceByStockAndSize;
+    }
+
     /** Acumula deltas de movimientos del periodo por categoria de kardex kiosco. */
     private static final class KardexAccumulator {
         private int comprasAjustes;

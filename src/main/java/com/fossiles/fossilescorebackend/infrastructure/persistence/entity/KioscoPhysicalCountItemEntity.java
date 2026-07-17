@@ -56,6 +56,14 @@ public class KioscoPhysicalCountItemEntity {
     @Column(name = "size_location_counts_data", columnDefinition = "TEXT")
     private String sizeLocationCountsData;
 
+    /** Observacion cuando hay diferencia (producto sin desglose por talla). */
+    @Column(name = "observation", columnDefinition = "TEXT")
+    private String observation;
+
+    /** JSON talla → observacion (cinchos expandidos por talla). */
+    @Column(name = "size_observations_data", columnDefinition = "TEXT")
+    private String sizeObservationsData;
+
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
