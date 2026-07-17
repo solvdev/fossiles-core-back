@@ -445,6 +445,7 @@ public class KioscoInventoryCountService {
                     : 0;
             inventarioInicial = Math.max(0, inventarioInicial - prePeriodEntradas);
             int entradas = kardexRow.getEntradas() + prePeriodEntradas;
+            // Fin. = Ini. + movimientos del periodo (algebraico): +Ent -Vtas +Anul.Vta -Sal (+Compras -Anul.Compras)
             int inventarioFinal = Math.max(0, inventarioInicial + kardexRowNetDelta(kardexRow, entradas));
 
             Map<String, Integer> rowSystemSizes = isSubcount ? null : (systemSizes.isEmpty() ? null : systemSizes);
