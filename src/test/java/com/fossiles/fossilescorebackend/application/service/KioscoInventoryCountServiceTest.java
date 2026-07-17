@@ -32,12 +32,14 @@ import org.mockito.quality.Strictness;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -112,6 +114,22 @@ class KioscoInventoryCountServiceTest {
                 .build();
     }
 
+    private void stubPrincipalKardex(List<KioscoKardexReportResponse.KioscoKardexRow> rows)
+            throws BusinessException, ResourceNotFoundException {
+        when(kioscoInventoryService.buildKardexRows(eq(locationId), eq(from), eq(to), eq(true), eq(to)))
+                .thenReturn(rows);
+        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to)))
+                .thenReturn(Map.of());
+    }
+
+    private void stubSubcountKardex(LocalDate asOf, List<KioscoKardexReportResponse.KioscoKardexRow> rows)
+            throws BusinessException, ResourceNotFoundException {
+        when(kioscoInventoryService.buildKardexRows(eq(locationId), eq(from), eq(asOf), eq(true), eq(asOf)))
+                .thenReturn(rows);
+        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(asOf)))
+                .thenReturn(Map.of());
+    }
+
     @Test
     void startOrGetSession_creaNuevaSesion_siNoExiste() throws Exception {
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
@@ -120,7 +138,7 @@ class KioscoInventoryCountServiceTest {
             entity.setId(countId);
             return entity;
         });
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(kardexRow(10)));
+        stubPrincipalKardex(List.of(kardexRow(10)));
 
         KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
 
@@ -131,7 +149,7 @@ class KioscoInventoryCountServiceTest {
         assertThat(report.getCategories().get(0).getCategoryName()).isEqualTo("Tarjeteros");
         assertThat(report.getCategories().get(0).getRows()).hasSize(1);
         assertThat(report.getTotalGeneral().getInventarioFinal()).isEqualTo(10);
-        assertThat(report.getTotalGeneral().getDiferencia()).isEqualTo(10);
+        assertThat(report.getTotalGeneral().getDiferencia()).isEqualTo(-10);
     }
 
     @Test
@@ -146,7 +164,7 @@ class KioscoInventoryCountServiceTest {
                 .maxAbsDiff(10)
                 .build();
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.of(existing));
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(kardexRow(10)));
+        stubPrincipalKardex(List.of(kardexRow(10)));
 
         KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
 
@@ -166,7 +184,7 @@ class KioscoInventoryCountServiceTest {
                 .generatedBy(userId)
                 .build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(kardexRow(10)));
+        stubPrincipalKardex(List.of(kardexRow(10)));
 
         AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
         when(itemRepository.findByCountIdAndProductIdAndColorId(countId, productId, colorId)).thenReturn(Optional.empty());
@@ -193,7 +211,7 @@ class KioscoInventoryCountServiceTest {
 
         KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow row = report.getCategories().get(0).getRows().get(0);
         assertThat(row.getTotal()).isEqualTo(4);
-        assertThat(row.getDiferencia()).isEqualTo(6);
+        assertThat(row.getDiferencia()).isEqualTo(-6);
         assertThat(row.getCounts().get("V1")).isEqualTo(2);
     }
 
@@ -208,7 +226,7 @@ class KioscoInventoryCountServiceTest {
                 .generatedBy(userId)
                 .build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(kardexRow(10)));
+        stubPrincipalKardex(List.of(kardexRow(10)));
 
         AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
         when(itemRepository.findByCountIdAndProductIdAndColorId(countId, productId, colorId)).thenReturn(Optional.empty());
@@ -238,7 +256,7 @@ class KioscoInventoryCountServiceTest {
         assertThat(row.getPhysicalSizes()).containsEntry("28", 2).containsEntry("30", 3);
         assertThat(row.getPhysicalSizesSummary()).contains("28: 2");
         assertThat(savedItemRef.get().getSizeCountsData()).contains("30");
-        assertThat(savedItemRef.get().getSizeLocationCountsData()).contains("\"E\"");
+        assertThat(savedItemRef.get().getSizeLocationCountsData()).isNull();
     }
 
     @Test
@@ -252,7 +270,7 @@ class KioscoInventoryCountServiceTest {
                 .generatedBy(userId)
                 .build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(kardexRow(10)));
+        stubPrincipalKardex(List.of(kardexRow(10)));
 
         AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
         when(itemRepository.findByCountIdAndProductIdAndColorId(countId, productId, colorId)).thenReturn(Optional.empty());
@@ -340,7 +358,7 @@ class KioscoInventoryCountServiceTest {
                 .generatedBy(userId)
                 .build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(kardexRow(10)));
+        stubPrincipalKardex(List.of(kardexRow(10)));
 
         KioscoPhysicalCountReportResponse report = service.terminarConteo(countId);
 
@@ -360,7 +378,7 @@ class KioscoInventoryCountServiceTest {
                 .build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
         when(securityUtil.getCurrentUserId()).thenReturn(reviewerId);
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(kardexRow(10)));
+        stubPrincipalKardex(List.of(kardexRow(10)));
 
         KioscoPhysicalCountReportResponse report = service.markReviewed(countId, "Revisar billeteras");
 
@@ -403,7 +421,7 @@ class KioscoInventoryCountServiceTest {
                 .build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
         when(securityUtil.getCurrentUserId()).thenReturn(reviewerId);
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(kardexRow(10)));
+        stubPrincipalKardex(List.of(kardexRow(10)));
 
         KioscoPhysicalCountReportResponse report = service.cerrarConteo(countId);
 
@@ -447,7 +465,7 @@ class KioscoInventoryCountServiceTest {
         when(productRepository.findAllById(any())).thenReturn(List.of(
                 ProductEntity.builder().id(packagingProductId).code("SUM-01").name("Bolsa").categoryId(categoryId).build()
         ));
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(
+        stubPrincipalKardex(List.of(
                 KioscoKardexReportResponse.KioscoKardexRow.builder()
                         .productId(packagingProductId)
                         .productCode("SUM-01")
@@ -483,7 +501,7 @@ class KioscoInventoryCountServiceTest {
         when(productCategoryRepository.findAllById(any())).thenReturn(List.of(
                 ProductCategoryEntity.builder().id(walletCategoryId).code("BILL").name("Billeteras").build()
         ));
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(
+        stubPrincipalKardex(List.of(
                 KioscoKardexReportResponse.KioscoKardexRow.builder()
                         .productId(damaProductId).productCode("B-1").productName("Billetera A")
                         .colorId(colorId).colorName("Negro").inventarioFinal(5).build(),
@@ -514,12 +532,14 @@ class KioscoInventoryCountServiceTest {
         ));
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of(
                 com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .id(501L)
+                        .locationId(locationId)
                         .productId(fossProductId)
                         .colorId(colorId)
                         .sizesData("{\"28\":2,\"30\":3}")
                         .build()
         ));
-        when(kioscoInventoryService.buildKardexRows(locationId, from, to, false)).thenReturn(List.of(
+        stubPrincipalKardex(List.of(
                 KioscoKardexReportResponse.KioscoKardexRow.builder()
                         .productId(fossProductId).productCode("FOSS-100").productName("Cincho casual")
                         .colorId(colorId).colorName("Negro").inventarioFinal(10).build()
@@ -553,8 +573,7 @@ class KioscoInventoryCountServiceTest {
                 .generatedBy(userId)
                 .build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
-        when(kioscoInventoryService.buildKardexRows(locationId, from, asOf, true, asOf))
-                .thenReturn(List.of(kardexRow(7)));
+        stubSubcountKardex(asOf, List.of(kardexRow(7)));
 
         KioscoPhysicalCountReportResponse report = service.getSubcountReport(countId, asOf);
 
@@ -562,6 +581,59 @@ class KioscoInventoryCountServiceTest {
         assertThat(report.getAsOfDate()).isEqualTo(asOf);
         assertThat(report.getParentCountId()).isEqualTo(countId);
         assertThat(report.getCategories().get(0).getRows().get(0).getInventarioFinal()).isEqualTo(7);
+    }
+
+    @Test
+    void buildReport_subtotalNetDifferenceBalancesPositiveAndNegativeRows() throws Exception {
+        Long secondProductId = 31L;
+        Long secondColorId = 41L;
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(productId).code("P-1").name("Tarjetero").categoryId(categoryId).build(),
+                ProductEntity.builder().id(secondProductId).code("P-2").name("Tarjetero B").categoryId(categoryId).build()
+        ));
+        stubPrincipalKardex(List.of(
+                kardexRow(10),
+                KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(secondProductId)
+                        .productCode("P-2")
+                        .productName("Tarjetero B")
+                        .colorId(secondColorId)
+                        .colorName("Negro")
+                        .inventarioFinal(10)
+                        .build()
+        ));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+        when(itemRepository.findByCountId(countId)).thenReturn(List.of(
+                KioscoPhysicalCountItemEntity.builder()
+                        .id(901L)
+                        .countId(countId)
+                        .productId(productId)
+                        .colorId(colorId)
+                        .countsData("{\"V1\":12}")
+                        .build(),
+                KioscoPhysicalCountItemEntity.builder()
+                        .id(902L)
+                        .countId(countId)
+                        .productId(secondProductId)
+                        .colorId(secondColorId)
+                        .countsData("{\"V1\":8}")
+                        .build()
+        ));
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+
+        assertThat(report.getCategories()).hasSize(1);
+        KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow subtotal =
+                report.getCategories().get(0).getSubtotal();
+        assertThat(subtotal.getTotal()).isEqualTo(20);
+        assertThat(subtotal.getInventarioFinal()).isEqualTo(20);
+        assertThat(subtotal.getDiferencia()).isZero();
+        assertThat(report.getTotalGeneral().getDiferencia()).isZero();
     }
 
     @Test

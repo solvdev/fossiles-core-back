@@ -103,8 +103,7 @@ public class KioscoPhysicalCountReportResponse {
         /** Conteo fisico por ubicacion: claves fijas V1..V7, E, BO. */
         private Map<String, Integer> counts;
         private int total;
-        /** inventarioFinal (sistema) - total (fisico). */
-    /** Diferencia = físico − sistema (+ sobrante, − faltante). */
-    private int diferencia;
+        /** Diferencia = físico − sistema (+ sobrante, − faltante). */
+        private int diferencia;
     }
 }
