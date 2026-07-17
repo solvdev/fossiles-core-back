@@ -31,6 +31,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPosManager
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromotionEstimateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskDisbursementReportRowResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDepositReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskMainSheetReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskVoucherReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
@@ -256,6 +257,13 @@ public class KioskPosController {
             @RequestParam(required = false) Long kioskLocationId
     ) throws BusinessException {
         return ResponseEntity.ok(kioskPosService.getVoucherReport(startDate, endDate, kioskLocationId));
+    }
+
+    @GetMapping("/reports/main-sheet")
+    public ResponseEntity<KioskMainSheetReportResponse> getMainSheetReport(
+            @RequestParam Long physicalCountId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.getMainSheetReport(physicalCountId));
     }
 
     @GetMapping("/availability")

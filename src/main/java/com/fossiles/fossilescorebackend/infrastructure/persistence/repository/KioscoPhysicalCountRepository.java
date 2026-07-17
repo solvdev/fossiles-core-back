@@ -18,6 +18,8 @@ public interface KioscoPhysicalCountRepository extends JpaRepository<KioscoPhysi
 
     List<KioscoPhysicalCountEntity> findByLocationIdOrderByGeneratedAtDesc(Long locationId);
 
+    Optional<KioscoPhysicalCountEntity> findFirstByLocationIdOrderByPeriodToDescIdDesc(Long locationId);
+
     /** Conteos revisados con diferencias pendientes (para el panel de alertas), opcionalmente por kiosko. */
     List<KioscoPhysicalCountEntity> findByStatusAndMaxAbsDiffGreaterThanEqualAndLocationIdOrderByReviewedAtAsc(
             KioscoPhysicalCountStatus status, int minAbsDiff, Long locationId);

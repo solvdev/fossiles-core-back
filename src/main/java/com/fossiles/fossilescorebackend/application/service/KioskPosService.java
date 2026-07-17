@@ -26,6 +26,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromoti
 import com.fossiles.fossilescorebackend.application.dto.response.KioskDisbursementReportRowResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDepositReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDepositReportRowResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskMainSheetReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskVoucherReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskVoucherReportRowResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
@@ -37,6 +38,7 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskCashExpenseEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskCashSessionEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
@@ -52,6 +54,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaxInvoiceEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskCashExpenseRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskCashSessionRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionRepository;
@@ -89,7 +92,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
+import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -129,6 +132,7 @@ public class KioskPosService {
     private final KioskPosDepositReportProperties depositReportProperties;
     private final KioskPosVoucherReportProperties voucherReportProperties;
     private final TaxInvoiceRepository taxInvoiceRepository;
+    private final KioscoPhysicalCountRepository kioscoPhysicalCountRepository;
     private final KioscoInventoryService kioscoInventoryService;
 
     @Transactional(readOnly = true)
@@ -1365,6 +1369,117 @@ public class KioskPosService {
     }
 
     @Transactional(readOnly = true)
+    public KioskMainSheetReportResponse getMainSheetReport(Long physicalCountId)
+            throws BusinessException, ResourceNotFoundException {
+        if (physicalCountId == null) {
+            throw new BusinessException("Debes indicar el corte de conteo físico.");
+        }
+        UserEntity user = getCurrentUserOrThrow();
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+
+        KioscoPhysicalCountEntity count = kioscoPhysicalCountRepository.findById(physicalCountId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioscoPhysicalCount", physicalCountId));
+
+        LocationEntity kiosk = locationRepository.findById(count.getLocationId())
+                .orElseThrow(() -> new ResourceNotFoundException("Location", count.getLocationId()));
+        if (!admin) {
+            boolean allowed = availableKiosks.stream()
+                    .anyMatch(item -> Objects.equals(item.getId(), kiosk.getId()));
+            if (!allowed) {
+                throw new BusinessException("No tienes acceso a este kiosko.");
+            }
+        }
+
+        LocalDate from = count.getPeriodFrom();
+        LocalDate to = count.getPeriodTo();
+        if (from == null || to == null) {
+            throw new BusinessException("El corte de conteo no tiene un rango de fechas válido.");
+        }
+        LocalDateTime startAt = from.atStartOfDay();
+        LocalDateTime endAt = to.plusDays(1).atStartOfDay();
+
+        List<KioskSaleEntity> sales = kioskSaleRepository
+                .findByKioskLocationIdAndSaleDateBetweenOrderBySoldAtDesc(kiosk.getId(), from, to)
+                .stream()
+                .filter(KioskPosService::countsForProductionMetrics)
+                .toList();
+
+        Set<Long> invoiceIds = sales.stream()
+                .map(KioskSaleEntity::getInvoiceId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, TaxInvoiceEntity> invoicesById = taxInvoiceRepository.findAllById(invoiceIds).stream()
+                .collect(Collectors.toMap(TaxInvoiceEntity::getId, item -> item, (a, b) -> a));
+
+        Map<LocalDate, BigDecimal> dailyTotals = new TreeMap<>();
+        BigDecimal totalSold = BigDecimal.ZERO;
+        BigDecimal cardsTotal = BigDecimal.ZERO;
+        BigDecimal depositsTotal = BigDecimal.ZERO;
+        List<String> invoiceLabels = new ArrayList<>();
+
+        for (KioskSaleEntity sale : sales) {
+            LocalDate day = sale.getSaleDate() != null
+                    ? sale.getSaleDate()
+                    : (sale.getSoldAt() != null ? sale.getSoldAt().toLocalDate() : from);
+            BigDecimal amount = safeAmount(sale.getTotalAmount());
+            totalSold = totalSold.add(amount);
+            dailyTotals.merge(day, amount, BigDecimal::add);
+            cardsTotal = cardsTotal.add(resolveCardAmountForReport(sale));
+            if (qualifiesForBankDepositReport(sale)) {
+                depositsTotal = depositsTotal.add(resolveCashAmountForDeposit(sale));
+            }
+            String invoiceLabel = resolveSaleInvoiceLabel(sale, invoicesById);
+            if (!safeTrim(invoiceLabel).isBlank()) {
+                invoiceLabels.add(invoiceLabel);
+            }
+        }
+
+        List<KioskCashExpenseEntity> expenses = kioskCashExpenseRepository.findForReport(
+                startAt, endAt, kiosk.getId());
+        BigDecimal expensesTotal = expenses.stream()
+                .map(expense -> safeAmount(expense.getAmount()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        totalSold = totalSold.setScale(2, RoundingMode.HALF_UP);
+        cardsTotal = cardsTotal.setScale(2, RoundingMode.HALF_UP);
+        depositsTotal = depositsTotal.setScale(2, RoundingMode.HALF_UP);
+        expensesTotal = expensesTotal.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal reconciledTotal = cardsTotal.add(depositsTotal).add(expensesTotal)
+                .setScale(2, RoundingMode.HALF_UP);
+        BigDecimal difference = totalSold.subtract(reconciledTotal).setScale(2, RoundingMode.HALF_UP);
+
+        List<KioskMainSheetReportResponse.DailySaleRow> dailySales = dailyTotals.entrySet().stream()
+                .map(entry -> KioskMainSheetReportResponse.DailySaleRow.builder()
+                        .saleDate(entry.getKey())
+                        .amount(entry.getValue().setScale(2, RoundingMode.HALF_UP))
+                        .build())
+                .toList();
+
+        InternalInvoiceRange invoiceRange = resolveInternalInvoiceRange(invoiceLabels);
+
+        return KioskMainSheetReportResponse.builder()
+                .physicalCountId(count.getId())
+                .periodFrom(from)
+                .periodTo(to)
+                .physicalCountStatus(count.getStatus() != null ? count.getStatus().name() : "")
+                .kioskLocationId(kiosk.getId())
+                .kioskCode(safeTrim(kiosk.getCode()))
+                .kioskName(safeTrim(kiosk.getName()))
+                .encargadaName(resolveKioskEncargadaName(kiosk))
+                .invoiceFrom(invoiceRange.from())
+                .invoiceTo(invoiceRange.to())
+                .totalSold(totalSold)
+                .cardsTotal(cardsTotal)
+                .depositsTotal(depositsTotal)
+                .expensesTotal(expensesTotal)
+                .reconciledTotal(reconciledTotal)
+                .difference(difference)
+                .dailySales(dailySales)
+                .build();
+    }
+
+    @Transactional(readOnly = true)
     public TaxpayerLookupResponse lookupTaxpayer(String taxId) throws BusinessException {
         String normalizedTaxId = normalizeTaxId(taxId);
         if (normalizedTaxId == null || "CF".equals(normalizedTaxId)) {
@@ -2074,6 +2189,73 @@ public class KioskPosService {
             throw new BusinessException("Marca de tarjeta no válida. Use VISA, MC o AMEX.");
         }
         return normalized;
+    }
+
+    private String resolveKioskEncargadaName(LocationEntity kiosk) {
+        if (kiosk == null) {
+            return "";
+        }
+        if (kiosk.getEncargado() != null) {
+            String name = buildUserFullName(kiosk.getEncargado());
+            if (!name.isBlank()) {
+                return name.toUpperCase(Locale.ROOT);
+            }
+        }
+        if (kiosk.getEncargadoId() != null) {
+            UserEntity encargado = userRepository.findById(kiosk.getEncargadoId()).orElse(null);
+            String name = buildUserFullName(encargado);
+            if (!name.isBlank()) {
+                return name.toUpperCase(Locale.ROOT);
+            }
+        }
+        return "";
+    }
+
+    private record InternalInvoiceRange(String from, String to) {}
+
+    private InternalInvoiceRange resolveInternalInvoiceRange(List<String> labels) {
+        if (labels == null || labels.isEmpty()) {
+            return new InternalInvoiceRange("", "");
+        }
+        List<ParsedInternalInvoice> parsed = labels.stream()
+                .map(ParsedInternalInvoice::parse)
+                .sorted()
+                .toList();
+        return new InternalInvoiceRange(parsed.get(0).label(), parsed.get(parsed.size() - 1).label());
+    }
+
+    private record ParsedInternalInvoice(String series, int number, String label)
+            implements Comparable<ParsedInternalInvoice> {
+        static ParsedInternalInvoice parse(String raw) {
+            String label = safeTrimStatic(raw);
+            if (label.isBlank()) {
+                return new ParsedInternalInvoice("", 0, "");
+            }
+            String normalized = label.toUpperCase(Locale.ROOT);
+            int dash = normalized.lastIndexOf('-');
+            if (dash <= 0 || dash >= normalized.length() - 1) {
+                return new ParsedInternalInvoice(normalized, 0, normalized);
+            }
+            String series = normalized.substring(0, dash);
+            try {
+                int num = Integer.parseInt(normalized.substring(dash + 1));
+                return new ParsedInternalInvoice(series, num, normalized);
+            } catch (NumberFormatException ex) {
+                return new ParsedInternalInvoice(normalized, 0, normalized);
+            }
+        }
+
+        @Override
+        public int compareTo(ParsedInternalInvoice other) {
+            if (other == null) {
+                return 1;
+            }
+            int bySeries = series.compareTo(other.series);
+            if (bySeries != 0) {
+                return bySeries;
+            }
+            return Integer.compare(number, other.number);
+        }
     }
 
     static String resolveCardBrandForReport(KioskSaleEntity sale, String defaultBrand) {
