@@ -1077,9 +1077,17 @@ public class KioskPosService {
             Long kioskLocationId
     ) throws BusinessException {
         UserEntity user = getCurrentUserOrThrow();
-        if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
-            throw new BusinessException("Solo administradores o logística pueden ver desembolsos de kioskos.");
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+
+        Long effectiveKioskId;
+        if (admin) {
+            effectiveKioskId = kioskLocationId;
+        } else {
+            LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
+            effectiveKioskId = kiosk.getId();
         }
+
         LocalDate[] range = normalizeSaleDateRange(startDate, endDate);
         LocalDate from = range[0] != null ? range[0] : GuatemalaDateTime.today();
         LocalDate to = range[1] != null ? range[1] : from;
@@ -1087,7 +1095,7 @@ public class KioskPosService {
         LocalDateTime endAt = to.plusDays(1).atStartOfDay();
 
         List<KioskCashExpenseEntity> expenses = kioskCashExpenseRepository.findForReport(
-                startAt, endAt, kioskLocationId);
+                startAt, endAt, effectiveKioskId);
 
         Set<Long> sessionIds = expenses.stream()
                 .map(KioskCashExpenseEntity::getCashSessionId)
