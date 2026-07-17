@@ -713,4 +713,19 @@ class KioscoInventoryServiceTest {
         verify(kioscoMovementRepository, never()).save(any(KioscoMovementEntity.class));
         verify(kioscoStockRepository).save(stock);
     }
+
+    @Test
+    void computePrePeriodEntradasByStockId_sumaEntradasAntesDelPeriodo() throws Exception {
+        LocalDateTime periodStart = LocalDate.of(2026, 6, 1).atStartOfDay();
+        KioscoMovementEntity entradaPrevia = movementAt(KioscoMovementType.ENTRADA, 0, 1,
+                LocalDateTime.of(2026, 5, 28, 10, 0));
+        KioscoMovementEntity ventaPrevia = movementAt(KioscoMovementType.VENTA, 1, 0,
+                LocalDateTime.of(2026, 5, 29, 10, 0));
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(eq(locationId), eq(periodStart)))
+                .thenReturn(List.of(entradaPrevia, ventaPrevia));
+
+        Map<Long, Integer> entradas = service.computePrePeriodEntradasByStockId(locationId, null, periodStart);
+
+        assertThat(entradas).containsEntry(100L, 1);
+    }
 }

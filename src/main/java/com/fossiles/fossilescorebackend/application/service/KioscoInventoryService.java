@@ -1839,6 +1839,86 @@ public class KioscoInventoryService {
         return computeBalanceByStockId(locationId, cutoffExclusive);
     }
 
+    /**
+     * ENTRADAs entre el corte del conteo fisico anterior y el inicio del periodo actual.
+     * En conteo fisico se muestran en Ent., no en Ini. (primer conteo: todas las ENTRADAs previas al periodo).
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, Integer> computePrePeriodEntradasByStockId(
+            Long locationId,
+            LocalDateTime fromInclusive,
+            LocalDateTime toExclusive
+    ) throws BusinessException, ResourceNotFoundException {
+        validateLocationIsKiosk(locationId);
+        if (toExclusive == null) {
+            return Map.of();
+        }
+        Map<Long, Integer> entradasByStockId = new LinkedHashMap<>();
+        for (KioscoMovementEntity movement : loadPrePeriodEntradaMovements(locationId, fromInclusive, toExclusive)) {
+            accumulatePrePeriodEntrada(entradasByStockId, null, movement);
+        }
+        return entradasByStockId;
+    }
+
+    /** ENTRADAs pre-periodo desglosadas por talla ({@code size_key} vacío = sin talla). */
+    @Transactional(readOnly = true)
+    public Map<Long, Map<String, Integer>> computePrePeriodEntradasByStockAndSize(
+            Long locationId,
+            LocalDateTime fromInclusive,
+            LocalDateTime toExclusive
+    ) throws BusinessException, ResourceNotFoundException {
+        validateLocationIsKiosk(locationId);
+        if (toExclusive == null) {
+            return Map.of();
+        }
+        Map<Long, Map<String, Integer>> entradasByStockAndSize = new LinkedHashMap<>();
+        for (KioscoMovementEntity movement : loadPrePeriodEntradaMovements(locationId, fromInclusive, toExclusive)) {
+            accumulatePrePeriodEntrada(null, entradasByStockAndSize, movement);
+        }
+        return entradasByStockAndSize;
+    }
+
+    private List<KioscoMovementEntity> loadPrePeriodEntradaMovements(
+            Long locationId,
+            LocalDateTime fromInclusive,
+            LocalDateTime toExclusive
+    ) {
+        if (fromInclusive == null) {
+            return kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(locationId, toExclusive);
+        }
+        if (!fromInclusive.isBefore(toExclusive)) {
+            return List.of();
+        }
+        return kioscoMovementRepository.findByLocationAndCreatedAtBetween(locationId, fromInclusive, toExclusive);
+    }
+
+    private void accumulatePrePeriodEntrada(
+            Map<Long, Integer> entradasByStockId,
+            Map<Long, Map<String, Integer>> entradasByStockAndSize,
+            KioscoMovementEntity movement
+    ) {
+        if (movement.getKioscoStockId() == null || !Boolean.TRUE.equals(movement.getAffectsStock())) {
+            return;
+        }
+        KioscoMovementType type = movement.getMovementType();
+        if (type != KioscoMovementType.ENTRADA && type != KioscoMovementType.TRASLADO_ENTRADA) {
+            return;
+        }
+        int delta = movementSignedDelta(movement);
+        if (delta <= 0) {
+            return;
+        }
+        if (entradasByStockId != null) {
+            entradasByStockId.merge(movement.getKioscoStockId(), delta, Integer::sum);
+        }
+        if (entradasByStockAndSize != null) {
+            String sizeKey = ProductInventorySizesJson.normalizeKey(movement.getSizeKey());
+            entradasByStockAndSize
+                    .computeIfAbsent(movement.getKioscoStockId(), k -> new LinkedHashMap<>())
+                    .merge(sizeKey, delta, Integer::sum);
+        }
+    }
+
     /** Acumula deltas de movimientos del periodo por categoria de kardex kiosco. */
     private static final class KardexAccumulator {
         private int comprasAjustes;

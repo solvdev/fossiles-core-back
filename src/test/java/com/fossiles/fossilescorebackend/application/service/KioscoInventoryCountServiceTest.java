@@ -105,6 +105,12 @@ class KioscoInventoryCountServiceTest {
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of());
         when(exchangeSlipRepository.findByPhysicalCountId(any())).thenReturn(List.of());
         when(exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
+        try {
+            when(kioscoInventoryService.computePrePeriodEntradasByStockId(any(), any(), any())).thenReturn(Map.of());
+            when(kioscoInventoryService.computePrePeriodEntradasByStockAndSize(any(), any(), any())).thenReturn(Map.of());
+        } catch (BusinessException | ResourceNotFoundException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private KioscoKardexReportResponse.KioscoKardexRow kardexRow(int inventarioFinal) {
@@ -745,5 +751,87 @@ class KioscoInventoryCountServiceTest {
         assertThatThrownBy(() -> service.upsertItems(countId, List.of(request)))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("cerrado");
+    }
+
+    @Test
+    void buildReport_entradaPrePeriodoApareceEnEntradasNoEnInicial() throws Exception {
+        long stockId = 913L;
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .id(stockId)
+                        .locationId(locationId)
+                        .productId(productId)
+                        .colorId(colorId)
+                        .build()
+        ));
+        stubPrincipalKardex(List.of(
+                KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(productId).productCode("BD-8").productName("Bolso Perla")
+                        .colorId(colorId).colorName("Salmon Acabado Flores")
+                        .ventas(1)
+                        .build()
+        ));
+        when(kioscoInventoryService.computePrePeriodEntradasByStockId(eq(locationId), eq(null), any(LocalDateTime.class)))
+                .thenReturn(Map.of(stockId, 1));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+
+        var row = report.getCategories().get(0).getRows().get(0);
+        assertThat(row.getInventarioInicial()).isZero();
+        assertThat(row.getEntradas()).isEqualTo(1);
+        assertThat(row.getVentas()).isEqualTo(1);
+        assertThat(row.getInventarioFinal()).isZero();
+    }
+
+    @Test
+    void buildReport_entradaEnGapEntreConteosApareceEnEntradasNoEnInicial() throws Exception {
+        long stockId = 913L;
+        LocalDate previousTo = LocalDate.of(2026, 5, 31);
+        LocalDateTime openingCutoff = previousTo.plusDays(1).atStartOfDay();
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(from), eq(countId)))
+                .thenReturn(Optional.of(KioscoPhysicalCountEntity.builder()
+                        .id(100L)
+                        .locationId(locationId)
+                        .periodFrom(LocalDate.of(2026, 5, 1))
+                        .periodTo(previousTo)
+                        .build()));
+        when(kioscoInventoryService.computeStockBalanceByStockId(eq(locationId), eq(openingCutoff)))
+                .thenReturn(Map.of(stockId, 1));
+        when(kioscoInventoryService.computePrePeriodEntradasByStockId(eq(locationId), eq(openingCutoff), any(LocalDateTime.class)))
+                .thenReturn(Map.of(stockId, 1));
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .id(stockId)
+                        .locationId(locationId)
+                        .productId(productId)
+                        .colorId(colorId)
+                        .build()
+        ));
+        stubPrincipalKardex(List.of(
+                KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(productId).productCode("BD-8").productName("Bolso Perla")
+                        .colorId(colorId).colorName("Salmon Acabado Flores")
+                        .build()
+        ));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+
+        var row = report.getCategories().get(0).getRows().get(0);
+        assertThat(row.getInventarioInicial()).isZero();
+        assertThat(row.getEntradas()).isEqualTo(1);
+        assertThat(row.getInventarioFinal()).isEqualTo(1);
     }
 }

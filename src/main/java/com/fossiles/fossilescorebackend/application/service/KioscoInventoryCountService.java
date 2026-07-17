@@ -361,6 +361,16 @@ public class KioscoInventoryCountService {
                         count.getLocationId(), openingCutoffExclusive)
                 : Map.of();
 
+        LocalDateTime periodStart = count.getPeriodFrom().atStartOfDay();
+        Map<Long, Integer> prePeriodEntradasByStockId = kioscoInventoryService.computePrePeriodEntradasByStockId(
+                count.getLocationId(), openingCutoffExclusive, periodStart);
+        Map<Long, Map<String, Integer>> prePeriodEntradasByStockAndSize =
+                kioscoInventoryService.computePrePeriodEntradasByStockAndSize(
+                        count.getLocationId(), openingCutoffExclusive, periodStart);
+        applyPrePeriodEntradasToKardexBySize(kardexByStockAndSize, prePeriodEntradasByStockAndSize);
+        openingBalanceByStockAndSize = subtractQuantityMapsByStock(
+                openingBalanceByStockAndSize, prePeriodEntradasByStockAndSize);
+
         Map<String, KioscoPhysicalCountItemEntity> itemsByKey = itemRepository.findByCountId(count.getId()).stream()
                 .collect(Collectors.toMap(i -> itemKey(i.getProductId(), i.getColorId()), i -> i, (a, b) -> a));
 
@@ -427,10 +437,15 @@ public class KioscoInventoryCountService {
                 counts.put(key, value);
             }
 
+            int prePeriodEntradas = stock != null
+                    ? prePeriodEntradasByStockId.getOrDefault(stock.getId(), 0)
+                    : 0;
             int inventarioInicial = stock != null
                     ? openingBalanceByStockId.getOrDefault(stock.getId(), 0)
                     : 0;
-            int inventarioFinal = Math.max(0, inventarioInicial + kardexRowNetDelta(kardexRow));
+            inventarioInicial = Math.max(0, inventarioInicial - prePeriodEntradas);
+            int entradas = kardexRow.getEntradas() + prePeriodEntradas;
+            int inventarioFinal = Math.max(0, inventarioInicial + kardexRowNetDelta(kardexRow, entradas));
 
             Map<String, Integer> rowSystemSizes = isSubcount ? null : (systemSizes.isEmpty() ? null : systemSizes);
             String rowSizesSummary = isSubcount ? null : sizesSummary;
@@ -464,7 +479,7 @@ public class KioscoInventoryCountService {
                     .inventarioInicial(inventarioInicial)
                     .comprasAjustes(kardexRow.getComprasAjustes())
                     .anulacionCompras(kardexRow.getAnulacionCompras())
-                    .entradas(kardexRow.getEntradas())
+                    .entradas(entradas)
                     .ventas(kardexRow.getVentas())
                     .anulacionVenta(kardexRow.getAnulacionVenta())
                     .salida(kardexRow.getSalida())
@@ -973,15 +988,75 @@ public class KioscoInventoryCountService {
     }
 
     private static int kardexRowNetDelta(KioscoKardexReportResponse.KioscoKardexRow row) {
+        return kardexRowNetDelta(row, row != null ? row.getEntradas() : 0);
+    }
+
+    private static int kardexRowNetDelta(KioscoKardexReportResponse.KioscoKardexRow row, int entradas) {
         if (row == null) {
             return 0;
         }
         return row.getComprasAjustes()
                 - row.getAnulacionCompras()
-                + row.getEntradas()
+                + entradas
                 - row.getVentas()
                 + row.getAnulacionVenta()
                 - row.getSalida();
+    }
+
+    private static void applyPrePeriodEntradasToKardexBySize(
+            Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize,
+            Map<Long, Map<String, Integer>> prePeriodEntradasByStockAndSize
+    ) {
+        if (prePeriodEntradasByStockAndSize == null || prePeriodEntradasByStockAndSize.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<Long, Map<String, Integer>> stockEntry : prePeriodEntradasByStockAndSize.entrySet()) {
+            Map<String, KioscoInventoryService.SizeKardexBucket> bySize = kardexByStockAndSize
+                    .computeIfAbsent(stockEntry.getKey(), k -> new LinkedHashMap<>());
+            for (Map.Entry<String, Integer> sizeEntry : stockEntry.getValue().entrySet()) {
+                KioscoInventoryService.SizeKardexBucket current = bySize.getOrDefault(
+                        sizeEntry.getKey(), KioscoInventoryService.SizeKardexBucket.empty());
+                bySize.put(sizeEntry.getKey(), current.plus(0, 0, sizeEntry.getValue(), 0, 0, 0));
+            }
+        }
+    }
+
+    private static Map<Long, Map<String, Integer>> subtractQuantityMapsByStock(
+            Map<Long, Map<String, Integer>> baseByStock,
+            Map<Long, Map<String, Integer>> subtractByStock
+    ) {
+        if (baseByStock == null || baseByStock.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, Map<String, Integer>> adjusted = new LinkedHashMap<>();
+        for (Map.Entry<Long, Map<String, Integer>> stockEntry : baseByStock.entrySet()) {
+            Map<String, Integer> adjustedBySize = subtractQuantityMap(
+                    stockEntry.getValue(),
+                    subtractByStock != null
+                            ? subtractByStock.getOrDefault(stockEntry.getKey(), Map.of())
+                            : Map.of());
+            if (!adjustedBySize.isEmpty()) {
+                adjusted.put(stockEntry.getKey(), adjustedBySize);
+            }
+        }
+        return adjusted;
+    }
+
+    private static Map<String, Integer> subtractQuantityMap(
+            Map<String, Integer> base,
+            Map<String, Integer> subtract
+    ) {
+        if (base == null || base.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Integer> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> entry : base.entrySet()) {
+            int adjusted = Math.max(0, entry.getValue() - subtract.getOrDefault(entry.getKey(), 0));
+            if (adjusted > 0) {
+                result.put(entry.getKey(), adjusted);
+            }
+        }
+        return result;
     }
 
     private List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> expandRowsForDisplay(
