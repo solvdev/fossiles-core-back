@@ -126,6 +126,10 @@ public class KioskExchangeSlipEntity {
     @Column(name = "reintegrated_by")
     private Long reintegratedBy;
 
+    /** Conteo físico al que se asocia la devolución para cuadrar Salidas del periodo. */
+    @Column(name = "physical_count_id")
+    private Long physicalCountId;
+
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) {

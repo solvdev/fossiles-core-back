@@ -178,8 +178,42 @@ public class KioscoInventoryService {
             String physicalSlipNumber,
             String reason
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarDevolucionDeposito(
+                locationId, productId, colorId, quantity, referenceId, userId, sizeKey, physicalSlipNumber, reason, null);
+    }
+
+    public KioscoStockResponse registrarDevolucionDeposito(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String physicalSlipNumber,
+            String reason,
+            Long physicalCountId
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarDevolucionDepositoWithMovement(
+                locationId, productId, colorId, quantity, referenceId, userId, sizeKey, physicalSlipNumber, reason,
+                physicalCountId
+        ).stockResponse();
+    }
+
+    public KioscoMovementWithStock registrarDevolucionDepositoWithMovement(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String physicalSlipNumber,
+            String reason,
+            Long physicalCountId
+    ) throws BusinessException, ResourceNotFoundException {
         String trimmedReason = safeTrim(reason);
-        return applyStockMovement(
+        return applyStockMovementWithMovement(
                 locationId,
                 productId,
                 colorId,
@@ -194,7 +228,8 @@ public class KioscoInventoryService {
                 trimmedReason.isEmpty() ? null : trimmedReason,
                 sizeKey,
                 true,
-                physicalSlipNumber
+                physicalSlipNumber,
+                physicalCountId
         );
     }
 
@@ -236,6 +271,23 @@ public class KioscoInventoryService {
             String sizeKey,
             String physicalSlipNumber
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarDevolucionCliente(
+                locationId, productId, colorId, quantity, originalInvoiceId, apto, userId, sizeKey, physicalSlipNumber,
+                null);
+    }
+
+    public KioscoStockResponse registrarDevolucionCliente(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long originalInvoiceId,
+            Boolean apto,
+            Long userId,
+            String sizeKey,
+            String physicalSlipNumber,
+            Long physicalCountId
+    ) throws BusinessException, ResourceNotFoundException {
         if (apto == null) {
             throw new BusinessException("Debes indicar si el producto es apto para reventa.");
         }
@@ -256,7 +308,8 @@ public class KioscoInventoryService {
                     null,
                     sizeKey,
                     true,
-                    physicalSlipNumber
+                    physicalSlipNumber,
+                    physicalCountId
             );
         }
 
@@ -264,9 +317,11 @@ public class KioscoInventoryService {
         int before = safeInt(stock.getCurrentStock());
         int after = before;
         saveMovement(stock, KioscoMovementType.DEVOLUCION_CLIENTE, quantity, before, after,
-                originalInvoiceId, null, false, resolvedUserId, null, null, physicalSlipNumber);
+                originalInvoiceId, null, false, resolvedUserId, null, null, physicalSlipNumber, null,
+                physicalCountId);
         saveMovement(stock, KioscoMovementType.MERMA, quantity, before, after,
-                originalInvoiceId, REASON_NON_RESELLABLE, false, resolvedUserId, null, null, physicalSlipNumber);
+                originalInvoiceId, REASON_NON_RESELLABLE, false, resolvedUserId, null, null, physicalSlipNumber,
+                null, physicalCountId);
         return toStockResponse(stock);
     }
 
@@ -1304,6 +1359,14 @@ public class KioscoInventoryService {
     List<KioscoKardexReportResponse.KioscoKardexRow> buildKardexRows(
             Long locationId, LocalDate from, LocalDate to, boolean includeZeroRows, LocalDate balanceAsOf
     ) throws BusinessException, ResourceNotFoundException {
+        return buildKardexRows(locationId, from, to, includeZeroRows, balanceAsOf, null);
+    }
+
+    @Transactional(readOnly = true)
+    List<KioscoKardexReportResponse.KioscoKardexRow> buildKardexRows(
+            Long locationId, LocalDate from, LocalDate to, boolean includeZeroRows,
+            LocalDate balanceAsOf, Long physicalCountId
+    ) throws BusinessException, ResourceNotFoundException {
         if (from == null || to == null) {
             throw new BusinessException("Debes indicar el rango de fechas (from y to).");
         }
@@ -1321,7 +1384,7 @@ public class KioscoInventoryService {
                 : null;
 
         Map<Long, KardexAccumulator> accByStockId = new LinkedHashMap<>();
-        for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBetween(locationId, fromDt, toDtExclusive)) {
+        for (KioscoMovementEntity m : collectPeriodMovements(locationId, fromDt, toDtExclusive, physicalCountId)) {
             if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
                 continue;
             }
@@ -1384,6 +1447,13 @@ public class KioscoInventoryService {
     public Map<Long, Map<String, SizeKardexBucket>> buildKardexByStockAndSize(
             Long locationId, LocalDate from, LocalDate to
     ) throws BusinessException, ResourceNotFoundException {
+        return buildKardexByStockAndSize(locationId, from, to, null);
+    }
+
+    @Transactional(readOnly = true)
+    public Map<Long, Map<String, SizeKardexBucket>> buildKardexByStockAndSize(
+            Long locationId, LocalDate from, LocalDate to, Long physicalCountId
+    ) throws BusinessException, ResourceNotFoundException {
         if (from == null || to == null) {
             throw new BusinessException("Debes indicar el rango de fechas (from y to).");
         }
@@ -1399,8 +1469,7 @@ public class KioscoInventoryService {
         // stockId -> shipmentIds relacionados a ENTRADAs (con o sin talla) para desglosar desde el envío.
         Map<Long, Set<Long>> shipmentIdsByStock = new LinkedHashMap<>();
         Map<String, Long> shipmentIdByNumberCache = new HashMap<>();
-        for (KioscoMovementEntity m : kioscoMovementRepository.findByLocationAndCreatedAtBetween(
-                locationId, fromDt, toDtExclusive)) {
+        for (KioscoMovementEntity m : collectPeriodMovements(locationId, fromDt, toDtExclusive, physicalCountId)) {
             if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
                 continue;
             }
@@ -1436,6 +1505,35 @@ public class KioscoInventoryService {
             out.put(stockEntry.getKey(), bySize);
         }
         return out;
+    }
+
+    /** Movimientos del periodo + movimientos asociados explícitamente al conteo físico. */
+    private List<KioscoMovementEntity> collectPeriodMovements(
+            Long locationId,
+            LocalDateTime fromDt,
+            LocalDateTime toDtExclusive,
+            Long physicalCountId
+    ) {
+        Map<Long, KioscoMovementEntity> merged = new LinkedHashMap<>();
+        for (KioscoMovementEntity movement : kioscoMovementRepository.findByLocationAndCreatedAtBetween(
+                locationId, fromDt, toDtExclusive)) {
+            if (movement.getId() != null) {
+                merged.put(movement.getId(), movement);
+            }
+        }
+        if (physicalCountId != null) {
+            for (KioscoMovementEntity movement : kioscoMovementRepository.findByLocationAndPhysicalCountId(
+                    locationId, physicalCountId)) {
+                if (movement.getId() != null) {
+                    merged.putIfAbsent(movement.getId(), movement);
+                }
+            }
+        }
+        return merged.values().stream()
+                .sorted(Comparator
+                        .comparing(KioscoMovementEntity::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(KioscoMovementEntity::getId, Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList();
     }
 
     /**
@@ -1648,6 +1746,18 @@ public class KioscoInventoryService {
         /** Neto del periodo (suma algebraica de columnas kardex). */
         public int netDelta() {
             return comprasAjustes - anulacionCompras + entradas - ventas + anulacionVenta - salida;
+        }
+
+        public SizeKardexBucket plus(int comprasDelta, int anulacionComprasDelta, int entradasDelta,
+                int ventasDelta, int anulacionVentaDelta, int salidaDelta) {
+            return new SizeKardexBucket(
+                    comprasAjustes + comprasDelta,
+                    anulacionCompras + anulacionComprasDelta,
+                    entradas + entradasDelta,
+                    ventas + ventasDelta,
+                    anulacionVenta + anulacionVentaDelta,
+                    salida + salidaDelta
+            );
         }
     }
 
@@ -1990,11 +2100,50 @@ public class KioscoInventoryService {
                 reason,
                 sizeKey,
                 syncLegacy,
-                physicalSlipNumber
+                physicalSlipNumber,
+                null
         ).stockResponse();
     }
 
-    private record KioscoMovementWithStock(KioscoStockResponse stockResponse, KioscoMovementEntity movement) {}
+    private KioscoStockResponse applyStockMovement(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long originLocationId,
+            Long destinationLocationId,
+            Long userId,
+            KioscoMovementType movementType,
+            int delta,
+            boolean affectsStock,
+            String reason,
+            String sizeKey,
+            boolean syncLegacy,
+            String physicalSlipNumber,
+            Long physicalCountId
+    ) throws BusinessException, ResourceNotFoundException {
+        return applyStockMovementWithMovement(
+                locationId,
+                productId,
+                colorId,
+                quantity,
+                referenceId,
+                originLocationId,
+                destinationLocationId,
+                userId,
+                movementType,
+                delta,
+                affectsStock,
+                reason,
+                sizeKey,
+                syncLegacy,
+                physicalSlipNumber,
+                physicalCountId
+        ).stockResponse();
+    }
+
+    public record KioscoMovementWithStock(KioscoStockResponse stockResponse, KioscoMovementEntity movement) {}
 
     private KioscoMovementWithStock applyStockMovementWithMovement(
             Long locationId,
@@ -2012,6 +2161,29 @@ public class KioscoInventoryService {
             String sizeKey,
             boolean syncLegacy,
             String physicalSlipNumber
+    ) throws BusinessException, ResourceNotFoundException {
+        return applyStockMovementWithMovement(
+                locationId, productId, colorId, quantity, referenceId, originLocationId, destinationLocationId,
+                userId, movementType, delta, affectsStock, reason, sizeKey, syncLegacy, physicalSlipNumber, null);
+    }
+
+    private KioscoMovementWithStock applyStockMovementWithMovement(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long originLocationId,
+            Long destinationLocationId,
+            Long userId,
+            KioscoMovementType movementType,
+            int delta,
+            boolean affectsStock,
+            String reason,
+            String sizeKey,
+            boolean syncLegacy,
+            String physicalSlipNumber,
+            Long physicalCountId
     ) throws BusinessException, ResourceNotFoundException {
         validateQuantity(quantity);
         validateLocationIsKiosk(locationId);
@@ -2044,7 +2216,8 @@ public class KioscoInventoryService {
                 originLocationId,
                 destinationLocationId,
                 physicalSlipNumber,
-                sizeKey
+                sizeKey,
+                physicalCountId
         );
 
         if (syncLegacy && affectsStock) {
@@ -2148,6 +2321,7 @@ public class KioscoInventoryService {
                 originLocationId,
                 destinationLocationId,
                 physicalSlipNumber,
+                null,
                 null
         );
     }
@@ -2167,6 +2341,27 @@ public class KioscoInventoryService {
             String physicalSlipNumber,
             String sizeKey
     ) {
+        return saveMovement(
+                stock, movementType, quantity, stockBefore, stockAfter, referenceId, reason, affectsStock, userId,
+                originLocationId, destinationLocationId, physicalSlipNumber, sizeKey, null);
+    }
+
+    private KioscoMovementEntity saveMovement(
+            KioscoStockEntity stock,
+            KioscoMovementType movementType,
+            Integer quantity,
+            Integer stockBefore,
+            Integer stockAfter,
+            Long referenceId,
+            String reason,
+            boolean affectsStock,
+            Long userId,
+            Long originLocationId,
+            Long destinationLocationId,
+            String physicalSlipNumber,
+            String sizeKey,
+            Long physicalCountId
+    ) {
         String normalizedSlip = normalizePhysicalSlipNumber(physicalSlipNumber);
         String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
         KioscoMovementEntity movement = KioscoMovementEntity.builder()
@@ -2177,6 +2372,7 @@ public class KioscoInventoryService {
                 .stockBefore(stockBefore)
                 .stockAfter(stockAfter)
                 .referenceId(referenceId)
+                .physicalCountId(physicalCountId)
                 .physicalSlipNumber(normalizedSlip)
                 .reason(safeTrim(reason))
                 .affectsStock(affectsStock)

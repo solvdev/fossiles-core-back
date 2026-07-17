@@ -35,5 +35,8 @@ public class KioscoInventoryDevolucionDepositoRequest {
 
     private Long referenceId;
 
+    /** Conteo físico al que se asocia la salida (aunque el reintegro sea posterior al period_to). */
+    private Long physicalCountId;
+
     private Long userId;
 }

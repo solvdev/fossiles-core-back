@@ -15,6 +15,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Kiosco
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountStatus;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductCategoryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
@@ -23,6 +24,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
@@ -36,6 +38,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -73,11 +76,17 @@ public class KioscoInventoryCountService {
     /** Diferencia absoluta minima (unidades) para considerar un producto como discrepancia relevante. */
     public static final int DIFF_ALERT_THRESHOLD = 3;
 
+    private static final String SLIP_TYPE_RETURN = "RETURN";
+    private static final String STATUS_PENDING_REINTEGRO = "PENDING_REINTEGRO";
+    private static final String STATUS_REINTEGRATED = "REINTEGRATED";
+    private static final String STATUS_COMPLETED = "COMPLETED";
+
     private final KioscoPhysicalCountRepository countRepository;
     private final KioscoPhysicalCountItemRepository itemRepository;
     private final KioscoNotificationRecipientRepository notificationRecipientRepository;
     private final KioscoInventoryService kioscoInventoryService;
     private final KioscoStockRepository kioscoStockRepository;
+    private final KioskExchangeSlipRepository exchangeSlipRepository;
     private final LocationRepository locationRepository;
     private final ProductRepository productRepository;
     private final ProductCategoryRepository productCategoryRepository;
@@ -334,10 +343,11 @@ public class KioscoInventoryCountService {
         }
 
         List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows = kioscoInventoryService.buildKardexRows(
-                count.getLocationId(), count.getPeriodFrom(), kardexTo, true, finAsOf);
+                count.getLocationId(), count.getPeriodFrom(), kardexTo, true, finAsOf, count.getId());
         Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize =
                 kioscoInventoryService.buildKardexByStockAndSize(
-                        count.getLocationId(), count.getPeriodFrom(), kardexTo);
+                        count.getLocationId(), count.getPeriodFrom(), kardexTo, count.getId());
+        applyPendingReturnSalidasForCount(count, kardexRows, kardexByStockAndSize, stockByKey);
 
         Optional<KioscoPhysicalCountEntity> previousCount = resolvePreviousPhysicalCount(count);
         LocalDateTime openingCutoffExclusive = previousCount
@@ -851,6 +861,101 @@ public class KioscoInventoryCountService {
                 count.getLocationId(), count.getPeriodFrom(), count.getId());
     }
 
+    private void applyPendingReturnSalidasForCount(
+            KioscoPhysicalCountEntity count,
+            List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows,
+            Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize,
+            Map<String, KioscoStockEntity> stockByKey
+    ) {
+        if (count == null || count.getId() == null) {
+            return;
+        }
+        List<KioskExchangeSlipEntity> slips = exchangeSlipRepository.findByPhysicalCountId(count.getId());
+        if (slips.isEmpty()) {
+            slips = exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(count.getLocationId()).stream()
+                    .filter(slip -> SLIP_TYPE_RETURN.equalsIgnoreCase(safeTrim(slip.getSlipType())))
+                    .filter(slip -> slip.getPhysicalCountId() == null && isSlipCompletedInPeriod(slip, count))
+                    .toList();
+        }
+        for (KioskExchangeSlipEntity slip : slips) {
+            if (!SLIP_TYPE_RETURN.equalsIgnoreCase(safeTrim(slip.getSlipType()))) {
+                continue;
+            }
+            if (!Boolean.TRUE.equals(slip.getApto())) {
+                continue;
+            }
+            if (!isReturnSlipLinkedToCount(slip, count)) {
+                continue;
+            }
+            if (slip.getReintegroMovementId() != null || STATUS_REINTEGRATED.equalsIgnoreCase(safeTrim(slip.getStatus()))) {
+                continue;
+            }
+            if (!STATUS_PENDING_REINTEGRO.equalsIgnoreCase(safeTrim(slip.getStatus()))
+                    && !STATUS_COMPLETED.equalsIgnoreCase(safeTrim(slip.getStatus()))) {
+                continue;
+            }
+            int qty = slip.getReturnedQuantity() != null
+                    ? slip.getReturnedQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact()
+                    : 0;
+            if (qty <= 0) {
+                continue;
+            }
+            String sizeKey = ProductInventorySizesJson.normalizeKey(slip.getReturnedSize());
+            KioscoStockEntity stock = stockByKey.get(itemKey(slip.getReturnedProductId(), slip.getReturnedColorId()));
+            if (stock == null) {
+                continue;
+            }
+            applyReturnSalidaAdjustment(kardexRows, kardexByStockAndSize, stock, qty, sizeKey);
+        }
+    }
+
+    private boolean isReturnSlipLinkedToCount(KioskExchangeSlipEntity slip, KioscoPhysicalCountEntity count) {
+        if (slip == null || count == null) {
+            return false;
+        }
+        if (Objects.equals(slip.getPhysicalCountId(), count.getId())) {
+            return true;
+        }
+        return slip.getPhysicalCountId() == null && isSlipCompletedInPeriod(slip, count);
+    }
+
+    private boolean isSlipCompletedInPeriod(KioskExchangeSlipEntity slip, KioscoPhysicalCountEntity count) {
+        if (slip.getCompletedAt() == null || count.getPeriodFrom() == null || count.getPeriodTo() == null) {
+            return false;
+        }
+        LocalDate completedDate = slip.getCompletedAt().toLocalDate();
+        return !completedDate.isBefore(count.getPeriodFrom()) && !completedDate.isAfter(count.getPeriodTo());
+    }
+
+    private void applyReturnSalidaAdjustment(
+            List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows,
+            Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize,
+            KioscoStockEntity stock,
+            int qty,
+            String sizeKey
+    ) {
+        for (KioscoKardexReportResponse.KioscoKardexRow row : kardexRows) {
+            if (!Objects.equals(row.getProductId(), stock.getProductId())
+                    || !Objects.equals(row.getColorId(), stock.getColorId())) {
+                continue;
+            }
+            row.setComprasAjustes(Math.max(0, row.getComprasAjustes() - qty));
+            row.setSalida(row.getSalida() + qty);
+            break;
+        }
+
+        Map<String, KioscoInventoryService.SizeKardexBucket> bySize =
+                kardexByStockAndSize.computeIfAbsent(stock.getId(), k -> new LinkedHashMap<>());
+        String bucketKey = sizeKey == null || sizeKey.isBlank() ? "" : sizeKey;
+        KioscoInventoryService.SizeKardexBucket current =
+                bySize.getOrDefault(bucketKey, KioscoInventoryService.SizeKardexBucket.empty());
+        bySize.put(bucketKey, current.plus(-qty, 0, 0, 0, 0, qty));
+    }
+
+    private static String safeTrim(String value) {
+        return value == null ? "" : value.trim();
+    }
+
     private static int kardexRowNetDelta(KioscoKardexReportResponse.KioscoKardexRow row) {
         if (row == null) {
             return 0;
@@ -892,6 +997,18 @@ public class KioscoInventoryCountService {
             KioscoInventoryService.SizeKardexBucket bucket;
             if (hasSizedMovements) {
                 bucket = sizeKardex.getOrDefault(size, KioscoInventoryService.SizeKardexBucket.empty());
+                KioscoInventoryService.SizeKardexBucket unallocated =
+                        sizeKardex.getOrDefault("", KioscoInventoryService.SizeKardexBucket.empty());
+                if (first && !unallocated.isEmpty()) {
+                    bucket = bucket.plus(
+                            unallocated.comprasAjustes,
+                            unallocated.anulacionCompras,
+                            unallocated.entradas,
+                            unallocated.ventas,
+                            unallocated.anulacionVenta,
+                            unallocated.salida
+                    );
+                }
             } else {
                 bucket = first ? bucketFromAggregateRow(base) : KioscoInventoryService.SizeKardexBucket.empty();
             }

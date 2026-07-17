@@ -187,6 +187,16 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             @Param("to") LocalDateTime to
     );
 
+    @Query("SELECT m FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
+            + "AND m.physicalCountId = :physicalCountId "
+            + "ORDER BY m.createdAt ASC, m.id ASC")
+    List<KioscoMovementEntity> findByLocationAndPhysicalCountId(
+            @Param("locationId") Long locationId,
+            @Param("physicalCountId") Long physicalCountId
+    );
+
     /** Movimientos previos al inicio del periodo, orden cronologico ascendente (saldo inicial kardex). */
     @Query("SELECT m FROM KioscoMovementEntity m "
             + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "

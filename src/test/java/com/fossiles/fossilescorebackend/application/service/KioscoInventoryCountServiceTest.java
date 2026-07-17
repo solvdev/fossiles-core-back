@@ -16,6 +16,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
@@ -57,6 +58,8 @@ class KioscoInventoryCountServiceTest {
     private KioscoInventoryService kioscoInventoryService;
     @Mock
     private KioscoStockRepository kioscoStockRepository;
+    @Mock
+    private KioskExchangeSlipRepository exchangeSlipRepository;
     @Mock
     private LocationRepository locationRepository;
     @Mock
@@ -100,6 +103,8 @@ class KioscoInventoryCountServiceTest {
                 .id(categoryId).code("TARJ").name("Tarjeteros").build()));
         when(itemRepository.findByCountId(any())).thenReturn(List.of());
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of());
+        when(exchangeSlipRepository.findByPhysicalCountId(any())).thenReturn(List.of());
+        when(exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
     }
 
     private KioscoKardexReportResponse.KioscoKardexRow kardexRow(int inventarioFinal) {
@@ -115,17 +120,17 @@ class KioscoInventoryCountServiceTest {
 
     private void stubPrincipalKardex(List<KioscoKardexReportResponse.KioscoKardexRow> rows)
             throws BusinessException, ResourceNotFoundException {
-        when(kioscoInventoryService.buildKardexRows(eq(locationId), eq(from), eq(to), eq(true), eq(to)))
+        when(kioscoInventoryService.buildKardexRows(eq(locationId), eq(from), eq(to), eq(true), eq(to), eq(countId)))
                 .thenReturn(rows);
-        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to)))
+        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to), eq(countId)))
                 .thenReturn(Map.of());
     }
 
     private void stubSubcountKardex(LocalDate asOf, List<KioscoKardexReportResponse.KioscoKardexRow> rows)
             throws BusinessException, ResourceNotFoundException {
-        when(kioscoInventoryService.buildKardexRows(eq(locationId), eq(from), eq(asOf), eq(true), eq(asOf)))
+        when(kioscoInventoryService.buildKardexRows(eq(locationId), eq(from), eq(asOf), eq(true), eq(asOf), eq(countId)))
                 .thenReturn(rows);
-        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(asOf)))
+        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(asOf), eq(countId)))
                 .thenReturn(Map.of());
     }
 
@@ -543,7 +548,7 @@ class KioscoInventoryCountServiceTest {
                         .productId(fossProductId).productCode("FOSS-100").productName("Cincho casual")
                         .colorId(colorId).colorName("Negro").entradas(5).build()
         ));
-        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to)))
+        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to), eq(countId)))
                 .thenReturn(Map.of(
                         501L,
                         Map.of(
@@ -593,7 +598,7 @@ class KioscoInventoryCountServiceTest {
                         .productId(fossProductId).productCode("FOSS-5").productName("Cincho Giorgio")
                         .colorId(colorId).colorName("Cafe").entradas(1).build()
         ));
-        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to)))
+        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to), eq(countId)))
                 .thenReturn(Map.of(
                         stockId,
                         Map.of("34", KioscoInventoryService.SizeKardexBucket.of(0, 0, 1, 0, 0, 0))

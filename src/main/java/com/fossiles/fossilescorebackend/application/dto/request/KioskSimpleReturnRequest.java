@@ -31,4 +31,7 @@ public class KioskSimpleReturnRequest {
     private String reason;
     private String observations;
     private String physicalSlipNumber;
+
+    /** Conteo físico DRAFT al que se asocia la devolución (columna Salidas del corte). */
+    private Long physicalCountId;
 }

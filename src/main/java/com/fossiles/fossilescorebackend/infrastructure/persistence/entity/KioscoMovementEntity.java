@@ -54,6 +54,10 @@ public class KioscoMovementEntity {
     @Column(name = "reference_id")
     private Long referenceId;
 
+    /** Conteo físico al que se asocia el movimiento (p. ej. devolución a bodega del corte). */
+    @Column(name = "physical_count_id")
+    private Long physicalCountId;
+
     @Column(name = "physical_slip_number", length = 60)
     private String physicalSlipNumber;
 

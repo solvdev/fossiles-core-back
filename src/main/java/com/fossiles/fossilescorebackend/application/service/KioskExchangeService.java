@@ -13,6 +13,8 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountStatus;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
@@ -24,6 +26,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEn
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
@@ -54,11 +57,13 @@ public class KioskExchangeService {
     private static final String SLIP_TYPE_RETURN = "RETURN";
     private static final String STATUS_COMPLETED = "COMPLETED";
     private static final String STATUS_PENDING_REINTEGRO = "PENDING_REINTEGRO";
+    private static final String STATUS_REINTEGRATED = "REINTEGRATED";
     private static final String STATUS_PENDING_AUTHORIZATION = "PENDING_AUTHORIZATION";
     private static final String STATUS_REJECTED = "REJECTED";
 
     private final KioskExchangeSlipRepository exchangeSlipRepository;
     private final KioscoMovementRepository kioscoMovementRepository;
+    private final KioscoPhysicalCountRepository physicalCountRepository;
     private final KioskSaleRepository kioskSaleRepository;
     private final KioskSaleItemRepository kioskSaleItemRepository;
     private final ProductRepository productRepository;
@@ -388,6 +393,7 @@ public class KioskExchangeService {
         BigDecimal returnedAmount = item.getUnitPrice().multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
         String returnedSize = extractSizeFromProductName(item.getProductName());
         String slipNumber = requireAvailablePhysicalSlipNumber(request.getPhysicalSlipNumber());
+        Long physicalCountId = resolvePhysicalCountIdForReturns(request.getPhysicalCountId(), ctx.kiosk().getId());
 
         kioscoInventoryService.registrarDevolucionCliente(
                 ctx.kiosk().getId(),
@@ -398,10 +404,11 @@ public class KioskExchangeService {
                 request.getApto(),
                 ctx.user().getId(),
                 returnedSize,
-                slipNumber
+                slipNumber,
+                physicalCountId
         );
 
-        String status = STATUS_COMPLETED;
+        String status = Boolean.TRUE.equals(request.getApto()) ? STATUS_PENDING_REINTEGRO : STATUS_COMPLETED;
         KioskExchangeSlipEntity slip = KioskExchangeSlipEntity.builder()
                 .slipNumber(slipNumber)
                 .slipType(SLIP_TYPE_RETURN)
@@ -420,7 +427,10 @@ public class KioskExchangeService {
                 .observations(safeTrim(request.getObservations()))
                 .createdBy(ctx.user().getId())
                 .completedAt(GuatemalaDateTime.now())
+                .physicalCountId(physicalCountId)
                 .build();
+        slip = exchangeSlipRepository.save(slip);
+        linkExchangeMovementIds(slip, slipNumber);
         slip = exchangeSlipRepository.save(slip);
         return toSlipResponse(slip, ctx);
     }
@@ -440,17 +450,22 @@ public class KioskExchangeService {
             throw new BusinessException("Solo productos aptos pueden reintegrarse a bodega.");
         }
 
-        kioscoInventoryService.registrarDevolucionDeposito(
+        KioscoInventoryService.KioscoMovementWithStock movementResult =
+                kioscoInventoryService.registrarDevolucionDepositoWithMovement(
                 slip.getKioskLocationId(),
                 slip.getReturnedProductId(),
                 slip.getReturnedColorId(),
                 slip.getReturnedQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact(),
                 slip.getId(),
                 ctx.user().getId(),
-                slip.getReturnedSize()
+                slip.getReturnedSize(),
+                slip.getSlipNumber(),
+                slip.getReason(),
+                slip.getPhysicalCountId()
         );
 
-        slip.setStatus("REINTEGRATED");
+        slip.setReintegroMovementId(movementResult.movement().getId());
+        slip.setStatus(STATUS_REINTEGRATED);
         slip.setReintegratedAt(GuatemalaDateTime.now());
         slip.setReintegratedBy(ctx.user().getId());
         if (slip.getCompletedAt() == null) {
@@ -945,5 +960,22 @@ public class KioskExchangeService {
 
     private static BigDecimal safeAmount(BigDecimal value) {
         return value != null ? value : BigDecimal.ZERO;
+    }
+
+    private Long resolvePhysicalCountIdForReturns(Long physicalCountId, Long kioskLocationId)
+            throws BusinessException {
+        if (physicalCountId == null) {
+            return null;
+        }
+        KioscoPhysicalCountEntity count = physicalCountRepository.findById(physicalCountId)
+                .orElseThrow(() -> new BusinessException("Conteo físico no encontrado."));
+        if (!Objects.equals(count.getLocationId(), kioskLocationId)) {
+            throw new BusinessException("El conteo físico no pertenece al kiosko seleccionado.");
+        }
+        if (count.getStatus() != KioscoPhysicalCountStatus.DRAFT
+                && count.getStatus() != KioscoPhysicalCountStatus.CONTADO) {
+            throw new BusinessException("Solo puedes asociar devoluciones a un conteo en borrador o contado.");
+        }
+        return count.getId();
     }
 }

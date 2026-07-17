@@ -100,7 +100,8 @@ public class KioscoInventoryController {
                 request.getUserId(),
                 request.getSizeKey(),
                 request.getPhysicalSlipNumber(),
-                request.getReason()
+                request.getReason(),
+                request.getPhysicalCountId()
         ));
     }
 
