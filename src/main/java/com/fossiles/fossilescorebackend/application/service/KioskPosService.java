@@ -1448,7 +1448,7 @@ public class KioskPosService {
         expensesTotal = expensesTotal.setScale(2, RoundingMode.HALF_UP);
         BigDecimal reconciledTotal = cardsTotal.add(depositsTotal).add(expensesTotal)
                 .setScale(2, RoundingMode.HALF_UP);
-        BigDecimal difference = totalSold.subtract(reconciledTotal).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal difference = reconciledTotal.subtract(totalSold).setScale(2, RoundingMode.HALF_UP);
 
         List<KioskMainSheetReportResponse.DailySaleRow> dailySales = dailyTotals.entrySet().stream()
                 .map(entry -> KioskMainSheetReportResponse.DailySaleRow.builder()
