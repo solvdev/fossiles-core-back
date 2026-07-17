@@ -109,9 +109,7 @@ class KioscoInventoryCountServiceTest {
                 .productName("Tarjetero")
                 .colorId(colorId)
                 .colorName("Cafe")
-                .inventarioInicial(5)
-                .entradas(5)
-                .inventarioFinal(inventarioFinal)
+                .entradas(inventarioFinal)
                 .build();
     }
 
@@ -121,8 +119,6 @@ class KioscoInventoryCountServiceTest {
                 .thenReturn(rows);
         when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to)))
                 .thenReturn(Map.of());
-        when(kioscoInventoryService.computeSizeBalanceByStockAndSize(eq(locationId), eq(from.atStartOfDay())))
-                .thenReturn(Map.of());
     }
 
     private void stubSubcountKardex(LocalDate asOf, List<KioscoKardexReportResponse.KioscoKardexRow> rows)
@@ -130,8 +126,6 @@ class KioscoInventoryCountServiceTest {
         when(kioscoInventoryService.buildKardexRows(eq(locationId), eq(from), eq(asOf), eq(true), eq(asOf)))
                 .thenReturn(rows);
         when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(asOf)))
-                .thenReturn(Map.of());
-        when(kioscoInventoryService.computeSizeBalanceByStockAndSize(eq(locationId), eq(from.atStartOfDay())))
                 .thenReturn(Map.of());
     }
 
@@ -475,7 +469,7 @@ class KioscoInventoryCountServiceTest {
                         .productId(packagingProductId)
                         .productCode("SUM-01")
                         .productName("Bolsa")
-                        .inventarioFinal(20)
+                        .entradas(20)
                         .build()
         ));
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
@@ -509,10 +503,10 @@ class KioscoInventoryCountServiceTest {
         stubPrincipalKardex(List.of(
                 KioscoKardexReportResponse.KioscoKardexRow.builder()
                         .productId(damaProductId).productCode("B-1").productName("Billetera A")
-                        .colorId(colorId).colorName("Negro").inventarioFinal(5).build(),
+                        .colorId(colorId).colorName("Negro").entradas(5).build(),
                 KioscoKardexReportResponse.KioscoKardexRow.builder()
                         .productId(cabProductId).productCode("B-2").productName("Billetera B")
-                        .colorId(colorId + 1).colorName("Cafe").inventarioFinal(3).build()
+                        .colorId(colorId + 1).colorName("Cafe").entradas(3).build()
         ));
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
         when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
@@ -547,10 +541,16 @@ class KioscoInventoryCountServiceTest {
         stubPrincipalKardex(List.of(
                 KioscoKardexReportResponse.KioscoKardexRow.builder()
                         .productId(fossProductId).productCode("FOSS-100").productName("Cincho casual")
-                        .colorId(colorId).colorName("Negro").inventarioFinal(10).build()
+                        .colorId(colorId).colorName("Negro").entradas(5).build()
         ));
-        when(kioscoInventoryService.computeSizeBalanceByStockAndSize(eq(locationId), eq(from.atStartOfDay())))
-                .thenReturn(Map.of(501L, Map.of("28", 2, "30", 3)));
+        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to)))
+                .thenReturn(Map.of(
+                        501L,
+                        Map.of(
+                                "28", KioscoInventoryService.SizeKardexBucket.of(0, 0, 2, 0, 0, 0),
+                                "30", KioscoInventoryService.SizeKardexBucket.of(0, 0, 3, 0, 0, 0)
+                        )
+                ));
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
         when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
             KioscoPhysicalCountEntity entity = inv.getArgument(0);
@@ -563,7 +563,9 @@ class KioscoInventoryCountServiceTest {
         var rows = report.getCategories().get(0).getRows();
         assertThat(rows).hasSize(2);
         assertThat(rows.stream().map(r -> r.getSizeLabel())).containsExactly("28", "30");
+        assertThat(rows.get(0).getInventarioInicial()).isZero();
         assertThat(rows.get(0).getInventarioFinal()).isEqualTo(2);
+        assertThat(rows.get(1).getInventarioInicial()).isZero();
         assertThat(rows.get(1).getInventarioFinal()).isEqualTo(3);
         assertThat(rows.get(0).getInventarioInicial() + rows.get(0).getEntradas()).isEqualTo(rows.get(0).getInventarioFinal());
         assertThat(report.getTotalGeneral().getInventarioFinal()).isEqualTo(5);
@@ -589,10 +591,8 @@ class KioscoInventoryCountServiceTest {
         stubPrincipalKardex(List.of(
                 KioscoKardexReportResponse.KioscoKardexRow.builder()
                         .productId(fossProductId).productCode("FOSS-5").productName("Cincho Giorgio")
-                        .colorId(colorId).colorName("Cafe").inventarioFinal(0).build()
+                        .colorId(colorId).colorName("Cafe").entradas(1).build()
         ));
-        when(kioscoInventoryService.computeSizeBalanceByStockAndSize(eq(locationId), eq(from.atStartOfDay())))
-                .thenReturn(Map.of(stockId, Map.of("34", 0)));
         when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to)))
                 .thenReturn(Map.of(
                         stockId,
@@ -653,7 +653,7 @@ class KioscoInventoryCountServiceTest {
                         .productName("Tarjetero B")
                         .colorId(secondColorId)
                         .colorName("Negro")
-                        .inventarioFinal(10)
+                        .entradas(10)
                         .build()
         ));
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());

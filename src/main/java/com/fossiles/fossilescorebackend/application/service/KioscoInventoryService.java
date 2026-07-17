@@ -1701,6 +1701,16 @@ public class KioscoInventoryService {
         return balanceByStockAndSize;
     }
 
+    /** Saldo agregado por stock al cierre de un corte (movimientos antes de {@code cutoffExclusive}). */
+    @Transactional(readOnly = true)
+    public Map<Long, Integer> computeStockBalanceByStockId(
+            Long locationId,
+            LocalDateTime cutoffExclusive
+    ) throws BusinessException, ResourceNotFoundException {
+        validateLocationIsKiosk(locationId);
+        return computeBalanceByStockId(locationId, cutoffExclusive);
+    }
+
     /** Acumula deltas de movimientos del periodo por categoria de kardex kiosco. */
     private static final class KardexAccumulator {
         private int comprasAjustes;
