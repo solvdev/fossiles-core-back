@@ -78,6 +78,18 @@ public class KioscoPhysicalCountEntity {
     @Column(name = "diff_notified_at")
     private LocalDateTime diffNotifiedAt;
 
+    /** Hoja principal: REVISADO Y CERTIFICADO POR. */
+    @Column(name = "main_sheet_certified_by", length = 120)
+    private String mainSheetCertifiedBy;
+
+    /** Hoja principal: REVISADO POR (segunda revisión). */
+    @Column(name = "main_sheet_reviewed_by", length = 120)
+    private String mainSheetReviewedBy;
+
+    /** Hoja principal: INVENTARIO DIGITAL (fecha de certificación). */
+    @Column(name = "main_sheet_certified_at")
+    private LocalDateTime mainSheetCertifiedAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

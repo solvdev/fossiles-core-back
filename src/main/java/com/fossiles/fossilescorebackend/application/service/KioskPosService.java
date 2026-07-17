@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.KioskMainSheetCertificationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashExpenseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionCloseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
@@ -111,6 +112,12 @@ public class KioskPosService {
     private static final Pattern CARD_LAST4_PATTERN = Pattern.compile("^\\d{4}$");
     private static final Set<String> ALLOWED_CARD_BRANDS = Set.of("VISA", "MC", "AMEX");
     private static final Pattern POS_SALE_NUMBER_PATTERN = Pattern.compile("^POS-(\\d{8})-(\\d{4})$", Pattern.CASE_INSENSITIVE);
+    /** Supervisores autorizados para certificar la hoja principal. */
+    private static final List<String> MAIN_SHEET_REVIEWERS = List.of(
+            "GUSTAVO CASTRO",
+            "ROBERTO LIQUE",
+            "FATIMA ZACARIAS"
+    );
 
     private final SecurityUtil securityUtil;
     private final UserRepository userRepository;
@@ -1475,8 +1482,77 @@ public class KioskPosService {
                 .expensesTotal(expensesTotal)
                 .reconciledTotal(reconciledTotal)
                 .difference(difference)
+                .mainSheetCertifiedBy(safeTrim(count.getMainSheetCertifiedBy()))
+                .mainSheetReviewedBy(safeTrim(count.getMainSheetReviewedBy()))
+                .mainSheetCertifiedAt(count.getMainSheetCertifiedAt())
                 .dailySales(dailySales)
                 .build();
+    }
+
+    @Transactional
+    public KioskMainSheetReportResponse certifyMainSheetReport(
+            Long physicalCountId,
+            KioskMainSheetCertificationRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        if (physicalCountId == null) {
+            throw new BusinessException("Debes indicar el corte de conteo físico.");
+        }
+        if (request == null) {
+            throw new BusinessException("Debes indicar los datos de certificación.");
+        }
+        UserEntity user = getCurrentUserOrThrow();
+        if (!KioskAccessHelper.hasKioskReportsAccess(user)) {
+            throw new BusinessException("No tienes permiso para certificar la hoja principal.");
+        }
+
+        KioscoPhysicalCountEntity count = kioscoPhysicalCountRepository.findById(physicalCountId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioscoPhysicalCount", physicalCountId));
+        assertMainSheetKioskAccess(user, count.getLocationId());
+
+        String certifiedBy = resolveMainSheetReviewerName(request.getCertifiedBy());
+        String reviewedBy = resolveMainSheetReviewerName(request.getReviewedBy());
+
+        count.setMainSheetCertifiedBy(certifiedBy);
+        count.setMainSheetReviewedBy(reviewedBy);
+        count.setMainSheetCertifiedAt(GuatemalaDateTime.now());
+        kioscoPhysicalCountRepository.save(count);
+        return getMainSheetReport(physicalCountId);
+    }
+
+    private void assertMainSheetKioskAccess(UserEntity user, Long kioskLocationId) throws BusinessException {
+        boolean globalReports = KioskAccessHelper.hasKioskReportsAccess(user);
+        if (globalReports) {
+            return;
+        }
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, false);
+        boolean allowed = availableKiosks.stream()
+                .anyMatch(item -> Objects.equals(item.getId(), kioskLocationId));
+        if (!allowed) {
+            throw new BusinessException("No tienes acceso a este kiosko.");
+        }
+    }
+
+    private static String resolveMainSheetReviewerName(String rawName) throws BusinessException {
+        String normalized = normalizeMainSheetReviewerName(rawName);
+        if (normalized == null) {
+            throw new BusinessException("Debes seleccionar un revisor válido de la lista.");
+        }
+        return normalized;
+    }
+
+    static String normalizeMainSheetReviewerName(String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            return null;
+        }
+        String candidate = rawName.trim().toUpperCase(Locale.ROOT)
+                .replace("Á", "A").replace("É", "E").replace("Í", "I")
+                .replace("Ó", "O").replace("Ú", "U");
+        for (String allowed : MAIN_SHEET_REVIEWERS) {
+            if (allowed.equals(candidate)) {
+                return allowed;
+            }
+        }
+        return null;
     }
 
     @Transactional(readOnly = true)

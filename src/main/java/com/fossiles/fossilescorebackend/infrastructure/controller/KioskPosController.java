@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.KioskMainSheetCertificationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashExpenseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionCloseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
@@ -264,6 +265,14 @@ public class KioskPosController {
             @RequestParam Long physicalCountId
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskPosService.getMainSheetReport(physicalCountId));
+    }
+
+    @PostMapping("/reports/main-sheet/certify")
+    public ResponseEntity<KioskMainSheetReportResponse> certifyMainSheetReport(
+            @RequestParam Long physicalCountId,
+            @Valid @RequestBody KioskMainSheetCertificationRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.certifyMainSheetReport(physicalCountId, request));
     }
 
     @GetMapping("/availability")

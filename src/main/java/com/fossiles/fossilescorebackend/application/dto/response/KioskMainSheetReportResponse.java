@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 /** Resumen de ventas por corte de conteo físico (Hoja Principal). */
@@ -34,6 +35,13 @@ public class KioskMainSheetReportResponse {
     private BigDecimal expensesTotal;
     private BigDecimal reconciledTotal;
     private BigDecimal difference;
+
+    /** REVISADO Y CERTIFICADO POR (nombre del supervisor). */
+    private String mainSheetCertifiedBy;
+    /** REVISADO POR (segunda revisión). */
+    private String mainSheetReviewedBy;
+    /** INVENTARIO DIGITAL: fecha/hora de certificación. */
+    private LocalDateTime mainSheetCertifiedAt;
 
     private List<DailySaleRow> dailySales;
 
