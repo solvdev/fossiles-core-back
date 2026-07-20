@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoStockResp
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoTrasladoBoletaResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
@@ -1999,9 +2000,19 @@ public class KioscoInventoryService {
             throws BusinessException, ResourceNotFoundException {
         Long resolvedUserId = resolveUserIdRequired(userId);
         List<LocationEntity> kiosks = resolveKioskLocations(locationId);
-
         List<ProductEntity> products = productRepository.findAll();
-        int createdCount = 0;
+        List<Long> catalogColorIds = colorRepository.findAll().stream()
+                .map(c -> c.getId())
+                .sorted()
+                .collect(Collectors.toList());
+
+        List<Long> kioskIds = kiosks.stream().map(LocationEntity::getId).collect(Collectors.toList());
+        Set<String> existingKeys = kioscoStockRepository.findByLocationIdIn(kioskIds).stream()
+                .map(s -> KioscoInventoryInitRules.stockInitKey(
+                        s.getLocationId(), s.getProductId(), s.getColorId(), s.getHardwareCondition()))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        List<KioscoStockEntity> toCreate = new ArrayList<>();
         int existingCount = 0;
 
         for (LocationEntity kiosk : kiosks) {
@@ -2009,32 +2020,42 @@ public class KioscoInventoryService {
                 if (product == null || product.getId() == null) {
                     continue;
                 }
-                boolean exists = kioscoStockRepository
-                        .findByLocationIdAndProductIdAndColorId(kiosk.getId(), product.getId(), null)
-                        .isPresent();
-                if (exists) {
-                    existingCount++;
-                    continue;
+                List<Long> colorIds = KioscoInventoryInitRules.resolveColorIds(product, catalogColorIds);
+                String sizesData = KioscoInventoryInitRules.buildZeroSizesData(product);
+                for (Long colorId : colorIds) {
+                    String key = KioscoInventoryInitRules.stockInitKey(
+                            kiosk.getId(), product.getId(), colorId, ProductHardwareCondition.NUEVO);
+                    if (existingKeys.contains(key)) {
+                        existingCount++;
+                        continue;
+                    }
+                    toCreate.add(KioscoStockEntity.builder()
+                            .locationId(kiosk.getId())
+                            .productId(product.getId())
+                            .colorId(colorId)
+                            .currentStock(0)
+                            .minimumStock(0)
+                            .sizesData(sizesData)
+                            .hardwareCondition(ProductHardwareCondition.NUEVO)
+                            .createdBy(resolvedUserId)
+                            .updatedBy(resolvedUserId)
+                            .build());
+                    existingKeys.add(key);
                 }
-                kioscoStockRepository.save(KioscoStockEntity.builder()
-                        .locationId(kiosk.getId())
-                        .productId(product.getId())
-                        .colorId(null)
-                        .currentStock(0)
-                        .minimumStock(0)
-                        .createdBy(resolvedUserId)
-                        .updatedBy(resolvedUserId)
-                        .build());
-                createdCount++;
             }
+        }
+
+        if (!toCreate.isEmpty()) {
+            kioscoStockRepository.saveAll(toCreate);
         }
 
         String scopeLabel = locationId != null ? "kiosko seleccionado" : "todos los kioskos";
         return KioscoInventoryInitializeResponse.builder()
-                .message("Inventario kiosko inicializado para " + scopeLabel + ".")
+                .message("Inventario kiosko inicializado para " + scopeLabel
+                        + " (variantes por color; cinchos con tallas en cero).")
                 .kiosksProcessed(kiosks.size())
                 .productsProcessed(products.size())
-                .createdCount(createdCount)
+                .createdCount(toCreate.size())
                 .existingCount(existingCount)
                 .locationId(locationId)
                 .build();

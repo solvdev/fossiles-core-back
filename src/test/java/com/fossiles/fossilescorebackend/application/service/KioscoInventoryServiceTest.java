@@ -1,9 +1,11 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoInventoryInitializeResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoKardexReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
@@ -727,5 +729,42 @@ class KioscoInventoryServiceTest {
         Map<Long, Integer> entradas = service.computePrePeriodEntradasByStockId(locationId, null, periodStart);
 
         assertThat(entradas).containsEntry(100L, 1);
+    }
+
+    @Test
+    void initializeMissingStock_createsColorVariantsAndCinchoSizes() throws Exception {
+        ProductEntity regular = ProductEntity.builder().id(1L).code("BOL-01").name("Bolso").build();
+        ProductEntity cincho = ProductEntity.builder()
+                .id(2L)
+                .code("FOSS-01")
+                .name("Cincho")
+                .cinchoType("CASUAL")
+                .cinchoForKids(false)
+                .build();
+        when(productRepository.findAll()).thenReturn(List.of(regular, cincho));
+        when(colorRepository.findAll()).thenReturn(List.of(
+                ColorEntity.builder().id(2L).name("CAFE").build(),
+                ColorEntity.builder().id(3L).name("NEGRO").build(),
+                ColorEntity.builder().id(13L).name("GENA").build(),
+                ColorEntity.builder().id(37L).name("NEGRO/CAFE").build(),
+                ColorEntity.builder().id(38L).name("NEGRO/GENA").build(),
+                ColorEntity.builder().id(39L).name("CAFE/GENA").build()
+        ));
+        when(kioscoStockRepository.findByLocationIdIn(List.of(locationId))).thenReturn(List.of());
+        when(kioscoStockRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        KioscoInventoryInitializeResponse result = service.initializeMissingStock(locationId, userId);
+
+        ArgumentCaptor<List<KioscoStockEntity>> captor = ArgumentCaptor.forClass(List.class);
+        verify(kioscoStockRepository).saveAll(captor.capture());
+        List<KioscoStockEntity> created = captor.getValue();
+
+        assertThat(result.getCreatedCount()).isEqualTo(created.size());
+        assertThat(created.stream().filter(s -> s.getProductId().equals(1L)).count()).isEqualTo(3);
+        assertThat(created.stream().filter(s -> s.getProductId().equals(2L)).count()).isEqualTo(6);
+        assertThat(created.stream()
+                .filter(s -> s.getProductId().equals(2L))
+                .allMatch(s -> s.getSizesData() != null && s.getSizesData().contains("\"32\":0")))
+                .isTrue();
     }
 }
