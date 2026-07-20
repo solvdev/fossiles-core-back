@@ -1982,23 +1982,55 @@ public class KioskPosService {
             BigDecimal eligibleSubtotal = eligibleDiscountSubtotal(lines);
             BigDecimal discount = eligibleSubtotal.multiply(pct)
                     .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
-            return new DiscountResolution(
-                    discount,
-                    null,
-                    resolvePromotionDisplayName(null, pct),
-                    false
+            return applyDefaultPosDiscountFloor(
+                    new DiscountResolution(
+                            discount,
+                            null,
+                            resolvePromotionDisplayName(null, pct),
+                            false
+                    ),
+                    lines
             );
         }
         if (selectedPromotion != null) {
-            BigDecimal discount = calculatePromotionDiscount(subtotal, selectedPromotion, lines);
-            return new DiscountResolution(
-                    discount,
+            DiscountResolution resolved = new DiscountResolution(
+                    calculatePromotionDiscount(subtotal, selectedPromotion, lines),
                     selectedPromotion.getId(),
                     resolvePromotionDisplayName(selectedPromotion, null),
                     false
             );
+            return applyDefaultPosDiscountFloor(resolved, lines);
         }
-        return resolveAutoPromotionDiscount(subtotal, lines, kioskId, saleDate);
+        return applyDefaultPosDiscountFloor(
+                resolveAutoPromotionDiscount(subtotal, lines, kioskId, saleDate),
+                lines
+        );
+    }
+
+    private BigDecimal calculateDefaultPosDiscount(List<PreparedLine> lines) {
+        return eligibleDiscountSubtotal(lines)
+                .multiply(DEFAULT_POS_DISCOUNT_PERCENT)
+                .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Todo producto elegible se vende con al menos 10% sobre precio original.
+     * Si hay promo/manual/auto mayor (p. ej. 15%), se usa ese % sobre original — no se apila.
+     */
+    private DiscountResolution applyDefaultPosDiscountFloor(DiscountResolution resolved, List<PreparedLine> lines) {
+        BigDecimal defaultDiscount = calculateDefaultPosDiscount(lines);
+        if (defaultDiscount.compareTo(BigDecimal.ZERO) <= 0) {
+            return resolved;
+        }
+        if (resolved.discountAmount().compareTo(defaultDiscount) >= 0) {
+            return resolved;
+        }
+        return new DiscountResolution(
+                defaultDiscount,
+                resolved.promotionId(),
+                DEFAULT_POS_DISCOUNT_NAME,
+                resolved.autoApplied()
+        );
     }
 
     private DiscountResolution resolveAutoPromotionDiscount(
@@ -2374,9 +2406,21 @@ public class KioskPosService {
     }
 
     private static final String PACKAGING_PRODUCT_CODE_PREFIX = "SUM";
+    /** Descuento base POS sobre precio de catálogo (no acumula con promos; la promo mayor reemplaza). */
+    private static final BigDecimal DEFAULT_POS_DISCOUNT_PERCENT = new BigDecimal("10");
+    private static final String DEFAULT_POS_DISCOUNT_NAME = "Descuento 10%";
 
     private BigDecimal resolvePosUnitPrice(ProductEntity product) {
         if (product == null) {
+            return BigDecimal.ZERO;
+        }
+        if (isPackagingProduct(product)) {
+            if (product.getSalePrice() != null && product.getSalePrice().compareTo(BigDecimal.ZERO) > 0) {
+                return product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
+            }
+            if (product.getSellerPrice() != null && product.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
+                return product.getSellerPrice().setScale(2, RoundingMode.HALF_UP);
+            }
             return BigDecimal.ZERO;
         }
         if (product.getSalePrice() != null && product.getSalePrice().compareTo(BigDecimal.ZERO) > 0) {

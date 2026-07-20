@@ -194,7 +194,7 @@ class KioskPosServiceTest {
                 .build());
 
         assertThat(sale.getSaleNumber()).startsWith("POS-");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("500.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("450.00");
 
         ProductInventoryLocation row = inventoryRepository
                 .findByProductIdAndLocationIdAndColorId(wallet.getId(), kioskA.getId(), negro.getId())
@@ -482,8 +482,8 @@ class KioskPosServiceTest {
                 .build());
 
         assertThat(sale.getSubtotal()).isEqualByComparingTo("300.00");
-        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("20.00");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("280.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("30.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("270.00");
     }
 
     @Test
@@ -527,6 +527,53 @@ class KioskPosServiceTest {
         assertThat(sale.getDiscountAmount()).isEqualByComparingTo("10.00");
         assertThat(sale.getTotalAmount()).isEqualByComparingTo("90.00");
         assertThat(sale.getPromotionName()).isEqualTo("Promoción automática");
+    }
+
+    @Test
+    void default_pos_discount_applies_without_promotion() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .cardBrand("VISA")
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getSubtotal()).isEqualByComparingTo("250.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("25.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("225.00");
+        assertThat(sale.getPromotionName()).isEqualTo("Descuento 10%");
+    }
+
+    @Test
+    void promotion_percent_replaces_default_on_original_price_not_stacked() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPromotionEntity percentPromo = promotionRepository.save(KioskPromotionEntity.builder()
+                .name("15% promo")
+                .discountType("PERCENT")
+                .discountValue(new BigDecimal("15"))
+                .kioskLocationId(kioskA.getId())
+                .active(true)
+                .build());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .cardBrand("VISA")
+                .promotionId(percentPromo.getId())
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getSubtotal()).isEqualByComparingTo("250.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("37.50");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("212.50");
+        assertThat(sale.getPromotionName()).isEqualTo("15% promo");
     }
 
     @Test
@@ -596,6 +643,32 @@ class KioskPosServiceTest {
         assertThat(sale.getSubtotal()).isEqualByComparingTo("270.00");
         assertThat(sale.getDiscountAmount()).isEqualByComparingTo("25.00");
         assertThat(sale.getTotalAmount()).isEqualByComparingTo("245.00");
+    }
+
+    @Test
+    void packagingPosPrice_ignoresCatalogDiscountedPrice() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        ProductEntity packaging = productRepository.save(ProductEntity.builder()
+                .code("SUM-003")
+                .name("Bolsa SUM precio fijo")
+                .salePrice(new BigDecimal("2.00"))
+                .discountedPrice(new BigDecimal("1.80"))
+                .build());
+        seedInventory(packaging.getId(), 5);
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .cardBrand("VISA")
+                .items(List.of(item(packaging.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getItems()).hasSize(1);
+        assertThat(sale.getItems().get(0).getUnitPrice()).isEqualByComparingTo("2.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("2.00");
     }
 
     @Test
@@ -784,9 +857,9 @@ class KioskPosServiceTest {
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("250.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("225.00");
         assertThat(sale.getAmountReceived()).isEqualByComparingTo("300.00");
-        assertThat(sale.getChangeAmount()).isEqualByComparingTo("50.00");
+        assertThat(sale.getChangeAmount()).isEqualByComparingTo("75.00");
     }
 
     @Test
@@ -814,8 +887,8 @@ class KioskPosServiceTest {
 
         assertThat(report.getSalesCount()).isEqualTo(2);
         assertThat(report.getTotalItems()).isEqualByComparingTo("2");
-        assertThat(report.getTotalAmount()).isEqualByComparingTo("500.00");
-        assertThat(report.getAverageTicket()).isEqualByComparingTo("250.00");
+        assertThat(report.getTotalAmount()).isEqualByComparingTo("450.00");
+        assertThat(report.getAverageTicket()).isEqualByComparingTo("225.00");
     }
 
     @Test
