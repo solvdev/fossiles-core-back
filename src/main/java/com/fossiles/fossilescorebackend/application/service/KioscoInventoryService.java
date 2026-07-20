@@ -2007,9 +2007,20 @@ public class KioscoInventoryService {
                 .collect(Collectors.toList());
 
         List<Long> kioskIds = kiosks.stream().map(LocationEntity::getId).collect(Collectors.toList());
-        Set<String> existingKeys = kioscoStockRepository.findByLocationIdIn(kioskIds).stream()
-                .map(s -> KioscoInventoryInitRules.stockInitKey(
-                        s.getLocationId(), s.getProductId(), s.getColorId(), s.getHardwareCondition()))
+        if (kioskIds.isEmpty()) {
+            return KioscoInventoryInitializeResponse.builder()
+                    .message("No hay kioskos configurados para inicializar.")
+                    .kiosksProcessed(0)
+                    .productsProcessed(products.size())
+                    .createdCount(0)
+                    .existingCount(0)
+                    .locationId(locationId)
+                    .build();
+        }
+
+        Set<String> existingColorKeys = kioscoStockRepository.findByLocationIdIn(kioskIds).stream()
+                .map(s -> KioscoInventoryInitRules.stockColorKey(
+                        s.getLocationId(), s.getProductId(), s.getColorId()))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
         List<KioscoStockEntity> toCreate = new ArrayList<>();
@@ -2023,9 +2034,9 @@ public class KioscoInventoryService {
                 List<Long> colorIds = KioscoInventoryInitRules.resolveColorIds(product, catalogColorIds);
                 String sizesData = KioscoInventoryInitRules.buildZeroSizesData(product);
                 for (Long colorId : colorIds) {
-                    String key = KioscoInventoryInitRules.stockInitKey(
-                            kiosk.getId(), product.getId(), colorId, ProductHardwareCondition.NUEVO);
-                    if (existingKeys.contains(key)) {
+                    String colorKey = KioscoInventoryInitRules.stockColorKey(
+                            kiosk.getId(), product.getId(), colorId);
+                    if (existingColorKeys.contains(colorKey)) {
                         existingCount++;
                         continue;
                     }
@@ -2040,13 +2051,31 @@ public class KioscoInventoryService {
                             .createdBy(resolvedUserId)
                             .updatedBy(resolvedUserId)
                             .build());
-                    existingKeys.add(key);
+                    existingColorKeys.add(colorKey);
                 }
             }
         }
 
         if (!toCreate.isEmpty()) {
-            kioscoStockRepository.saveAll(toCreate);
+            try {
+                saveInitStockInBatches(toCreate);
+            } catch (DataIntegrityViolationException ex) {
+                log.warn("Init inventario kiosko: conflicto parcial al insertar — {}", ex.getMessage());
+                int inserted = saveInitStockSkippingDuplicates(toCreate);
+                if (inserted == 0) {
+                    throw new BusinessException(
+                            "No se pudo crear inventario: ya existen registros para este kiosko "
+                                    + "o falta ejecutar la migración de herraje (migration-kiosco-stock-hardware-split.sql).");
+                }
+            } catch (Exception ex) {
+                String msg = ex.getMessage() != null ? ex.getMessage().toLowerCase(Locale.ROOT) : "";
+                if (msg.contains("hardware_condition")) {
+                    throw new BusinessException(
+                            "Falta la columna hardware_condition en kiosco_stock. "
+                                    + "Ejecute scripts/migration-kiosco-stock-hardware-split.sql en la base de datos.");
+                }
+                throw ex;
+            }
         }
 
         String scopeLabel = locationId != null ? "kiosko seleccionado" : "todos los kioskos";
@@ -2059,6 +2088,29 @@ public class KioscoInventoryService {
                 .existingCount(existingCount)
                 .locationId(locationId)
                 .build();
+    }
+
+    private static final int INIT_STOCK_BATCH_SIZE = 250;
+
+    private void saveInitStockInBatches(List<KioscoStockEntity> entities) {
+        for (int i = 0; i < entities.size(); i += INIT_STOCK_BATCH_SIZE) {
+            int end = Math.min(i + INIT_STOCK_BATCH_SIZE, entities.size());
+            kioscoStockRepository.saveAll(entities.subList(i, end));
+            kioscoStockRepository.flush();
+        }
+    }
+
+    private int saveInitStockSkippingDuplicates(List<KioscoStockEntity> entities) {
+        int inserted = 0;
+        for (KioscoStockEntity entity : entities) {
+            try {
+                kioscoStockRepository.save(entity);
+                inserted++;
+            } catch (DataIntegrityViolationException ignored) {
+                // Fila ya existía (legacy o carrera concurrente).
+            }
+        }
+        return inserted;
     }
 
     private List<LocationEntity> resolveKioskLocations(Long locationId) throws ResourceNotFoundException, BusinessException {

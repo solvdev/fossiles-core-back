@@ -78,6 +78,15 @@ public final class KioscoInventoryInitRules {
     }
 
     public static String stockInitKey(Long locationId, Long productId, Long colorId, String hardwareCondition) {
-        return locationId + "|" + productId + "|" + (colorId != null ? colorId : "") + "|" + hardwareCondition;
+        String hw = ProductHardwareCondition.normalize(hardwareCondition);
+        if (hw == null) {
+            hw = ProductHardwareCondition.NUEVO;
+        }
+        return stockColorKey(locationId, productId, colorId) + "|" + hw;
+    }
+
+    /** Clave sin herraje — evita duplicar filas legacy al reinicializar. */
+    public static String stockColorKey(Long locationId, Long productId, Long colorId) {
+        return locationId + "|" + productId + "|" + (colorId != null ? colorId : "");
     }
 }

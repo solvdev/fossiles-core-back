@@ -755,6 +755,7 @@ class KioscoInventoryServiceTest {
 
         KioscoInventoryInitializeResponse result = service.initializeMissingStock(locationId, userId);
 
+        @SuppressWarnings("unchecked")
         ArgumentCaptor<List<KioscoStockEntity>> captor = ArgumentCaptor.forClass(List.class);
         verify(kioscoStockRepository).saveAll(captor.capture());
         List<KioscoStockEntity> created = captor.getValue();
@@ -766,5 +767,32 @@ class KioscoInventoryServiceTest {
                 .filter(s -> s.getProductId().equals(2L))
                 .allMatch(s -> s.getSizesData() != null && s.getSizesData().contains("\"32\":0")))
                 .isTrue();
+    }
+
+    @Test
+    void initializeMissingStock_skipsLegacyRowsWithoutHardwareColumn() throws Exception {
+        ProductEntity regular = ProductEntity.builder().id(1L).code("BOL-01").name("Bolso").build();
+        when(productRepository.findAll()).thenReturn(List.of(regular));
+        when(colorRepository.findAll()).thenReturn(List.of(
+                ColorEntity.builder().id(2L).name("CAFE").build(),
+                ColorEntity.builder().id(3L).name("NEGRO").build()
+        ));
+        when(kioscoStockRepository.findByLocationIdIn(List.of(locationId))).thenReturn(List.of(
+                KioscoStockEntity.builder()
+                        .locationId(locationId)
+                        .productId(1L)
+                        .colorId(2L)
+                        .hardwareCondition(null)
+                        .build()
+        ));
+        when(kioscoStockRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        KioscoInventoryInitializeResponse result = service.initializeMissingStock(locationId, userId);
+
+        assertThat(result.getCreatedCount()).isEqualTo(1);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<KioscoStockEntity>> captor = ArgumentCaptor.forClass(List.class);
+        verify(kioscoStockRepository).saveAll(captor.capture());
+        assertThat(captor.getValue()).extracting(KioscoStockEntity::getColorId).containsExactly(3L);
     }
 }

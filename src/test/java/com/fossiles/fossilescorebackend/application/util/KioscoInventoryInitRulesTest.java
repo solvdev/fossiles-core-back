@@ -93,4 +93,10 @@ class KioscoInventoryInitRulesTest {
         assertThat(json).contains("\"32\":0");
         assertThat(json).contains("\"42\":0");
     }
+
+    @Test
+    void stockColorKey_treatsLegacyNullHardwareAsSameSlot() {
+        assertThat(KioscoInventoryInitRules.stockInitKey(1L, 10L, 2L, null))
+                .isEqualTo(KioscoInventoryInitRules.stockInitKey(1L, 10L, 2L, "NUEVO"));
+    }
 }
