@@ -498,6 +498,21 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
+    void salidaDevolucionForDiff_empaqueNoRestaDevolucionEnDiferencia() {
+        assertThat(KioscoInventoryCountService.salidaDevolucionForDiff(true, 15)).isZero();
+        assertThat(KioscoInventoryCountService.salidaDevolucionForDiff(false, 15)).isEqualTo(15);
+    }
+
+    @Test
+    void computeDiferenciaConteo_empaqueIgnoraSalidaDevolucion() {
+        int total = 25;
+        int inventarioFinal = 10;
+        int salidaDevolucion = KioscoInventoryCountService.salidaDevolucionForDiff(true, 15);
+        assertThat(KioscoInventoryCountService.computeDiferenciaConteo(total, inventarioFinal, salidaDevolucion))
+                .isEqualTo(15);
+    }
+
+    @Test
     void buildReport_separaBilleterasPorPublico() throws Exception {
         Long walletCategoryId = 80L;
         Long damaProductId = 32L;

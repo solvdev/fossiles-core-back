@@ -568,7 +568,12 @@ public class KioscoInventoryCountService {
                     .inventarioFinal(inventarioFinal)
                     .counts(counts)
                     .total(total)
-                    .diferencia(computeDiferenciaConteo(total, inventarioFinal, kardexRow.getSalidaDevolucion()))
+                    .diferencia(computeDiferenciaConteo(
+                            total,
+                            inventarioFinal,
+                            salidaDevolucionForDiff(
+                                    ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()),
+                                    kardexRow.getSalidaDevolucion())))
                     .build();
             Map<String, Integer> openingBalanceBySize = stock != null
                     ? openingBalanceByStockAndSize.getOrDefault(stock.getId(), Map.of())
@@ -1062,6 +1067,11 @@ public class KioscoInventoryCountService {
         return Math.max(0, raw - Math.max(0, salidaDevolucion));
     }
 
+    /** Empaques SUM-: diferencia simple físico − Fin. (sin ajuste por devolución a bodega). */
+    static int salidaDevolucionForDiff(boolean packaging, int salidaDevolucion) {
+        return packaging ? 0 : salidaDevolucion;
+    }
+
     private List<KioscoKardexReportResponse.KioscoKardexRow> mergeKardexRowsByProductColor(
             List<KioscoKardexReportResponse.KioscoKardexRow> rows
     ) {
@@ -1489,7 +1499,10 @@ public class KioscoInventoryCountService {
                 .inventarioFinal(inventarioFinal)
                 .counts(counts)
                 .total(total)
-                .diferencia(computeDiferenciaConteo(total, inventarioFinal, bucket.salidaDevolucion))
+                .diferencia(computeDiferenciaConteo(
+                        total,
+                        inventarioFinal,
+                        salidaDevolucionForDiff(base.isPackaging(), bucket.salidaDevolucion)))
                 .build(),
                 null,
                 sizeObservations != null ? sizeObservations.get(size) : null
