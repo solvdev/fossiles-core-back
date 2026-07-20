@@ -17,6 +17,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoInventory
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoKardexReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoNotificationRecipientResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountLiveSessionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountSessionSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentReconcileResponse;
@@ -43,6 +44,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @RestController
@@ -286,6 +288,14 @@ public class KioscoInventoryController {
             @RequestBody List<KioscoPhysicalCountItemUpsertRequest> items
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioscoInventoryCountService.upsertItems(countId, items));
+    }
+
+    @PostMapping("/conteo-fisico/{countId}/live-session")
+    public ResponseEntity<KioscoPhysicalCountLiveSessionResponse> pollConteoLiveSession(
+            @PathVariable Long countId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime since
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryCountService.pollLiveSession(countId, since));
     }
 
     @PostMapping("/conteo-fisico/{countId}/terminar")

@@ -4,6 +4,9 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioscoNotificati
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountItemUpsertRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoKardexReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoNotificationRecipientResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountItemSyncResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountLiveSessionResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountPresenceResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountSessionSummaryResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -13,6 +16,7 @@ import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoNotificationRecipientEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountPresenceEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountStatus;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipEntity;
@@ -22,6 +26,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoNotificationRecipientRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountPresenceRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipRepository;
@@ -81,8 +86,12 @@ public class KioscoInventoryCountService {
     private static final String STATUS_REINTEGRATED = "REINTEGRATED";
     private static final String STATUS_COMPLETED = "COMPLETED";
 
+    /** Segundos sin heartbeat antes de considerar desconectado en la sesión en vivo. */
+    public static final int PRESENCE_TTL_SECONDS = 90;
+
     private final KioscoPhysicalCountRepository countRepository;
     private final KioscoPhysicalCountItemRepository itemRepository;
+    private final KioscoPhysicalCountPresenceRepository presenceRepository;
     private final KioscoNotificationRecipientRepository notificationRecipientRepository;
     private final KioscoInventoryService kioscoInventoryService;
     private final KioscoStockRepository kioscoStockRepository;
@@ -114,6 +123,54 @@ public class KioscoInventoryCountService {
     @Transactional(readOnly = true)
     public KioscoPhysicalCountReportResponse getReport(Long countId) throws BusinessException, ResourceNotFoundException {
         return buildReport(findCountOrThrow(countId), null);
+    }
+
+    /**
+     * Heartbeat + presencia + cambios de ítems desde {@code since} (colaboración en vivo del conteo).
+     */
+    public KioscoPhysicalCountLiveSessionResponse pollLiveSession(Long countId, LocalDateTime since)
+            throws BusinessException, ResourceNotFoundException {
+        KioscoPhysicalCountEntity count = findCountOrThrow(countId);
+        Long userId = resolveCurrentUserId();
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime presenceCutoff = now.minusSeconds(PRESENCE_TTL_SECONDS);
+
+        List<KioscoPhysicalCountPresenceResponse> participants = List.of();
+        List<KioscoPhysicalCountItemSyncResponse> items = List.of();
+
+        if (count.getStatus() == KioscoPhysicalCountStatus.DRAFT) {
+            presenceRepository.deleteStaleForCount(countId, presenceCutoff);
+            KioscoPhysicalCountPresenceEntity presence = presenceRepository
+                    .findByCountIdAndUserId(countId, userId)
+                    .orElseGet(() -> KioscoPhysicalCountPresenceEntity.builder()
+                            .countId(countId)
+                            .userId(userId)
+                            .build());
+            presence.setLastSeenAt(now);
+            presenceRepository.save(presence);
+
+            participants = presenceRepository
+                    .findByCountIdAndLastSeenAtAfterOrderByLastSeenAtDesc(countId, presenceCutoff)
+                    .stream()
+                    .map(p -> KioscoPhysicalCountPresenceResponse.builder()
+                            .userId(p.getUserId())
+                            .userName(resolveUserDisplayName(p.getUserId()))
+                            .lastSeenAt(p.getLastSeenAt())
+                            .self(Objects.equals(p.getUserId(), userId))
+                            .build())
+                    .collect(Collectors.toList());
+
+            LocalDateTime itemSince = since != null ? since : now.minusDays(1);
+            items = itemRepository.findByCountIdAndUpdatedAtAfter(countId, itemSince).stream()
+                    .map(this::toItemSyncResponse)
+                    .collect(Collectors.toList());
+        }
+
+        return KioscoPhysicalCountLiveSessionResponse.builder()
+                .serverTime(now)
+                .participants(participants)
+                .items(items)
+                .build();
     }
 
     @Transactional(readOnly = true)
@@ -1530,6 +1587,43 @@ public class KioscoInventoryCountService {
             return null;
         }
         return userRepository.findById(userId).map(UserEntity::getUsername).orElse(null);
+    }
+
+    private String resolveUserDisplayName(Long userId) {
+        if (userId == null) {
+            return null;
+        }
+        return userRepository.findById(userId).map(user -> {
+            String first = safeTrim(user.getFirstName());
+            String last = safeTrim(user.getLastName());
+            String full = (first + " " + last).trim();
+            if (!full.isEmpty()) {
+                return full;
+            }
+            return user.getUsername();
+        }).orElse(null);
+    }
+
+    private KioscoPhysicalCountItemSyncResponse toItemSyncResponse(KioscoPhysicalCountItemEntity item) {
+        Map<String, BigDecimal> countedValues = ProductInventorySizesJson.parse(item.getCountsData());
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (String key : COUNT_LOCATION_KEYS) {
+            counts.put(key, countedValues.getOrDefault(key, BigDecimal.ZERO).intValue());
+        }
+        Map<String, Integer> physicalSizes = toSystemSizesMap(item.getSizeCountsData());
+        return KioscoPhysicalCountItemSyncResponse.builder()
+                .productId(item.getProductId())
+                .colorId(item.getColorId())
+                .counts(counts)
+                .physicalSizes(physicalSizes.isEmpty() ? null : physicalSizes)
+                .physicalSizesByLocation(toPhysicalSizesByLocationMap(item.getSizeLocationCountsData()))
+                .hardwareLocationCounts(toHardwareLocationCountsMap(item.getHardwareLocationCountsData()))
+                .observation(item.getObservation())
+                .sizeObservations(ProductInventorySizesJson.parseStringMap(item.getSizeObservationsData()))
+                .updatedAt(item.getUpdatedAt())
+                .updatedBy(item.getUpdatedBy())
+                .updatedByName(resolveUserDisplayName(item.getUpdatedBy()))
+                .build();
     }
 
     private Long resolveCurrentUserId() throws BusinessException {
