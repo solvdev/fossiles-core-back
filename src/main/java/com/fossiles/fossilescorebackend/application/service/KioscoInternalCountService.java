@@ -57,6 +57,7 @@ public class KioscoInternalCountService {
     private final ProductCategoryRepository productCategoryRepository;
     private final ColorRepository colorRepository;
     private final UserRepository userRepository;
+    private final SecurityUtil securityUtil;
 
     @Transactional
     public KioscoPhysicalCountReportResponse startOrGetDraft(Long locationId, LocalDate countDate)
@@ -464,7 +465,7 @@ public class KioscoInternalCountService {
     }
 
     private Long resolveCurrentUserId() {
-        return SecurityUtil.getCurrentUserId().orElse(null);
+        return securityUtil.getCurrentUserId();
     }
 
     private static String itemKey(Long productId, Long colorId) {

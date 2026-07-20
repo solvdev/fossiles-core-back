@@ -35,6 +35,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDeposi
 import com.fossiles.fossilescorebackend.application.dto.response.KioskMainSheetReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskVoucherReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountItemUpsertRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoInternalCountSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountReportResponse;

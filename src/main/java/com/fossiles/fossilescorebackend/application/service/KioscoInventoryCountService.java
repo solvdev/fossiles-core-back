@@ -341,6 +341,7 @@ public class KioscoInventoryCountService {
         // Fin. siempre al cierre del periodo/corte (replay de movimientos), no stock vivo.
         LocalDate finAsOf = isSubcount ? balanceAsOf : count.getPeriodTo();
 
+        Map<String, List<KioscoStockEntity>> stocksByProductColor = kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(count.getLocationId()).stream()
                 .collect(Collectors.groupingBy(s -> itemKey(s.getProductId(), s.getColorId())));
         Map<String, KioscoStockEntity> stockByKey = new LinkedHashMap<>();
