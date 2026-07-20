@@ -121,6 +121,68 @@ class FelFactXmlBuilderTest {
     }
 
     @Test
+    void usesReceptorAddressWhenProvided() {
+        FelEmissionProperties props = new FelEmissionProperties();
+        props.setNitEmisor("123456789");
+        props.setNombreEmisor("FOSSILES SA");
+        props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
+
+        TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .emitterEstablishmentCode("2")
+                .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
+                .customerTaxId("1234567-8")
+                .customerName("CLIENTE PRUEBA")
+                .address("5a Avenida 12-34 Zona 10, Guatemala")
+                .subtotal(new BigDecimal("50.00"))
+                .totalAmount(new BigDecimal("50.00"))
+                .lines(List.of(
+                        TaxInvoiceDocument.Line.builder()
+                                .description("Producto")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("50.00"))
+                                .lineTotal(new BigDecimal("50.00"))
+                                .build()
+                ))
+                .build();
+
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
+
+        assertThat(xml).contains("<dte:Direccion>5a Avenida 12-34 Zona 10, Guatemala</dte:Direccion>");
+    }
+
+    @Test
+    void fallsBackToCiudadWhenReceptorAddressMissing() {
+        FelEmissionProperties props = new FelEmissionProperties();
+        props.setNitEmisor("123456789");
+        props.setNombreEmisor("FOSSILES SA");
+        props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
+
+        TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .emitterEstablishmentCode("2")
+                .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
+                .customerTaxId("CF")
+                .customerName("CONSUMIDOR FINAL")
+                .subtotal(new BigDecimal("50.00"))
+                .totalAmount(new BigDecimal("50.00"))
+                .lines(List.of(
+                        TaxInvoiceDocument.Line.builder()
+                                .description("Producto")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("50.00"))
+                                .lineTotal(new BigDecimal("50.00"))
+                                .build()
+                ))
+                .build();
+
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
+
+        assertThat(xml).contains("<dte:DireccionReceptor>");
+        assertThat(xml).contains("<dte:Direccion>Ciudad</dte:Direccion>");
+    }
+
+    @Test
     void includesReceptorEmailSemicolonSeparated() {
         FelEmissionProperties props = new FelEmissionProperties();
         props.setNitEmisor("123456789");

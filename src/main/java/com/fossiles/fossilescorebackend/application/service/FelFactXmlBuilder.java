@@ -119,6 +119,7 @@ public class FelFactXmlBuilder {
         String addressLine = firstNonBlank(document.getEmitterAddressLine(), credentials.direccion());
         String municipio = firstNonBlank(document.getEmitterMunicipio(), credentials.municipio());
         String departamento = firstNonBlank(document.getEmitterDepartamento(), credentials.departamento());
+        String receptorAddress = normalizeReceptorAddress(document.getAddress());
         // FCAM: abono único quemado (1 / total factura / fecha GT de facturación)
         String complementosXml = buildFcamAbonosComplemento(documentType, granTotal, emission);
 
@@ -140,7 +141,7 @@ public class FelFactXmlBuilder {
                         </dte:Emisor>
                         <dte:Receptor CorreoReceptor="%s" IDReceptor="%s" NombreReceptor="%s">
                           <dte:DireccionReceptor>
-                            <dte:Direccion>Ciudad</dte:Direccion>
+                            <dte:Direccion>%s</dte:Direccion>
                             <dte:CodigoPostal>0</dte:CodigoPostal>
                             <dte:Municipio/>
                             <dte:Departamento/>
@@ -181,6 +182,7 @@ public class FelFactXmlBuilder {
                 FelXmlEscaper.escape(receptorEmail),
                 FelXmlEscaper.escape(receptorId),
                 FelXmlEscaper.escape(receptorName),
+                FelXmlEscaper.escape(receptorAddress),
                 frasesXml,
                 itemsXml,
                 fmt(totalIva.setScale(2, RoundingMode.HALF_UP)),
@@ -293,6 +295,12 @@ public class FelFactXmlBuilder {
         }
         String name = safe(customerName).trim();
         return name.isBlank() ? "CONSUMIDOR FINAL" : name;
+    }
+
+    /** SAT acepta "Ciudad" para CF sin dirección; si el usuario capturó una, va al XML. */
+    static String normalizeReceptorAddress(String address) {
+        String value = safe(address);
+        return value.isBlank() ? "Ciudad" : value;
     }
 
     /** Varios correos separados por ';' sin espacios (requisito FEL / INFILE). */
