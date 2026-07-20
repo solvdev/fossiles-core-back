@@ -571,11 +571,9 @@ public class KioscoInventoryCountService {
                 .inventarioFinal(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getInventarioFinal))
                 .counts(totalCounts)
                 .total(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getTotal))
-                .diferencia(computeDiferenciaConteo(
-                        sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getTotal),
-                        sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getInventarioFinal),
-                        sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getSalidaDevolucion)
-                ))
+                // No recalcular con Σ salidaDevolucion: computeDiferenciaConteo no es lineal
+                // (solo descuenta devoluciones cuando hay sobrante). Sumar diffs de fila.
+                .diferencia(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getDiferencia))
                 .build();
     }
 
