@@ -2031,27 +2031,19 @@ public class KioscoInventoryService {
                 if (product == null || product.getId() == null) {
                     continue;
                 }
+                if (KioscoInventoryInitRules.isPackagingProduct(product)) {
+                    // Empaques SUM-: fuera del criterio de colores/tallas; una fila sin variante.
+                    existingCount += appendInitStockIfMissing(
+                            kiosk.getId(), product.getId(), null, null,
+                            existingColorKeys, toCreate, resolvedUserId);
+                    continue;
+                }
                 List<Long> colorIds = KioscoInventoryInitRules.resolveColorIds(product, catalogColorIds);
                 String sizesData = KioscoInventoryInitRules.buildZeroSizesData(product);
                 for (Long colorId : colorIds) {
-                    String colorKey = KioscoInventoryInitRules.stockColorKey(
-                            kiosk.getId(), product.getId(), colorId);
-                    if (existingColorKeys.contains(colorKey)) {
-                        existingCount++;
-                        continue;
-                    }
-                    toCreate.add(KioscoStockEntity.builder()
-                            .locationId(kiosk.getId())
-                            .productId(product.getId())
-                            .colorId(colorId)
-                            .currentStock(0)
-                            .minimumStock(0)
-                            .sizesData(sizesData)
-                            .hardwareCondition(ProductHardwareCondition.NUEVO)
-                            .createdBy(resolvedUserId)
-                            .updatedBy(resolvedUserId)
-                            .build());
-                    existingColorKeys.add(colorKey);
+                    existingCount += appendInitStockIfMissing(
+                            kiosk.getId(), product.getId(), colorId, sizesData,
+                            existingColorKeys, toCreate, resolvedUserId);
                 }
             }
         }
@@ -2081,7 +2073,7 @@ public class KioscoInventoryService {
         String scopeLabel = locationId != null ? "kiosko seleccionado" : "todos los kioskos";
         return KioscoInventoryInitializeResponse.builder()
                 .message("Inventario kiosko inicializado para " + scopeLabel
-                        + " (variantes por color; cinchos con tallas en cero).")
+                        + " (variantes por color; cinchos con tallas en cero; empaques SUM- sin color ni tallas).")
                 .kiosksProcessed(kiosks.size())
                 .productsProcessed(products.size())
                 .createdCount(toCreate.size())
@@ -2091,6 +2083,36 @@ public class KioscoInventoryService {
     }
 
     private static final int INIT_STOCK_BATCH_SIZE = 250;
+
+    /**
+     * @return 1 si ya existía la fila, 0 si se agregó a {@code toCreate}.
+     */
+    private static int appendInitStockIfMissing(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            String sizesData,
+            Set<String> existingColorKeys,
+            List<KioscoStockEntity> toCreate,
+            Long userId) {
+        String colorKey = KioscoInventoryInitRules.stockColorKey(locationId, productId, colorId);
+        if (existingColorKeys.contains(colorKey)) {
+            return 1;
+        }
+        toCreate.add(KioscoStockEntity.builder()
+                .locationId(locationId)
+                .productId(productId)
+                .colorId(colorId)
+                .currentStock(0)
+                .minimumStock(0)
+                .sizesData(sizesData)
+                .hardwareCondition(ProductHardwareCondition.NUEVO)
+                .createdBy(userId)
+                .updatedBy(userId)
+                .build());
+        existingColorKeys.add(colorKey);
+        return 0;
+    }
 
     private void saveInitStockInBatches(List<KioscoStockEntity> entities) {
         for (int i = 0; i < entities.size(); i += INIT_STOCK_BATCH_SIZE) {

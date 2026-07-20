@@ -770,6 +770,31 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
+    void initializeMissingStock_packagingProduct_singleRowWithoutColorOrSizes() throws Exception {
+        ProductEntity packaging = ProductEntity.builder().id(3L).code("SUM-001").name("Bolsa").build();
+        when(productRepository.findAll()).thenReturn(List.of(packaging));
+        when(colorRepository.findAll()).thenReturn(List.of(
+                ColorEntity.builder().id(2L).name("CAFE").build(),
+                ColorEntity.builder().id(3L).name("NEGRO").build()
+        ));
+        when(kioscoStockRepository.findByLocationIdIn(List.of(locationId))).thenReturn(List.of());
+        when(kioscoStockRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        KioscoInventoryInitializeResponse result = service.initializeMissingStock(locationId, userId);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<KioscoStockEntity>> captor = ArgumentCaptor.forClass(List.class);
+        verify(kioscoStockRepository).saveAll(captor.capture());
+        List<KioscoStockEntity> created = captor.getValue();
+
+        assertThat(result.getCreatedCount()).isEqualTo(1);
+        assertThat(created).hasSize(1);
+        assertThat(created.get(0).getProductId()).isEqualTo(3L);
+        assertThat(created.get(0).getColorId()).isNull();
+        assertThat(created.get(0).getSizesData()).isNull();
+    }
+
+    @Test
     void initializeMissingStock_skipsLegacyRowsWithoutHardwareColumn() throws Exception {
         ProductEntity regular = ProductEntity.builder().id(1L).code("BOL-01").name("Bolso").build();
         when(productRepository.findAll()).thenReturn(List.of(regular));

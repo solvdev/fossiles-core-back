@@ -8,6 +8,7 @@ import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class KioscoInventoryInitRulesTest {
 
@@ -69,15 +70,17 @@ class KioscoInventoryInitRulesTest {
     }
 
     @Test
-    void packagingProduct_hasSingleNullColorRow() {
+    void packagingProduct_isExcludedFromColorVariants() {
         ProductEntity packaging = ProductEntity.builder()
                 .code("SUM-001")
                 .name("Empaque")
                 .build();
 
-        assertThat(KioscoInventoryInitRules.resolveColorIds(packaging, fullCatalog()))
-                .containsExactly((Long) null);
+        assertThatThrownBy(() -> KioscoInventoryInitRules.resolveColorIds(packaging, fullCatalog()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("SUM-");
         assertThat(KioscoInventoryInitRules.buildZeroSizesData(packaging)).isNull();
+        assertThat(KioscoInventoryInitRules.isPackagingProduct(packaging)).isTrue();
     }
 
     @Test

@@ -47,7 +47,8 @@ public final class KioscoInventoryInitRules {
 
     public static List<Long> resolveColorIds(ProductEntity product, List<Long> catalogColorIds) {
         if (isPackagingProduct(product)) {
-            return List.of((Long) null);
+            throw new IllegalArgumentException(
+                    "Empaques SUM- no usan variantes por color; inicialícelos aparte.");
         }
         if (isCinchoProduct(product)) {
             return CINCHO_COLOR_IDS.stream()
