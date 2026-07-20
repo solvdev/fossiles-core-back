@@ -2,12 +2,9 @@ package com.fossiles.fossilescorebackend.infrastructure.persistence.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -19,24 +16,23 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 
-/** Conteo fisico por producto/color dentro de una sesion: JSON ubicacion (V1..V7, E, BO) -> cantidad. */
 @Entity
 @Table(
-        name = "kiosco_physical_count_item",
-        uniqueConstraints = @UniqueConstraint(columnNames = {"count_id", "product_id", "color_id"})
+        name = "kiosco_internal_count_item",
+        uniqueConstraints = @UniqueConstraint(columnNames = {"internal_count_id", "product_id", "color_id"})
 )
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class KioscoPhysicalCountItemEntity {
+public class KioscoInternalCountItemEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "count_id", nullable = false)
-    private Long countId;
+    @Column(name = "internal_count_id", nullable = false)
+    private Long internalCountId;
 
     @Column(name = "product_id", nullable = false)
     private Long productId;
@@ -44,27 +40,21 @@ public class KioscoPhysicalCountItemEntity {
     @Column(name = "color_id")
     private Long colorId;
 
-    /** JSON ubicacion → cantidad; claves V1..V7, E, BO. */
     @Column(name = "counts_data", columnDefinition = "TEXT")
     private String countsData;
 
-    /** JSON talla → cantidad fisica (cinchos); mismo patron que KioscoStockEntity.sizesData. */
     @Column(name = "size_counts_data", columnDefinition = "TEXT")
     private String sizeCountsData;
 
-    /** JSON ubicación cincho (E, BO) → talla → cantidad fisica (FOSS). */
     @Column(name = "size_location_counts_data", columnDefinition = "TEXT")
     private String sizeLocationCountsData;
 
-    /** JSON ubicación (V1..BO) → herraje (NUEVO|VIEJO) → cantidad física. */
     @Column(name = "hardware_location_counts_data", columnDefinition = "TEXT")
     private String hardwareLocationCountsData;
 
-    /** Observacion cuando hay diferencia (producto sin desglose por talla). */
     @Column(name = "observation", columnDefinition = "TEXT")
     private String observation;
 
-    /** JSON talla → observacion (cinchos expandidos por talla). */
     @Column(name = "size_observations_data", columnDefinition = "TEXT")
     private String sizeObservationsData;
 
@@ -73,14 +63,6 @@ public class KioscoPhysicalCountItemEntity {
 
     @Column(name = "updated_by")
     private Long updatedBy;
-
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "product_id", insertable = false, updatable = false)
-    private ProductEntity product;
-
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "color_id", insertable = false, updatable = false)
-    private ColorEntity color;
 
     @PrePersist
     protected void onCreate() {

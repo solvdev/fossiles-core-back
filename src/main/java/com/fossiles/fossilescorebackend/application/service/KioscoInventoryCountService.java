@@ -163,6 +163,11 @@ public class KioscoInventoryCountService {
                 item.setSizeLocationCountsData(ProductInventorySizesJson.serializeByLocation(
                         normalizePhysicalSizesByLocation(req.getPhysicalSizesByLocation())));
             }
+            if (req.getHardwareLocationCounts() != null) {
+                item.setHardwareLocationCountsData(ProductInventorySizesJson.serializeByLocation(
+                        normalizeHardwareLocationCounts(req.getHardwareLocationCounts())));
+                syncCountsFromHardwareLocationCounts(item, req.getHardwareLocationCounts());
+            }
             if (req.getObservation() != null) {
                 String trimmed = req.getObservation().trim();
                 item.setObservation(trimmed.isEmpty() ? null : trimmed);
@@ -185,7 +190,8 @@ public class KioscoInventoryCountService {
             }
             boolean hasCountChanges = normalized != null
                     || req.getPhysicalSizes() != null
-                    || req.getPhysicalSizesByLocation() != null;
+                    || req.getPhysicalSizesByLocation() != null
+                    || req.getHardwareLocationCounts() != null;
             boolean hasObservationChanges = req.getObservation() != null || req.getSizeObservations() != null;
             if (!hasCountChanges && !hasObservationChanges) {
                 continue;
@@ -335,15 +341,22 @@ public class KioscoInventoryCountService {
         // Fin. siempre al cierre del periodo/corte (replay de movimientos), no stock vivo.
         LocalDate finAsOf = isSubcount ? balanceAsOf : count.getPeriodTo();
 
-        Map<String, KioscoStockEntity> stockByKey = kioscoStockRepository
-                .findByLocationIdOrderByProductIdAscColorIdAsc(count.getLocationId()).stream()
-                .collect(Collectors.toMap(s -> itemKey(s.getProductId(), s.getColorId()), s -> s, (a, b) -> a));
+                .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(count.getLocationId()).stream()
+                .collect(Collectors.groupingBy(s -> itemKey(s.getProductId(), s.getColorId())));
+        Map<String, KioscoStockEntity> stockByKey = new LinkedHashMap<>();
+        stocksByProductColor.forEach((key, stocks) -> stockByKey.put(key, stocks.get(0)));
         if (!isSubcount) {
-            stockByKey.values().forEach(kioscoInventoryService::syncFossCurrentStockFromSizes);
+            stocksByProductColor.values().stream()
+                    .flatMap(List::stream)
+                    .forEach(kioscoInventoryService::syncFossCurrentStockFromSizes);
         }
 
-        List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows = kioscoInventoryService.buildKardexRows(
+        List<KioscoKardexReportResponse.KioscoKardexRow> rawKardexRows = kioscoInventoryService.buildKardexRows(
                 count.getLocationId(), count.getPeriodFrom(), kardexTo, true, finAsOf, count.getId());
+        Map<String, Map<String, Integer>> inventarioFinalByHardwareLookup =
+                buildInventarioFinalByHardwareLookup(rawKardexRows);
+        List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows =
+                mergeKardexRowsByProductColor(rawKardexRows);
         Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize =
                 kioscoInventoryService.buildKardexByStockAndSize(
                         count.getLocationId(), count.getPeriodFrom(), kardexTo, count.getId());
@@ -412,11 +425,14 @@ public class KioscoInventoryCountService {
             Map<String, Integer> physicalSizes = toSystemSizesMap(item != null ? item.getSizeCountsData() : null);
             Map<String, Map<String, Integer>> physicalSizesByLocation = toPhysicalSizesByLocationMap(
                     item != null ? item.getSizeLocationCountsData() : null);
+            Map<String, Map<String, Integer>> hardwareLocationCounts = toHardwareLocationCountsMap(
+                    item != null ? item.getHardwareLocationCountsData() : null);
 
-            KioscoStockEntity stock = stockByKey.get(itemKey(kardexRow.getProductId(), kardexRow.getColorId()));
-            Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardexForStock = stock != null
-                    ? kardexByStockAndSize.getOrDefault(stock.getId(), Map.of())
-                    : Map.of();
+            String productColorKey = itemKey(kardexRow.getProductId(), kardexRow.getColorId());
+            List<KioscoStockEntity> stocksForRow = stocksByProductColor.getOrDefault(productColorKey, List.of());
+            KioscoStockEntity stock = stockByKey.get(productColorKey);
+            Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardexForStock = mergeSizeKardexForStocks(
+                    stocksForRow, kardexByStockAndSize);
             // Incluir tallas con movimiento/envío en el periodo aunque el stock actual sea 0.
             Map<String, Integer> systemSizes = enrichSizesWithMovementKeys(
                     resolveSystemSizesForReport(stock), sizeKardexForStock);
@@ -437,12 +453,15 @@ public class KioscoInventoryCountService {
                 counts.put(key, value);
             }
 
-            int prePeriodEntradas = stock != null
-                    ? prePeriodEntradasByStockId.getOrDefault(stock.getId(), 0)
-                    : 0;
-            int inventarioInicial = stock != null
-                    ? openingBalanceByStockId.getOrDefault(stock.getId(), 0)
-                    : 0;
+            Map<String, Integer> inventarioFinalByHardware = inventarioFinalByHardwareLookup.getOrDefault(
+                    productColorKey, Map.of());
+
+            int prePeriodEntradas = stocksForRow.stream()
+                    .mapToInt(s -> prePeriodEntradasByStockId.getOrDefault(s.getId(), 0))
+                    .sum();
+            int inventarioInicial = stocksForRow.stream()
+                    .mapToInt(s -> openingBalanceByStockId.getOrDefault(s.getId(), 0))
+                    .sum();
             inventarioInicial = Math.max(0, inventarioInicial - prePeriodEntradas);
             int entradas = kardexRow.getEntradas() + prePeriodEntradas;
             // Fin. = Ini. + movimientos del periodo (algebraico): +Ent -Vtas +Anul.Vta -Sal (+Compras -Anul.Compras)
@@ -468,7 +487,10 @@ public class KioscoInventoryCountService {
                             : ProductAudienceCategory.UNISEX)
                     .cinchoType(product != null ? ProductCinchoType.normalizeCinchoType(product.getCinchoType()) : null)
                     .cinchoForKids(product != null && Boolean.TRUE.equals(product.getCinchoForKids()))
-                    .hardwareCondition(stock != null ? stock.getHardwareCondition() : null)
+                    .hardwareCondition(stocksForRow.size() == 1 && stock != null
+                            ? stock.getHardwareCondition() : null)
+                    .inventarioFinalByHardware(inventarioFinalByHardware.isEmpty() ? null : inventarioFinalByHardware)
+                    .hardwareLocationCounts(hardwareLocationCounts)
                     .packaging(ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()))
                     .productCategoryId(productCategoryId)
                     .productCategoryName(productCategoryName)
@@ -980,6 +1002,160 @@ public class KioscoInventoryCountService {
             return raw;
         }
         return Math.max(0, raw - Math.max(0, salidaDevolucion));
+    }
+
+    private List<KioscoKardexReportResponse.KioscoKardexRow> mergeKardexRowsByProductColor(
+            List<KioscoKardexReportResponse.KioscoKardexRow> rows
+    ) {
+        if (rows == null || rows.isEmpty()) {
+            return List.of();
+        }
+        Map<String, KioscoKardexReportResponse.KioscoKardexRow> merged = new LinkedHashMap<>();
+        for (KioscoKardexReportResponse.KioscoKardexRow row : rows) {
+            String key = itemKey(row.getProductId(), row.getColorId());
+            KioscoKardexReportResponse.KioscoKardexRow existing = merged.get(key);
+            if (existing == null) {
+                merged.put(key, row);
+                continue;
+            }
+            merged.put(key, KioscoKardexReportResponse.KioscoKardexRow.builder()
+                    .productId(existing.getProductId())
+                    .productCode(existing.getProductCode())
+                    .productName(existing.getProductName())
+                    .colorId(existing.getColorId())
+                    .colorName(existing.getColorName())
+                    .audienceCategory(existing.getAudienceCategory())
+                    .cinchoType(existing.getCinchoType())
+                    .inventarioInicial(existing.getInventarioInicial() + row.getInventarioInicial())
+                    .comprasAjustes(existing.getComprasAjustes() + row.getComprasAjustes())
+                    .anulacionCompras(existing.getAnulacionCompras() + row.getAnulacionCompras())
+                    .entradas(existing.getEntradas() + row.getEntradas())
+                    .ventas(existing.getVentas() + row.getVentas())
+                    .anulacionVenta(existing.getAnulacionVenta() + row.getAnulacionVenta())
+                    .salida(existing.getSalida() + row.getSalida())
+                    .salidaDevolucion(existing.getSalidaDevolucion() + row.getSalidaDevolucion())
+                    .inventarioFinal(existing.getInventarioFinal() + row.getInventarioFinal())
+                    .build());
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private Map<String, Map<String, Integer>> buildInventarioFinalByHardwareLookup(
+            List<KioscoKardexReportResponse.KioscoKardexRow> rows
+    ) {
+        Map<String, Map<String, Integer>> out = new LinkedHashMap<>();
+        if (rows == null) {
+            return out;
+        }
+        for (KioscoKardexReportResponse.KioscoKardexRow row : rows) {
+            String hardware = row.getHardwareCondition();
+            if (hardware == null || hardware.isBlank()) {
+                continue;
+            }
+            String key = itemKey(row.getProductId(), row.getColorId());
+            out.computeIfAbsent(key, k -> new LinkedHashMap<>())
+                    .merge(hardware, row.getInventarioFinal(), Integer::sum);
+        }
+        return out;
+    }
+
+    private Map<String, KioscoInventoryService.SizeKardexBucket> mergeSizeKardexForStocks(
+            List<KioscoStockEntity> stocks,
+            Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize
+    ) {
+        Map<String, KioscoInventoryService.SizeKardexBucket> merged = new LinkedHashMap<>();
+        if (stocks == null) {
+            return merged;
+        }
+        for (KioscoStockEntity stock : stocks) {
+            Map<String, KioscoInventoryService.SizeKardexBucket> part =
+                    kardexByStockAndSize.getOrDefault(stock.getId(), Map.of());
+            for (Map.Entry<String, KioscoInventoryService.SizeKardexBucket> entry : part.entrySet()) {
+                String sizeKey = entry.getKey();
+                KioscoInventoryService.SizeKardexBucket bucket = entry.getValue();
+                if (bucket == null || bucket.isEmpty()) {
+                    continue;
+                }
+                KioscoInventoryService.SizeKardexBucket current =
+                        merged.getOrDefault(sizeKey, KioscoInventoryService.SizeKardexBucket.empty());
+                merged.put(sizeKey, current.plus(
+                        bucket.comprasAjustes,
+                        bucket.anulacionCompras,
+                        bucket.entradas,
+                        bucket.ventas,
+                        bucket.anulacionVenta,
+                        bucket.salida,
+                        bucket.salidaDevolucion
+                ));
+            }
+        }
+        return merged;
+    }
+
+    private Map<String, Map<String, Integer>> toHardwareLocationCountsMap(String json) {
+        Map<String, Map<String, Integer>> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, BigDecimal>> locEntry
+                : ProductInventorySizesJson.parseByLocation(json).entrySet()) {
+            Map<String, Integer> hardwareCounts = new LinkedHashMap<>();
+            for (Map.Entry<String, BigDecimal> hwEntry : locEntry.getValue().entrySet()) {
+                int qty = hwEntry.getValue() != null ? hwEntry.getValue().intValue() : 0;
+                if (qty > 0) {
+                    hardwareCounts.put(hwEntry.getKey(), qty);
+                }
+            }
+            if (!hardwareCounts.isEmpty()) {
+                out.put(locEntry.getKey(), hardwareCounts);
+            }
+        }
+        return out.isEmpty() ? null : out;
+    }
+
+    private Map<String, Map<String, BigDecimal>> normalizeHardwareLocationCounts(
+            Map<String, Map<String, Integer>> raw
+    ) throws BusinessException {
+        Map<String, Map<String, BigDecimal>> normalized = new LinkedHashMap<>();
+        if (raw == null) {
+            return normalized;
+        }
+        for (Map.Entry<String, Map<String, Integer>> locEntry : raw.entrySet()) {
+            String locKey = locEntry.getKey() == null ? "" : locEntry.getKey().trim().toUpperCase(Locale.ROOT);
+            if (!COUNT_LOCATION_KEYS.contains(locKey)) {
+                throw new BusinessException("Ubicación de conteo inválida: " + locEntry.getKey());
+            }
+            Map<String, BigDecimal> hardwareMap = new LinkedHashMap<>();
+            if (locEntry.getValue() != null) {
+                for (Map.Entry<String, Integer> hwEntry : locEntry.getValue().entrySet()) {
+                    String hw = hwEntry.getKey() == null ? "" : hwEntry.getKey().trim().toUpperCase(Locale.ROOT);
+                    if (!"NUEVO".equals(hw) && !"VIEJO".equals(hw)) {
+                        throw new BusinessException("Herraje inválido: " + hwEntry.getKey());
+                    }
+                    int value = hwEntry.getValue() != null ? hwEntry.getValue() : 0;
+                    if (value < 0) {
+                        throw new BusinessException("El conteo de herraje " + hw + " no puede ser negativo.");
+                    }
+                    hardwareMap.put(hw, BigDecimal.valueOf(value));
+                }
+            }
+            normalized.put(locKey, hardwareMap);
+        }
+        return normalized;
+    }
+
+    private void syncCountsFromHardwareLocationCounts(
+            KioscoPhysicalCountItemEntity item,
+            Map<String, Map<String, Integer>> hardwareLocationCounts
+    ) {
+        Map<String, BigDecimal> totals = new LinkedHashMap<>();
+        if (hardwareLocationCounts == null) {
+            return;
+        }
+        for (Map.Entry<String, Map<String, Integer>> locEntry : hardwareLocationCounts.entrySet()) {
+            int sum = locEntry.getValue() != null
+                    ? locEntry.getValue().values().stream().mapToInt(v -> v != null ? v : 0).sum()
+                    : 0;
+            totals.put(locEntry.getKey(), BigDecimal.valueOf(sum));
+        }
+        item.setCountsData(ProductInventorySizesJson.serializeIncludingZeros(totals));
     }
 
     private static String safeTrim(String value) {

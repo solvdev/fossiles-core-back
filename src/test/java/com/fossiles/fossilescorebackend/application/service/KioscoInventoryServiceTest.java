@@ -477,7 +477,7 @@ class KioscoInventoryServiceTest {
 
     @Test
     void kardex_clasificaMovimientosPorCategoria_yCuadraInventarioFinal() throws Exception {
-        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(locationId))
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId))
                 .thenReturn(List.of(stockEntity(0, 0)));
 
         LocalDate from = LocalDate.of(2026, 6, 1);
@@ -526,7 +526,7 @@ class KioscoInventoryServiceTest {
     @Test
     void buildKardexRows_conBalanceAsOf_replayHastaFechaExcluyeVentasPosteriores() throws Exception {
         KioscoStockEntity stock = stockEntity(5, 0);
-        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(locationId))
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId))
                 .thenReturn(List.of(stock));
 
         LocalDate from = LocalDate.of(2026, 6, 1);

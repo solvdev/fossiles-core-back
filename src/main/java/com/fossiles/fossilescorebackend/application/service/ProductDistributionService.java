@@ -1992,7 +1992,7 @@ public class ProductDistributionService {
         int stockRowsRecalculated = 0;
         Long replayLocationId = resolvedLocationId;
         if (replayLocationId != null) {
-            for (KioscoStockEntity stock : kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(replayLocationId)) {
+            for (KioscoStockEntity stock : kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(replayLocationId)) {
                 stockRowsRecalculated += kioscoInventoryService.replayMovementStockChain(stock.getId());
             }
         }
@@ -2514,9 +2514,10 @@ public class ProductDistributionService {
         if (locationId == null || productId == null) {
             return 0;
         }
-        return kioscoStockRepository.findByLocationIdAndProductIdAndColorId(locationId, productId, colorId)
-                .map(stock -> kioscoInventoryService.resolveInventarioFinal(stock, stock.getProduct()))
-                .orElse(0);
+        return kioscoStockRepository.findByLocationIdAndProductIdAndColorIdOrderByHardwareConditionAsc(
+                        locationId, productId, colorId).stream()
+                .mapToInt(stock -> kioscoInventoryService.resolveInventarioFinal(stock, stock.getProduct()))
+                .sum();
     }
 
     private KioscoShipmentReconcilePreviewResponse.PreviewLine buildPreviewLine(

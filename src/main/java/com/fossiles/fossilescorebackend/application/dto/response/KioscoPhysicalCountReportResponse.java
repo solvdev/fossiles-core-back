@@ -102,8 +102,12 @@ public class KioscoPhysicalCountReportResponse {
         /** Devoluciones a bodega del periodo (subset de salida). */
         private int salidaDevolucion;
         private int inventarioFinal;
-        /** Conteo fisico por ubicacion: claves fijas V1..V7, E, BO. */
+        /** Conteo físico por ubicacion: claves fijas V1..V7, E, BO. */
         private Map<String, Integer> counts;
+        /** Fin. sistema desglosado por herraje cuando aplica. */
+        private Map<String, Integer> inventarioFinalByHardware;
+        /** Conteo físico por ubicación y herraje. */
+        private Map<String, Map<String, Integer>> hardwareLocationCounts;
         private int total;
         /** Diferencia = físico − sistema, descontando devoluciones a bodega aún en piso al contar. */
         private int diferencia;

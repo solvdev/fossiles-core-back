@@ -14,19 +14,47 @@ import java.util.Optional;
 @Repository
 public interface KioscoStockRepository extends JpaRepository<KioscoStockEntity, Long> {
 
-    Optional<KioscoStockEntity> findByLocationIdAndProductIdAndColorId(Long locationId, Long productId, Long colorId);
+    Optional<KioscoStockEntity> findFirstByLocationIdAndProductIdAndColorIdOrderByHardwareConditionAsc(
+            Long locationId, Long productId, Long colorId);
+
+    List<KioscoStockEntity> findByLocationIdAndProductIdAndColorIdOrderByHardwareConditionAsc(
+            Long locationId, Long productId, Long colorId);
+
+    /** Prefer NUEVO when multiple filas de herraje existen. */
+    default Optional<KioscoStockEntity> findByLocationIdAndProductIdAndColorId(
+            Long locationId, Long productId, Long colorId
+    ) {
+        return findFirstByLocationIdAndProductIdAndColorIdOrderByHardwareConditionAsc(
+                locationId, productId, colorId);
+    }
+
+    Optional<KioscoStockEntity> findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+            Long locationId, Long productId, Long colorId, String hardwareCondition);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s FROM KioscoStockEntity s WHERE s.locationId = :locationId "
             + "AND s.productId = :productId "
-            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId)")
+            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
+            + "ORDER BY s.hardwareCondition ASC")
     Optional<KioscoStockEntity> findForUpdate(
             @Param("locationId") Long locationId,
             @Param("productId") Long productId,
             @Param("colorId") Long colorId
     );
 
-    List<KioscoStockEntity> findByLocationIdOrderByProductIdAscColorIdAsc(Long locationId);
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT s FROM KioscoStockEntity s WHERE s.locationId = :locationId "
+            + "AND s.productId = :productId "
+            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
+            + "AND s.hardwareCondition = :hardwareCondition")
+    Optional<KioscoStockEntity> findForUpdateByHardware(
+            @Param("locationId") Long locationId,
+            @Param("productId") Long productId,
+            @Param("colorId") Long colorId,
+            @Param("hardwareCondition") String hardwareCondition
+    );
+
+    List<KioscoStockEntity> findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(Long locationId);
 
     @Query("SELECT s FROM KioscoStockEntity s "
             + "WHERE s.locationId = :locationId AND s.currentStock <= s.minimumStock "

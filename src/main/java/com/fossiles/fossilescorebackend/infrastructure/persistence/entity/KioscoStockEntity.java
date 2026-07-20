@@ -22,7 +22,7 @@ import java.time.LocalDateTime;
 @Entity
 @Table(
         name = "kiosco_stock",
-        uniqueConstraints = @UniqueConstraint(columnNames = {"location_id", "product_id", "color_id"})
+        uniqueConstraints = @UniqueConstraint(columnNames = {"location_id", "product_id", "color_id", "hardware_condition"})
 )
 @Data
 @Builder
@@ -55,9 +55,10 @@ public class KioscoStockEntity {
     @Builder.Default
     private Integer minimumStock = 0;
 
-    /** NUEVO | VIEJO — herraje; se actualiza al recibir envíos de distribución. */
-    @Column(name = "hardware_condition", length = 20)
-    private String hardwareCondition;
+    /** NUEVO | VIEJO — dimensión de stock (una fila por herraje). */
+    @Column(name = "hardware_condition", nullable = false, length = 20)
+    @Builder.Default
+    private String hardwareCondition = "NUEVO";
 
     @Column(name = "last_updated_at", nullable = false)
     private LocalDateTime lastUpdatedAt;
@@ -89,6 +90,9 @@ public class KioscoStockEntity {
     @PrePersist
     protected void onCreate() {
         LocalDateTime now = LocalDateTime.now();
+        if (hardwareCondition == null || hardwareCondition.isBlank()) {
+            hardwareCondition = "NUEVO";
+        }
         if (currentStock == null) {
             currentStock = 0;
         }

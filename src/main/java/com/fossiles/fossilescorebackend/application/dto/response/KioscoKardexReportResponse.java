@@ -54,5 +54,7 @@ public class KioscoKardexReportResponse {
         /** Subconjunto de salida: devoluciones a bodega / reintegros del periodo. */
         private int salidaDevolucion;
         private int inventarioFinal;
+        /** NUEVO | VIEJO cuando el stock está partido por herraje. */
+        private String hardwareCondition;
     }
 }

@@ -35,11 +35,14 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDeposi
 import com.fossiles.fossilescorebackend.application.dto.response.KioskMainSheetReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskVoucherReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
-import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
+import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountItemUpsertRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoInternalCountSummaryResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAvailabilityResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxpayerLookupResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.KioscoInternalCountService;
 import com.fossiles.fossilescorebackend.application.service.KioskExchangeService;
 import com.fossiles.fossilescorebackend.application.service.KioskPosService;
 import jakarta.validation.Valid;
@@ -67,6 +70,7 @@ public class KioskPosController {
 
     private final KioskPosService kioskPosService;
     private final KioskExchangeService kioskExchangeService;
+    private final KioscoInternalCountService kioscoInternalCountService;
 
     @GetMapping("/context")
     public ResponseEntity<KioskPosContextResponse> getContext(
@@ -434,5 +438,43 @@ public class KioskPosController {
             @RequestParam(required = false) Long kioskLocationId
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskExchangeService.lookupSale(kioskLocationId, query));
+    }
+
+    @PostMapping("/{kioskLocationId}/conteo-interno")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> startInternalCount(
+            @PathVariable Long kioskLocationId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate countDate
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInternalCountService.startOrGetDraft(kioskLocationId, countDate));
+    }
+
+    @GetMapping("/conteo-interno/{internalCountId}")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> getInternalCountReport(
+            @PathVariable Long internalCountId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInternalCountService.getReport(internalCountId));
+    }
+
+    @PutMapping("/conteo-interno/{internalCountId}/items")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> upsertInternalCountItems(
+            @PathVariable Long internalCountId,
+            @RequestBody List<KioscoPhysicalCountItemUpsertRequest> items
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInternalCountService.upsertItems(internalCountId, items));
+    }
+
+    @PostMapping("/conteo-interno/{internalCountId}/guardar")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> saveInternalCountSnapshot(
+            @PathVariable Long internalCountId,
+            @RequestParam(required = false) String notes
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInternalCountService.saveSnapshot(internalCountId, notes));
+    }
+
+    @GetMapping("/{kioskLocationId}/conteo-interno/historial")
+    public ResponseEntity<List<KioscoInternalCountSummaryResponse>> listInternalCountHistory(
+            @PathVariable Long kioskLocationId
+    ) {
+        return ResponseEntity.ok(kioscoInternalCountService.listHistory(kioskLocationId));
     }
 }

@@ -102,7 +102,7 @@ class KioscoInventoryCountServiceTest {
         when(productCategoryRepository.findAllById(any())).thenReturn(List.of(ProductCategoryEntity.builder()
                 .id(categoryId).code("TARJ").name("Tarjeteros").build()));
         when(itemRepository.findByCountId(any())).thenReturn(List.of());
-        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of());
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of());
         when(exchangeSlipRepository.findByPhysicalCountId(any())).thenReturn(List.of());
         when(exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
         try {
@@ -540,7 +540,7 @@ class KioscoInventoryCountServiceTest {
                 ProductEntity.builder().id(fossProductId).code("FOSS-100").name("Cincho casual")
                         .categoryId(categoryId).cinchoType("CASUAL").build()
         ));
-        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of(
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
                 com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
                         .id(501L)
                         .locationId(locationId)
@@ -590,7 +590,7 @@ class KioscoInventoryCountServiceTest {
                 ProductEntity.builder().id(fossProductId).code("FOSS-5").name("Cincho Giorgio")
                         .categoryId(categoryId).cinchoType("CASUAL").build()
         ));
-        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of(
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
                 com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
                         .id(stockId)
                         .locationId(locationId)
@@ -756,7 +756,7 @@ class KioscoInventoryCountServiceTest {
     @Test
     void buildReport_entradaPrePeriodoApareceEnEntradasNoEnInicial() throws Exception {
         long stockId = 913L;
-        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of(
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
                 com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
                         .id(stockId)
                         .locationId(locationId)
@@ -806,7 +806,7 @@ class KioscoInventoryCountServiceTest {
                 .thenReturn(Map.of(stockId, 1));
         when(kioscoInventoryService.computePrePeriodEntradasByStockId(eq(locationId), eq(openingCutoff), any(LocalDateTime.class)))
                 .thenReturn(Map.of(stockId, 1));
-        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAsc(any())).thenReturn(List.of(
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
                 com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
                         .id(stockId)
                         .locationId(locationId)

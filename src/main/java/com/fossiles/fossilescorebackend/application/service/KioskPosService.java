@@ -156,7 +156,7 @@ public class KioskPosService {
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
         List<KioscoStockEntity> kioscoStockRows = kioscoStockRepository
-                .findByLocationIdOrderByProductIdAscColorIdAsc(kiosk.getId());
+                .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(kiosk.getId());
         List<ProductInventoryLocation> legacyRowsAtKiosk = productInventoryLocationRepository
                 .findByLocationId(kiosk.getId());
         Map<String, ProductInventoryLocation> legacyByKey = legacyRowsAtKiosk.stream()
@@ -1741,7 +1741,7 @@ public class KioskPosService {
         List<String> sortedKeys = aggregatedQty.keySet().stream().sorted().toList();
         Map<String, ProductInventoryLocation> locked = new LinkedHashMap<>();
         boolean kioscoModuleActive = !kioscoStockRepository
-                .findByLocationIdOrderByProductIdAscColorIdAsc(kioskId).isEmpty();
+                .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(kioskId).isEmpty();
 
         for (String key : sortedKeys) {
             ParsedInventoryKey parsed = parseInventoryKey(key);
