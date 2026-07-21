@@ -17,6 +17,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioscoOpeningInv
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoOpeningInventoryReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoOpeningInventoryStatusResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoOpeningInventorySummaryResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoConsolidatedReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoInventoryInitializeResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoKardexReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
