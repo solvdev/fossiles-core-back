@@ -899,6 +899,19 @@ public class KioscoInventoryService {
             String reason,
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarAjuste(locationId, productId, colorId, realQuantity, realSizes, reason, userId, null);
+    }
+
+    public KioscoStockResponse registrarAjuste(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer realQuantity,
+            Map<String, Integer> realSizes,
+            String reason,
+            Long userId,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
         if (realQuantity == null || realQuantity < 0) {
             throw new BusinessException("La cantidad real no puede ser negativa.");
         }
@@ -913,9 +926,10 @@ public class KioscoInventoryService {
         ProductEntity product = productRepository.findById(productId)
                 .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
 
-        KioscoStockEntity stock = getOrCreateLockedStock(locationId, productId, colorId, resolvedUserId);
+        String hardware = resolveStockHardware(hardwareCondition);
+        KioscoStockEntity stock = getOrCreateLockedStock(locationId, productId, colorId, resolvedUserId, hardware);
         syncFossCurrentStockFromSizes(stock);
-        stock = kioscoStockRepository.findForUpdate(locationId, productId, colorId).orElse(stock);
+        stock = kioscoStockRepository.findForUpdateByHardware(locationId, productId, colorId, hardware).orElse(stock);
 
         Map<String, BigDecimal> targetSizes = normalizeRealSizesMap(realSizes);
         if (CinchoProductUtils.isFossCinchoProduct(product)) {

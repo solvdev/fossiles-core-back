@@ -170,8 +170,8 @@ class KioscoOpeningInventoryServiceTest {
                 .code("SUM-001")
                 .name("Empaque")
                 .build()));
-        when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorId(
-                sessionId, packagingProductId, null)).thenReturn(Optional.empty());
+        when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
+                sessionId, packagingProductId, null, "NUEVO")).thenReturn(Optional.empty());
         when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
                 .thenReturn(List.of(KioscoOpeningInventoryItemEntity.builder()
                         .openingInventoryId(sessionId)
@@ -235,7 +235,8 @@ class KioscoOpeningInventoryServiceTest {
                 eq(10),
                 isNull(),
                 eq(KioscoOpeningInventoryService.OPENING_INVENTORY_REASON),
-                eq(userId)
+                eq(userId),
+                eq("NUEVO")
         )).thenReturn(KioscoStockResponse.builder().currentStock(10).build());
 
         KioscoOpeningInventoryReportResponse report = service.apply(
@@ -244,7 +245,7 @@ class KioscoOpeningInventoryServiceTest {
         assertThat(report.getStatus()).isEqualTo("APLICADO");
         verify(kioscoInventoryService).registrarAjuste(
                 locationId, productId, colorId, 10, null,
-                KioscoOpeningInventoryService.OPENING_INVENTORY_REASON, userId);
+                KioscoOpeningInventoryService.OPENING_INVENTORY_REASON, userId, "NUEVO");
         ArgumentCaptor<KioscoOpeningInventoryEntity> captor =
                 ArgumentCaptor.forClass(KioscoOpeningInventoryEntity.class);
         verify(openingInventoryRepository).save(captor.capture());
@@ -296,7 +297,8 @@ class KioscoOpeningInventoryServiceTest {
                 eq(3),
                 eq(sizes),
                 eq(KioscoOpeningInventoryService.OPENING_INVENTORY_REASON),
-                eq(userId));
+                eq(userId),
+                eq("NUEVO"));
     }
 
     @Test
@@ -357,7 +359,7 @@ class KioscoOpeningInventoryServiceTest {
     }
 
     @Test
-    void apply_noLlamaAjusteSiStockYaCoincide() {
+    void apply_noLlamaAjusteSiStockYaCoincide() throws Exception {
         stubDraftSession();
         when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
                 .thenReturn(List.of(KioscoOpeningInventoryItemEntity.builder()
@@ -383,7 +385,8 @@ class KioscoOpeningInventoryServiceTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("Ningún ítem difiere");
 
-        verify(kioscoInventoryService, never()).registrarAjuste(any(), any(), any(), any(), any(), any(), any());
+        verify(kioscoInventoryService, never()).registrarAjuste(
+                any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     private void stubDraftSession() {

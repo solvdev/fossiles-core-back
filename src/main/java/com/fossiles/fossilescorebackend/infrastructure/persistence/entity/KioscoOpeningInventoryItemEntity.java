@@ -19,7 +19,9 @@ import java.time.LocalDateTime;
 @Entity
 @Table(
         name = "kiosco_opening_inventory_item",
-        uniqueConstraints = @UniqueConstraint(columnNames = {"opening_inventory_id", "product_id", "color_id"})
+        uniqueConstraints = @UniqueConstraint(columnNames = {
+                "opening_inventory_id", "product_id", "color_id", "hardware_condition"
+        })
 )
 @Data
 @Builder
@@ -39,6 +41,10 @@ public class KioscoOpeningInventoryItemEntity {
 
     @Column(name = "color_id")
     private Long colorId;
+
+    @Column(name = "hardware_condition", nullable = false, length = 10)
+    @Builder.Default
+    private String hardwareCondition = "NUEVO";
 
     @Column(name = "quantity", nullable = false)
     @Builder.Default

@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoOpeningIn
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
+import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoOpeningInventoryEntity;
@@ -132,7 +133,8 @@ public class KioscoOpeningInventoryService {
                         targetQty,
                         CinchoProductUtils.isFossCinchoProduct(product) ? targetSizes : null,
                         OPENING_INVENTORY_REASON,
-                        userId
+                        userId,
+                        item.getHardwareCondition()
                 );
                 adjustmentsApplied++;
             }
@@ -220,8 +222,10 @@ public class KioscoOpeningInventoryService {
                 .orElseThrow(() -> new ResourceNotFoundException("Product", req.getProductId()));
         boolean packaging = KioscoInventoryInitRules.isPackagingProduct(product);
         boolean foss = CinchoProductUtils.isFossCinchoProduct(product);
+        boolean cincho = KioscoInventoryInitRules.isCinchoProduct(product);
 
         Long colorId = req.getColorId();
+        String hardware = resolveItemHardware(req.getHardwareCondition(), cincho);
         if (packaging) {
             if (colorId != null) {
                 throw new BusinessException("Los empaques SUM- no usan color; omita colorId.");
@@ -255,20 +259,22 @@ public class KioscoOpeningInventoryService {
         }
 
         if (quantity == 0 && (sizes == null || sizes.isEmpty())) {
-            openingInventoryItemRepository.deleteByOpeningInventoryIdAndProductIdAndColorId(
-                    session.getId(), req.getProductId(), colorId);
+            openingInventoryItemRepository.deleteByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
+                    session.getId(), req.getProductId(), colorId, hardware);
             return;
         }
 
         KioscoOpeningInventoryItemEntity item = openingInventoryItemRepository
-                .findByOpeningInventoryIdAndProductIdAndColorId(
-                        session.getId(), req.getProductId(), colorId)
+                .findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
+                        session.getId(), req.getProductId(), colorId, hardware)
                 .orElseGet(() -> KioscoOpeningInventoryItemEntity.builder()
                         .openingInventoryId(session.getId())
                         .productId(req.getProductId())
                         .colorId(colorId)
+                        .hardwareCondition(hardware)
                         .build());
         item.setQuantity(quantity);
+        item.setHardwareCondition(hardware);
         if (foss && sizes != null && !sizes.isEmpty()) {
             item.setSizesData(ProductInventorySizesJson.serializeIncludingZeros(normalizeSizes(sizes)));
         } else {
@@ -288,7 +294,10 @@ public class KioscoOpeningInventoryService {
         List<KioscoStockEntity> stocks = kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId).stream()
                 .filter(s -> Objects.equals(s.getProductId(), item.getProductId())
-                        && Objects.equals(s.getColorId(), item.getColorId()))
+                        && Objects.equals(s.getColorId(), item.getColorId())
+                        && Objects.equals(
+                                ProductHardwareCondition.normalize(s.getHardwareCondition()),
+                                ProductHardwareCondition.normalize(item.getHardwareCondition())))
                 .collect(Collectors.toList());
         int currentQty = stocks.stream().mapToInt(s -> safeInt(s.getCurrentStock())).sum();
         if (CinchoProductUtils.isFossCinchoProduct(product)) {
@@ -331,6 +340,8 @@ public class KioscoOpeningInventoryService {
                     .productName(product != null ? product.getName() : null)
                     .colorId(item.getColorId())
                     .colorName(color != null ? color.getName() : null)
+                    .hardwareCondition(item.getHardwareCondition())
+                    .hardwareLabel(resolveHardwareLabel(item.getHardwareCondition()))
                     .quantity(item.getQuantity())
                     .sizes(sizes.isEmpty() ? null : sizes)
                     .sizesSummary(formatSizesSummary(sizes))
@@ -483,6 +494,28 @@ public class KioscoOpeningInventoryService {
                 }))
                 .map(e -> e.getKey() + ":" + e.getValue())
                 .collect(Collectors.joining(", "));
+    }
+
+    private String resolveItemHardware(String raw, boolean cinchoProduct) throws BusinessException {
+        String hardware = ProductHardwareCondition.normalize(raw);
+        if (hardware == null) {
+            hardware = ProductHardwareCondition.NUEVO;
+        }
+        if (!ProductHardwareCondition.NUEVO.equals(hardware)
+                && !ProductHardwareCondition.VIEJO.equals(hardware)) {
+            throw new BusinessException("Herraje inválido: use NUEVO o VIEJO.");
+        }
+        if (!cinchoProduct && ProductHardwareCondition.VIEJO.equals(hardware)) {
+            throw new BusinessException("Solo los cinchos usan herraje viejo en inventario inicial.");
+        }
+        return hardware;
+    }
+
+    private String resolveHardwareLabel(String hardware) {
+        if (ProductHardwareCondition.VIEJO.equals(ProductHardwareCondition.normalize(hardware))) {
+            return "Herraje viejo";
+        }
+        return "Herraje nuevo";
     }
 
     private String resolveUsername(Long userId) {

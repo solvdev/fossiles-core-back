@@ -14,6 +14,8 @@ import java.util.Map;
 public class KioscoOpeningInventoryItemUpsertRequest {
     private Long productId;
     private Long colorId;
+    /** Cinchos: NUEVO | VIEJO. Omitir en productos sin herraje (default NUEVO). */
+    private String hardwareCondition;
     private Integer quantity;
     /** Cinchos FOSS: cantidad por talla. */
     private Map<String, Integer> sizes;

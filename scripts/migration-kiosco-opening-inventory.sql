@@ -27,12 +27,14 @@ CREATE TABLE IF NOT EXISTS kiosco_opening_inventory_item (
     opening_inventory_id    BIGINT NOT NULL REFERENCES kiosco_opening_inventory (id) ON DELETE CASCADE,
     product_id              BIGINT NOT NULL REFERENCES product (id),
     color_id                BIGINT REFERENCES colors (id),
+    hardware_condition      VARCHAR(10) NOT NULL DEFAULT 'NUEVO',
     quantity                INTEGER NOT NULL DEFAULT 0,
     sizes_data              TEXT,
     updated_at              TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_by              BIGINT REFERENCES users (id),
-    CONSTRAINT uq_kiosco_opening_inventory_item UNIQUE (opening_inventory_id, product_id, color_id),
-    CONSTRAINT chk_kiosco_opening_inventory_item_qty CHECK (quantity >= 0)
+    CONSTRAINT uq_kiosco_opening_inventory_item UNIQUE (opening_inventory_id, product_id, color_id, hardware_condition),
+    CONSTRAINT chk_kiosco_opening_inventory_item_qty CHECK (quantity >= 0),
+    CONSTRAINT chk_kiosco_opening_inventory_item_hw CHECK (hardware_condition IN ('NUEVO', 'VIEJO'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_kiosco_opening_inventory_item_session

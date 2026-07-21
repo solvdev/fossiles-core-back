@@ -42,6 +42,8 @@ public class KioscoOpeningInventoryReportResponse {
         private String productName;
         private Long colorId;
         private String colorName;
+        private String hardwareCondition;
+        private String hardwareLabel;
         private Integer quantity;
         private Map<String, Integer> sizes;
         private String sizesSummary;

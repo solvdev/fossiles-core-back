@@ -12,9 +12,9 @@ public interface KioscoOpeningInventoryItemRepository extends JpaRepository<Kios
 
     List<KioscoOpeningInventoryItemEntity> findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(Long openingInventoryId);
 
-    Optional<KioscoOpeningInventoryItemEntity> findByOpeningInventoryIdAndProductIdAndColorId(
-            Long openingInventoryId, Long productId, Long colorId);
+    Optional<KioscoOpeningInventoryItemEntity> findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
+            Long openingInventoryId, Long productId, Long colorId, String hardwareCondition);
 
-    void deleteByOpeningInventoryIdAndProductIdAndColorId(
-            Long openingInventoryId, Long productId, Long colorId);
+    void deleteByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
+            Long openingInventoryId, Long productId, Long colorId, String hardwareCondition);
 }
