@@ -21,6 +21,7 @@ class TaxInvoiceInternalNumberRulesTest {
         assertThat(method.invoke(null, "TINV-000042", "A45")).isEqualTo(true);
         assertThat(method.invoke(null, "B-12", "A45")).isEqualTo(true);
         assertThat(method.invoke(null, "VL20260101-0005", "A45")).isEqualTo(true);
+        assertThat(method.invoke(null, "POS-20260721-0042", "A15")).isEqualTo(true);
         assertThat(method.invoke(null, "A45-28", "A45")).isEqualTo(false);
         assertThat(method.invoke(null, "A45-14", "A45")).isEqualTo(false);
     }

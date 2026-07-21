@@ -21,14 +21,15 @@ public class KioskSaleInvoiceMapper {
         List<TaxInvoiceDocument.Line> lines = new ArrayList<>();
         List<KioskSaleItemEntity> saleLines = sale.getItems() == null ? List.of() : sale.getItems();
         for (KioskSaleItemEntity line : saleLines) {
-            BigDecimal lineTotal = nz(line.getLineTotal()).setScale(2, RoundingMode.HALF_UP);
-            if (lineTotal.compareTo(BigDecimal.ZERO) <= 0) {
+            BigDecimal qty = nz(line.getQuantity()).setScale(3, RoundingMode.HALF_UP);
+            if (qty.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
-            BigDecimal qty = nz(line.getQuantity()).setScale(3, RoundingMode.HALF_UP);
-            BigDecimal unitPrice = qty.compareTo(BigDecimal.ZERO) > 0
-                    ? lineTotal.divide(qty, 2, RoundingMode.HALF_UP)
-                    : lineTotal;
+            BigDecimal lineTotal = nz(line.getLineTotal()).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal unitPrice = nz(line.getUnitPrice()).setScale(2, RoundingMode.HALF_UP);
+            if (unitPrice.compareTo(BigDecimal.ZERO) <= 0 && lineTotal.compareTo(BigDecimal.ZERO) > 0) {
+                unitPrice = lineTotal.divide(qty, 2, RoundingMode.HALF_UP);
+            }
             lines.add(TaxInvoiceDocument.Line.builder()
                     .description(buildLineDescription(line))
                     .quantity(qty)

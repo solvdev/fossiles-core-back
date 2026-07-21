@@ -63,10 +63,11 @@ public class FelFactXmlBuilder {
             BigDecimal lineTotal = nz(line.getLineTotal())
                     .multiply(discountRatio)
                     .setScale(2, RoundingMode.HALF_UP);
-            if (lineTotal.compareTo(BigDecimal.ZERO) <= 0) {
+            FelIvaCalculator.IvaBreakdown iva = FelIvaCalculator.fromTaxIncludedTotal(lineTotal);
+            if (lineTotal.compareTo(BigDecimal.ZERO) <= 0
+                    && nz(line.getQuantity()).compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
-            FelIvaCalculator.IvaBreakdown iva = FelIvaCalculator.fromTaxIncludedTotal(lineTotal);
             totalIva = totalIva.add(iva.tax());
             granTotalFromLines = granTotalFromLines.add(lineTotal);
             BigDecimal qty = nz(line.getQuantity()).setScale(2, RoundingMode.HALF_UP);
@@ -255,7 +256,11 @@ public class FelFactXmlBuilder {
         if (internalNumber == null || internalNumber.isBlank()) {
             return "";
         }
-        String value = FelXmlEscaper.escape(internalNumber.trim());
+        String trimmed = internalNumber.trim();
+        if (looksLikePosSaleNumber(trimmed)) {
+            return "";
+        }
+        String value = FelXmlEscaper.escape(trimmed);
         // INFILE imprime "Control:" en la representación gráfica leyendo la adenda.
         // Enviamos ambas etiquetas por compatibilidad con plantillas distintas.
         return "<dte:Adenda><Control>"
@@ -349,5 +354,13 @@ public class FelFactXmlBuilder {
             return BigDecimal.ONE;
         }
         return total.divide(sub, 8, RoundingMode.HALF_UP);
+    }
+
+    /** No usar número de venta POS como control interno en adenda FEL. */
+    static boolean looksLikePosSaleNumber(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        return value.trim().toUpperCase(Locale.ROOT).matches("^POS-\\d{8}-\\d+$");
     }
 }

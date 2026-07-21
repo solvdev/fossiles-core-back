@@ -284,6 +284,77 @@ class FelFactXmlBuilderTest {
     }
 
     @Test
+    void excludesPosSaleNumberFromAdenda() {
+        FelEmissionProperties props = new FelEmissionProperties();
+        props.setNitEmisor("123456789");
+        props.setNombreEmisor("FOSSILES SA");
+        props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
+
+        TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .emitterEstablishmentCode("2")
+                .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
+                .internalNumber("POS-20260721-0042")
+                .customerTaxId("CF")
+                .customerName("CONSUMIDOR FINAL")
+                .subtotal(new BigDecimal("50.00"))
+                .totalAmount(new BigDecimal("50.00"))
+                .lines(List.of(
+                        TaxInvoiceDocument.Line.builder()
+                                .description("Producto")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("50.00"))
+                                .lineTotal(new BigDecimal("50.00"))
+                                .build()
+                ))
+                .build();
+
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
+
+        assertThat(xml).doesNotContain("<dte:Adenda>");
+        assertThat(xml).doesNotContain("POS-20260721-0042");
+    }
+
+    @Test
+    void includesZeroValueLineInItems() {
+        FelEmissionProperties props = new FelEmissionProperties();
+        props.setNitEmisor("123456789");
+        props.setNombreEmisor("FOSSILES SA");
+        props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
+
+        TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .emitterEstablishmentCode("2")
+                .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
+                .internalNumber("A15-6107")
+                .customerTaxId("CF")
+                .customerName("CONSUMIDOR FINAL")
+                .subtotal(new BigDecimal("100.00"))
+                .totalAmount(new BigDecimal("100.00"))
+                .lines(List.of(
+                        TaxInvoiceDocument.Line.builder()
+                                .description("Bolso")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("100.00"))
+                                .lineTotal(new BigDecimal("100.00"))
+                                .build(),
+                        TaxInvoiceDocument.Line.builder()
+                                .description("Empaque SUM")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("5.00"))
+                                .lineTotal(BigDecimal.ZERO)
+                                .build()
+                ))
+                .build();
+
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
+
+        assertThat(xml).contains("Empaque SUM");
+        assertThat(xml).contains("<Control>A15-6107</Control>");
+        assertThat(xml).contains("<dte:GranTotal>100.00</dte:GranTotal>");
+    }
+
+    @Test
     void establishmentOneEmitsFcamWithAbonosComplemento() {
         FelEmissionProperties props = new FelEmissionProperties();
         props.setNitEmisor("11700874K");

@@ -221,7 +221,6 @@ public class TaxInvoiceService {
 
         TaxInvoiceEntity invoice = persistDraft("KIOSK_SALE", sale.getId(), document, sale.getCreatedBy(), sale.getKioskLocationId());
         applyKioskSaleFelSnapshot(invoice, sale);
-        invoice.setFelTransactionId(document.getTransactionId());
         appendInvoiceNote(invoice, "[Backfill] Borrador generado desde venta POS existente.");
         TaxInvoiceEntity saved = taxInvoiceRepository.save(invoice);
         linkKioskSaleToInvoice(sale, saved);
@@ -508,7 +507,6 @@ public class TaxInvoiceService {
             invoice.setSourceType("KIOSK_SALE");
             invoice.setSourceId(sale.getId());
             syncInvoiceFromDocument(invoice, document);
-            invoice.setFelTransactionId(document.getTransactionId());
             if (request.getNotes() != null) {
                 appendInvoiceNote(invoice, trimToNull(request.getNotes()));
             }
@@ -963,6 +961,10 @@ public class TaxInvoiceService {
 
         TaxInvoiceEntity saved = taxInvoiceRepository.save(invoice);
         assignInternalNumber(saved, document, locationIdForSeries);
+        String felIdentifier = trimToNull(saved.getInternalNumber());
+        if (felIdentifier != null) {
+            saved.setFelTransactionId(felIdentifier);
+        }
         return taxInvoiceRepository.save(saved);
     }
 
@@ -1017,6 +1019,9 @@ public class TaxInvoiceService {
         }
         String normalized = internalNumber.trim().toUpperCase(Locale.ROOT);
         if (normalized.startsWith("TINV-")) {
+            return true;
+        }
+        if (FelFactXmlBuilder.looksLikePosSaleNumber(normalized)) {
             return true;
         }
         if (seriesCode == null || seriesCode.isBlank()) {
@@ -1103,26 +1108,58 @@ public class TaxInvoiceService {
         if (reissueAfterVoid) {
             return buildReplacementFelTransactionId(invoice, document);
         }
-        if (retry && invoice.getFelTransactionId() != null && !invoice.getFelTransactionId().isBlank()) {
-            return invoice.getFelTransactionId();
+        String internalIdentifier = resolveInternalFelIdentifier(invoice, document);
+        if (internalIdentifier != null) {
+            if (retry) {
+                String existing = trimToNull(invoice.getFelTransactionId());
+                if (existing != null && existing.equalsIgnoreCase(internalIdentifier)) {
+                    return existing;
+                }
+            }
+            return internalIdentifier;
+        }
+        if (retry) {
+            String existing = trimToNull(invoice.getFelTransactionId());
+            if (existing != null && !FelFactXmlBuilder.looksLikePosSaleNumber(existing)) {
+                return existing;
+            }
         }
         String fromDocument = document != null ? trimToNull(document.getTransactionId()) : null;
-        if (fromDocument != null) {
+        if (fromDocument != null && !FelFactXmlBuilder.looksLikePosSaleNumber(fromDocument)) {
             return fromDocument;
         }
         String fromInvoice = trimToNull(invoice.getFelTransactionId());
-        if (fromInvoice != null) {
+        if (fromInvoice != null && !FelFactXmlBuilder.looksLikePosSaleNumber(fromInvoice)) {
             return fromInvoice;
         }
         return "TINV-" + invoice.getId();
     }
 
+    /** Mismo valor que la adenda FEL ({@code <Control>}) para Identificador INFILE y firma. */
+    private static String resolveInternalFelIdentifier(TaxInvoiceEntity invoice, TaxInvoiceDocument document) {
+        String fromInvoice = invoice != null ? trimToNull(invoice.getInternalNumber()) : null;
+        if (fromInvoice != null && !FelFactXmlBuilder.looksLikePosSaleNumber(fromInvoice)) {
+            return fromInvoice;
+        }
+        String fromDocument = document != null ? trimToNull(document.getInternalNumber()) : null;
+        if (fromDocument != null && !FelFactXmlBuilder.looksLikePosSaleNumber(fromDocument)) {
+            return fromDocument;
+        }
+        return null;
+    }
+
     private String buildReplacementFelTransactionId(TaxInvoiceEntity invoice, TaxInvoiceDocument document) {
-        String base = trimToNull(invoice.getFelTransactionId());
+        String base = resolveInternalFelIdentifier(invoice, document);
+        if (base == null) {
+            base = trimToNull(invoice.getFelTransactionId());
+        }
         if (base == null && document != null) {
             base = trimToNull(document.getTransactionId());
         }
         if (base == null) {
+            base = "TINV-" + invoice.getId();
+        }
+        if (FelFactXmlBuilder.looksLikePosSaleNumber(base)) {
             base = "TINV-" + invoice.getId();
         }
         int reissueSuffix = base.indexOf("-R");
@@ -1143,13 +1180,15 @@ public class TaxInvoiceService {
             return;
         }
 
-        String transactionId = resolveCertificationTransactionId(invoice, document, retry, reissueAfterVoid);
-        invoice.setFelTransactionId(transactionId);
-        document.setTransactionId(transactionId);
-
         try {
             FelCredentials credentials = properties.resolveCredentials(resolveSandboxMode(invoice));
             validateEmitterConfig(credentials);
+            Long locationId = resolveInvoiceLocationId(invoice);
+            assignInternalNumber(invoice, document, locationId);
+            String transactionId = resolveCertificationTransactionId(invoice, document, retry, reissueAfterVoid);
+            invoice.setFelTransactionId(transactionId);
+            document.setTransactionId(transactionId);
+            taxInvoiceRepository.save(invoice);
             if (invoice.getInternalNumber() != null && !invoice.getInternalNumber().isBlank()) {
                 document.setInternalNumber(invoice.getInternalNumber());
             }
