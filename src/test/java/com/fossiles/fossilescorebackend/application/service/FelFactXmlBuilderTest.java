@@ -247,6 +247,81 @@ class FelFactXmlBuilderTest {
     }
 
     @Test
+    void exemptsPackagingFromGlobalDiscountOnInvoiceLines() {
+        FelEmissionProperties props = new FelEmissionProperties();
+        props.setNitEmisor("11700874K");
+        props.setNombreEmisor("CUEROGLAM, SOCIEDAD ANONIMA");
+        props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
+
+        TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .emitterEstablishmentCode("2")
+                .issuedAt(LocalDateTime.of(2026, 7, 21, 10, 30))
+                .customerTaxId("1507435")
+                .customerName("FREDY ROLANDO HERNANDEZ OLA")
+                .subtotal(new BigDecimal("537.00"))
+                .discountAmount(new BigDecimal("80.25"))
+                .totalAmount(new BigDecimal("456.75"))
+                .lines(List.of(
+                        TaxInvoiceDocument.Line.builder()
+                                .productCode("B-46")
+                                .description("BILLETERA JOHANA TOSTADO")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("535.00"))
+                                .lineTotal(new BigDecimal("535.00"))
+                                .build(),
+                        TaxInvoiceDocument.Line.builder()
+                                .productCode("SUM-CAJA-P")
+                                .description("CAJA PORTACHEQUERA FOSS")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(BigDecimal.ZERO)
+                                .lineTotal(BigDecimal.ZERO)
+                                .build(),
+                        TaxInvoiceDocument.Line.builder()
+                                .productCode("SUM-BL-M")
+                                .description("BOLSA EMPAQUE MEDIANA")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("2.00"))
+                                .lineTotal(new BigDecimal("2.00"))
+                                .build()
+                ))
+                .build();
+
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
+
+        assertThat(xml).contains("<dte:Total>454.75</dte:Total>");
+        assertThat(xml).contains("<dte:Total>2.00</dte:Total>");
+        assertThat(xml).doesNotContain("<dte:Total>455.05</dte:Total>");
+        assertThat(xml).doesNotContain("<dte:Total>1.70</dte:Total>");
+        assertThat(xml).contains("<dte:GranTotal>456.75</dte:GranTotal>");
+    }
+
+    @Test
+    void resolveFelLineTotals_keepsPackagingAtListPrice() {
+        List<TaxInvoiceDocument.Line> lines = List.of(
+                TaxInvoiceDocument.Line.builder()
+                        .productCode("B-46")
+                        .lineTotal(new BigDecimal("535.00"))
+                        .build(),
+                TaxInvoiceDocument.Line.builder()
+                        .productCode("SUM-BL-M")
+                        .lineTotal(new BigDecimal("2.00"))
+                        .build()
+        );
+
+        List<BigDecimal> totals = FelFactXmlBuilder.resolveFelLineTotals(
+                lines,
+                new BigDecimal("537.00"),
+                new BigDecimal("456.75"),
+                new BigDecimal("80.25"));
+
+        assertThat(totals).containsExactly(
+                new BigDecimal("454.75"),
+                new BigDecimal("2.00")
+        );
+    }
+
+    @Test
     void includesInternalControlNumberInAdenda() {
         FelEmissionProperties props = new FelEmissionProperties();
         props.setNitEmisor("123456789");

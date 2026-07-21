@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.model.TaxInvoiceDocument;
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelCredentials;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelIvaCalculator;
@@ -53,17 +54,17 @@ public class FelFactXmlBuilder {
             subtotal = linesRawSum.setScale(2, RoundingMode.HALF_UP);
             totalAmount = subtotal;
         }
-        BigDecimal discountRatio = resolveDiscountRatio(subtotal, totalAmount, linesRawSum);
+        List<BigDecimal> felLineTotals = resolveFelLineTotals(
+                documentLines, subtotal, totalAmount, discountAmount);
 
         StringBuilder itemsXml = new StringBuilder();
         List<String> adendaLineCodes = new ArrayList<>();
         BigDecimal totalIva = BigDecimal.ZERO;
         BigDecimal granTotalFromLines = BigDecimal.ZERO;
         int lineNo = 0;
-        for (TaxInvoiceDocument.Line line : documentLines) {
-            BigDecimal lineTotal = nz(line.getLineTotal())
-                    .multiply(discountRatio)
-                    .setScale(2, RoundingMode.HALF_UP);
+        for (int lineIdx = 0; lineIdx < documentLines.size(); lineIdx++) {
+            TaxInvoiceDocument.Line line = documentLines.get(lineIdx);
+            BigDecimal lineTotal = felLineTotals.get(lineIdx);
             FelIvaCalculator.IvaBreakdown iva = FelIvaCalculator.fromTaxIncludedTotal(lineTotal);
             if (lineTotal.compareTo(BigDecimal.ZERO) <= 0
                     && nz(line.getQuantity()).compareTo(BigDecimal.ZERO) <= 0) {
@@ -431,6 +432,83 @@ public class FelFactXmlBuilder {
             return preferred.trim();
         }
         return fallback == null ? "" : fallback.trim();
+    }
+
+    /**
+     * Empaques SUM- nunca llevan descuento en POS; la factura debe reflejar lo mismo.
+     * El descuento global se reparte solo entre líneas elegibles (no empaque).
+     */
+    static boolean isPackagingLine(TaxInvoiceDocument.Line line) {
+        return line != null && ProductCinchoType.isPackagingProductCode(line.getProductCode());
+    }
+
+    /**
+     * Totales por línea para el XML FEL. Empaques a precio de lista; productos con descuento POS.
+     */
+    static List<BigDecimal> resolveFelLineTotals(
+            List<TaxInvoiceDocument.Line> lines,
+            BigDecimal subtotal,
+            BigDecimal totalAmount,
+            BigDecimal discountAmount
+    ) {
+        if (lines == null || lines.isEmpty()) {
+            return List.of();
+        }
+        List<BigDecimal> rawTotals = lines.stream()
+                .map(line -> nz(line.getLineTotal()))
+                .toList();
+        BigDecimal linesRawSum = rawTotals.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal discount = nz(discountAmount);
+        BigDecimal total = nz(totalAmount);
+        BigDecimal sub = nz(subtotal);
+
+        if (discount.compareTo(BigDecimal.ZERO) <= 0) {
+            return new ArrayList<>(rawTotals);
+        }
+
+        // Líneas ya traen precio neto (mapper antiguo): no volver a descontar.
+        if (linesRawSum.subtract(total).abs().compareTo(new BigDecimal("0.05")) <= 0
+                && total.compareTo(sub) < 0) {
+            return new ArrayList<>(rawTotals);
+        }
+
+        List<Integer> eligibleIndexes = new ArrayList<>();
+        BigDecimal eligibleSum = BigDecimal.ZERO;
+        for (int i = 0; i < lines.size(); i++) {
+            if (!isPackagingLine(lines.get(i))) {
+                eligibleIndexes.add(i);
+                eligibleSum = eligibleSum.add(rawTotals.get(i));
+            }
+        }
+
+        if (eligibleIndexes.isEmpty()) {
+            return new ArrayList<>(rawTotals);
+        }
+
+        BigDecimal discountApplied = discount.min(eligibleSum).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal eligibleNet = eligibleSum.subtract(discountApplied).max(BigDecimal.ZERO)
+                .setScale(2, RoundingMode.HALF_UP);
+
+        List<BigDecimal> result = new ArrayList<>(rawTotals);
+        if (eligibleSum.compareTo(BigDecimal.ZERO) <= 0) {
+            return result;
+        }
+
+        BigDecimal allocated = BigDecimal.ZERO;
+        for (int j = 0; j < eligibleIndexes.size(); j++) {
+            int idx = eligibleIndexes.get(j);
+            BigDecimal raw = rawTotals.get(idx);
+            BigDecimal net;
+            if (j == eligibleIndexes.size() - 1) {
+                net = eligibleNet.subtract(allocated).setScale(2, RoundingMode.HALF_UP);
+            } else {
+                net = eligibleNet.multiply(raw)
+                        .divide(eligibleSum, 2, RoundingMode.HALF_UP);
+                allocated = allocated.add(net);
+            }
+            result.set(idx, net);
+        }
+        return result;
     }
 
     /**
