@@ -59,12 +59,28 @@ Copiar `application.properties.example` → `application.properties` y verificar
 
 Regla piloto: **1 encargada = 1 kiosko** (no asignar la misma persona a dos ubicaciones).
 
-### 1.5 Inventario inicial
+### 1.5 Inventario inicial (migración desde sistema anterior)
 
-Inicializar stock en cero (el stock real entra por distribución):
+Para kioskos que vienen de otro sistema con saldos reales al corte, use la pestaña **Inventario inicial** en **Inventarios → Inventario de kioskos** (`/admin/kiosk-inventory`). No confundir con **Conteo físico** (periódico) ni con **Mi conteo** del POS.
 
-- API: `POST /api/product-inventory/initialize?category=KIOSKO&locationId={idVillaLobos}`
-- UI: **Inventarios → Por ubicación (KIOSKO)** → “Actualizar inventario”
+Orden operativo (supervisora con `KIOSCOS.INVENTARIO_KIOSKO.VER`):
+
+1. **Generar inventario** — crea filas en `kiosco_stock` en cero para el kiosko seleccionado (`POST /api/kiosco-inventory/initialize?locationId={id}`).
+2. Pestaña **Inventario inicial** → **Iniciar inventario inicial** — abre borrador DRAFT.
+3. Buscar producto → color → (cinchos FOSS: tallas) → capturar cantidades reales del corte.
+4. **Aplicar al stock** — crea movimientos **AJUSTE** con motivo fijo `Inventario inicial - migración` y deja el stock en esas cantidades. Solo puede aplicarse **una vez** por kiosko.
+5. **Primer conteo físico** oficial — la columna **Ini.** del kardex debe coincidir con lo cargado (derivado de movimientos previos al periodo del conteo).
+
+Migración SQL requerida antes del deploy: `scripts/migration-kiosco-opening-inventory.sql`.
+
+API inventario inicial:
+
+- `POST /api/kiosco-inventory/{locationId}/inventario-inicial`
+- `PUT /api/kiosco-inventory/inventario-inicial/{id}/items`
+- `POST /api/kiosco-inventory/inventario-inicial/{id}/aplicar`
+- `GET /api/kiosco-inventory/{locationId}/inventario-inicial/estado`
+
+Para kioskos nuevos sin corte histórico, basta con inicializar en cero y recibir mercadería por distribución (sin inventario inicial aplicado).
 
 ---
 

@@ -12,7 +12,11 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryV
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoNotificationRecipientRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountItemUpsertRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountReviewRequest;
-import com.fossiles.fossilescorebackend.application.dto.response.KioscoConsolidatedReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.request.KioscoOpeningInventoryApplyRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioscoOpeningInventoryItemUpsertRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoOpeningInventoryReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoOpeningInventoryStatusResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioscoOpeningInventorySummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoInventoryInitializeResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoKardexReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
@@ -28,6 +32,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.KioscoInventoryCountService;
 import com.fossiles.fossilescorebackend.application.service.KioscoInventoryService;
+import com.fossiles.fossilescorebackend.application.service.KioscoOpeningInventoryService;
 import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -54,6 +59,7 @@ public class KioscoInventoryController {
 
     private final KioscoInventoryService kioscoInventoryService;
     private final KioscoInventoryCountService kioscoInventoryCountService;
+    private final KioscoOpeningInventoryService kioscoOpeningInventoryService;
     private final ProductDistributionService productDistributionService;
 
     @PostMapping("/{locationId}/entrada")
@@ -375,5 +381,49 @@ public class KioscoInventoryController {
             @PathVariable Long locationId
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(productDistributionService.previewShipmentReceiptInventoryReconcile(locationId, null));
+    }
+
+    @PostMapping("/{locationId}/inventario-inicial")
+    public ResponseEntity<KioscoOpeningInventoryReportResponse> startInventarioInicial(
+            @PathVariable Long locationId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoOpeningInventoryService.startOrGetDraft(locationId));
+    }
+
+    @GetMapping("/inventario-inicial/{id}")
+    public ResponseEntity<KioscoOpeningInventoryReportResponse> getInventarioInicial(
+            @PathVariable Long id
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoOpeningInventoryService.getById(id));
+    }
+
+    @PutMapping("/inventario-inicial/{id}/items")
+    public ResponseEntity<KioscoOpeningInventoryReportResponse> saveInventarioInicialItems(
+            @PathVariable Long id,
+            @RequestBody List<KioscoOpeningInventoryItemUpsertRequest> items
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoOpeningInventoryService.upsertItems(id, items));
+    }
+
+    @PostMapping("/inventario-inicial/{id}/aplicar")
+    public ResponseEntity<KioscoOpeningInventoryReportResponse> aplicarInventarioInicial(
+            @PathVariable Long id,
+            @RequestBody(required = false) KioscoOpeningInventoryApplyRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoOpeningInventoryService.apply(id, request));
+    }
+
+    @GetMapping("/{locationId}/inventario-inicial/estado")
+    public ResponseEntity<KioscoOpeningInventoryStatusResponse> getInventarioInicialEstado(
+            @PathVariable Long locationId
+    ) throws ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoOpeningInventoryService.getStatus(locationId));
+    }
+
+    @GetMapping("/{locationId}/inventario-inicial/historial")
+    public ResponseEntity<List<KioscoOpeningInventorySummaryResponse>> getInventarioInicialHistorial(
+            @PathVariable Long locationId
+    ) throws ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoOpeningInventoryService.listApplied(locationId));
     }
 }
