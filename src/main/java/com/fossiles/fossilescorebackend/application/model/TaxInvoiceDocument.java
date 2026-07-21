@@ -48,7 +48,7 @@ public class TaxInvoiceDocument {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class Line {
-        /** Código de producto para columna COD en representación gráfica INFILE (adenda). */
+        /** Código de producto (parte anterior al {@code |} en {@code dte:Descripcion} para plantilla INFILE). */
         private String productCode;
         private String description;
         private BigDecimal quantity;

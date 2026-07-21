@@ -359,7 +359,7 @@ class FelFactXmlBuilderTest {
     }
 
     @Test
-    void separatesProductCodeInAdendaFromDescriptionInItem() {
+    void formatsProductCodeAndDescriptionInFelDescripcion() {
         FelEmissionProperties props = new FelEmissionProperties();
         props.setNitEmisor("123456789");
         props.setNombreEmisor("FOSSILES SA");
@@ -394,16 +394,10 @@ class FelFactXmlBuilderTest {
 
         String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
 
-        assertThat(xml).contains("<Codigos>");
-        assertThat(xml).contains("<Codigo Linea=\"1\">B-23-1</Codigo>");
-        assertThat(xml).contains("<Codigo1>B-23-1</Codigo1>");
-        assertThat(xml).contains("<Codigo Linea=\"2\">SUM-BL-M</Codigo>");
-        assertThat(xml).contains("<Codigo2>SUM-BL-M</Codigo2>");
+        assertThat(xml).doesNotContain("<Codigos>");
         assertThat(xml).doesNotContain("<dte:CodigoProducto>");
-        assertThat(xml).contains("<dte:Descripcion>BILLETERA MEGAN CON HOJAS NEGRO</dte:Descripcion>");
-        assertThat(xml).contains("<dte:Descripcion>BOLSA EMPAQUE MEDIANA</dte:Descripcion>");
-        assertThat(xml).doesNotContain("<dte:Descripcion>B-23-1 BILLETERA");
-        assertThat(xml).doesNotContain("<dte:Descripcion>SUM-BL-M BOLSA");
+        assertThat(xml).contains("<dte:Descripcion>B-23-1 | BILLETERA MEGAN CON HOJAS NEGRO</dte:Descripcion>");
+        assertThat(xml).contains("<dte:Descripcion>SUM-BL-M | BOLSA EMPAQUE MEDIANA</dte:Descripcion>");
     }
 
     @Test
@@ -415,6 +409,8 @@ class FelFactXmlBuilderTest {
 
         assertThat(FelFactXmlBuilder.resolveFelItemDescription(line))
                 .isEqualTo("BILLETERA MEGAN CON HOJAS NEGRO");
+        assertThat(FelFactXmlBuilder.resolveFelItemDescripcionForDte(line))
+                .isEqualTo("B-23-1 | BILLETERA MEGAN CON HOJAS NEGRO");
         assertThat(FelFactXmlBuilder.resolveFelItemProductCode(line)).isEqualTo("B-23-1");
     }
 

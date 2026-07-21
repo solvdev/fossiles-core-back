@@ -4,11 +4,13 @@ import org.junit.jupiter.api.Test;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -75,7 +77,8 @@ class KioskSaleInvoiceMapperTest {
 
     @Test
     void resolvesMissingProductCodeFromProductCatalog() {
-        when(productRepository.findById(99L)).thenReturn(Optional.empty());
+        ProductEntity product = ProductEntity.builder().id(99L).code("FOSS-18").build();
+        when(productRepository.findAllById(Set.of(99L))).thenReturn(List.of(product));
 
         KioskSaleEntity sale = KioskSaleEntity.builder()
                 .items(List.of(
@@ -92,6 +95,6 @@ class KioskSaleInvoiceMapperTest {
         var document = mapper.fromSale(sale);
 
         assertThat(document.getLines()).hasSize(1);
-        assertThat(document.getLines().get(0).getProductCode()).isNull();
+        assertThat(document.getLines().get(0).getProductCode()).isEqualTo("FOSS-18");
     }
 }

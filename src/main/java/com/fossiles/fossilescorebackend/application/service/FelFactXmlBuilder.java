@@ -58,7 +58,6 @@ public class FelFactXmlBuilder {
                 documentLines, subtotal, totalAmount, discountAmount);
 
         StringBuilder itemsXml = new StringBuilder();
-        List<String> adendaLineCodes = new ArrayList<>();
         BigDecimal totalIva = BigDecimal.ZERO;
         BigDecimal granTotalFromLines = BigDecimal.ZERO;
         int lineNo = 0;
@@ -77,14 +76,7 @@ public class FelFactXmlBuilder {
             BigDecimal unitPrice = qty.compareTo(BigDecimal.ZERO) > 0
                     ? lineTotal.divide(qty, 2, RoundingMode.HALF_UP)
                     : lineTotal;
-            String productCode = resolveFelItemProductCode(line);
-            if (!productCode.isBlank()) {
-                adendaLineCodes.add(buildAdendaLineCodeTag(lineNo, productCode));
-            }
-            String desc = resolveFelItemDescription(line);
-            if (desc.isBlank()) {
-                desc = "Producto";
-            }
+            String desc = resolveFelItemDescripcionForDte(line);
             itemsXml.append("""
                     <dte:Item BienOServicio="B" NumeroLinea="%d">
                       <dte:Cantidad>%s</dte:Cantidad>
@@ -116,7 +108,7 @@ public class FelFactXmlBuilder {
         }
 
         String frasesXml = buildFrasesXml(credentials.frases());
-        String adendaXml = buildAdendaXml(document.getInternalNumber(), adendaLineCodes);
+        String adendaXml = buildAdendaXml(document.getInternalNumber());
         BigDecimal granTotal = granTotalFromLines.setScale(2, RoundingMode.HALF_UP);
 
         String establishmentCode = firstNonBlank(
@@ -259,41 +251,52 @@ public class FelFactXmlBuilder {
      * Adenda: información no tributaria dentro de {@code SAT}, hermana de {@code DTE}
      * (esquema GT_Documento-0.2.0). No va como hijo directo de {@code GTDocumento}.
      */
-    private String buildAdendaXml(String internalNumber, List<String> lineCodeTags) {
+    private String buildAdendaXml(String internalNumber) {
         boolean hasInternal = internalNumber != null
                 && !internalNumber.isBlank()
                 && !looksLikePosSaleNumber(internalNumber.trim());
-        boolean hasLineCodes = lineCodeTags != null && !lineCodeTags.isEmpty();
-        if (!hasInternal && !hasLineCodes) {
+        if (!hasInternal) {
             return "";
         }
-        StringBuilder sb = new StringBuilder("<dte:Adenda>");
-        if (hasLineCodes) {
-            sb.append("<Codigos>");
-            for (String tag : lineCodeTags) {
-                sb.append(tag);
-            }
-            sb.append("</Codigos>");
-        }
-        if (hasInternal) {
-            String value = FelXmlEscaper.escape(internalNumber.trim());
-            // INFILE imprime "Control:" en la representación gráfica leyendo la adenda.
-            sb.append("<Control>").append(value).append("</Control>");
-            sb.append("<NumeroControlInterno>").append(value).append("</NumeroControlInterno>");
-        }
-        sb.append("</dte:Adenda>");
-        return sb.toString();
+        String value = FelXmlEscaper.escape(internalNumber.trim());
+        return "<dte:Adenda>"
+                + "<Control>" + value + "</Control>"
+                + "<NumeroControlInterno>" + value + "</NumeroControlInterno>"
+                + "</dte:Adenda>";
     }
 
-    /** Descripción tributaria sin el código de producto (columna DESCRIPCIÓN en INFILE). */
+    /**
+     * Valor de {@code dte:Descripcion} para plantilla INFILE/CUEROGLAM:
+     * {@code Código | Descripción}. INFILE parte la columna COD antes del pipe.
+     */
+    static String resolveFelItemDescripcionForDte(TaxInvoiceDocument.Line line) {
+        if (line == null) {
+            return "Producto";
+        }
+        String productCode = safe(line.getProductCode()).trim();
+        String description = resolveFelItemDescription(line);
+        if (productCode.isBlank()) {
+            return description.isBlank() ? "Producto" : description;
+        }
+        if (description.isBlank()) {
+            return productCode;
+        }
+        return productCode + " | " + description;
+    }
+
+    /** Texto descriptivo del ítem sin el código de producto (parte posterior al pipe en INFILE). */
     static String resolveFelItemDescription(TaxInvoiceDocument.Line line) {
         if (line == null) {
             return "Producto";
         }
         String description = safe(line.getDescription());
-        String productCode = safe(line.getProductCode());
+        String productCode = safe(line.getProductCode()).trim();
         if (description.isBlank()) {
             return productCode.isBlank() ? "Producto" : productCode;
+        }
+        String pipeSplit = splitFelPipeDescription(description);
+        if (pipeSplit != null) {
+            return pipeSplit;
         }
         if (!productCode.isBlank() && startsWithToken(description, productCode)) {
             String withoutCode = stripLeadingToken(description, productCode).trim();
@@ -304,31 +307,21 @@ public class FelFactXmlBuilder {
         return description;
     }
 
-    /** Código interno del producto (solo adenda INFILE para columna COD del PDF). */
+    /** Código interno del producto para columna COD en plantilla INFILE (parte anterior al pipe). */
     static String resolveFelItemProductCode(TaxInvoiceDocument.Line line) {
         if (line == null) {
             return "";
         }
-        return safe(line.getProductCode());
+        return safe(line.getProductCode()).trim();
     }
 
-    /**
-     * Adenda INFILE/CUEROGLAM: {@code Linea} (no {@code NumeroLinea}) y tag numerado {@code CodigoN}.
-     */
-    private static String buildAdendaLineCodeTag(int lineNo, String productCode) {
-        String escaped = FelXmlEscaper.escape(productCode.trim());
-        return "<Codigo Linea=\""
-                + lineNo
-                + "\">"
-                + escaped
-                + "</Codigo>"
-                + "<Codigo"
-                + lineNo
-                + ">"
-                + escaped
-                + "</Codigo"
-                + lineNo
-                + ">";
+    private static String splitFelPipeDescription(String description) {
+        int pipeIdx = description.indexOf('|');
+        if (pipeIdx < 0) {
+            return null;
+        }
+        String afterPipe = description.substring(pipeIdx + 1).trim();
+        return afterPipe.isBlank() ? null : afterPipe;
     }
 
     private static boolean startsWithToken(String text, String token) {
