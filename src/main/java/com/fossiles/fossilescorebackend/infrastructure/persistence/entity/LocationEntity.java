@@ -6,6 +6,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
+
 @Entity
 @Table(name = "locations")
 @Data
@@ -61,6 +63,11 @@ public class LocationEntity {
     @Column(name = "pos_test_mode", nullable = false)
     @Builder.Default
     private Boolean posTestMode = false;
+
+    /** Fondo inicial de caja POS al abrir turno (por kiosko). */
+    @Column(name = "pos_opening_cash_amount", nullable = false, precision = 12, scale = 2)
+    @Builder.Default
+    private BigDecimal posOpeningCashAmount = new BigDecimal("300");
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "encargado_id", insertable = false, updatable = false)

@@ -399,8 +399,7 @@ class FelFactXmlBuilderTest {
         assertThat(xml).contains("<Codigo1>B-23-1</Codigo1>");
         assertThat(xml).contains("<Codigo Linea=\"2\">SUM-BL-M</Codigo>");
         assertThat(xml).contains("<Codigo2>SUM-BL-M</Codigo2>");
-        assertThat(xml).contains("<dte:CodigoProducto>B-23-1</dte:CodigoProducto>");
-        assertThat(xml).contains("<dte:CodigoProducto>SUM-BL-M</dte:CodigoProducto>");
+        assertThat(xml).doesNotContain("<dte:CodigoProducto>");
         assertThat(xml).contains("<dte:Descripcion>BILLETERA MEGAN CON HOJAS NEGRO</dte:Descripcion>");
         assertThat(xml).contains("<dte:Descripcion>BOLSA EMPAQUE MEDIANA</dte:Descripcion>");
         assertThat(xml).doesNotContain("<dte:Descripcion>B-23-1 BILLETERA");

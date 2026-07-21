@@ -23,6 +23,8 @@ public class KioskPosContextResponse {
     private String kioskName;
     /** Kiosko en piloto: ventas no cuentan en reportes de producción. */
     private Boolean posTestMode;
+    /** Fondo inicial de caja POS al abrir turno. */
+    private BigDecimal posOpeningCashAmount;
     private List<KioskOption> kiosks;
     private List<InventoryItem> inventory;
 
@@ -34,6 +36,7 @@ public class KioskPosContextResponse {
         private Long kioskId;
         private String kioskCode;
         private String kioskName;
+        private BigDecimal posOpeningCashAmount;
     }
 
     @Data

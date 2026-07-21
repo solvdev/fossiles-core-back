@@ -15,6 +15,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URI;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -101,6 +103,7 @@ public class LocationController {
                 .felMunicipio(entity.getFelMunicipio())
                 .felDepartamento(entity.getFelDepartamento())
                 .posTestMode(Boolean.TRUE.equals(entity.getPosTestMode()))
+                .posOpeningCashAmount(entity.getPosOpeningCashAmount())
                 .internalSeriesCode(entity.getInternalSeriesCode());
         
         if (entity.getEncargado() != null) {
@@ -135,6 +138,7 @@ public class LocationController {
                 .felMunicipio(trimToNull(request.getFelMunicipio()))
                 .felDepartamento(trimToNull(request.getFelDepartamento()))
                 .posTestMode(Boolean.TRUE.equals(request.getPosTestMode()))
+                .posOpeningCashAmount(normalizePosOpeningCashAmount(request.getPosOpeningCashAmount()))
                 .internalSeriesCode(trimToNull(request.getInternalSeriesCode()))
                 .build();
     }
@@ -145,6 +149,13 @@ public class LocationController {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static BigDecimal normalizePosOpeningCashAmount(BigDecimal value) {
+        if (value == null || value.compareTo(BigDecimal.ZERO) <= 0) {
+            return new BigDecimal("300");
+        }
+        return value.setScale(2, RoundingMode.HALF_UP);
     }
 
     private void updateEntity(LocationEntity entity, LocationRequest request) {
@@ -172,6 +183,9 @@ public class LocationController {
         }
         if (request.getPosTestMode() != null) {
             entity.setPosTestMode(request.getPosTestMode());
+        }
+        if (request.getPosOpeningCashAmount() != null) {
+            entity.setPosOpeningCashAmount(normalizePosOpeningCashAmount(request.getPosOpeningCashAmount()));
         }
         if (request.getInternalSeriesCode() != null) {
             entity.setInternalSeriesCode(trimToNull(request.getInternalSeriesCode()));

@@ -1,10 +1,13 @@
 package com.fossiles.fossilescorebackend.application.dto.request;
 
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
 
 @Data
 @Builder
@@ -48,6 +51,10 @@ public class LocationRequest {
 
     /** Kiosko en piloto POS: ventas no suman en dashboard de producción. */
     private Boolean posTestMode;
+
+    /** Fondo inicial de caja POS al abrir turno. */
+    @DecimalMin(value = "0.01", message = "El fondo inicial POS debe ser mayor a cero")
+    private BigDecimal posOpeningCashAmount;
 
     /** Código de serie de control interno (ej. A45, B). Prefijo de tax_invoice.internal_number. */
     @Size(max = 10, message = "Internal series code must not exceed 10 characters")

@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
+
 @Data
 @Builder
 @NoArgsConstructor
@@ -25,6 +27,8 @@ public class LocationResponse {
     private String felMunicipio;
     private String felDepartamento;
     private Boolean posTestMode;
+    /** Fondo inicial de caja POS al abrir turno. */
+    private BigDecimal posOpeningCashAmount;
     /** Código de serie de control interno (ej. A45, B). */
     private String internalSeriesCode;
 }

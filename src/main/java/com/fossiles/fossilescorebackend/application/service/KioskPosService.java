@@ -277,11 +277,13 @@ public class KioskPosService {
                 .kioskCode(kiosk.getCode())
                 .kioskName(kiosk.getName())
                 .posTestMode(isPosTestSale(kiosk))
+                .posOpeningCashAmount(resolvePosOpeningCashAmount(kiosk))
                 .kiosks(availableKiosks.stream()
                         .map(item -> KioskPosContextResponse.KioskOption.builder()
                                 .kioskId(item.getId())
                                 .kioskCode(item.getCode())
                                 .kioskName(item.getName())
+                                .posOpeningCashAmount(resolvePosOpeningCashAmount(item))
                                 .build())
                         .collect(Collectors.toList()))
                 .inventory(inventory)
@@ -2760,6 +2762,17 @@ public class KioskPosService {
                 .divide(safePrevious, 1, RoundingMode.HALF_UP);
     }
 
+    private BigDecimal resolvePosOpeningCashAmount(LocationEntity kiosk) {
+        if (kiosk == null || kiosk.getPosOpeningCashAmount() == null) {
+            return CASH_OPENING_AMOUNT;
+        }
+        BigDecimal amount = kiosk.getPosOpeningCashAmount().setScale(2, RoundingMode.HALF_UP);
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return CASH_OPENING_AMOUNT;
+        }
+        return amount;
+    }
+
     private boolean isPosTestSale(LocationEntity kiosk) {
         if (kiosk != null && kiosk.getPosTestMode() != null) {
             return Boolean.TRUE.equals(kiosk.getPosTestMode());
@@ -3248,7 +3261,7 @@ public class KioskPosService {
                 .kioskLocationId(kiosk.getId())
                 .openedByUserId(user.getId())
                 .openedAt(GuatemalaDateTime.now())
-                .openingAmount(CASH_OPENING_AMOUNT)
+                .openingAmount(resolvePosOpeningCashAmount(kiosk))
                 .status(CASH_SESSION_OPEN)
                 .build();
         KioskCashSessionEntity saved = kioskCashSessionRepository.save(session);

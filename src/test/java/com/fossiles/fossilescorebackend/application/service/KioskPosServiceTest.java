@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotio
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionTierRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -302,6 +303,19 @@ class KioskPosServiceTest {
         assertThat(firstInvoiced.getInvoice()).isNotNull();
         assertThat(firstInvoiced.getInvoice().getInternalNumber()).isEqualTo("A1-1");
         assertThat(secondInvoiced.getInvoice().getInternalNumber()).isEqualTo("A1-2");
+    }
+
+    @Test
+    void openCashSession_usesKioskConfiguredOpeningAmount() throws Exception {
+        kioskB.setPosOpeningCashAmount(new BigDecimal("500.00"));
+        locationRepository.save(kioskB);
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        KioskCashSessionResponse session = kioskPosService.openCashSession(KioskCashSessionOpenRequest.builder()
+                .kioskLocationId(kioskB.getId())
+                .build());
+
+        assertThat(session.getOpeningAmount()).isEqualByComparingTo("500.00");
     }
 
     @Test

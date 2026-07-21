@@ -85,10 +85,9 @@ public class FelFactXmlBuilder {
             if (desc.isBlank()) {
                 desc = "Producto";
             }
-            String codigoProductoXml = buildCodigoProductoXml(productCode);
             itemsXml.append("""
                     <dte:Item BienOServicio="B" NumeroLinea="%d">
-                      %s<dte:Cantidad>%s</dte:Cantidad>
+                      <dte:Cantidad>%s</dte:Cantidad>
                       <dte:UnidadMedida>UNI</dte:UnidadMedida>
                       <dte:Descripcion>%s</dte:Descripcion>
                       <dte:PrecioUnitario>%s</dte:PrecioUnitario>
@@ -106,7 +105,6 @@ public class FelFactXmlBuilder {
                     </dte:Item>
                     """.formatted(
                     lineNo,
-                    codigoProductoXml,
                     fmt(qty),
                     FelXmlEscaper.escape(desc),
                     fmt(unitPrice),
@@ -306,25 +304,12 @@ public class FelFactXmlBuilder {
         return description;
     }
 
-    /** Código de producto para columna COD en representación gráfica INFILE (adenda). */
+    /** Código interno del producto (solo adenda INFILE para columna COD del PDF). */
     static String resolveFelItemProductCode(TaxInvoiceDocument.Line line) {
         if (line == null) {
             return "";
         }
         return safe(line.getProductCode());
-    }
-
-    /**
-     * Campo SAT opcional (0.2.1+) que INFILE suele usar para la columna COD del PDF.
-     * Se emite antes de Cantidad; el certificador lo acepta aunque el namespace sea 0.2.0.
-     */
-    private static String buildCodigoProductoXml(String productCode) {
-        if (productCode == null || productCode.isBlank()) {
-            return "";
-        }
-        return "<dte:CodigoProducto>"
-                + FelXmlEscaper.escape(productCode.trim())
-                + "</dte:CodigoProducto>\n                      ";
     }
 
     /**
