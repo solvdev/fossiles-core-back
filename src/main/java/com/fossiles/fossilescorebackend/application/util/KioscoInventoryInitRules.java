@@ -22,11 +22,11 @@ public final class KioscoInventoryInitRules {
     /** Solo aplican a cinchos; el resto del catálogo no los usa. */
     public static final Set<Long> CINCHO_COMBO_ONLY_COLOR_IDS = Set.of(37L, 38L, 39L);
 
-    /** Niño: 16–28 por pares. */
-    public static final List<String> KIDS_CINCHO_SIZES = List.of("16", "18", "20", "22", "24", "26", "28");
+    /** Niño: 16–30 por pares. */
+    public static final List<String> KIDS_CINCHO_SIZES = List.of("16", "18", "20", "22", "24", "26", "28", "30");
 
-    /** Dama / caballero: 32–42 por pares. */
-    public static final List<String> ADULT_CINCHO_SIZES = List.of("32", "34", "36", "38", "40", "42");
+    /** Dama / caballero: 30–42 por pares. */
+    public static final List<String> ADULT_CINCHO_SIZES = List.of("30", "32", "34", "36", "38", "40", "42");
 
     private KioscoInventoryInitRules() {
     }
