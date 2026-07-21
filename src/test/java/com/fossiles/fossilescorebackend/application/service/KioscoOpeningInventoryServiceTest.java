@@ -165,11 +165,7 @@ class KioscoOpeningInventoryServiceTest {
     @Test
     void upsertItems_aceptaEmpaqueSinColor() throws Exception {
         stubDraftSession();
-        when(productRepository.findById(packagingProductId)).thenReturn(Optional.of(ProductEntity.builder()
-                .id(packagingProductId)
-                .code("SUM-001")
-                .name("Empaque")
-                .build()));
+        when(productRepository.findById(packagingProductId)).thenReturn(Optional.of(packagingProduct("SUM-001", "Empaque")));
         when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
                 sessionId, packagingProductId, null, "NUEVO")).thenReturn(Optional.empty());
         when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
@@ -183,6 +179,30 @@ class KioscoOpeningInventoryServiceTest {
                 KioscoOpeningInventoryItemUpsertRequest.builder()
                         .productId(packagingProductId)
                         .quantity(5)
+                        .build()));
+
+        assertThat(report.getItems()).hasSize(1);
+        verify(openingInventoryItemRepository).save(any(KioscoOpeningInventoryItemEntity.class));
+    }
+
+    @Test
+    void upsertItems_aceptaBolsaParaCinchosSinTallas() throws Exception {
+        stubDraftSession();
+        when(productRepository.findById(packagingProductId)).thenReturn(Optional.of(
+                packagingProduct("SUM-BL-CN", "BOLSA PARA CINCHOS")));
+        when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
+                sessionId, packagingProductId, null, "NUEVO")).thenReturn(Optional.empty());
+        when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
+                .thenReturn(List.of(KioscoOpeningInventoryItemEntity.builder()
+                        .openingInventoryId(sessionId)
+                        .productId(packagingProductId)
+                        .quantity(38)
+                        .build()));
+
+        KioscoOpeningInventoryReportResponse report = service.upsertItems(sessionId, List.of(
+                KioscoOpeningInventoryItemUpsertRequest.builder()
+                        .productId(packagingProductId)
+                        .quantity(38)
                         .build()));
 
         assertThat(report.getItems()).hasSize(1);
@@ -410,6 +430,14 @@ class KioscoOpeningInventoryServiceTest {
                 .code("FOSS-001")
                 .name("Cincho FOSS")
                 .cinchoType("FOSS")
+                .build();
+    }
+
+    private ProductEntity packagingProduct(String code, String name) {
+        return ProductEntity.builder()
+                .id(packagingProductId)
+                .code(code)
+                .name(name)
                 .build();
     }
 }

@@ -84,6 +84,17 @@ class KioscoInventoryInitRulesTest {
     }
 
     @Test
+    void packagingProductWithCinchoInName_isNotCinchoProduct() {
+        ProductEntity bag = ProductEntity.builder()
+                .code("SUM-BL-CN")
+                .name("BOLSA PARA CINCHOS")
+                .build();
+
+        assertThat(KioscoInventoryInitRules.isCinchoProduct(bag)).isFalse();
+        assertThat(KioscoInventoryInitRules.buildZeroSizesData(bag)).isNull();
+    }
+
+    @Test
     void cinchoProduct_buildsZeroSizesJson() {
         ProductEntity cincho = ProductEntity.builder()
                 .code("FOSS-001")

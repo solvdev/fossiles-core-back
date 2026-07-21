@@ -25,7 +25,6 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
-import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -131,7 +130,7 @@ public class KioscoOpeningInventoryService {
                         item.getProductId(),
                         item.getColorId(),
                         targetQty,
-                        CinchoProductUtils.isFossCinchoProduct(product) ? targetSizes : null,
+                        KioscoInventoryInitRules.isCinchoProduct(product) ? targetSizes : null,
                         OPENING_INVENTORY_REASON,
                         userId,
                         item.getHardwareCondition()
@@ -221,7 +220,7 @@ public class KioscoOpeningInventoryService {
         ProductEntity product = productRepository.findById(req.getProductId())
                 .orElseThrow(() -> new ResourceNotFoundException("Product", req.getProductId()));
         boolean packaging = KioscoInventoryInitRules.isPackagingProduct(product);
-        boolean foss = CinchoProductUtils.isFossCinchoProduct(product);
+        boolean foss = KioscoInventoryInitRules.isCinchoProduct(product);
 
         Long colorId = req.getColorId();
         String hardware = resolveItemHardware(req.getHardwareCondition());
@@ -299,7 +298,7 @@ public class KioscoOpeningInventoryService {
                                 ProductHardwareCondition.normalize(item.getHardwareCondition())))
                 .collect(Collectors.toList());
         int currentQty = stocks.stream().mapToInt(s -> safeInt(s.getCurrentStock())).sum();
-        if (CinchoProductUtils.isFossCinchoProduct(product)) {
+        if (KioscoInventoryInitRules.isCinchoProduct(product)) {
             Map<String, Integer> currentSizes = parseSizes(
                     stocks.isEmpty() ? null : stocks.get(0).getSizesData());
             return currentQty != targetQty || !sizesEqual(currentSizes, targetSizes);

@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.util;
 
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 
 import java.text.Normalizer;
@@ -16,9 +17,12 @@ public final class CinchoProductUtils {
 
     private CinchoProductUtils() {}
 
-    /** Cincho clásico (FOSS o nombre con cincho). */
+    /** Cincho clásico (FOSS o nombre con cincho). Empaques SUM- quedan excluidos aunque el nombre diga "cincho". */
     public static boolean isFossCinchoProduct(ProductEntity product) {
         if (product == null) {
+            return false;
+        }
+        if (ProductCinchoType.isPackagingProductCode(product.getCode())) {
             return false;
         }
         if (isFossCinchoCode(product.getCode())) {
