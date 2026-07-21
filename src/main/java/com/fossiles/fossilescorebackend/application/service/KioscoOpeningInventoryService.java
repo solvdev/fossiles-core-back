@@ -222,10 +222,9 @@ public class KioscoOpeningInventoryService {
                 .orElseThrow(() -> new ResourceNotFoundException("Product", req.getProductId()));
         boolean packaging = KioscoInventoryInitRules.isPackagingProduct(product);
         boolean foss = CinchoProductUtils.isFossCinchoProduct(product);
-        boolean cincho = KioscoInventoryInitRules.isCinchoProduct(product);
 
         Long colorId = req.getColorId();
-        String hardware = resolveItemHardware(req.getHardwareCondition(), cincho);
+        String hardware = resolveItemHardware(req.getHardwareCondition());
         if (packaging) {
             if (colorId != null) {
                 throw new BusinessException("Los empaques SUM- no usan color; omita colorId.");
@@ -496,7 +495,7 @@ public class KioscoOpeningInventoryService {
                 .collect(Collectors.joining(", "));
     }
 
-    private String resolveItemHardware(String raw, boolean cinchoProduct) throws BusinessException {
+    private String resolveItemHardware(String raw) throws BusinessException {
         String hardware = ProductHardwareCondition.normalize(raw);
         if (hardware == null) {
             hardware = ProductHardwareCondition.NUEVO;
@@ -504,9 +503,6 @@ public class KioscoOpeningInventoryService {
         if (!ProductHardwareCondition.NUEVO.equals(hardware)
                 && !ProductHardwareCondition.VIEJO.equals(hardware)) {
             throw new BusinessException("Herraje inválido: use NUEVO o VIEJO.");
-        }
-        if (!cinchoProduct && ProductHardwareCondition.VIEJO.equals(hardware)) {
-            throw new BusinessException("Solo los cinchos usan herraje viejo en inventario inicial.");
         }
         return hardware;
     }
