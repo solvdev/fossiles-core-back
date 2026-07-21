@@ -440,6 +440,9 @@ public class KioscoOpeningInventoryService {
 
     private Map<String, BigDecimal> normalizeSizes(Map<String, Integer> raw) throws BusinessException {
         Map<String, BigDecimal> normalized = new LinkedHashMap<>();
+        if (raw == null || raw.isEmpty()) {
+            return normalized;
+        }
         for (Map.Entry<String, Integer> entry : raw.entrySet()) {
             String key = ProductInventorySizesJson.normalizeKey(entry.getKey());
             if (key.isEmpty()) {

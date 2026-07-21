@@ -35,6 +35,9 @@ public final class ProductInventorySizesJson {
         }
         try {
             Map<String, Object> raw = MAPPER.readValue(json, new TypeReference<>() {});
+            if (raw == null) {
+                return new LinkedHashMap<>();
+            }
             Map<String, BigDecimal> out = new LinkedHashMap<>();
             for (Map.Entry<String, Object> e : raw.entrySet()) {
                 if (e.getKey() == null) {
@@ -161,6 +164,9 @@ public final class ProductInventorySizesJson {
         }
         try {
             Map<String, Map<String, Object>> raw = MAPPER.readValue(json, new TypeReference<>() {});
+            if (raw == null) {
+                return new LinkedHashMap<>();
+            }
             Map<String, Map<String, BigDecimal>> out = new LinkedHashMap<>();
             for (Map.Entry<String, Map<String, Object>> locEntry : raw.entrySet()) {
                 if (locEntry.getKey() == null || locEntry.getValue() == null) {
@@ -193,6 +199,9 @@ public final class ProductInventorySizesJson {
         }
         try {
             Map<String, Object> raw = MAPPER.readValue(json, new TypeReference<>() {});
+            if (raw == null) {
+                return new LinkedHashMap<>();
+            }
             Map<String, String> out = new LinkedHashMap<>();
             for (Map.Entry<String, Object> e : raw.entrySet()) {
                 if (e.getKey() == null || e.getValue() == null) {

@@ -58,7 +58,7 @@ class KioscoInventoryInitRulesTest {
     }
 
     @Test
-    void cinchoAdult_hasEvenSizes30To42() {
+    void cinchoAdult_hasEvenSizes30To46() {
         ProductEntity cincho = ProductEntity.builder()
                 .code("FOSS-ADULT")
                 .cinchoType("REVERSIBLE")
@@ -66,7 +66,7 @@ class KioscoInventoryInitRulesTest {
                 .build();
 
         assertThat(KioscoInventoryInitRules.resolveCinchoSizes(cincho))
-                .containsExactly("30", "32", "34", "36", "38", "40", "42");
+                .containsExactly("30", "32", "34", "36", "38", "40", "42", "46");
     }
 
     @Test
