@@ -48,6 +48,8 @@ public class TaxInvoiceDocument {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class Line {
+        /** Código de producto para columna COD en representación gráfica INFILE (adenda). */
+        private String productCode;
         private String description;
         private BigDecimal quantity;
         private BigDecimal unitPrice;

@@ -31,6 +31,7 @@ public class KioskSaleInvoiceMapper {
                 unitPrice = lineTotal.divide(qty, 2, RoundingMode.HALF_UP);
             }
             lines.add(TaxInvoiceDocument.Line.builder()
+                    .productCode(trimToNull(line.getProductCode()))
                     .description(buildLineDescription(line))
                     .quantity(qty)
                     .unitPrice(unitPrice)
@@ -67,9 +68,6 @@ public class KioskSaleInvoiceMapper {
 
     private static String buildLineDescription(KioskSaleItemEntity line) {
         List<String> parts = new ArrayList<>();
-        if (line.getProductCode() != null && !line.getProductCode().isBlank()) {
-            parts.add(line.getProductCode().trim());
-        }
         if (line.getProductName() != null && !line.getProductName().isBlank()) {
             parts.add(line.getProductName().trim());
         }
@@ -81,6 +79,13 @@ public class KioskSaleInvoiceMapper {
             return text.substring(0, 450);
         }
         return text.isBlank() ? "Producto" : text;
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim();
     }
 
     static String normalizeTaxId(String taxId) {

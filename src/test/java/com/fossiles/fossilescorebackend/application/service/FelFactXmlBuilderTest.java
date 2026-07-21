@@ -284,6 +284,62 @@ class FelFactXmlBuilderTest {
     }
 
     @Test
+    void separatesProductCodeInAdendaFromDescriptionInItem() {
+        FelEmissionProperties props = new FelEmissionProperties();
+        props.setNitEmisor("123456789");
+        props.setNombreEmisor("FOSSILES SA");
+        props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
+
+        TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .emitterEstablishmentCode("2")
+                .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
+                .internalNumber("A15-99")
+                .customerTaxId("CF")
+                .customerName("CONSUMIDOR FINAL")
+                .subtotal(new BigDecimal("441.45"))
+                .totalAmount(new BigDecimal("441.45"))
+                .lines(List.of(
+                        TaxInvoiceDocument.Line.builder()
+                                .productCode("B-23-1")
+                                .description("BILLETERA MEGAN CON HOJAS NEGRO")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("439.75"))
+                                .lineTotal(new BigDecimal("439.75"))
+                                .build(),
+                        TaxInvoiceDocument.Line.builder()
+                                .productCode("SUM-BL-M")
+                                .description("BOLSA EMPAQUE MEDIANA")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("1.70"))
+                                .lineTotal(new BigDecimal("1.70"))
+                                .build()
+                ))
+                .build();
+
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
+
+        assertThat(xml).contains("<Codigo NumeroLinea=\"1\">B-23-1</Codigo>");
+        assertThat(xml).contains("<Codigo NumeroLinea=\"2\">SUM-BL-M</Codigo>");
+        assertThat(xml).contains("<dte:Descripcion>BILLETERA MEGAN CON HOJAS NEGRO</dte:Descripcion>");
+        assertThat(xml).contains("<dte:Descripcion>BOLSA EMPAQUE MEDIANA</dte:Descripcion>");
+        assertThat(xml).doesNotContain("<dte:Descripcion>B-23-1 BILLETERA");
+        assertThat(xml).doesNotContain("<dte:Descripcion>SUM-BL-M BOLSA");
+    }
+
+    @Test
+    void stripsLegacyCombinedDescriptionWhenProductCodePresent() {
+        TaxInvoiceDocument.Line line = TaxInvoiceDocument.Line.builder()
+                .productCode("B-23-1")
+                .description("B-23-1 BILLETERA MEGAN CON HOJAS NEGRO")
+                .build();
+
+        assertThat(FelFactXmlBuilder.resolveFelItemDescription(line))
+                .isEqualTo("BILLETERA MEGAN CON HOJAS NEGRO");
+        assertThat(FelFactXmlBuilder.resolveFelItemProductCode(line)).isEqualTo("B-23-1");
+    }
+
+    @Test
     void excludesPosSaleNumberFromAdenda() {
         FelEmissionProperties props = new FelEmissionProperties();
         props.setNitEmisor("123456789");

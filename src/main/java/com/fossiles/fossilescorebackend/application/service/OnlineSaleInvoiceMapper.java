@@ -35,6 +35,7 @@ public class OnlineSaleInvoiceMapper {
                         ? item.getUnitPrice()
                         : lineTotal.divide(qty, 2, RoundingMode.HALF_UP);
                 lines.add(TaxInvoiceDocument.Line.builder()
+                        .productCode(trimToNull(item.getProductCode()))
                         .description(buildLineDescription(item))
                         .quantity(qty.setScale(3, RoundingMode.HALF_UP))
                         .unitPrice(unitPrice)
@@ -46,6 +47,7 @@ public class OnlineSaleInvoiceMapper {
             BigDecimal unitPrice = sale.getUnitPrice() != null ? sale.getUnitPrice() : BigDecimal.ZERO;
             BigDecimal lineTotal = unitPrice.multiply(qty).setScale(2, RoundingMode.HALF_UP);
             lines.add(TaxInvoiceDocument.Line.builder()
+                    .productCode(trimToNull(sale.getProductCode()))
                     .description(buildLegacyDescription(sale))
                     .quantity(qty.setScale(3, RoundingMode.HALF_UP))
                     .unitPrice(unitPrice)
@@ -101,9 +103,6 @@ public class OnlineSaleInvoiceMapper {
 
     private static String buildLineDescription(OnlineSaleItemEntity item) {
         List<String> parts = new ArrayList<>();
-        if (item.getProductCode() != null && !item.getProductCode().isBlank()) {
-            parts.add(item.getProductCode().trim());
-        }
         if (item.getProductName() != null && !item.getProductName().isBlank()) {
             parts.add(item.getProductName().trim());
         }
@@ -118,15 +117,17 @@ public class OnlineSaleInvoiceMapper {
     }
 
     private static String buildLegacyDescription(OnlineSaleEntity sale) {
-        List<String> parts = new ArrayList<>();
-        if (sale.getProductCode() != null) {
-            parts.add(sale.getProductCode().trim());
+        if (sale.getProductName() != null && !sale.getProductName().isBlank()) {
+            return sale.getProductName().trim();
         }
-        if (sale.getProductName() != null) {
-            parts.add(sale.getProductName().trim());
+        return "Producto";
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
         }
-        String text = String.join(" ", parts).trim();
-        return text.isBlank() ? "Producto" : text;
+        return value.trim();
     }
 
     private static String buildTransactionId(OnlineSaleEntity sale) {

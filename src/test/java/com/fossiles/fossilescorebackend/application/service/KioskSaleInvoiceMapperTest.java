@@ -62,6 +62,8 @@ class KioskSaleInvoiceMapperTest {
         var document = mapper.fromSale(sale);
 
         assertThat(document.getLines()).hasSize(2);
+        assertThat(document.getLines().get(0).getProductCode()).isEqualTo("BOL-01");
+        assertThat(document.getLines().get(0).getDescription()).isEqualTo("Bolso");
         assertThat(document.getLines().get(1).getLineTotal()).isEqualByComparingTo("0.00");
         assertThat(document.getLines().get(1).getUnitPrice()).isEqualByComparingTo("5.00");
     }

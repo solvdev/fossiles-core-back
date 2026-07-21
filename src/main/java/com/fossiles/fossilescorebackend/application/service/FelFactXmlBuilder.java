@@ -13,6 +13,7 @@ import java.math.RoundingMode;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.List;
@@ -55,11 +56,11 @@ public class FelFactXmlBuilder {
         BigDecimal discountRatio = resolveDiscountRatio(subtotal, totalAmount, linesRawSum);
 
         StringBuilder itemsXml = new StringBuilder();
+        List<String> adendaLineCodes = new ArrayList<>();
         BigDecimal totalIva = BigDecimal.ZERO;
         BigDecimal granTotalFromLines = BigDecimal.ZERO;
         int lineNo = 0;
         for (TaxInvoiceDocument.Line line : documentLines) {
-            lineNo++;
             BigDecimal lineTotal = nz(line.getLineTotal())
                     .multiply(discountRatio)
                     .setScale(2, RoundingMode.HALF_UP);
@@ -68,13 +69,22 @@ public class FelFactXmlBuilder {
                     && nz(line.getQuantity()).compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
+            lineNo++;
             totalIva = totalIva.add(iva.tax());
             granTotalFromLines = granTotalFromLines.add(lineTotal);
             BigDecimal qty = nz(line.getQuantity()).setScale(2, RoundingMode.HALF_UP);
             BigDecimal unitPrice = qty.compareTo(BigDecimal.ZERO) > 0
                     ? lineTotal.divide(qty, 2, RoundingMode.HALF_UP)
                     : lineTotal;
-            String desc = safe(line.getDescription());
+            String productCode = resolveFelItemProductCode(line);
+            if (!productCode.isBlank()) {
+                adendaLineCodes.add("<Codigo NumeroLinea=\""
+                        + lineNo
+                        + "\">"
+                        + FelXmlEscaper.escape(productCode)
+                        + "</Codigo>");
+            }
+            String desc = resolveFelItemDescription(line);
             if (desc.isBlank()) {
                 desc = "Producto";
             }
@@ -109,7 +119,7 @@ public class FelFactXmlBuilder {
         }
 
         String frasesXml = buildFrasesXml(credentials.frases());
-        String adendaXml = buildAdendaXml(document.getInternalNumber());
+        String adendaXml = buildAdendaXml(document.getInternalNumber(), adendaLineCodes);
         BigDecimal granTotal = granTotalFromLines.setScale(2, RoundingMode.HALF_UP);
 
         String establishmentCode = firstNonBlank(
@@ -252,22 +262,75 @@ public class FelFactXmlBuilder {
      * Adenda: información no tributaria dentro de {@code SAT}, hermana de {@code DTE}
      * (esquema GT_Documento-0.2.0). No va como hijo directo de {@code GTDocumento}.
      */
-    private String buildAdendaXml(String internalNumber) {
-        if (internalNumber == null || internalNumber.isBlank()) {
+    private String buildAdendaXml(String internalNumber, List<String> lineCodeTags) {
+        boolean hasInternal = internalNumber != null
+                && !internalNumber.isBlank()
+                && !looksLikePosSaleNumber(internalNumber.trim());
+        boolean hasLineCodes = lineCodeTags != null && !lineCodeTags.isEmpty();
+        if (!hasInternal && !hasLineCodes) {
             return "";
         }
-        String trimmed = internalNumber.trim();
-        if (looksLikePosSaleNumber(trimmed)) {
+        StringBuilder sb = new StringBuilder("<dte:Adenda>");
+        if (hasLineCodes) {
+            for (String tag : lineCodeTags) {
+                sb.append(tag);
+            }
+        }
+        if (hasInternal) {
+            String value = FelXmlEscaper.escape(internalNumber.trim());
+            // INFILE imprime "Control:" en la representación gráfica leyendo la adenda.
+            sb.append("<Control>").append(value).append("</Control>");
+            sb.append("<NumeroControlInterno>").append(value).append("</NumeroControlInterno>");
+        }
+        sb.append("</dte:Adenda>");
+        return sb.toString();
+    }
+
+    /** Descripción tributaria sin el código de producto (columna DESCRIPCIÓN en INFILE). */
+    static String resolveFelItemDescription(TaxInvoiceDocument.Line line) {
+        if (line == null) {
+            return "Producto";
+        }
+        String description = safe(line.getDescription());
+        String productCode = safe(line.getProductCode());
+        if (description.isBlank()) {
+            return productCode.isBlank() ? "Producto" : productCode;
+        }
+        if (!productCode.isBlank() && startsWithToken(description, productCode)) {
+            String withoutCode = stripLeadingToken(description, productCode).trim();
+            if (!withoutCode.isBlank()) {
+                return withoutCode;
+            }
+        }
+        return description;
+    }
+
+    /** Código de producto para columna COD en representación gráfica INFILE (adenda). */
+    static String resolveFelItemProductCode(TaxInvoiceDocument.Line line) {
+        if (line == null) {
             return "";
         }
-        String value = FelXmlEscaper.escape(trimmed);
-        // INFILE imprime "Control:" en la representación gráfica leyendo la adenda.
-        // Enviamos ambas etiquetas por compatibilidad con plantillas distintas.
-        return "<dte:Adenda><Control>"
-                + value
-                + "</Control><NumeroControlInterno>"
-                + value
-                + "</NumeroControlInterno></dte:Adenda>";
+        return safe(line.getProductCode());
+    }
+
+    private static boolean startsWithToken(String text, String token) {
+        if (text.length() < token.length()) {
+            return false;
+        }
+        if (!text.regionMatches(true, 0, token, 0, token.length())) {
+            return false;
+        }
+        return text.length() == token.length()
+                || Character.isWhitespace(text.charAt(token.length()))
+                || text.charAt(token.length()) == '-';
+    }
+
+    private static String stripLeadingToken(String text, String token) {
+        String rest = text.substring(token.length()).trim();
+        if (rest.startsWith("-")) {
+            rest = rest.substring(1).trim();
+        }
+        return rest;
     }
 
     private String buildFrasesXml(List<FelEmissionProperties.Frase> frases) {
