@@ -497,11 +497,6 @@ public class KioskPosService {
             );
         }
 
-        if (KioskSaleInvoiceMapper.shouldEmitForPos(normalizedTaxId, request.getRequestInvoice())) {
-            taxInvoiceService.issueFromKioskSale(saved, true);
-            saved = kioskSaleRepository.findById(saved.getId()).orElse(saved);
-        }
-
         return toSaleResponse(saved, kiosk, user);
     }
 

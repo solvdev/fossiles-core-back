@@ -87,6 +87,9 @@ class KioskPosServiceTest {
     @Autowired
     private KioskSaleRepository saleRepository;
 
+    @Autowired
+    private TaxInvoiceService taxInvoiceService;
+
     @MockBean
     private SecurityUtil securityUtil;
 
@@ -287,9 +290,18 @@ class KioskPosServiceTest {
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
-        assertThat(firstSale.getInvoice()).isNotNull();
-        assertThat(firstSale.getInvoice().getInternalNumber()).isEqualTo("A1-1");
-        assertThat(secondSale.getInvoice().getInternalNumber()).isEqualTo("A1-2");
+        assertThat(firstSale.getInvoice()).isNull();
+        assertThat(secondSale.getInvoice()).isNull();
+
+        taxInvoiceService.issueFromKioskSaleId(firstSale.getId());
+        taxInvoiceService.issueFromKioskSaleId(secondSale.getId());
+
+        KioskPosSaleResponse firstInvoiced = kioskPosService.getSaleById(firstSale.getId(), kioskA.getId());
+        KioskPosSaleResponse secondInvoiced = kioskPosService.getSaleById(secondSale.getId(), kioskA.getId());
+
+        assertThat(firstInvoiced.getInvoice()).isNotNull();
+        assertThat(firstInvoiced.getInvoice().getInternalNumber()).isEqualTo("A1-1");
+        assertThat(secondInvoiced.getInvoice().getInternalNumber()).isEqualTo("A1-2");
     }
 
     @Test
