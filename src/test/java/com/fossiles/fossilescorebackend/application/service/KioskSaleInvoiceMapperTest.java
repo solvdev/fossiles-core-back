@@ -4,15 +4,20 @@ import org.junit.jupiter.api.Test;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class KioskSaleInvoiceMapperTest {
 
-    private final KioskSaleInvoiceMapper mapper = new KioskSaleInvoiceMapper();
+    private final ProductRepository productRepository = mock(ProductRepository.class);
+    private final KioskSaleInvoiceMapper mapper = new KioskSaleInvoiceMapper(productRepository);
 
     @Test
     void emitsAutomaticallyForNit() {
@@ -66,5 +71,27 @@ class KioskSaleInvoiceMapperTest {
         assertThat(document.getLines().get(0).getDescription()).isEqualTo("Bolso");
         assertThat(document.getLines().get(1).getLineTotal()).isEqualByComparingTo("0.00");
         assertThat(document.getLines().get(1).getUnitPrice()).isEqualByComparingTo("5.00");
+    }
+
+    @Test
+    void resolvesMissingProductCodeFromProductCatalog() {
+        when(productRepository.findById(99L)).thenReturn(Optional.empty());
+
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .items(List.of(
+                        KioskSaleItemEntity.builder()
+                                .productId(99L)
+                                .productName("Bolso")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("100.00"))
+                                .lineTotal(new BigDecimal("100.00"))
+                                .build()
+                ))
+                .build();
+
+        var document = mapper.fromSale(sale);
+
+        assertThat(document.getLines()).hasSize(1);
+        assertThat(document.getLines().get(0).getProductCode()).isNull();
     }
 }

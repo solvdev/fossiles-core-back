@@ -319,8 +319,13 @@ class FelFactXmlBuilderTest {
 
         String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
 
-        assertThat(xml).contains("<Codigo NumeroLinea=\"1\">B-23-1</Codigo>");
-        assertThat(xml).contains("<Codigo NumeroLinea=\"2\">SUM-BL-M</Codigo>");
+        assertThat(xml).contains("<Codigos>");
+        assertThat(xml).contains("<Codigo Linea=\"1\">B-23-1</Codigo>");
+        assertThat(xml).contains("<Codigo1>B-23-1</Codigo1>");
+        assertThat(xml).contains("<Codigo Linea=\"2\">SUM-BL-M</Codigo>");
+        assertThat(xml).contains("<Codigo2>SUM-BL-M</Codigo2>");
+        assertThat(xml).contains("<dte:CodigoProducto>B-23-1</dte:CodigoProducto>");
+        assertThat(xml).contains("<dte:CodigoProducto>SUM-BL-M</dte:CodigoProducto>");
         assertThat(xml).contains("<dte:Descripcion>BILLETERA MEGAN CON HOJAS NEGRO</dte:Descripcion>");
         assertThat(xml).contains("<dte:Descripcion>BOLSA EMPAQUE MEDIANA</dte:Descripcion>");
         assertThat(xml).doesNotContain("<dte:Descripcion>B-23-1 BILLETERA");

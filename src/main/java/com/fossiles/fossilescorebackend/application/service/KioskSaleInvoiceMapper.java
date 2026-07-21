@@ -3,6 +3,8 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.model.TaxInvoiceDocument;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -12,7 +14,10 @@ import java.util.List;
 import java.util.Locale;
 
 @Component
+@RequiredArgsConstructor
 public class KioskSaleInvoiceMapper {
+
+    private final ProductRepository productRepository;
 
     public TaxInvoiceDocument fromSale(KioskSaleEntity sale) {
         BigDecimal subtotal = nz(sale.getSubtotal());
@@ -31,7 +36,7 @@ public class KioskSaleInvoiceMapper {
                 unitPrice = lineTotal.divide(qty, 2, RoundingMode.HALF_UP);
             }
             lines.add(TaxInvoiceDocument.Line.builder()
-                    .productCode(trimToNull(line.getProductCode()))
+                    .productCode(resolveProductCode(line))
                     .description(buildLineDescription(line))
                     .quantity(qty)
                     .unitPrice(unitPrice)
@@ -79,6 +84,19 @@ public class KioskSaleInvoiceMapper {
             return text.substring(0, 450);
         }
         return text.isBlank() ? "Producto" : text;
+    }
+
+    private String resolveProductCode(KioskSaleItemEntity line) {
+        String fromLine = trimToNull(line.getProductCode());
+        if (fromLine != null) {
+            return fromLine;
+        }
+        if (line.getProductId() == null) {
+            return null;
+        }
+        return productRepository.findById(line.getProductId())
+                .map(product -> trimToNull(product.getCode()))
+                .orElse(null);
     }
 
     private static String trimToNull(String value) {

@@ -78,19 +78,16 @@ public class FelFactXmlBuilder {
                     : lineTotal;
             String productCode = resolveFelItemProductCode(line);
             if (!productCode.isBlank()) {
-                adendaLineCodes.add("<Codigo NumeroLinea=\""
-                        + lineNo
-                        + "\">"
-                        + FelXmlEscaper.escape(productCode)
-                        + "</Codigo>");
+                adendaLineCodes.add(buildAdendaLineCodeTag(lineNo, productCode));
             }
             String desc = resolveFelItemDescription(line);
             if (desc.isBlank()) {
                 desc = "Producto";
             }
+            String codigoProductoXml = buildCodigoProductoXml(productCode);
             itemsXml.append("""
                     <dte:Item BienOServicio="B" NumeroLinea="%d">
-                      <dte:Cantidad>%s</dte:Cantidad>
+                      %s<dte:Cantidad>%s</dte:Cantidad>
                       <dte:UnidadMedida>UNI</dte:UnidadMedida>
                       <dte:Descripcion>%s</dte:Descripcion>
                       <dte:PrecioUnitario>%s</dte:PrecioUnitario>
@@ -108,6 +105,7 @@ public class FelFactXmlBuilder {
                     </dte:Item>
                     """.formatted(
                     lineNo,
+                    codigoProductoXml,
                     fmt(qty),
                     FelXmlEscaper.escape(desc),
                     fmt(unitPrice),
@@ -272,9 +270,11 @@ public class FelFactXmlBuilder {
         }
         StringBuilder sb = new StringBuilder("<dte:Adenda>");
         if (hasLineCodes) {
+            sb.append("<Codigos>");
             for (String tag : lineCodeTags) {
                 sb.append(tag);
             }
+            sb.append("</Codigos>");
         }
         if (hasInternal) {
             String value = FelXmlEscaper.escape(internalNumber.trim());
@@ -311,6 +311,38 @@ public class FelFactXmlBuilder {
             return "";
         }
         return safe(line.getProductCode());
+    }
+
+    /**
+     * Campo SAT opcional (0.2.1+) que INFILE suele usar para la columna COD del PDF.
+     * Se emite antes de Cantidad; el certificador lo acepta aunque el namespace sea 0.2.0.
+     */
+    private static String buildCodigoProductoXml(String productCode) {
+        if (productCode == null || productCode.isBlank()) {
+            return "";
+        }
+        return "<dte:CodigoProducto>"
+                + FelXmlEscaper.escape(productCode.trim())
+                + "</dte:CodigoProducto>\n                      ";
+    }
+
+    /**
+     * Adenda INFILE/CUEROGLAM: {@code Linea} (no {@code NumeroLinea}) y tag numerado {@code CodigoN}.
+     */
+    private static String buildAdendaLineCodeTag(int lineNo, String productCode) {
+        String escaped = FelXmlEscaper.escape(productCode.trim());
+        return "<Codigo Linea=\""
+                + lineNo
+                + "\">"
+                + escaped
+                + "</Codigo>"
+                + "<Codigo"
+                + lineNo
+                + ">"
+                + escaped
+                + "</Codigo"
+                + lineNo
+                + ">";
     }
 
     private static boolean startsWithToken(String text, String token) {
