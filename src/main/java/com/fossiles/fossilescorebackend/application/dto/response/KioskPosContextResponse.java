@@ -54,5 +54,8 @@ public class KioskPosContextResponse {
         private BigDecimal suggestedUnitPrice;
         /** Cinchos y variantes por talla: talla → cantidad disponible en kiosko. */
         private Map<String, BigDecimal> sizes;
+        /** NUEVO o VIEJO cuando el kiosko separa stock por herraje. */
+        private String hardwareCondition;
+        private String hardwareLabel;
     }
 }

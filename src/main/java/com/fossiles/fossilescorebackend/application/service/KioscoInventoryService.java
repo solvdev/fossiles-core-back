@@ -1193,7 +1193,26 @@ public class KioscoInventoryService {
             Long userId,
             String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarVentaDesdeIntegracion(
+                locationId, productId, colorId, quantity, invoiceId, userId, sizeKey, null);
+    }
+
+    public KioscoStockResponse registrarVentaDesdeIntegracion(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            BigDecimal quantity,
+            Long invoiceId,
+            Long userId,
+            String sizeKey,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
+        String hardware = ProductHardwareCondition.normalize(hardwareCondition);
+        if (hardware != null) {
+            return registrarVentaInternal(
+                    locationId, productId, colorId, qty, invoiceId, userId, false, sizeKey, hardware);
+        }
         if (shouldSplitVentaByHardware(productId, null)) {
             return registrarVentaFifoByHardware(
                     locationId, productId, colorId, qty, invoiceId, userId, sizeKey, false);

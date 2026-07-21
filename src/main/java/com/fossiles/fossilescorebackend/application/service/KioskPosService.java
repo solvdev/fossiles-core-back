@@ -38,6 +38,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
+import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskCashExpenseEntity;
@@ -209,6 +210,8 @@ public class KioskPosService {
                             .quantity(row.getQuantity() != null ? row.getQuantity() : BigDecimal.ZERO)
                             .suggestedUnitPrice(resolvePosUnitPrice(product))
                             .sizes(positiveSizesMap(row.getSizesData()))
+                            .hardwareCondition(ProductHardwareCondition.NUEVO)
+                            .hardwareLabel(ProductHardwareCondition.label(ProductHardwareCondition.NUEVO))
                             .build();
                 })
                 .filter(Objects::nonNull)
@@ -221,6 +224,10 @@ public class KioskPosService {
                             : null;
                     ProductInventoryLocation legacy = legacyByKey.get(
                             inventoryKey(row.getProductId(), row.getColorId()));
+                    String hardware = ProductHardwareCondition.normalize(row.getHardwareCondition());
+                    if (hardware == null) {
+                        hardware = ProductHardwareCondition.NUEVO;
+                    }
                     return KioskPosContextResponse.InventoryItem.builder()
                             .productId(row.getProductId())
                             .productCode(product != null ? product.getCode() : "")
@@ -236,6 +243,8 @@ public class KioskPosService {
                             .quantity(BigDecimal.valueOf(row.getCurrentStock() != null ? row.getCurrentStock() : 0))
                             .suggestedUnitPrice(resolvePosUnitPrice(product))
                             .sizes(resolveKioscoSizes(row, legacy))
+                            .hardwareCondition(hardware)
+                            .hardwareLabel(ProductHardwareCondition.label(hardware))
                             .build();
                 })
                 .filter(Objects::nonNull)
@@ -340,9 +349,10 @@ public class KioskPosService {
             }
 
             String sizeLabel = ProductInventorySizesJson.normalizeKey(itemRequest.getSize());
+            String hardware = resolveItemHardwareCondition(itemRequest.getHardwareCondition());
             Optional<KioscoStockEntity> kioscoRowOpt = kioscoStockRepository
-                    .findByLocationIdAndProductIdAndColorId(
-                            itemRequest.getProductId(), kiosk.getId(), itemRequest.getColorId());
+                    .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                            kiosk.getId(), itemRequest.getProductId(), itemRequest.getColorId(), hardware);
             Optional<ProductInventoryLocation> invRowOpt = productInventoryLocationRepository
                     .findByProductIdAndLocationIdAndColorId(
                             itemRequest.getProductId(), kiosk.getId(), itemRequest.getColorId());
@@ -482,7 +492,8 @@ public class KioskPosService {
                     qty,
                     saved.getId(),
                     user.getId(),
-                    parsed.size()
+                    parsed.size(),
+                    parsed.hardwareCondition()
             );
         }
 
@@ -1729,7 +1740,11 @@ public class KioskPosService {
             if (item == null || item.getProductId() == null) {
                 continue;
             }
-            String key = inventoryKey(item.getProductId(), item.getColorId(), item.getSize());
+            String key = inventoryKey(
+                    item.getProductId(),
+                    item.getColorId(),
+                    resolveItemHardwareCondition(item.getHardwareCondition()),
+                    item.getSize());
             BigDecimal qty = item.getQuantity() != null ? item.getQuantity() : BigDecimal.ZERO;
             aggregated.merge(key, qty, BigDecimal::add);
         }
@@ -1750,8 +1765,9 @@ public class KioskPosService {
             String label = product != null ? product.getName() : "Producto";
 
             if (kioscoModuleActive) {
+                String hardware = parsed.hardwareCondition();
                 KioscoStockEntity kioscoRow = kioscoStockRepository
-                        .findForUpdate(kioskId, parsed.productId(), parsed.colorId())
+                        .findForUpdateByHardware(kioskId, parsed.productId(), parsed.colorId(), hardware)
                         .orElse(null);
                 if (kioscoRow == null) {
                     throw buildInsufficientStockException(label, parsed.size(), BigDecimal.ZERO, requested);
@@ -2488,13 +2504,26 @@ public class KioskPosService {
         }
     }
 
-    private String inventoryKey(Long productId, Long colorId, String size) {
-        String base = inventoryKey(productId, colorId);
+    private String inventoryKey(Long productId, Long colorId, String hardwareCondition, String size) {
+        String hardware = ProductHardwareCondition.normalize(hardwareCondition);
+        if (hardware == null) {
+            hardware = ProductHardwareCondition.NUEVO;
+        }
+        String base = productId + ":" + (colorId != null ? colorId : "null") + ":" + hardware;
         String normalized = ProductInventorySizesJson.normalizeKey(size);
         if (!normalized.isEmpty()) {
             return base + ":" + normalized;
         }
         return base;
+    }
+
+    private String resolveItemHardwareCondition(String hardwareCondition) {
+        String hardware = ProductHardwareCondition.normalize(hardwareCondition);
+        return hardware != null ? hardware : ProductHardwareCondition.NUEVO;
+    }
+
+    private String inventoryKey(Long productId, Long colorId, String size) {
+        return inventoryKey(productId, colorId, ProductHardwareCondition.NUEVO, size);
     }
 
     private Map<String, BigDecimal> positiveSizesMap(String sizesDataJson) {
@@ -2503,22 +2532,34 @@ public class KioskPosService {
         return parsed.isEmpty() ? null : parsed;
     }
 
-    private record ParsedInventoryKey(Long productId, Long colorId, String size) {}
+    private record ParsedInventoryKey(Long productId, Long colorId, String size, String hardwareCondition) {}
 
     private ParsedInventoryKey parseInventoryKey(String key) {
-        int first = key.indexOf(':');
-        if (first < 0) {
+        String[] parts = key.split(":", -1);
+        if (parts.length < 2) {
             throw new IllegalArgumentException("Clave de inventario inválida: " + key);
         }
-        int second = key.indexOf(':', first + 1);
-        Long productId = Long.parseLong(key.substring(0, first));
-        String colorPart = second < 0 ? key.substring(first + 1) : key.substring(first + 1, second);
+        Long productId = Long.parseLong(parts[0]);
+        String colorPart = parts[1];
         Long colorId = "null".equals(colorPart) ? null : Long.parseLong(colorPart);
-        String size = second < 0 ? null : key.substring(second + 1);
+        String hardware = ProductHardwareCondition.NUEVO;
+        String size = null;
+        if (parts.length >= 3 && !parts[2].isBlank()) {
+            String third = parts[2];
+            String normalizedHardware = ProductHardwareCondition.normalize(third);
+            if (normalizedHardware != null) {
+                hardware = normalizedHardware;
+                if (parts.length >= 4 && !parts[3].isBlank()) {
+                    size = parts[3];
+                }
+            } else {
+                size = third;
+            }
+        }
         if (size != null && size.isBlank()) {
             size = null;
         }
-        return new ParsedInventoryKey(productId, colorId, size);
+        return new ParsedInventoryKey(productId, colorId, size, hardware);
     }
 
     private boolean isPromotionActiveOnDate(KioskPromotionEntity promotion, LocalDate date) {

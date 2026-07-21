@@ -32,6 +32,8 @@ public class KioskPosPromotionEstimateRequest {
         private Long productId;
         private Long colorId;
         private String size;
+        /** Herraje del stock kiosko: NUEVO o VIEJO. */
+        private String hardwareCondition;
 
         @NotNull(message = "La cantidad es obligatoria.")
         @Positive(message = "La cantidad debe ser mayor a cero.")

@@ -61,6 +61,8 @@ public class KioskPosSaleRequest {
         private Long colorId;
         /** Talla para cinchos (sizes_data en inventario del kiosko). */
         private String size;
+        /** Herraje del stock kiosko: NUEVO o VIEJO. */
+        private String hardwareCondition;
 
         @NotNull(message = "La cantidad es obligatoria.")
         @Positive(message = "La cantidad debe ser mayor a cero.")
