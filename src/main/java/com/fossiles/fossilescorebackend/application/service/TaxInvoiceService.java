@@ -1183,7 +1183,7 @@ public class TaxInvoiceService {
         try {
             FelCredentials credentials = properties.resolveCredentials(resolveSandboxMode(invoice));
             validateEmitterConfig(credentials);
-            Long locationId = resolveInvoiceLocationId(invoice);
+            Long locationId = resolveLocationIdForInvoice(invoice);
             assignInternalNumber(invoice, document, locationId);
             String transactionId = resolveCertificationTransactionId(invoice, document, retry, reissueAfterVoid);
             invoice.setFelTransactionId(transactionId);
