@@ -18,6 +18,11 @@ public class KioskBankDepositReportRowResponse {
     private String accountNumber;
     private String bankName;
     private String documentNumber;
+    /** Efectivo bruto de la venta (antes de desembolsos ligados). */
+    private BigDecimal grossCashAmount;
+    /** Suma de desembolsos ligados a la venta. */
+    private BigDecimal disbursementsTotal;
+    /** Monto depositado (neto). */
     private BigDecimal amount;
     private String userName;
     private String description;

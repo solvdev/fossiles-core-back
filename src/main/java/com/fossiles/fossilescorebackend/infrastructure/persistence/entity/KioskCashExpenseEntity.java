@@ -24,6 +24,10 @@ public class KioskCashExpenseEntity {
     @Column(name = "cash_session_id", nullable = false)
     private Long cashSessionId;
 
+    /** Venta POS asociada; null = desembolso general del turno. */
+    @Column(name = "kiosk_sale_id")
+    private Long kioskSaleId;
+
     @Column(name = "amount", nullable = false, precision = 12, scale = 2)
     private BigDecimal amount;
 

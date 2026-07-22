@@ -15,6 +15,9 @@ import java.time.LocalDateTime;
 public class KioskDisbursementReportRowResponse {
     private Long id;
     private Long cashSessionId;
+    private Long kioskSaleId;
+    private String saleNumber;
+    private String internalNumber;
     private Long kioskLocationId;
     private String kioskCode;
     private String kioskName;

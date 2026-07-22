@@ -68,6 +68,25 @@ public class KioskPosSaleResponse {
     private String depositRecordedByName;
     /** true = venta en efectivo/mixto sin boleta registrada aún. */
     private Boolean pendingDeposit;
+    /** Efectivo bruto sujeto a depósito (sin desembolsos). */
+    private BigDecimal cashAmountForDeposit;
+    /** Desembolsos ligados a esta venta. */
+    private BigDecimal disbursementsTotal;
+    /** Monto neto a depositar (efectivo − desembolsos). */
+    private BigDecimal netDepositAmount;
+    private List<SaleDisbursement> disbursements;
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class SaleDisbursement {
+        private Long id;
+        private BigDecimal amount;
+        private String description;
+        private LocalDateTime createdAt;
+        private String createdByName;
+    }
 
     @Data
     @Builder

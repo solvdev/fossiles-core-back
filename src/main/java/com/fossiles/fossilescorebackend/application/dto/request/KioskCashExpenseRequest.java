@@ -21,4 +21,7 @@ public class KioskCashExpenseRequest {
 
     @NotBlank
     private String description;
+
+    /** Opcional: venta en efectivo/mixto del turno a la que se descuenta el depósito. */
+    private Long kioskSaleId;
 }

@@ -15,6 +15,9 @@ import java.time.LocalDateTime;
 public class KioskCashExpenseResponse {
     private Long id;
     private Long cashSessionId;
+    private Long kioskSaleId;
+    private String saleNumber;
+    private String internalNumber;
     private BigDecimal amount;
     private String description;
     private LocalDateTime createdAt;

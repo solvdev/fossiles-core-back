@@ -1056,6 +1056,60 @@ class KioskPosServiceTest {
                 .isEqualByComparingTo("200.00");
     }
 
+    @Test
+    void resolveNetDepositAmount_subtractsLinkedDisbursementsFromCashSale() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .status("COMPLETED")
+                .paymentMethod("EFECTIVO")
+                .totalAmount(new BigDecimal("500.00"))
+                .build();
+
+        assertThat(KioskPosService.resolveNetDepositAmount(sale, new BigDecimal("50.00")))
+                .isEqualByComparingTo("450.00");
+        assertThat(KioskPosService.pendingDepositCashAmount(sale, new BigDecimal("50.00")))
+                .isEqualByComparingTo("450.00");
+        assertThat(KioskPosService.isPendingDeposit(sale, new BigDecimal("50.00"))).isTrue();
+    }
+
+    @Test
+    void resolveNetDepositAmount_zeroWhenFullyDisbursed() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .status("COMPLETED")
+                .paymentMethod("EFECTIVO")
+                .totalAmount(new BigDecimal("500.00"))
+                .build();
+
+        assertThat(KioskPosService.resolveNetDepositAmount(sale, new BigDecimal("500.00")))
+                .isEqualByComparingTo("0.00");
+        assertThat(KioskPosService.isPendingDeposit(sale, new BigDecimal("500.00"))).isFalse();
+    }
+
+    @Test
+    void pendingDeposit_withoutDisbursements_usesGrossCashAmount() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .status("COMPLETED")
+                .paymentMethod("EFECTIVO")
+                .totalAmount(new BigDecimal("100.00"))
+                .build();
+
+        assertThat(KioskPosService.pendingDepositCashAmount(sale)).isEqualByComparingTo("100.00");
+        assertThat(KioskPosService.isPendingDeposit(sale)).isTrue();
+    }
+
+    @Test
+    void resolveNetDepositAmount_mixtoUsesCashPartOnly() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .status("COMPLETED")
+                .paymentMethod("MIXTO")
+                .totalAmount(new BigDecimal("150.00"))
+                .cashAmount(new BigDecimal("50.00"))
+                .cardAmount(new BigDecimal("100.00"))
+                .build();
+
+        assertThat(KioskPosService.resolveNetDepositAmount(sale, new BigDecimal("10.00")))
+                .isEqualByComparingTo("40.00");
+    }
+
     private void seedInventory(Long productId, int quantity) {
         inventoryRepository.save(ProductInventoryLocation.builder()
                 .productId(productId)

@@ -85,6 +85,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -973,8 +974,13 @@ public class KioskPosService {
         if (!Objects.equals(sale.getKioskLocationId(), kiosk.getId())) {
             throw new BusinessException("No tienes acceso a esta venta.");
         }
-        if (!isPendingDeposit(sale)) {
+        BigDecimal linkedDisbursements = safeAmount(kioskCashExpenseRepository.sumAmountByKioskSaleId(sale.getId()));
+        if (!isPendingDeposit(sale, linkedDisbursements)) {
             throw new BusinessException("Esta venta no requiere boleta de depósito o ya fue registrada.");
+        }
+        BigDecimal netDeposit = resolveNetDepositAmount(sale, linkedDisbursements);
+        if (netDeposit.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("Esta venta no requiere boleta de depósito (efectivo totalmente desembolsado).");
         }
 
         sale.setDepositSlipNumber(safeTrim(request.getDepositSlipNumber()));
@@ -992,14 +998,19 @@ public class KioskPosService {
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
         List<KioskSaleEntity> pendingSales = kioskSaleRepository.findPendingDepositsByKioskLocationId(kiosk.getId());
-        BigDecimal pendingAmount = pendingSales.stream()
-                .map(KioskPosService::pendingDepositCashAmount)
+        Map<Long, BigDecimal> disbursementTotals = loadDisbursementTotalsBySaleIds(
+                pendingSales.stream().map(KioskSaleEntity::getId).filter(Objects::nonNull).collect(Collectors.toSet()));
+        List<KioskSaleEntity> netPendingSales = pendingSales.stream()
+                .filter(sale -> isPendingDeposit(sale, disbursementTotals.getOrDefault(sale.getId(), BigDecimal.ZERO)))
+                .toList();
+        BigDecimal pendingAmount = netPendingSales.stream()
+                .map(sale -> pendingDepositCashAmount(sale, disbursementTotals.getOrDefault(sale.getId(), BigDecimal.ZERO)))
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(2, RoundingMode.HALF_UP);
 
         return KioskPendingDepositSummaryResponse.builder()
                 .kioskLocationId(kiosk.getId())
-                .pendingCount(pendingSales.size())
+                .pendingCount(netPendingSales.size())
                 .pendingAmount(pendingAmount)
                 .build();
     }
@@ -1177,15 +1188,40 @@ public class KioskPosService {
                 .collect(Collectors.toMap(LocationEntity::getId, item -> item, (a, b) -> a));
 
         List<KioskDisbursementReportRowResponse> rows = new ArrayList<>();
+        Set<Long> linkedSaleIds = expenses.stream()
+                .map(KioskCashExpenseEntity::getKioskSaleId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, KioskSaleEntity> salesById = linkedSaleIds.isEmpty()
+                ? Map.of()
+                : kioskSaleRepository.findAllById(linkedSaleIds).stream()
+                        .collect(Collectors.toMap(KioskSaleEntity::getId, item -> item, (a, b) -> a));
+        Set<Long> invoiceIds = salesById.values().stream()
+                .map(KioskSaleEntity::getInvoiceId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, TaxInvoiceEntity> invoicesById = invoiceIds.isEmpty()
+                ? Map.of()
+                : taxInvoiceRepository.findAllById(invoiceIds).stream()
+                        .collect(Collectors.toMap(TaxInvoiceEntity::getId, item -> item, (a, b) -> a));
+
         for (KioskCashExpenseEntity expense : expenses) {
             KioskCashSessionEntity session = sessionsById.get(expense.getCashSessionId());
             LocationEntity kiosk = session != null ? kiosksById.get(session.getKioskLocationId()) : null;
             UserEntity createdBy = expense.getCreatedByUserId() != null
                     ? userRepository.findById(expense.getCreatedByUserId()).orElse(null)
                     : null;
+            KioskSaleEntity linkedSale = expense.getKioskSaleId() != null
+                    ? salesById.get(expense.getKioskSaleId())
+                    : null;
             rows.add(KioskDisbursementReportRowResponse.builder()
                     .id(expense.getId())
                     .cashSessionId(expense.getCashSessionId())
+                    .kioskSaleId(expense.getKioskSaleId())
+                    .saleNumber(linkedSale != null ? linkedSale.getSaleNumber() : null)
+                    .internalNumber(linkedSale != null
+                            ? resolveSaleInvoiceLabel(linkedSale, invoicesById)
+                            : null)
                     .kioskLocationId(session != null ? session.getKioskLocationId() : null)
                     .kioskCode(kiosk != null ? kiosk.getCode() : "")
                     .kioskName(kiosk != null ? kiosk.getName() : "Kiosko")
@@ -1248,6 +1284,9 @@ public class KioskPosService {
         Map<Long, UserEntity> usersById = userRepository.findAllById(userIds).stream()
                 .collect(Collectors.toMap(UserEntity::getId, item -> item, (a, b) -> a));
 
+        Set<Long> saleIds = sales.stream().map(KioskSaleEntity::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, BigDecimal> disbursementTotals = loadDisbursementTotalsBySaleIds(saleIds);
+
         String accountNumber = safeTrim(depositReportProperties.getBankAccount());
         String bankName = safeTrim(depositReportProperties.getBankName());
         String accountName = safeTrim(depositReportProperties.getAccountName());
@@ -1268,13 +1307,19 @@ public class KioskPosService {
             LocalDateTime recordedAt = sale.getDepositRecordedAt() != null
                     ? sale.getDepositRecordedAt()
                     : sale.getSoldAt();
+            BigDecimal grossCash = resolveCashAmountForDeposit(sale).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal linkedDisbursements = disbursementTotals.getOrDefault(sale.getId(), BigDecimal.ZERO)
+                    .setScale(2, RoundingMode.HALF_UP);
+            BigDecimal netAmount = resolveNetDepositAmount(sale, linkedDisbursements);
             rows.add(KioskBankDepositReportRowResponse.builder()
                     .id(sale.getId())
                     .saleId(sale.getId())
                     .accountNumber(accountNumber)
                     .bankName(bankName)
                     .documentNumber(safeTrim(sale.getDepositSlipNumber()))
-                    .amount(resolveCashAmountForDeposit(sale).setScale(2, RoundingMode.HALF_UP))
+                    .grossCashAmount(grossCash)
+                    .disbursementsTotal(linkedDisbursements)
+                    .amount(netAmount)
                     .userName(userName)
                     .description(buildBankDepositDescription(sale, kiosk))
                     .recordedAt(recordedAt)
@@ -1427,6 +1472,13 @@ public class KioskPosService {
         Map<Long, TaxInvoiceEntity> invoicesById = taxInvoiceRepository.findAllById(invoiceIds).stream()
                 .collect(Collectors.toMap(TaxInvoiceEntity::getId, item -> item, (a, b) -> a));
 
+        Set<Long> saleIdsForDeposits = sales.stream()
+                .filter(KioskPosService::qualifiesForBankDepositReport)
+                .map(KioskSaleEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, BigDecimal> disbursementTotals = loadDisbursementTotalsBySaleIds(saleIdsForDeposits);
+
         Map<LocalDate, BigDecimal> dailyTotals = new TreeMap<>();
         BigDecimal totalSold = BigDecimal.ZERO;
         BigDecimal cardsTotal = BigDecimal.ZERO;
@@ -1442,7 +1494,8 @@ public class KioskPosService {
             dailyTotals.merge(day, amount, BigDecimal::add);
             cardsTotal = cardsTotal.add(resolveCardAmountForReport(sale));
             if (qualifiesForBankDepositReport(sale)) {
-                depositsTotal = depositsTotal.add(resolveCashAmountForDeposit(sale));
+                BigDecimal linkedDisbursements = disbursementTotals.getOrDefault(sale.getId(), BigDecimal.ZERO);
+                depositsTotal = depositsTotal.add(resolveNetDepositAmount(sale, linkedDisbursements));
             }
             String invoiceLabel = resolveSaleInvoiceLabel(sale, invoicesById);
             if (!safeTrim(invoiceLabel).isBlank()) {
@@ -2924,6 +2977,13 @@ public class KioskPosService {
 
         KioskPosSaleResponse.InvoiceInfo invoiceInfo = buildInvoiceInfo(sale);
 
+        BigDecimal disbursementsTotal = safeAmount(
+                sale.getId() != null ? kioskCashExpenseRepository.sumAmountByKioskSaleId(sale.getId()) : BigDecimal.ZERO)
+                .setScale(2, RoundingMode.HALF_UP);
+        BigDecimal cashAmountForDeposit = resolveCashAmountForDeposit(sale).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal netDepositAmount = resolveNetDepositAmount(sale, disbursementsTotal);
+        List<KioskPosSaleResponse.SaleDisbursement> disbursements = buildSaleDisbursementResponses(sale.getId());
+
         return KioskPosSaleResponse.builder()
                 .id(sale.getId())
                 .saleNumber(sale.getSaleNumber())
@@ -2971,9 +3031,66 @@ public class KioskPosService {
                 .depositRecordedAt(sale.getDepositRecordedAt())
                 .depositRecordedByUserId(sale.getDepositRecordedBy())
                 .depositRecordedByName(depositRecordedBy != null ? buildUserFullName(depositRecordedBy) : null)
-                .pendingDeposit(isPendingDeposit(sale))
+                .pendingDeposit(isPendingDeposit(sale, disbursementsTotal))
+                .cashAmountForDeposit(cashAmountForDeposit)
+                .disbursementsTotal(disbursementsTotal)
+                .netDepositAmount(netDepositAmount)
+                .disbursements(disbursements)
                 .items(items)
                 .build();
+    }
+
+    private List<KioskPosSaleResponse.SaleDisbursement> buildSaleDisbursementResponses(Long saleId) {
+        if (saleId == null) {
+            return List.of();
+        }
+        return kioskCashExpenseRepository.findByKioskSaleIdOrderByCreatedAtAscIdAsc(saleId).stream()
+                .map(expense -> {
+                    UserEntity createdBy = expense.getCreatedByUserId() != null
+                            ? userRepository.findById(expense.getCreatedByUserId()).orElse(null)
+                            : null;
+                    return KioskPosSaleResponse.SaleDisbursement.builder()
+                            .id(expense.getId())
+                            .amount(expense.getAmount())
+                            .description(expense.getDescription())
+                            .createdAt(expense.getCreatedAt())
+                            .createdByName(createdBy != null ? buildUserFullName(createdBy) : null)
+                            .build();
+                })
+                .collect(Collectors.toList());
+    }
+
+    private KioskSaleEntity validateLinkedSaleForExpense(KioskCashSessionEntity session, Long kioskSaleId)
+            throws ResourceNotFoundException, BusinessException {
+        KioskSaleEntity sale = kioskSaleRepository.findById(kioskSaleId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioskSale", kioskSaleId));
+        if (!Objects.equals(sale.getCashSessionId(), session.getId())) {
+            throw new BusinessException("La venta no pertenece a la sesión de caja abierta.");
+        }
+        if (isVoidSale(sale)) {
+            throw new BusinessException("No puedes desembolsar de una venta anulada.");
+        }
+        if (!"COMPLETED".equalsIgnoreCase(safeTrim(sale.getStatus()))) {
+            throw new BusinessException("Solo puedes desembolsar de ventas completadas.");
+        }
+        if (resolveCashAmountForDeposit(sale).compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("La venta no tiene efectivo sujeto a depósito.");
+        }
+        return sale;
+    }
+
+    private Map<Long, BigDecimal> loadDisbursementTotalsBySaleIds(java.util.Collection<Long> saleIds) {
+        if (saleIds == null || saleIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, BigDecimal> totals = new HashMap<>();
+        for (Object[] row : kioskCashExpenseRepository.sumAmountByKioskSaleIds(saleIds)) {
+            if (row == null || row.length < 2 || row[0] == null) {
+                continue;
+            }
+            totals.put((Long) row[0], safeAmount((BigDecimal) row[1]).setScale(2, RoundingMode.HALF_UP));
+        }
+        return totals;
     }
 
     private Map<Long, String> resolveSaleItemCategoryNames(KioskSaleEntity sale) {
@@ -3423,9 +3540,20 @@ public class KioskPosService {
             throw new BusinessException("El monto del gasto debe ser mayor a cero.");
         }
 
+        Long kioskSaleId = request.getKioskSaleId();
+        if (kioskSaleId != null) {
+            KioskSaleEntity linkedSale = validateLinkedSaleForExpense(session, kioskSaleId);
+            BigDecimal existing = safeAmount(kioskCashExpenseRepository.sumAmountByKioskSaleId(kioskSaleId));
+            BigDecimal gross = resolveCashAmountForDeposit(linkedSale);
+            if (existing.add(amount).compareTo(gross) > 0) {
+                throw new BusinessException("El desembolso supera el efectivo disponible de la venta.");
+            }
+        }
+
         KioskCashExpenseEntity saved = kioskCashExpenseRepository.save(
                 KioskCashExpenseEntity.builder()
                         .cashSessionId(session.getId())
+                        .kioskSaleId(kioskSaleId)
                         .amount(amount)
                         .description(description)
                         .createdByUserId(user.getId())
@@ -3799,9 +3927,23 @@ public class KioskPosService {
         UserEntity createdBy = entity.getCreatedByUserId() != null
                 ? userRepository.findById(entity.getCreatedByUserId()).orElse(null)
                 : null;
+        String saleNumber = null;
+        String internalNumber = null;
+        if (entity.getKioskSaleId() != null) {
+            KioskSaleEntity linkedSale = kioskSaleRepository.findById(entity.getKioskSaleId()).orElse(null);
+            if (linkedSale != null) {
+                saleNumber = linkedSale.getSaleNumber();
+                if (linkedSale.getInvoiceId() != null) {
+                    internalNumber = taxInvoiceService.getInternalNumber(linkedSale.getInvoiceId());
+                }
+            }
+        }
         return KioskCashExpenseResponse.builder()
                 .id(entity.getId())
                 .cashSessionId(entity.getCashSessionId())
+                .kioskSaleId(entity.getKioskSaleId())
+                .saleNumber(saleNumber)
+                .internalNumber(internalNumber)
                 .amount(entity.getAmount())
                 .description(entity.getDescription())
                 .createdAt(entity.getCreatedAt())
@@ -3815,6 +3957,10 @@ public class KioskPosService {
     }
 
     static boolean isPendingDeposit(KioskSaleEntity sale) {
+        return isPendingDeposit(sale, BigDecimal.ZERO);
+    }
+
+    static boolean isPendingDeposit(KioskSaleEntity sale, BigDecimal saleDisbursementsTotal) {
         if (sale == null || isVoidSale(sale)) {
             return false;
         }
@@ -3824,11 +3970,25 @@ public class KioskPosService {
         if (!safeTrimStatic(sale.getDepositSlipNumber()).isBlank()) {
             return false;
         }
-        return resolveCashAmountForDeposit(sale).compareTo(BigDecimal.ZERO) > 0;
+        return resolveNetDepositAmount(sale, saleDisbursementsTotal).compareTo(BigDecimal.ZERO) > 0;
     }
 
     static BigDecimal pendingDepositCashAmount(KioskSaleEntity sale) {
-        return resolveCashAmountForDeposit(sale);
+        return pendingDepositCashAmount(sale, BigDecimal.ZERO);
+    }
+
+    static BigDecimal pendingDepositCashAmount(KioskSaleEntity sale, BigDecimal saleDisbursementsTotal) {
+        return resolveNetDepositAmount(sale, saleDisbursementsTotal);
+    }
+
+    static BigDecimal resolveNetDepositAmount(KioskSaleEntity sale, BigDecimal saleDisbursementsTotal) {
+        if (sale == null) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal gross = resolveCashAmountForDeposit(sale);
+        BigDecimal disbursements = saleDisbursementsTotal != null ? saleDisbursementsTotal : BigDecimal.ZERO;
+        BigDecimal net = gross.subtract(disbursements).max(BigDecimal.ZERO);
+        return net.setScale(2, RoundingMode.HALF_UP);
     }
 
     static BigDecimal resolveCashAmountForDeposit(KioskSaleEntity sale) {
