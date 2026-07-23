@@ -95,6 +95,19 @@ public class KioskSaleEntity {
     @Column(name = "card_brand", length = 10)
     private String cardBrand;
 
+    /** Segunda tarjeta cuando el pago TARJETA se divide en dos vouchers. */
+    @Column(name = "card2_amount", precision = 12, scale = 2)
+    private BigDecimal card2Amount;
+
+    @Column(name = "card2_auth_number", length = 40)
+    private String card2AuthNumber;
+
+    @Column(name = "card2_last4", length = 4)
+    private String card2Last4;
+
+    @Column(name = "card2_brand", length = 10)
+    private String card2Brand;
+
     @Column(name = "promotion_id")
     private Long promotionId;
 

@@ -1126,6 +1126,38 @@ class KioskPosServiceTest {
                 .build());
     }
 
+    @Test
+    void resolveCardAmountForReport_splitTwoCardsSumsBothParts() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .paymentMethod("TARJETA")
+                .totalAmount(new BigDecimal("300.00"))
+                .cardAmount(new BigDecimal("180.00"))
+                .card2Amount(new BigDecimal("120.00"))
+                .build();
+
+        assertThat(KioskPosService.hasSplitCardPayment(sale)).isTrue();
+        assertThat(KioskPosService.resolveCardAmountForReport(sale)).isEqualByComparingTo("300.00");
+    }
+
+    @Test
+    void resolveCardAmountForReport_singleCardTarjetaUsesTotalWhenCardAmountMissing() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .paymentMethod("TARJETA")
+                .totalAmount(new BigDecimal("250.00"))
+                .cardAuthNumber("AUTH-1")
+                .cardLast4("1234")
+                .build();
+
+        assertThat(KioskPosService.hasSplitCardPayment(sale)).isFalse();
+        assertThat(KioskPosService.resolveCardAmountForReport(sale)).isEqualByComparingTo("250.00");
+    }
+
+    @Test
+    void resolveCardBrandForReport_usesSecondCardBrandWhenProvided() {
+        assertThat(KioskPosService.resolveCardBrandForReport("AMEX", "VISA")).isEqualTo("AMEX");
+        assertThat(KioskPosService.resolveCardBrandForReport("MASTER", "VISA")).isEqualTo("MC");
+    }
+
     private static KioskPosSaleRequest.ItemRequest item(Long productId, Long colorId, BigDecimal qty) {
         return KioskPosSaleRequest.ItemRequest.builder()
                 .productId(productId)

@@ -53,7 +53,7 @@ Al entrar verás:
 - Estado de **caja** (abierta / cerrada).
 - Aviso de **depósitos pendientes** si aplica.
 
-**Pestañas:** Resumen · POS · Caja · Inventario · Recibir distribución · Reportes · Promociones (solo admin)
+**Pestañas:** Resumen · POS · Caja · **Cierres** · Inventario · Recibir distribución · Reportes · Promociones (solo admin)
 
 ---
 
@@ -70,7 +70,7 @@ Tabla **Ventas por día** (mes actual):
 |---------|-------------|
 | Ventas / Unidades / Total | Resumen de ventas del día |
 | **Efectivo** | Cobrado en efectivo (POS) |
-| **Gastos** | Salidas de caja registradas ese día |
+| **Gastos / Desembolsos** | Salidas de caja registradas ese día |
 | **Dif. caja** | Diferencia al cerrar caja (si ya cerró ese día) |
 | Tarjeta | Cobrado con tarjeta |
 | Depósitos pendientes | Ventas en efectivo sin boleta de banco |
@@ -86,7 +86,7 @@ Tres zonas: **catálogo**, **carrito**, **consulta stock en otros kioskos**.
 
 ### Antes de vender
 
-Caja **abierta**. Si no: pestaña **Caja → Abrir caja — Q300**.
+Caja **abierta**. Si no: pestaña **Caja → Abrir caja** (el fondo inicial lo define administración por kiosko; suele ser Q300).
 
 ### Buscar productos
 
@@ -111,8 +111,26 @@ Caja **abierta**. Si no: pestaña **Caja → Abrir caja — Q300**.
 | Método | Qué registrar |
 |--------|----------------|
 | **Efectivo** | Monto recibido → calcula cambio |
-| **Tarjeta** | Autorización + últimos 4 dígitos |
-| **Mixto** | Parte efectivo + parte tarjeta |
+| **Tarjeta** | Marca, autorización + últimos 4 dígitos |
+| **Tarjeta (2 tarjetas)** | Checkbox **Dividir pago en dos tarjetas** → montos y datos de cada tarjeta |
+| **Mixto** | Parte efectivo + parte tarjeta (una sola tarjeta) |
+
+#### Pago con dos tarjetas
+
+Cuando el cliente divide el total entre **dos tarjetas** (no es efectivo + tarjeta):
+
+1. Forma de pago **Tarjeta**.
+2. Activa **Dividir pago en dos tarjetas**.
+3. **Monto tarjeta 1** y **monto tarjeta 2** (suma = total).
+4. Marca, **número de autorización** y **últimos 4 dígitos** de **cada** tarjeta.
+5. Confirmar.
+
+Resultado:
+- **Una venta** y **una factura**.
+- En **Reportes → Ventas**, la forma de pago muestra Tarjeta 1 y Tarjeta 2.
+- En **Reportes → Voucher (tarjeta)**, **dos filas** (un voucher por tarjeta) para conciliar con el banco.
+
+---
 
 ### Consultar otro kiosko
 
@@ -124,32 +142,46 @@ Abajo en POS: busca producto/color → **Consultar** → tabla con stock en otro
 
 ### Abrir caja
 
-**Abrir caja — Q300** → fondo inicial Q300 en el cajón.
+**Abrir caja** → el sistema registra el **fondo inicial** configurado para tu kiosko (por ejemplo Q300).
 
 ### Durante el turno — Cuadre de efectivo
 
 El sistema calcula:
 
 ```
-Efectivo esperado = Q300 (fondo)
+Efectivo esperado = fondo inicial
                   + efectivo en ventas del turno
-                  − gastos registrados
+                  − desembolsos del turno (todos)
 ```
 
 En pantalla ves:
-- Fondo inicial, efectivo en ventas, **gastos del turno**, **efectivo esperado**.
+- Fondo inicial, efectivo en ventas, **desembolsos del turno**, **efectivo esperado**.
 - Ventas en tarjeta (no van al cajón de efectivo).
 
-### Registrar gastos de efectivo
+### Registrar desembolsos (gastos de efectivo)
 
-Si la encargada **gasta** del fondo (compras menores, etc.):
+Cuando **sales efectivo del turno** para una compra (insumos, taxi, etc.), regístralo como **desembolso**:
 
 1. Pestaña **Caja**.
-2. Sección **Registrar gasto de efectivo**.
+2. Sección **Registrar desembolso (gasto de efectivo)**.
 3. **Monto** + **Descripción** (obligatoria).
-4. **Agregar gasto**.
+4. **Venta (opcional):**
+   - **General de caja** — gasto del fondo o del efectivo del turno que **no** viene de una venta concreta (ej. taxi con el fondo Q300).
+   - **Elegir una venta** — si el gasto salió del efectivo **de esa venta** (ej. compraste algo con el billete que pagó el cliente). El desembolso se **descuenta del depósito bancario** de esa venta.
+5. **Agregar desembolso**.
 
-Los gastos aparecen en una tabla y **restan** del efectivo esperado. Así al cerrar cuadra lo que hay vs lo que debería haber.
+**Ejemplo:** venta en efectivo Q500 → desembolso Q50 ligado a esa venta → **a depositar en banco Q450** (no Q500).
+
+Los desembolsos aparecen en una tabla (hora, venta ligada, descripción, monto) y **restan** del efectivo esperado de caja.
+
+También puedes agregar desembolsos ligados a una venta desde **Reportes → detalle de la venta** (sección *Desembolsos de esta venta*), mientras la caja siga abierta.
+
+| Tipo de desembolso | Afecta caja | Afecta depósito de venta |
+|--------------------|-------------|---------------------------|
+| **General de caja** | Sí | No |
+| **Ligado a venta** | Sí | Sí — reduce el monto a depositar |
+
+**Importante:** solo puedes ligar desembolsos a ventas **del mismo turno** (caja abierta), en **efectivo o mixto**, y el total ligado no puede superar el efectivo de esa venta.
 
 ### Cerrar caja
 
@@ -159,19 +191,39 @@ Los gastos aparecen en una tabla y **restan** del efectivo esperado. Así al cer
 4. El sistema muestra **diferencia** (contado − esperado): sobra o falta.
 5. Notas opcionales → **Confirmar cierre**.
 
-Después de cerrar **no se vende** hasta abrir caja de nuevo.
+Después de cerrar **no se vende** hasta abrir caja de nuevo. Se abre un **reporte de cierre** (ver en pantalla o en pestaña **Cierres**).
+
+---
+
+## Pestaña: Cierres
+
+Historial de **turnos ya cerrados** (no es la caja del día en curso).
+
+- Filtra por **fechas** (y por kiosko si eres admin).
+- Tabla: apertura, cierre, fondo, ventas efectivo/tarjeta, desembolsos, efectivo contado, **diferencia**.
+- Acciones: **Ver reporte**, **PDF**, **Excel** del cierre.
+
+**Úsala cuando:** necesites reimprimir o revisar un cierre pasado sin abrir contabilidad.
 
 ---
 
 ## Pestaña: Inventario (consulta en Ventas)
 
-**Solo lectura** — no mueve stock.
+**Solo lectura** para consulta rápida — no mueve stock.
 
 - Busca por código, nombre, categoría, color, talla.
 - Filtros: todos / stock bajo / sin stock.
 - Estados: Normal, Stock bajo, Sin stock.
 
-Para **ajustes, traslados o conteos**, usa **Inventario del Kiosko** (Parte 2).
+### Mi conteo (control interno)
+
+Pestaña secundaria **Mi conteo** dentro de Inventario (Ventas):
+
+- Conteo **solo por vitrinas** para tu control diario.
+- **No reemplaza** el conteo físico oficial (Inventario del Kiosko → Conteo físico).
+- Puedes **guardar borrador**, **guardar snapshot del día** y exportar **Excel**.
+
+Para **ajustes, traslados o conteo oficial**, usa **Inventario del Kiosko** (Parte 2).
 
 ---
 
@@ -192,24 +244,62 @@ Tras confirmar, el stock **ya se puede vender** en POS.
 
 ## Pestaña: Reportes de ventas
 
-### Filtrar ventas
+Arriba elige el **tipo de reporte**:
+
+| Tipo | Para qué sirve |
+|------|----------------|
+| **Ventas** | Listado de ventas del periodo (uso diario) |
+| **Desembolsos** | Todos los gastos de caja; columna **Venta** (número interno o “General”) |
+| **Depósitos bancarios** | Boletas registradas con **efectivo bruto**, **desembolsos** y **depósito neto** |
+| **Voucher (tarjeta)** | Ventas con tarjeta para conciliar vouchers; **dos filas** si la venta usó 2 tarjetas |
+| **Hoja principal** | Resumen por **corte de conteo físico** (supervisora / cierre de periodo) |
+
+Todos permiten **Excel** y **PDF** según el tipo.
+
+### Filtrar ventas (tipo Ventas)
 
 - Fechas **Inicio / Fin** → **Aplicar filtro**.
-- Filtro **Boleta depósito:** Todas o Pendientes.
+- Atajos: Hoy, Ayer, Esta semana, Este mes.
+- Filtro **Boleta depósito:** Todas o **Pendientes**.
 - Toca una fila → **detalle** de la venta.
+- Botón **Boleta** en filas pendientes → abre detalle para registrar boleta.
 
 ### Cuadre con caja (turno abierto)
 
 Si la caja está abierta, verás un recuadro **Cuadre de caja (turno abierto)** comparando:
 - Efectivo en ventas del turno (caja).
-- Gastos registrados.
+- Desembolsos registrados.
 - Efectivo esperado.
 
 Compara con la columna **Efectivo** de las ventas del filtro.
 
-### Boleta de depósito
+### Boleta de depósito y depósito neto
 
-Ventas en **efectivo** → depositar en banco → registrar número de boleta en la venta (badge **Pendiente**).
+Ventas en **efectivo o mixto** con efectivo > 0 pueden requerir **boleta de depósito** en banco.
+
+En el **detalle de la venta** verás:
+
+| Dato | Significado |
+|------|-------------|
+| **Efectivo** | Parte en efectivo de la venta (bruto) |
+| **Desembolsos** | Suma de desembolsos ligados a esa venta |
+| **A depositar / Depósito neto** | Efectivo − desembolsos de la venta |
+
+Al registrar la boleta, el monto a depositar es el **neto**, no el bruto.
+
+**Casos especiales:**
+- Si desembolsaste **todo** el efectivo de la venta → **no requiere boleta** (mensaje en detalle).
+- Desembolsos **generales de caja** no cambian el neto de una venta concreta, pero sí el cuadre del turno.
+
+Pasos: Reportes → venta con badge **Pendiente** → detalle → **Registrar boleta** → número del comprobante bancario.
+
+### Desembolsos desde el detalle de venta
+
+En ventas en efectivo/mixto, con **caja abierta** del mismo turno:
+
+1. Abre el detalle (Reportes → clic en la fila).
+2. Bloque **Desembolsos de esta venta** → monto + descripción → **Agregar desembolso**.
+3. El resumen **A depositar** se actualiza al instante.
 
 ### Anular venta
 
@@ -218,7 +308,7 @@ Detalle → **Anular venta** → motivo obligatorio. El stock **regresa** al kio
 
 ### Exportar
 
-Botones **Excel** y **PDF** del listado filtrado.
+Botones **Excel** y **PDF** del reporte activo (ventas, desembolsos, depósitos, vouchers o hoja principal).
 
 ---
 
@@ -237,15 +327,16 @@ Campos: nombre, kiosko (vacío = todos), fechas vigencia, línea/tiers.
 
 ---
 
-## Tu día en 6 pasos (encargada)
+## Tu día en 7 pasos (encargada)
 
 ```
 1. Abrir caja           → Caja
 2. Vender               → POS
-3. Registrar gastos     → Caja (si gastaste efectivo)
-4. Depósitos banco      → Reportes → boletas
-5. Devoluciones/cambios → Devoluciones / Reintegros (si aplica)
-6. Cerrar caja          → Caja → contar efectivo y confirmar
+3. Desembolsos          → Caja (general) o detalle de venta (si salió del efectivo de esa venta)
+4. Depósitos banco      → Reportes → boletas (monto NETO a depositar)
+5. Mi conteo (opcional) → Inventario → Mi conteo
+6. Devoluciones/cambios → Devoluciones / Reintegros (si aplica)
+7. Cerrar caja          → Caja → contar efectivo y confirmar
 ```
 
 ---
@@ -315,11 +406,17 @@ Para auditoría y cuadre con contabilidad.
 1. Pestaña **Conteo físico**.
 2. Periodo **Desde / Hasta**.
 3. **Abrir conteo** → sesión nueva.
-4. Cuenta por ubicación (V1…V7, vitrinas, bodega).
-5. **Guardar** · **Marcar como revisado** · **Cerrar conteo**.
-6. Exportar **Excel / PDF**.
+4. Cuenta por ubicación (V1…V7, vitrinas E, bodega BO).
+5. **Guardar** → **Terminar conteo físico** (bloquea vitrinas) → **Marcar como revisado** → **Cerrar conteo**.
+6. Exportar **Excel / PDF** (incluye kardex, diferencias y leyenda de colores).
+
+**Subconteo al corte:** elige una fecha → inventario del sistema a las 23:59 de ese día (sin vitrinas) → Excel/PDF al corte.
+
+**Export Excel:** nombres compactos en columna Producto (nombre, color abreviado, talla en cinchos; código solo en billeteras). Columna **Código** aparte sigue completa.
 
 Diferencias grandes → alertas a correos en **Destinatarios de alertas**.
+
+> **Mi conteo** (pestaña Inventario en Ventas) es solo control interno de la encargada; el conteo **oficial** es este.
 
 ---
 
@@ -458,8 +555,11 @@ En las listas de boletas de cambio y devoluciones: botón **Imprimir** para reim
 | Necesito… | Dónde voy |
 |-----------|-----------|
 | Vender | Ventas → **POS** |
-| Abrir/cerrar caja, gastos, cuadre | Ventas → **Caja** |
-| Ver ventas del día / depósitos | Ventas → **Reportes** o **Resumen** |
+| Abrir/cerrar caja, desembolsos, cuadre | Ventas → **Caja** |
+| Historial de cierres (PDF/Excel) | Ventas → **Cierres** |
+| Ver ventas / desembolsos / depósitos | Ventas → **Reportes** |
+| Mi conteo interno (vitrinas) | Ventas → **Inventario** → **Mi conteo** |
+| Ver ventas del día / KPIs | Ventas → **Reportes** o **Resumen** |
 | Consulta rápida de stock | Ventas → **Inventario** |
 | Recibir cajas del almacén | Ventas → **Recibir distribución** |
 | Cambio de producto con boleta | **Devoluciones / Reintegros** → Boleta de cambio |
@@ -484,16 +584,26 @@ Sin stock en ese color o talla.
 `CF` para la mayoría de ventas al público.
 
 **¿Qué es depósito pendiente?**  
-Vendiste en efectivo y falta registrar la boleta del banco.
+Vendiste en efectivo (o mixto con efectivo) y falta registrar la boleta del banco. El monto a depositar es el **neto** (efectivo de la venta menos desembolsos ligados a esa venta).
+
+**¿Desembolso general vs ligado a venta?**  
+- **General de caja:** gasto del turno que no sale del efectivo de una venta concreta (ej. taxi con el fondo). Afecta el cuadre de caja, no el neto de una venta.  
+- **Ligado a venta:** gasto hecho con el efectivo de esa venta. Reduce lo que debes depositar en banco por esa venta.
+
+**¿Deposité el efectivo bruto pero había un desembolso de la venta?**  
+El reporte **Depósitos bancarios** muestra bruto, desembolsos y neto. Lo correcto es depositar el **neto**. Si ya depositaste de más, coordina con contabilidad.
+
+**¿Cuándo no pide boleta de depósito?**  
+Ventas solo tarjeta, ventas anuladas, o ventas cuyo efectivo fue **totalmente desembolsado** (neto = 0).
 
 **¿Puedo anular la venta de ayer?**  
 No desde POS si ya cerraste caja. Solo ventas del turno actual con caja abierta.
 
-**¿Debo registrar gastos de caja?**  
-Sí, si sacaste efectivo del fondo (Q300 o ventas). Si no los registras, al cerrar caja parecerá que **falta dinero**.
+**¿Debo registrar desembolsos?**  
+Sí, si sacaste efectivo del fondo o de ventas del turno. Si no los registras, al cerrar caja parecerá que **falta dinero**.
 
 **¿Cómo cuadra el efectivo?**  
-Esperado = Q300 + ventas efectivo − gastos. Al cerrar, comparas con el conteo físico.
+Esperado = fondo inicial + ventas en efectivo − **todos** los desembolsos del turno (generales y ligados a venta). Al cerrar, comparas con el conteo físico del cajón.
 
 **Cambio de cincho por talla con descuento — cobro diferencia?**  
 No. Mismo precio pagado → diferencia Q 0.00 → solicitud y autorización logística.
@@ -522,7 +632,9 @@ Usuario con permiso de logística (pestaña Autorizaciones pendientes).
 | **Línea** | Dama, Caballero o Unisex |
 | **Kardex** | Historial de entradas y salidas de inventario |
 | **Merma** | Pérdida de producto (daño, extravío) |
-| **Boleta de depósito** | Comprobante del banco al depositar efectivo |
+| **Boleta de depósito** | Comprobante del banco al depositar efectivo (sobre el monto **neto** de la venta) |
+| **Depósito neto** | Efectivo de la venta − desembolsos ligados a esa venta |
+| **Desembolso** | Gasto de efectivo del turno (general de caja o ligado a una venta) |
 | **Boleta física** | Número del comprobante impreso (traslado, devolución, cambio) |
 | **Turno / sesión de caja** | Desde abrir caja hasta cerrarla |
 | **Reintegro** | Enviar producto devuelto (apto) de vuelta a bodega PT |

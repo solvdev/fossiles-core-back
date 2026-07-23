@@ -29,10 +29,11 @@ Verás arriba:
 |---------|----------|
 | **Resumen** | Ventas del mes, comparativos, tabla por día |
 | **POS** | Cobrar al cliente |
-| **Caja** | Abrir/cerrar turno, gastos, cuadre de efectivo |
-| **Inventario** | Ver stock (solo consulta) |
+| **Caja** | Abrir/cerrar turno, desembolsos, cuadre de efectivo |
+| **Cierres** | Historial de cierres pasados (PDF/Excel) |
+| **Inventario** | Ver stock + **Mi conteo** (control interno) |
 | **Recibir distribución** | Confirmar envíos del almacén |
-| **Reportes** | Listado de ventas, depósitos, anulaciones |
+| **Reportes** | Ventas, desembolsos, depósitos bancarios, vouchers |
 | **Promociones** | Solo administrador — crear descuentos |
 
 ---
@@ -57,7 +58,7 @@ Tabla **Ventas por día**:
 | Columna | Qué es |
 |---------|--------|
 | Efectivo | Cobrado en efectivo en POS |
-| Gastos | Dinero que salió de caja ese día |
+| Gastos / Desembolsos | Dinero que salió de caja ese día |
 | Dif. caja | Sobrante o faltante al cerrar (si ya cerró) |
 | Tarjeta | Ventas con tarjeta |
 | Depósitos pendientes | Efectivo sin boleta de banco registrada |
@@ -68,7 +69,7 @@ Tabla **Ventas por día**:
 
 ### 1. Caja abierta
 
-Si el POS está bloqueado → **Caja → Abrir caja — Q300**.
+Si el POS está bloqueado → **Caja → Abrir caja** (fondo inicial configurado por kiosko; suele ser Q300).
 
 ### 2. Buscar producto
 
@@ -105,8 +106,20 @@ Si el POS está bloqueado → **Caja → Abrir caja — Q300**.
 | Forma | Datos |
 |-------|-------|
 | **Efectivo** | Cuánto te dio → ves el **cambio** |
-| **Tarjeta** | Autorización + últimos 4 dígitos |
-| **Mixto** | Monto efectivo + monto tarjeta |
+| **Tarjeta** | Marca, autorización y últimos 4 dígitos |
+| **Tarjeta (2 tarjetas)** | Activa **Dividir pago en dos tarjetas** → monto de cada una + datos de ambas |
+| **Mixto** | Monto efectivo + monto tarjeta (una sola tarjeta) |
+
+#### Pago con dos tarjetas (misma venta)
+
+A veces el cliente paga **con dos tarjetas** (no es mixto efectivo + tarjeta). En **Tarjeta**:
+
+1. Marca **Dividir pago en dos tarjetas**.
+2. Indica **monto tarjeta 1** y **monto tarjeta 2** (deben sumar el total; al poner la primera, la segunda se calcula sola).
+3. Completa **marca, autorización y últimos 4 dígitos** de **cada** tarjeta.
+4. **Confirmar** → queda **una sola venta**, pero en reportes aparecen **dos vouchers**.
+
+En el listado de ventas y en el detalle verás el detalle de **ambas** tarjetas (Tarjeta 1 y Tarjeta 2).
 
 **Confirmar** → pantalla de éxito con número de venta.
 
@@ -120,24 +133,29 @@ Abajo del POS: busca producto → **Consultar** → stock en otros locales.
 
 ### Abrir
 
-**Abrir caja — Q300** = fondo inicial en el cajón.
+**Abrir caja** = fondo inicial en el cajón (monto definido por administración).
 
 ### Cuadre durante el turno
 
 ```
-Efectivo esperado = Q300 + ventas en efectivo − gastos registrados
+Efectivo esperado = fondo inicial + ventas en efectivo − desembolsos del turno
 ```
 
-En pantalla: fondo, efectivo ventas, **gastos**, **esperado en caja**.
+En pantalla: fondo, efectivo ventas, **desembolsos**, **esperado en caja**.
 
-### Registrar gastos
+### Registrar desembolsos
 
-Si sacaste efectivo del cajón (compras menores, etc.):
+Si sacaste efectivo del cajón:
 
 1. **Monto** + **Descripción**.
-2. **Agregar gasto**.
+2. **Venta (opcional):**
+   - **General de caja** — gasto del fondo o del turno (no ligado a una venta).
+   - **Elegir venta** — si gastaste el efectivo **de esa venta**; se descuenta del **depósito neto** (ej. venta Q500 − gasto Q50 → depositar Q450).
+3. **Agregar desembolso**.
 
-Si no registras gastos, al cerrar parecerá que **falta dinero**.
+También puedes agregar desembolsos ligados a una venta desde **Reportes → detalle de la venta**.
+
+Si no registras desembolsos, al cerrar parecerá que **falta dinero**.
 
 ### Cerrar
 
@@ -153,10 +171,18 @@ No vendes más hasta abrir caja otra vez.
 
 ## Inventario (pestaña en Ventas)
 
-Solo **consulta** — no modifica stock.
+**Consulta** de stock — no modifica inventario.
 
 - Busca producto, color, talla.
 - Filtros: todos / stock bajo / sin stock.
+
+**Mi conteo:** sub-pestaña para contar vitrinas solo como control personal (no reemplaza el conteo oficial de supervisora).
+
+---
+
+## Cierres
+
+Historial de turnos **ya cerrados**. Ver reporte, PDF o Excel de cada cierre.
 
 ---
 
@@ -175,20 +201,25 @@ Después ya puedes **vender** esos productos en POS.
 
 ## Reportes de ventas
 
+Elige **tipo de reporte:** Ventas · Desembolsos · Depósitos bancarios · Voucher (tarjeta) · Hoja principal.
+
 ### Ver ventas
 
-- Fechas **Inicio / Fin** → **Aplicar filtro**.
+- Fechas **Inicio / Fin** → **Aplicar filtro** (atajos: Hoy, Ayer, etc.).
 - Filtro depósito: **Todas** o **Pendientes**.
-- Toca una fila → **detalle**.
+- Toca una fila → **detalle** (desembolsos, boleta, anular).
 
 ### Cuadre con caja
 
-Con caja abierta aparece un recuadro que compara efectivo del turno, gastos y esperado en caja.
+Con caja abierta: recuadro con efectivo del turno, desembolsos y esperado en caja.
 
-### Boleta de depósito
+### Boleta de depósito (monto neto)
 
-1. Ventas en efectivo → depositar en banco.
-2. En reportes, venta con **Pendiente** → abrir → **Registrar boleta** (número del banco).
+1. Ventas en efectivo o mixto → depositar en banco el **neto** (efectivo − desembolsos de esa venta).
+2. Reportes → **Pendiente** → detalle → ves **Efectivo · Desembolsos · A depositar**.
+3. **Registrar boleta** con número del banco.
+
+Si el efectivo de la venta fue **totalmente desembolsado**, no pide boleta.
 
 ### Anular venta
 
@@ -197,7 +228,13 @@ Detalle → **Anular venta** → motivo. El stock **vuelve** al kiosko.
 
 ### Excel / PDF
 
-Exporta el listado del filtro actual.
+Exporta el reporte del tipo seleccionado.
+
+### Reporte Voucher (tarjeta)
+
+Lista las ventas con tarjeta para conciliar con el banco. Si una venta se cobró con **dos tarjetas**, aparecen **dos filas** (un voucher por tarjeta), ligadas a la **misma venta** y factura.
+
+En el reporte **Ventas**, la columna de pago muestra el detalle de **ambas** tarjetas cuando aplica.
 
 ---
 
@@ -208,14 +245,15 @@ La cajera **no crea** promos aquí; las **aplica al cobrar** en POS.
 
 ---
 
-## Tu turno en 5 pasos
+## Tu turno en 6 pasos
 
 ```
-1. Abrir caja      → pestaña Caja
-2. Vender          → pestaña POS
-3. Gastos de caja  → pestaña Caja (si gastaste efectivo)
-4. Boletas banco   → pestaña Reportes
-5. Cerrar caja     → pestaña Caja
+1. Abrir caja       → pestaña Caja
+2. Vender           → pestaña POS
+3. Desembolsos      → Caja o detalle de venta en Reportes
+4. Boletas banco    → Reportes (monto NETO)
+5. Mi conteo        → Inventario → Mi conteo (opcional)
+6. Cerrar caja      → pestaña Caja
 ```
 
 ---
@@ -232,13 +270,19 @@ Sin stock en ese color o talla.
 `CF` en la mayoría de ventas.
 
 **¿Depósito pendiente?**  
-Vendiste en efectivo y falta registrar la boleta del banco.
+Vendiste con efectivo y falta boleta del banco. Deposita el **neto** (menos desembolsos ligados a esa venta).
+
+**¿Desembolso general o de venta?**  
+General = gasto del turno/fondo. Ligado a venta = reduce lo que depositas de esa venta.
 
 **¿Anulo ayer?**  
 No, solo ventas del turno con caja abierta.
 
-**¿Debo anotar gastos?**  
-Sí, todo efectivo que saques del cajón para que cuadre al cerrar.
+**¿Debo anotar desembolsos?**  
+Sí, todo efectivo que saques para que cuadre al cerrar.
+
+**¿Cliente paga con dos tarjetas?**  
+En cobro elige **Tarjeta**, activa **Dividir pago en dos tarjetas**, indica montos y datos de cada una. Es **una venta** con **dos vouchers** en el reporte.
 
 ---
 
@@ -249,7 +293,10 @@ Sí, todo efectivo que saques del cajón para que cuadre al cerrar.
 | POS | Pantalla de venta / cobro |
 | CF | Consumidor final |
 | FEL | Factura electrónica |
-| Boleta de depósito | Comprobante del banco al depositar efectivo |
+| Boleta de depósito | Comprobante del banco (sobre monto **neto** de la venta) |
+| Depósito neto | Efectivo de la venta − desembolsos ligados |
+| Desembolso | Gasto de efectivo del turno |
+| Pago con dos tarjetas | Una venta cobrada con 2 tarjetas; 2 vouchers en reporte |
 | Turno de caja | Desde abrir caja hasta cerrarla |
 
 ---

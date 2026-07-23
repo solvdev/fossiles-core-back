@@ -396,6 +396,16 @@ public class KioskPosService {
         BigDecimal discountAmount = discountResolution.discountAmount();
         BigDecimal totalAmount = subtotal.subtract(discountAmount).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
 
+        validateSplitCardPayment(
+                normalizedPaymentMethod,
+                totalAmount,
+                request.getCardAmount(),
+                request.getCard2Amount(),
+                request.getCard2AuthNumber(),
+                request.getCard2Last4(),
+                request.getCard2Brand()
+        );
+
         PaymentSnapshot payment = resolvePaymentSnapshot(
                 normalizedPaymentMethod,
                 totalAmount,
@@ -427,14 +437,40 @@ public class KioskPosService {
                 .amountReceived(payment.amountReceived())
                 .changeAmount(payment.changeAmount())
                 .cashAmount(payment.cashAmount())
-                .cardAmount(payment.cardAmount())
+                .cardAmount(resolveStoredCardAmount(
+                        normalizedPaymentMethod,
+                        payment.cardAmount(),
+                        request.getCardAmount(),
+                        request.getCard2Amount()
+                ))
                 .cardAuthNumber(safeTrim(request.getCardAuthNumber()))
                 .cardLast4(safeTrim(request.getCardLast4()))
                 .cardBrand(resolveStoredCardBrand(
                         normalizedPaymentMethod,
-                        payment.cardAmount(),
+                        resolveStoredCardAmount(
+                                normalizedPaymentMethod,
+                                payment.cardAmount(),
+                                request.getCardAmount(),
+                                request.getCard2Amount()
+                        ),
                         request.getCardBrand()
                 ))
+                .card2Amount(isSplitCardPayment(request.getCard2Amount())
+                        ? request.getCard2Amount().setScale(2, RoundingMode.HALF_UP)
+                        : null)
+                .card2AuthNumber(isSplitCardPayment(request.getCard2Amount())
+                        ? safeTrim(request.getCard2AuthNumber())
+                        : "")
+                .card2Last4(isSplitCardPayment(request.getCard2Amount())
+                        ? safeTrim(request.getCard2Last4())
+                        : "")
+                .card2Brand(isSplitCardPayment(request.getCard2Amount())
+                        ? resolveStoredCardBrand(
+                                normalizedPaymentMethod,
+                                request.getCard2Amount(),
+                                request.getCard2Brand()
+                        )
+                        : "")
                 .promotionId(exchangeSale
                         ? null
                         : (promotion != null ? promotion.getId() : discountResolution.promotionId()))
@@ -851,6 +887,15 @@ public class KioskPosService {
                 request.getCardBrand()
         );
         BigDecimal totalAmount = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
+        validateSplitCardPayment(
+                normalizedPaymentMethod,
+                totalAmount,
+                request.getCardAmount(),
+                request.getCard2Amount(),
+                request.getCard2AuthNumber(),
+                request.getCard2Last4(),
+                request.getCard2Brand()
+        );
         PaymentSnapshot payment = resolvePaymentSnapshot(
                 normalizedPaymentMethod,
                 totalAmount,
@@ -863,13 +908,50 @@ public class KioskPosService {
         sale.setAmountReceived(payment.amountReceived());
         sale.setChangeAmount(payment.changeAmount());
         sale.setCashAmount(payment.cashAmount());
-        sale.setCardAmount(payment.cardAmount());
-        boolean hasCardData = requiresCardData(normalizedPaymentMethod, payment.cardAmount());
+        sale.setCardAmount(resolveStoredCardAmount(
+                normalizedPaymentMethod,
+                payment.cardAmount(),
+                request.getCardAmount(),
+                request.getCard2Amount()
+        ));
+        boolean hasCardData = requiresCardData(
+                normalizedPaymentMethod,
+                resolveStoredCardAmount(
+                        normalizedPaymentMethod,
+                        payment.cardAmount(),
+                        request.getCardAmount(),
+                        request.getCard2Amount()
+                )
+        );
         sale.setCardAuthNumber(hasCardData ? safeTrim(request.getCardAuthNumber()) : "");
         sale.setCardLast4(hasCardData ? safeTrim(request.getCardLast4()) : "");
         sale.setCardBrand(hasCardData
-                ? resolveStoredCardBrand(normalizedPaymentMethod, payment.cardAmount(), request.getCardBrand())
+                ? resolveStoredCardBrand(
+                        normalizedPaymentMethod,
+                        resolveStoredCardAmount(
+                                normalizedPaymentMethod,
+                                payment.cardAmount(),
+                                request.getCardAmount(),
+                                request.getCard2Amount()
+                        ),
+                        request.getCardBrand()
+                )
                 : "");
+        if (isSplitCardPayment(request.getCard2Amount())) {
+            sale.setCard2Amount(request.getCard2Amount().setScale(2, RoundingMode.HALF_UP));
+            sale.setCard2AuthNumber(safeTrim(request.getCard2AuthNumber()));
+            sale.setCard2Last4(safeTrim(request.getCard2Last4()));
+            sale.setCard2Brand(resolveStoredCardBrand(
+                    normalizedPaymentMethod,
+                    request.getCard2Amount(),
+                    request.getCard2Brand()
+            ));
+        } else {
+            sale.setCard2Amount(null);
+            sale.setCard2AuthNumber("");
+            sale.setCard2Last4("");
+            sale.setCard2Brand("");
+        }
         KioskSaleEntity saved = kioskSaleRepository.save(sale);
         return toSaleResponse(saved, kiosk, user);
     }
@@ -1390,22 +1472,12 @@ public class KioskPosService {
         List<KioskVoucherReportRowResponse> rows = new ArrayList<>();
         for (KioskSaleEntity sale : sales) {
             LocationEntity kiosk = kiosksById.get(sale.getKioskLocationId());
-            String voucherNumber = safeTrim(sale.getCardAuthNumber());
-            String cardLast4 = safeTrim(sale.getCardLast4());
-            rows.add(KioskVoucherReportRowResponse.builder()
-                    .id(sale.getId())
-                    .saleId(sale.getId())
-                    .invoiceNumber(resolveSaleInvoiceLabel(sale, invoicesById))
-                    .cardBrand(resolveCardBrandForReport(sale, defaultCardBrand))
-                    .amount(resolveCardAmountForReport(sale).setScale(2, RoundingMode.HALF_UP))
-                    .voucherNumber(voucherNumber)
-                    .cardLast4(cardLast4)
-                    .description(buildVoucherDescription(voucherNumber, cardLast4))
-                    .soldAt(sale.getSoldAt())
-                    .kioskLocationId(sale.getKioskLocationId())
-                    .kioskCode(kiosk != null ? kiosk.getCode() : "")
-                    .kioskName(kiosk != null ? kiosk.getName() : "Kiosko")
-                    .build());
+            if (hasSplitCardPayment(sale)) {
+                rows.add(buildVoucherReportRow(sale, kiosk, invoicesById, defaultCardBrand, 1));
+                rows.add(buildVoucherReportRow(sale, kiosk, invoicesById, defaultCardBrand, 2));
+            } else {
+                rows.add(buildVoucherReportRow(sale, kiosk, invoicesById, defaultCardBrand, 0));
+            }
         }
 
         String headerKioskName;
@@ -2361,6 +2433,105 @@ public class KioskPosService {
         normalizeCardBrand(cardBrand);
     }
 
+    private void validateSplitCardPayment(
+            String paymentMethod,
+            BigDecimal totalAmount,
+            BigDecimal cardAmount,
+            BigDecimal card2Amount,
+            String card2AuthNumber,
+            String card2Last4,
+            String card2Brand
+    ) throws BusinessException {
+        if (!"TARJETA".equals(paymentMethod) || !isSplitCardPayment(card2Amount)) {
+            return;
+        }
+        BigDecimal safeTotal = totalAmount != null ? totalAmount : BigDecimal.ZERO;
+        BigDecimal firstCard = cardAmount != null ? cardAmount : BigDecimal.ZERO;
+        BigDecimal secondCard = card2Amount != null ? card2Amount : BigDecimal.ZERO;
+        if (firstCard.compareTo(BigDecimal.ZERO) <= 0 || secondCard.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("En pago con dos tarjetas, ambos montos deben ser mayores a cero.");
+        }
+        BigDecimal sum = firstCard.add(secondCard).setScale(2, RoundingMode.HALF_UP);
+        if (sum.compareTo(safeTotal) != 0) {
+            throw new BusinessException("La suma de las dos tarjetas debe igualar el total de la venta.");
+        }
+        if (safeTrim(card2AuthNumber).isBlank()) {
+            throw new BusinessException("Debes indicar el número de autorización de la segunda tarjeta.");
+        }
+        if (!CARD_LAST4_PATTERN.matcher(safeTrim(card2Last4)).matches()) {
+            throw new BusinessException("Los últimos 4 dígitos de la segunda tarjeta deben ser 4 números.");
+        }
+        if (safeTrim(card2Brand).isBlank()) {
+            throw new BusinessException("Debes indicar la marca de la segunda tarjeta (VISA, MC o AMEX).");
+        }
+        normalizeCardBrand(card2Brand);
+    }
+
+    static boolean isSplitCardPayment(BigDecimal card2Amount) {
+        return card2Amount != null && card2Amount.compareTo(BigDecimal.ZERO) > 0;
+    }
+
+    static boolean hasSplitCardPayment(KioskSaleEntity sale) {
+        return sale != null && isSplitCardPayment(sale.getCard2Amount());
+    }
+
+    private BigDecimal resolveStoredCardAmount(
+            String paymentMethod,
+            BigDecimal paymentCardAmount,
+            BigDecimal requestCardAmount,
+            BigDecimal card2Amount
+    ) {
+        if (isSplitCardPayment(card2Amount)) {
+            return requestCardAmount != null
+                    ? requestCardAmount.setScale(2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
+        }
+        return paymentCardAmount;
+    }
+
+    private KioskVoucherReportRowResponse buildVoucherReportRow(
+            KioskSaleEntity sale,
+            LocationEntity kiosk,
+            Map<Long, TaxInvoiceEntity> invoicesById,
+            String defaultCardBrand,
+            int cardSlot
+    ) {
+        String voucherNumber;
+        String cardLast4;
+        String cardBrand;
+        BigDecimal amount;
+        if (cardSlot == 2) {
+            voucherNumber = safeTrim(sale.getCard2AuthNumber());
+            cardLast4 = safeTrim(sale.getCard2Last4());
+            cardBrand = resolveCardBrandForReport(sale.getCard2Brand(), defaultCardBrand);
+            amount = sale.getCard2Amount() != null ? sale.getCard2Amount() : BigDecimal.ZERO;
+        } else if (cardSlot == 1) {
+            voucherNumber = safeTrim(sale.getCardAuthNumber());
+            cardLast4 = safeTrim(sale.getCardLast4());
+            cardBrand = resolveCardBrandForReport(sale.getCardBrand(), defaultCardBrand);
+            amount = sale.getCardAmount() != null ? sale.getCardAmount() : BigDecimal.ZERO;
+        } else {
+            voucherNumber = safeTrim(sale.getCardAuthNumber());
+            cardLast4 = safeTrim(sale.getCardLast4());
+            cardBrand = resolveCardBrandForReport(sale, defaultCardBrand);
+            amount = resolveCardAmountForReport(sale);
+        }
+        return KioskVoucherReportRowResponse.builder()
+                .id(sale.getId())
+                .saleId(sale.getId())
+                .invoiceNumber(resolveSaleInvoiceLabel(sale, invoicesById))
+                .cardBrand(cardBrand)
+                .amount(amount.setScale(2, RoundingMode.HALF_UP))
+                .voucherNumber(voucherNumber)
+                .cardLast4(cardLast4)
+                .description(buildVoucherDescription(voucherNumber, cardLast4))
+                .soldAt(sale.getSoldAt())
+                .kioskLocationId(sale.getKioskLocationId())
+                .kioskCode(kiosk != null ? kiosk.getCode() : "")
+                .kioskName(kiosk != null ? kiosk.getName() : "Kiosko")
+                .build();
+    }
+
     private boolean requiresCardData(String paymentMethod, BigDecimal cardAmount) {
         return "TARJETA".equals(paymentMethod)
                 || ("MIXTO".equals(paymentMethod) && cardAmount != null && cardAmount.compareTo(BigDecimal.ZERO) > 0);
@@ -2454,9 +2625,13 @@ public class KioskPosService {
 
     static String resolveCardBrandForReport(KioskSaleEntity sale, String defaultBrand) {
         if (sale == null) {
-            return safeTrimStatic(defaultBrand).isBlank() ? "VISA" : safeTrimStatic(defaultBrand).toUpperCase(Locale.ROOT);
+            return resolveCardBrandForReport((String) null, defaultBrand);
         }
-        String stored = safeTrimStatic(sale.getCardBrand()).toUpperCase(Locale.ROOT);
+        return resolveCardBrandForReport(sale.getCardBrand(), defaultBrand);
+    }
+
+    static String resolveCardBrandForReport(String storedBrand, String defaultBrand) {
+        String stored = safeTrimStatic(storedBrand).toUpperCase(Locale.ROOT);
         if ("MASTERCARD".equals(stored) || "MASTER".equals(stored)) {
             stored = "MC";
         }
@@ -3015,6 +3190,10 @@ public class KioskPosService {
                 .cardAuthNumber(sale.getCardAuthNumber())
                 .cardLast4(sale.getCardLast4())
                 .cardBrand(sale.getCardBrand())
+                .card2Amount(sale.getCard2Amount())
+                .card2AuthNumber(sale.getCard2AuthNumber())
+                .card2Last4(sale.getCard2Last4())
+                .card2Brand(sale.getCard2Brand())
                 .notes(sale.getNotes())
                 .comments(sale.getComments())
                 .promotionId(sale.getPromotionId())
@@ -4113,6 +4292,11 @@ public class KioskPosService {
         String payment = normalizePaymentMethodStatic(sale.getPaymentMethod());
         BigDecimal total = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
         if ("TARJETA".equals(payment) || "CARD".equals(payment) || "TRANSFERENCIA".equals(payment)) {
+            if (hasSplitCardPayment(sale)) {
+                BigDecimal firstCard = sale.getCardAmount() != null ? sale.getCardAmount() : BigDecimal.ZERO;
+                BigDecimal secondCard = sale.getCard2Amount() != null ? sale.getCard2Amount() : BigDecimal.ZERO;
+                return firstCard.add(secondCard).min(total);
+            }
             if (sale.getCardAmount() != null && sale.getCardAmount().compareTo(BigDecimal.ZERO) > 0) {
                 return sale.getCardAmount().min(total);
             }

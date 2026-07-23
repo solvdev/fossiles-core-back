@@ -19,4 +19,8 @@ public class KioskPosSalePaymentUpdateRequest {
     private String cardAuthNumber;
     private String cardLast4;
     private String cardBrand;
+    private BigDecimal card2Amount;
+    private String card2AuthNumber;
+    private String card2Last4;
+    private String card2Brand;
 }
