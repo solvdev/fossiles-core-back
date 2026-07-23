@@ -2114,6 +2114,9 @@ public class KioskPosService {
             BigDecimal discount = request.getExchangeCreditAmount().min(subtotal).setScale(2, RoundingMode.HALF_UP);
             return new DiscountResolution(discount, null, buildExchangePromotionName(request.getExchangeSlipNumber()), false);
         }
+        if (Boolean.TRUE.equals(request.getChargeWithoutDiscount())) {
+            return new DiscountResolution(BigDecimal.ZERO, null, null, false);
+        }
         if (request.getManualDiscountPercent() != null
                 && request.getManualDiscountPercent().compareTo(BigDecimal.ZERO) > 0) {
             BigDecimal pct = request.getManualDiscountPercent().max(BigDecimal.ZERO).min(new BigDecimal("100"));

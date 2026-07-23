@@ -105,6 +105,7 @@ Caja **abierta**. Si no: pestaña **Caja → Abrir caja** (el fondo inicial lo d
 - Subtotal, descuento (automático o manual), total.
 - **Cobrar** → ventana de cobro (NIT, promoción, forma de pago).
 - Promociones automáticas aplican solas; botones 10/15/20% para casos excepcionales.
+- Checkbox **Cobrar sin descuento (precio normal)** cuando el cliente paga precio de catálogo sin descuento ni promoción.
 
 ### Formas de pago
 

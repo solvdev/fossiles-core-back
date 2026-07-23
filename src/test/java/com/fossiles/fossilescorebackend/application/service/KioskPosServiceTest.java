@@ -365,6 +365,36 @@ class KioskPosServiceTest {
     }
 
     @Test
+    void createSale_chargeWithoutDiscount_skipsDefaultAndPromotion() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        KioskPromotionEntity percentPromo = promotionRepository.save(KioskPromotionEntity.builder()
+                .name("10%")
+                .discountType("PERCENT")
+                .discountValue(new BigDecimal("10"))
+                .active(true)
+                .build());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .cardBrand("VISA")
+                .promotionId(percentPromo.getId())
+                .manualDiscountPercent(new BigDecimal("15"))
+                .chargeWithoutDiscount(true)
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getSubtotal()).isEqualByComparingTo("250.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("0.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("250.00");
+        assertThat(sale.getPromotionId()).isNull();
+        assertThat(sale.getPromotionName()).isNull();
+    }
+
+    @Test
     void discount_tiered_percent_by_audience_line() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
 

@@ -97,8 +97,9 @@ Si el POS está bloqueado → **Caja → Abrir caja** (fondo inicial configurado
 
 #### Descuentos
 
-- Promociones vigentes se aplican **solas**.
+- Promociones vigentes se aplican **solas** (mínimo 10% sobre precio de catálogo).
 - Botones **10% / 15% / 20%** para casos excepcionales.
+- **Cobrar sin descuento (precio normal):** en la ventana de cobro, marca el checkbox si el cliente paga **precio de catálogo** sin descuento ni promoción.
 - Empaques **nunca** tienen descuento.
 
 #### Pago
