@@ -111,12 +111,12 @@ public class MinorExpenseController {
             @PathVariable Long id,
             @RequestPart("file") MultipartFile file) throws IOException, ResourceNotFoundException, BusinessException {
         // Validar que el gasto existe
-        MinorExpenseResponse expense = minorExpenseService.getMinorExpenseById(id);
-        
+        minorExpenseService.getMinorExpenseById(id);
+
         // Subir archivo a S3 (acepta PDF o imágenes)
         S3StorageService.UploadResult result;
         String contentType = file.getContentType();
-        
+
         if (contentType != null && contentType.equals("application/pdf")) {
             result = s3StorageService.uploadPDF(file);
         } else if (contentType != null && contentType.startsWith("image/")) {
@@ -124,29 +124,9 @@ public class MinorExpenseController {
         } else {
             throw new BusinessException("El archivo debe ser un PDF o una imagen");
         }
-        
-        // Actualizar el gasto con la URL del archivo
-        MinorExpenseRequest updateRequest = MinorExpenseRequest.builder()
-                .invoiceNumber(expense.getInvoiceNumber())
-                .purchaseDate(expense.getPurchaseDate())
-                .description(expense.getDescription())
-                .supplier(expense.getSupplier())
-                .totalAmount(expense.getTotalAmount())
-                .purchaserName(expense.getPurchaserName())
-                .authorizerName(expense.getAuthorizerName())
-                .companyAmount(expense.getCompanyAmount())
-                .messengerAmount(expense.getMessengerAmount())
-                .initialAmountGiven(expense.getInitialAmountGiven())
-                .returnedAmount(expense.getReturnedAmount())
-                .reimbursementStatus(expense.getReimbursementStatus())
-                .reimbursementDate(expense.getReimbursementDate())
-                .reimbursementPaymentMethod(expense.getReimbursementPaymentMethod())
-                .initialPaymentMethod(expense.getInitialPaymentMethod())
-                .observations(expense.getObservations())
-                .invoiceFileUrl(result.getUrl())
-                .build();
-        
-        MinorExpenseResponse updated = minorExpenseService.updateMinorExpense(id, updateRequest);
+
+        // Solo actualiza la URL; no toca vínculos ni montos
+        MinorExpenseResponse updated = minorExpenseService.updateInvoiceFileUrl(id, result.getUrl());
         return ResponseEntity.ok(updated);
     }
 }

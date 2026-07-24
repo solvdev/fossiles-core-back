@@ -48,13 +48,16 @@ public class MinorExpenseEntity {
     private BigDecimal companyAmount;
 
     @Column(name = "messenger_amount", precision = 12, scale = 2)
-    private BigDecimal messengerAmount;
+    private BigDecimal messengerAmount; // Legacy: se mantiene sincronizado con reimbursementAmount o returnedAmount
+
+    @Column(name = "reimbursement_amount", precision = 12, scale = 2)
+    private BigDecimal reimbursementAmount; // Monto a reembolsar al mensajero (solo MENSAJERO)
 
     @Column(name = "initial_amount_given", precision = 12, scale = 2)
     private BigDecimal initialAmountGiven; // Monto inicial que la empresa le dio al mensajero (caja chica)
 
     @Column(name = "returned_amount", precision = 12, scale = 2)
-    private BigDecimal returnedAmount; // Monto que el mensajero devuelve a la empresa (cambio/sobrante)
+    private BigDecimal returnedAmount; // Vuelto/cambio que el mensajero devuelve (EMPRESA)
 
     @Column(name = "reimbursement_status", length = 30)
     private String reimbursementStatus; // PENDIENTE, PAGADO, NO_APLICA

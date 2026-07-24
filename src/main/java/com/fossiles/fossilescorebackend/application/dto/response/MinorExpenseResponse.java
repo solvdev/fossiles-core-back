@@ -23,14 +23,16 @@ public class MinorExpenseResponse {
     private String purchaserName;
     private String authorizerName;
     private BigDecimal companyAmount;
+    /** Legacy mirror: reimbursementAmount (MENSAJERO) or returnedAmount (EMPRESA). */
     private BigDecimal messengerAmount;
+    private BigDecimal reimbursementAmount; // Monto a reembolsar al mensajero (MENSAJERO)
     private BigDecimal initialAmountGiven; // Monto inicial que la empresa le dio al mensajero (caja chica)
-    private BigDecimal returnedAmount; // Monto que el mensajero devuelve a la empresa (cambio/sobrante)
+    private BigDecimal returnedAmount; // Vuelto/cambio que el mensajero devuelve (EMPRESA)
     private String reimbursementStatus;
     private LocalDate reimbursementDate;
     private String reimbursementPaymentMethod;
     private BigDecimal reimbursementAdjustment; // Ajuste manual del reembolso
-    private BigDecimal adjustedReimbursementAmount; // messengerAmount + reimbursementAdjustment (calculado)
+    private BigDecimal adjustedReimbursementAmount; // reimbursementAmount + reimbursementAdjustment (calculado)
     private String initialPaymentMethod;
     private String observations;
     private String invoiceFileUrl;

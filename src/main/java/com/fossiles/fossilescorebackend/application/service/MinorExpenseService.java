@@ -1,7 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.MinorExpenseRequest;
-import com.fossiles.fossilescorebackend.application.dto.response.ExpenseCategoryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MinorExpenseResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MinorExpenseSummaryResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -26,64 +25,18 @@ public class MinorExpenseService {
     private final MinorExpenseRepository minorExpenseRepository;
     private final UserRepository userRepository;
     private final SecurityUtil securityUtil;
-    private final com.fossiles.fossilescorebackend.infrastructure.persistence.repository.PurchaseNumberRepository purchaseNumberRepository;
-    private final com.fossiles.fossilescorebackend.infrastructure.persistence.repository.PurchaseNumberItemRepository purchaseNumberItemRepository;
+    private final PurchaseNumberRepository purchaseNumberRepository;
+    private final PurchaseNumberItemRepository purchaseNumberItemRepository;
 
     public MinorExpenseResponse createMinorExpense(MinorExpenseRequest request) throws BusinessException, ResourceNotFoundException {
         assertPurchaseAcceptsExpenseChanges(request.getPurchaseNumberId());
 
-        // Validar número de factura único
         if (minorExpenseRepository.existsByInvoiceNumber(request.getInvoiceNumber())) {
             throw new BusinessException("El número de factura ya existe: " + request.getInvoiceNumber());
         }
 
-        BigDecimal companyAmount = request.getCompanyAmount() != null ? request.getCompanyAmount() : BigDecimal.ZERO;
-        BigDecimal messengerAmount = request.getMessengerAmount() != null ? request.getMessengerAmount() : BigDecimal.ZERO;
-        BigDecimal initialAmountGiven = request.getInitialAmountGiven() != null ? request.getInitialAmountGiven() : BigDecimal.ZERO;
-        BigDecimal returnedAmount = request.getReturnedAmount() != null ? request.getReturnedAmount() : BigDecimal.ZERO;
+        ResolvedAmounts amounts = resolveAndValidateAmounts(request);
 
-        // Validar según el método de pago inicial
-        if ("EMPRESA".equals(request.getInitialPaymentMethod())) {
-            // Cuando la empresa paga: companyAmount debe ser igual a totalAmount
-            // messengerAmount es el vuelto a recibir (no se suma al total)
-            if (companyAmount.compareTo(request.getTotalAmount()) != 0) {
-                throw new BusinessException("El monto empresa (" + companyAmount + ") debe ser igual al monto total (" + 
-                    request.getTotalAmount() + ") cuando la empresa paga inicialmente");
-            }
-            
-            // Validar y calcular monto devuelto (caja chica) cuando la empresa paga
-            if (initialAmountGiven.compareTo(BigDecimal.ZERO) > 0) {
-                BigDecimal calculatedReturned = initialAmountGiven.subtract(request.getTotalAmount());
-                if (calculatedReturned.compareTo(BigDecimal.ZERO) < 0) {
-                    throw new BusinessException("El monto inicial dado (" + initialAmountGiven + ") no puede ser menor al monto total gastado (" + 
-                        request.getTotalAmount() + ")");
-                }
-                // El vuelto a recibir debe ser igual al monto devuelto
-                if (messengerAmount.compareTo(calculatedReturned) != 0) {
-                    throw new BusinessException("El vuelto a recibir (" + messengerAmount + ") debe ser igual al monto devuelto calculado (" + 
-                        calculatedReturned + ") = monto inicial (" + initialAmountGiven + ") - monto total (" + request.getTotalAmount() + ")");
-                }
-                // Si no se proporciona el monto devuelto, calcularlo automáticamente
-                if (returnedAmount.compareTo(BigDecimal.ZERO) == 0) {
-                    returnedAmount = calculatedReturned;
-                } else {
-                    // Validar que el monto devuelto proporcionado sea correcto
-                    if (returnedAmount.compareTo(calculatedReturned) != 0) {
-                        throw new BusinessException("El monto devuelto (" + returnedAmount + ") debe ser igual a " +
-                            "monto inicial dado (" + initialAmountGiven + ") menos monto total (" + request.getTotalAmount() + ") = " + calculatedReturned);
-                    }
-                }
-            }
-        } else {
-            // Cuando el mensajero paga: companyAmount + messengerAmount = totalAmount
-            BigDecimal total = companyAmount.add(messengerAmount);
-            if (total.compareTo(request.getTotalAmount()) != 0) {
-                throw new BusinessException("La suma de monto empresa (" + companyAmount + ") y monto mensajero (" + 
-                    messengerAmount + ") debe ser igual al monto total (" + request.getTotalAmount() + ")");
-            }
-        }
-
-        // Validar fecha de reembolso
         if (request.getReimbursementDate() != null && request.getPurchaseDate() != null) {
             if (request.getReimbursementDate().isBefore(request.getPurchaseDate())) {
                 throw new BusinessException("La fecha de reembolso no puede ser anterior a la fecha de compra");
@@ -92,7 +45,6 @@ public class MinorExpenseService {
 
         Long currentUserId = securityUtil.getCurrentUserId();
 
-        // Si viene de un PurchaseNumberItem, obtener el estimatedPrice del item
         BigDecimal estimatedPrice = request.getEstimatedPrice();
         if (request.getPurchaseNumberItemId() != null && estimatedPrice == null) {
             PurchaseNumberItemEntity item = purchaseNumberItemRepository.findById(request.getPurchaseNumberItemId())
@@ -102,6 +54,8 @@ public class MinorExpenseService {
             }
         }
 
+        String reimbursementStatus = resolveReimbursementStatus(request, amounts);
+
         MinorExpenseEntity entity = MinorExpenseEntity.builder()
                 .invoiceNumber(request.getInvoiceNumber())
                 .purchaseDate(request.getPurchaseDate())
@@ -110,11 +64,12 @@ public class MinorExpenseService {
                 .totalAmount(request.getTotalAmount())
                 .purchaserName(request.getPurchaserName())
                 .authorizerName(request.getAuthorizerName())
-                .companyAmount(companyAmount)
-                .messengerAmount(messengerAmount)
-                .initialAmountGiven(initialAmountGiven)
-                .returnedAmount(returnedAmount)
-                .reimbursementStatus(request.getReimbursementStatus() != null ? request.getReimbursementStatus() : "NO_APLICA")
+                .companyAmount(amounts.companyAmount)
+                .messengerAmount(amounts.legacyMessengerAmount)
+                .reimbursementAmount(amounts.reimbursementAmount)
+                .initialAmountGiven(amounts.initialAmountGiven)
+                .returnedAmount(amounts.returnedAmount)
+                .reimbursementStatus(reimbursementStatus)
                 .reimbursementDate(request.getReimbursementDate())
                 .reimbursementPaymentMethod(request.getReimbursementPaymentMethod())
                 .reimbursementAdjustment(request.getReimbursementAdjustment())
@@ -129,23 +84,11 @@ public class MinorExpenseService {
                 .build();
 
         MinorExpenseEntity saved = minorExpenseRepository.save(entity);
-        
-        // Si viene de un PurchaseNumberItem, actualizar el item con el actualPrice y minorExpenseId
+
         if (request.getPurchaseNumberItemId() != null) {
-            PurchaseNumberItemEntity item = purchaseNumberItemRepository.findById(request.getPurchaseNumberItemId())
-                    .orElse(null);
-            if (item != null) {
-                // Calcular precio unitario real (totalAmount / quantity)
-                BigDecimal actualPrice = request.getTotalAmount();
-                if (item.getQuantity() != null && item.getQuantity() > 0) {
-                    actualPrice = request.getTotalAmount().divide(BigDecimal.valueOf(item.getQuantity()), 2, java.math.RoundingMode.HALF_UP);
-                }
-                item.setActualPrice(actualPrice);
-                item.setMinorExpenseId(saved.getId());
-                purchaseNumberItemRepository.save(item);
-            }
+            linkItemToExpense(request.getPurchaseNumberItemId(), saved.getId(), request.getTotalAmount());
         }
-        
+
         return toResponse(saved);
     }
 
@@ -158,64 +101,17 @@ public class MinorExpenseService {
                 : entity.getPurchaseNumberId();
         assertPurchaseAcceptsExpenseChanges(purchaseNumberId);
 
-        // Validar que no se puede eliminar/editar si tiene reembolso pagado
         if ("PAGADO".equals(entity.getReimbursementStatus())) {
             throw new BusinessException("No se puede modificar un gasto con reembolso ya pagado");
         }
 
-        // Validar número de factura único (excepto el actual)
-        if (!entity.getInvoiceNumber().equals(request.getInvoiceNumber()) && 
+        if (!entity.getInvoiceNumber().equals(request.getInvoiceNumber()) &&
             minorExpenseRepository.existsByInvoiceNumber(request.getInvoiceNumber())) {
             throw new BusinessException("El número de factura ya existe: " + request.getInvoiceNumber());
         }
 
-        BigDecimal companyAmount = request.getCompanyAmount() != null ? request.getCompanyAmount() : BigDecimal.ZERO;
-        BigDecimal messengerAmount = request.getMessengerAmount() != null ? request.getMessengerAmount() : BigDecimal.ZERO;
-        BigDecimal initialAmountGiven = request.getInitialAmountGiven() != null ? request.getInitialAmountGiven() : BigDecimal.ZERO;
-        BigDecimal returnedAmount = request.getReturnedAmount() != null ? request.getReturnedAmount() : BigDecimal.ZERO;
+        ResolvedAmounts amounts = resolveAndValidateAmounts(request);
 
-        // Validar según el método de pago inicial
-        if ("EMPRESA".equals(request.getInitialPaymentMethod())) {
-            // Cuando la empresa paga: companyAmount debe ser igual a totalAmount
-            // messengerAmount es el vuelto a recibir (no se suma al total)
-            if (companyAmount.compareTo(request.getTotalAmount()) != 0) {
-                throw new BusinessException("El monto empresa (" + companyAmount + ") debe ser igual al monto total (" + 
-                    request.getTotalAmount() + ") cuando la empresa paga inicialmente");
-            }
-            
-            // Validar y calcular monto devuelto (caja chica) cuando la empresa paga
-            if (initialAmountGiven.compareTo(BigDecimal.ZERO) > 0) {
-                BigDecimal calculatedReturned = initialAmountGiven.subtract(request.getTotalAmount());
-                if (calculatedReturned.compareTo(BigDecimal.ZERO) < 0) {
-                    throw new BusinessException("El monto inicial dado (" + initialAmountGiven + ") no puede ser menor al monto total gastado (" + 
-                        request.getTotalAmount() + ")");
-                }
-                // El vuelto a recibir debe ser igual al monto devuelto
-                if (messengerAmount.compareTo(calculatedReturned) != 0) {
-                    throw new BusinessException("El vuelto a recibir (" + messengerAmount + ") debe ser igual al monto devuelto calculado (" + 
-                        calculatedReturned + ") = monto inicial (" + initialAmountGiven + ") - monto total (" + request.getTotalAmount() + ")");
-                }
-                // Si no se proporciona el monto devuelto, calcularlo automáticamente
-                if (returnedAmount.compareTo(BigDecimal.ZERO) == 0) {
-                    returnedAmount = calculatedReturned;
-                } else {
-                    // Validar que el monto devuelto proporcionado sea correcto
-                    if (returnedAmount.compareTo(calculatedReturned) != 0) {
-                        throw new BusinessException("El monto devuelto (" + returnedAmount + ") debe ser igual a " +
-                            "monto inicial dado (" + initialAmountGiven + ") menos monto total (" + request.getTotalAmount() + ") = " + calculatedReturned);
-                    }
-                }
-            }
-        } else {
-            // Cuando el mensajero paga: companyAmount + messengerAmount = totalAmount
-            BigDecimal total = companyAmount.add(messengerAmount);
-            if (total.compareTo(request.getTotalAmount()) != 0) {
-                throw new BusinessException("La suma de monto empresa (" + companyAmount + ") y monto mensajero (" + 
-                    messengerAmount + ") debe ser igual al monto total (" + request.getTotalAmount() + ")");
-            }
-        }
-
-        // Validaciones adicionales (mismas que en create)
         if (request.getReimbursementDate() != null && request.getPurchaseDate() != null) {
             if (request.getReimbursementDate().isBefore(request.getPurchaseDate())) {
                 throw new BusinessException("La fecha de reembolso no puede ser anterior a la fecha de compra");
@@ -223,6 +119,7 @@ public class MinorExpenseService {
         }
 
         Long currentUserId = securityUtil.getCurrentUserId();
+        String reimbursementStatus = resolveReimbursementStatus(request, amounts);
 
         entity.setInvoiceNumber(request.getInvoiceNumber());
         entity.setPurchaseDate(request.getPurchaseDate());
@@ -231,11 +128,12 @@ public class MinorExpenseService {
         entity.setTotalAmount(request.getTotalAmount());
         entity.setPurchaserName(request.getPurchaserName());
         entity.setAuthorizerName(request.getAuthorizerName());
-        entity.setCompanyAmount(companyAmount);
-        entity.setMessengerAmount(messengerAmount);
-        entity.setInitialAmountGiven(initialAmountGiven);
-        entity.setReturnedAmount(returnedAmount);
-        entity.setReimbursementStatus(request.getReimbursementStatus() != null ? request.getReimbursementStatus() : "NO_APLICA");
+        entity.setCompanyAmount(amounts.companyAmount);
+        entity.setMessengerAmount(amounts.legacyMessengerAmount);
+        entity.setReimbursementAmount(amounts.reimbursementAmount);
+        entity.setInitialAmountGiven(amounts.initialAmountGiven);
+        entity.setReturnedAmount(amounts.returnedAmount);
+        entity.setReimbursementStatus(reimbursementStatus);
         entity.setReimbursementDate(request.getReimbursementDate());
         entity.setReimbursementPaymentMethod(request.getReimbursementPaymentMethod());
         entity.setReimbursementAdjustment(request.getReimbursementAdjustment());
@@ -248,33 +146,44 @@ public class MinorExpenseService {
             entity.setEstimatedPrice(request.getEstimatedPrice());
         }
         entity.setUpdatedBy(currentUserId);
-        
-        // Si viene de un PurchaseNumberItem, actualizar el item con el actualPrice
+
         if (request.getPurchaseNumberItemId() != null) {
-            PurchaseNumberItemEntity item = purchaseNumberItemRepository.findById(request.getPurchaseNumberItemId())
-                    .orElse(null);
-            if (item != null) {
-                // Calcular precio unitario real (totalAmount / quantity)
-                BigDecimal actualPrice = request.getTotalAmount();
-                if (item.getQuantity() != null && item.getQuantity() > 0) {
-                    actualPrice = request.getTotalAmount().divide(BigDecimal.valueOf(item.getQuantity()), 2, java.math.RoundingMode.HALF_UP);
-                }
-                item.setActualPrice(actualPrice);
-                purchaseNumberItemRepository.save(item);
-            }
+            linkItemToExpense(request.getPurchaseNumberItemId(), entity.getId(), request.getTotalAmount());
         }
 
         MinorExpenseEntity saved = minorExpenseRepository.save(entity);
         return toResponse(saved);
     }
 
+    /**
+     * Actualiza solo la URL de la factura, sin tocar vínculos ni montos.
+     */
+    public MinorExpenseResponse updateInvoiceFileUrl(Long id, String invoiceFileUrl)
+            throws ResourceNotFoundException, BusinessException {
+        MinorExpenseEntity entity = minorExpenseRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Minor Expense", id));
+
+        assertPurchaseAcceptsExpenseChanges(entity.getPurchaseNumberId());
+
+        entity.setInvoiceFileUrl(invoiceFileUrl);
+        entity.setUpdatedBy(securityUtil.getCurrentUserId());
+        return toResponse(minorExpenseRepository.save(entity));
+    }
+
     public void deleteMinorExpense(Long id) throws BusinessException, ResourceNotFoundException {
         MinorExpenseEntity entity = minorExpenseRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Minor Expense", id));
 
-        // No permitir eliminar si tiene reembolso pagado
         if ("PAGADO".equals(entity.getReimbursementStatus())) {
             throw new BusinessException("No se puede eliminar un gasto con reembolso ya pagado");
+        }
+
+        if (entity.getPurchaseNumberItemId() != null) {
+            purchaseNumberItemRepository.findById(entity.getPurchaseNumberItemId()).ifPresent(item -> {
+                item.setMinorExpenseId(null);
+                item.setActualPrice(null);
+                purchaseNumberItemRepository.save(item);
+            });
         }
 
         minorExpenseRepository.delete(entity);
@@ -287,23 +196,22 @@ public class MinorExpenseService {
     }
 
     public List<MinorExpenseResponse> getAllMinorExpenses(
-            LocalDate startDate, LocalDate endDate, String supplier, 
+            LocalDate startDate, LocalDate endDate, String supplier,
             String purchaserName, String reimbursementStatus,
             String invoiceNumber, String description, Long purchaseNumberId) {
         List<MinorExpenseEntity> entities;
-        
-        // Si se especifica purchaseNumberId, filtrar por ese
+
         if (purchaseNumberId != null) {
             entities = minorExpenseRepository.findByPurchaseNumberId(purchaseNumberId);
         } else {
             entities = minorExpenseRepository.findWithFilters(
-                    startDate, endDate, supplier, purchaserName, 
+                    startDate, endDate, supplier, purchaserName,
                     reimbursementStatus, invoiceNumber, description);
         }
-        
+
         return entities.stream().map(this::toResponse).collect(Collectors.toList());
     }
-    
+
     public List<MinorExpenseResponse> getExpensesByPurchaseNumberId(Long purchaseNumberId) {
         List<MinorExpenseEntity> entities = minorExpenseRepository.findByPurchaseNumberId(purchaseNumberId);
         return entities.stream().map(this::toResponse).collect(Collectors.toList());
@@ -314,7 +222,7 @@ public class MinorExpenseService {
         return entities.stream().map(this::toResponse).collect(Collectors.toList());
     }
 
-    public MinorExpenseResponse markReimbursementAsPaid(Long id, LocalDate paymentDate, String paymentMethod) 
+    public MinorExpenseResponse markReimbursementAsPaid(Long id, LocalDate paymentDate, String paymentMethod)
             throws BusinessException, ResourceNotFoundException {
         MinorExpenseEntity entity = minorExpenseRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Minor Expense", id));
@@ -336,7 +244,11 @@ public class MinorExpenseService {
     public List<MinorExpenseResponse> getReimbursementHistoryByPerson(String personName) {
         List<MinorExpenseEntity> entities = minorExpenseRepository.findByPurchaserName(personName);
         return entities.stream()
-                .filter(e -> e.getMessengerAmount() != null && e.getMessengerAmount().compareTo(BigDecimal.ZERO) > 0)
+                .filter(e -> {
+                    String status = e.getReimbursementStatus();
+                    return "PENDIENTE".equals(status) || "PAGADO".equals(status);
+                })
+                .filter(e -> resolveReimbursementAmount(e).compareTo(BigDecimal.ZERO) > 0)
                 .map(this::toResponse)
                 .collect(Collectors.toList());
     }
@@ -355,18 +267,15 @@ public class MinorExpenseService {
 
         BigDecimal totalPendingReimbursements = expenses.stream()
                 .filter(e -> "PENDIENTE".equals(e.getReimbursementStatus()))
-                .map(MinorExpenseEntity::getMessengerAmount)
-                .filter(Objects::nonNull)
+                .map(this::computeAdjustedReimbursement)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        // Gastos por comprador
         Map<String, BigDecimal> expensesByPurchaser = expenses.stream()
                 .collect(Collectors.groupingBy(
                         MinorExpenseEntity::getPurchaserName,
                         Collectors.reducing(BigDecimal.ZERO, MinorExpenseEntity::getTotalAmount, BigDecimal::add)
                 ));
 
-        // Gastos por proveedor (top 10)
         Map<String, Long> expensesBySupplier = expenses.stream()
                 .collect(Collectors.groupingBy(
                         MinorExpenseEntity::getSupplier,
@@ -382,7 +291,6 @@ public class MinorExpenseService {
                         LinkedHashMap::new
                 ));
 
-        // Recientes (últimos 10)
         List<MinorExpenseResponse> recentExpenses = expenses.stream()
                 .sorted((e1, e2) -> e2.getCreatedAt().compareTo(e1.getCreatedAt()))
                 .limit(10)
@@ -406,6 +314,128 @@ public class MinorExpenseService {
 
     // ========== HELPER METHODS ==========
 
+    private static final class ResolvedAmounts {
+        final BigDecimal companyAmount;
+        final BigDecimal reimbursementAmount;
+        final BigDecimal returnedAmount;
+        final BigDecimal initialAmountGiven;
+        /** Compat: MENSAJERO → reimbursement; EMPRESA → returned. */
+        final BigDecimal legacyMessengerAmount;
+
+        ResolvedAmounts(BigDecimal companyAmount, BigDecimal reimbursementAmount,
+                        BigDecimal returnedAmount, BigDecimal initialAmountGiven,
+                        BigDecimal legacyMessengerAmount) {
+            this.companyAmount = companyAmount;
+            this.reimbursementAmount = reimbursementAmount;
+            this.returnedAmount = returnedAmount;
+            this.initialAmountGiven = initialAmountGiven;
+            this.legacyMessengerAmount = legacyMessengerAmount;
+        }
+    }
+
+    private ResolvedAmounts resolveAndValidateAmounts(MinorExpenseRequest request) throws BusinessException {
+        BigDecimal companyAmount = nz(request.getCompanyAmount());
+        BigDecimal initialAmountGiven = nz(request.getInitialAmountGiven());
+        BigDecimal returnedAmount = nz(request.getReturnedAmount());
+
+        // Prefer reimbursementAmount; fall back to messengerAmount for older clients
+        BigDecimal reimbursementAmount = request.getReimbursementAmount() != null
+                ? request.getReimbursementAmount()
+                : nz(request.getMessengerAmount());
+
+        if ("EMPRESA".equals(request.getInitialPaymentMethod())) {
+            if (companyAmount.compareTo(request.getTotalAmount()) != 0) {
+                throw new BusinessException("El monto empresa (" + companyAmount + ") debe ser igual al monto total (" +
+                    request.getTotalAmount() + ") cuando la empresa paga inicialmente");
+            }
+
+            reimbursementAmount = BigDecimal.ZERO;
+
+            if (initialAmountGiven.compareTo(BigDecimal.ZERO) > 0) {
+                BigDecimal calculatedReturned = initialAmountGiven.subtract(request.getTotalAmount());
+                if (calculatedReturned.compareTo(BigDecimal.ZERO) < 0) {
+                    throw new BusinessException("El monto inicial dado (" + initialAmountGiven + ") no puede ser menor al monto total gastado (" +
+                        request.getTotalAmount() + ")");
+                }
+                if (returnedAmount.compareTo(BigDecimal.ZERO) == 0) {
+                    returnedAmount = calculatedReturned;
+                } else if (returnedAmount.compareTo(calculatedReturned) != 0) {
+                    throw new BusinessException("El monto devuelto (" + returnedAmount + ") debe ser igual a " +
+                        "monto inicial dado (" + initialAmountGiven + ") menos monto total (" + request.getTotalAmount() + ") = " + calculatedReturned);
+                }
+            } else {
+                returnedAmount = BigDecimal.ZERO;
+            }
+
+            return new ResolvedAmounts(companyAmount, reimbursementAmount, returnedAmount,
+                    initialAmountGiven, returnedAmount);
+        }
+
+        // MENSAJERO: company + reimbursement = total
+        // If client still sends messengerAmount as the split and reimbursementAmount is null, already handled above.
+        // If both company and reimbursement are 0 but messengerAmount was the full total, already in reimbursementAmount.
+        if (request.getReimbursementAmount() == null && request.getMessengerAmount() == null
+                && companyAmount.compareTo(BigDecimal.ZERO) == 0) {
+            reimbursementAmount = request.getTotalAmount();
+        }
+
+        BigDecimal total = companyAmount.add(reimbursementAmount);
+        if (total.compareTo(request.getTotalAmount()) != 0) {
+            throw new BusinessException("La suma de monto empresa (" + companyAmount + ") y monto a reembolsar (" +
+                reimbursementAmount + ") debe ser igual al monto total (" + request.getTotalAmount() + ")");
+        }
+
+        return new ResolvedAmounts(companyAmount, reimbursementAmount, BigDecimal.ZERO,
+                BigDecimal.ZERO, reimbursementAmount);
+    }
+
+    private String resolveReimbursementStatus(MinorExpenseRequest request, ResolvedAmounts amounts) {
+        if ("EMPRESA".equals(request.getInitialPaymentMethod())) {
+            return "NO_APLICA";
+        }
+        if (request.getReimbursementStatus() != null && !request.getReimbursementStatus().isBlank()) {
+            return request.getReimbursementStatus();
+        }
+        return amounts.reimbursementAmount.compareTo(BigDecimal.ZERO) > 0 ? "PENDIENTE" : "NO_APLICA";
+    }
+
+    private void linkItemToExpense(Long itemId, Long expenseId, BigDecimal totalAmount) {
+        PurchaseNumberItemEntity item = purchaseNumberItemRepository.findById(itemId).orElse(null);
+        if (item == null) {
+            return;
+        }
+        BigDecimal actualPrice = totalAmount;
+        if (item.getQuantity() != null && item.getQuantity() > 0) {
+            actualPrice = totalAmount.divide(BigDecimal.valueOf(item.getQuantity()), 2, java.math.RoundingMode.HALF_UP);
+        }
+        item.setActualPrice(actualPrice);
+        item.setMinorExpenseId(expenseId);
+        purchaseNumberItemRepository.save(item);
+    }
+
+    private BigDecimal resolveReimbursementAmount(MinorExpenseEntity entity) {
+        if (entity.getReimbursementAmount() != null) {
+            return entity.getReimbursementAmount();
+        }
+        // Legacy: MENSAJERO stored amount in messengerAmount
+        if ("MENSAJERO".equals(entity.getInitialPaymentMethod()) && entity.getMessengerAmount() != null) {
+            return entity.getMessengerAmount();
+        }
+        return BigDecimal.ZERO;
+    }
+
+    private BigDecimal computeAdjustedReimbursement(MinorExpenseEntity entity) {
+        BigDecimal base = resolveReimbursementAmount(entity);
+        if (entity.getReimbursementAdjustment() != null) {
+            base = base.add(entity.getReimbursementAdjustment());
+        }
+        return base.max(BigDecimal.ZERO);
+    }
+
+    private static BigDecimal nz(BigDecimal value) {
+        return value != null ? value : BigDecimal.ZERO;
+    }
+
     private MinorExpenseResponse toResponse(MinorExpenseEntity entity) {
         String createdByName = null;
         if (entity.getCreatedBy() != null) {
@@ -419,7 +449,6 @@ public class MinorExpenseService {
             updatedByName = updater != null ? updater.getUsername() : null;
         }
 
-        // Obtener número de compra si existe
         String purchaseNumber = null;
         String purchaseNumberDescription = null;
         if (entity.getPurchaseNumberId() != null) {
@@ -431,18 +460,13 @@ public class MinorExpenseService {
             }
         }
 
-        // Calcular monto ajustado de reembolso
-        BigDecimal adjustedReimbursementAmount = BigDecimal.ZERO;
-        if (entity.getMessengerAmount() != null) {
-            adjustedReimbursementAmount = entity.getMessengerAmount();
-            if (entity.getReimbursementAdjustment() != null) {
-                adjustedReimbursementAmount = adjustedReimbursementAmount.add(entity.getReimbursementAdjustment());
-            }
-            // Asegurar que no sea negativo
-            if (adjustedReimbursementAmount.compareTo(BigDecimal.ZERO) < 0) {
-                adjustedReimbursementAmount = BigDecimal.ZERO;
-            }
-        }
+        BigDecimal reimbursementAmount = resolveReimbursementAmount(entity);
+        BigDecimal adjustedReimbursementAmount = computeAdjustedReimbursement(entity);
+
+        // Compat: messengerAmount mirrors the meaningful amount for each mode
+        BigDecimal legacyMessenger = "EMPRESA".equals(entity.getInitialPaymentMethod())
+                ? nz(entity.getReturnedAmount())
+                : reimbursementAmount;
 
         return MinorExpenseResponse.builder()
                 .id(entity.getId())
@@ -454,7 +478,8 @@ public class MinorExpenseService {
                 .purchaserName(entity.getPurchaserName())
                 .authorizerName(entity.getAuthorizerName())
                 .companyAmount(entity.getCompanyAmount())
-                .messengerAmount(entity.getMessengerAmount())
+                .messengerAmount(legacyMessenger)
+                .reimbursementAmount(reimbursementAmount)
                 .initialAmountGiven(entity.getInitialAmountGiven())
                 .returnedAmount(entity.getReturnedAmount())
                 .reimbursementStatus(entity.getReimbursementStatus())
@@ -470,7 +495,7 @@ public class MinorExpenseService {
                 .purchaseNumberDescription(purchaseNumberDescription)
                 .purchaseNumberItemId(entity.getPurchaseNumberItemId())
                 .estimatedPrice(entity.getEstimatedPrice())
-                .fromPurchaseOrder(false) // Siempre false, ya que el nuevo sistema fue eliminado
+                .fromPurchaseOrder(false)
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
                 .createdByName(createdByName)
@@ -491,5 +516,19 @@ public class MinorExpenseService {
             throw new BusinessException("La compra está finalizada y no se pueden modificar gastos");
         }
     }
-}
 
+    /**
+     * True when every expense that requires reimbursement is already PAGADO.
+     * NO_APLICA expenses do not count. If none require reimbursement, returns false (not locked by reimbursements).
+     */
+    public static boolean allApplicableReimbursementsPaid(List<MinorExpenseEntity> expenses) {
+        List<MinorExpenseEntity> applicable = expenses.stream()
+                .filter(e -> !"NO_APLICA".equals(e.getReimbursementStatus()))
+                .filter(e -> "PENDIENTE".equals(e.getReimbursementStatus()) || "PAGADO".equals(e.getReimbursementStatus()))
+                .collect(Collectors.toList());
+        if (applicable.isEmpty()) {
+            return false;
+        }
+        return applicable.stream().allMatch(e -> "PAGADO".equals(e.getReimbursementStatus()));
+    }
+}

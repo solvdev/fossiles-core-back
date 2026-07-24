@@ -101,16 +101,9 @@ public class PurchaseNumberService {
             throw new BusinessException("No se puede editar una compra finalizada");
         }
 
-        // Validar que todas las facturas no estén aprobadas (PAGADO)
         List<MinorExpenseEntity> expenses = minorExpenseRepository.findByPurchaseNumberId(id);
-        
-        if (!expenses.isEmpty()) {
-            boolean allApproved = expenses.stream()
-                    .allMatch(exp -> "PAGADO".equals(exp.getReimbursementStatus()));
-            
-            if (allApproved) {
-                throw new BusinessException("No se puede editar el número de compra porque todas sus facturas ya han sido aprobadas (reembolsos pagados)");
-            }
+        if (MinorExpenseService.allApplicableReimbursementsPaid(expenses)) {
+            throw new BusinessException("No se puede editar el número de compra porque todos sus reembolsos aplicables ya fueron pagados");
         }
 
         // Si se cambia el número, validar que no exista
@@ -218,6 +211,13 @@ public class PurchaseNumberService {
             throw new BusinessException("Primero debe cerrar la lista de artículos");
         }
 
+        List<MinorExpenseEntity> expenses = minorExpenseRepository.findByPurchaseNumberId(id);
+        boolean hasPendingReimbursements = expenses.stream()
+                .anyMatch(exp -> "PENDIENTE".equals(exp.getReimbursementStatus()));
+        if (hasPendingReimbursements) {
+            throw new BusinessException("No se puede finalizar la compra mientras haya reembolsos pendientes");
+        }
+
         entity.setStatus("PAGADO");
         entity.setUpdatedBy(securityUtil.getCurrentUserId());
         PurchaseNumberEntity saved = purchaseNumberRepository.save(entity);
@@ -234,14 +234,9 @@ public class PurchaseNumberService {
 
         assertPurchaseAcceptsItems(purchaseNumber);
 
-        // Validar que la compra sea editable
         List<MinorExpenseEntity> expenses = minorExpenseRepository.findByPurchaseNumberId(purchaseNumberId);
-        if (!expenses.isEmpty()) {
-            boolean allApproved = expenses.stream()
-                    .allMatch(exp -> "PAGADO".equals(exp.getReimbursementStatus()));
-            if (allApproved) {
-                throw new BusinessException("No se puede agregar artículos porque todas las facturas ya han sido aprobadas");
-            }
+        if (MinorExpenseService.allApplicableReimbursementsPaid(expenses)) {
+            throw new BusinessException("No se puede agregar artículos porque todos los reembolsos aplicables ya fueron pagados");
         }
 
         Long currentUserId = securityUtil.getCurrentUserId();
@@ -409,9 +404,7 @@ public class PurchaseNumberService {
         List<MinorExpenseEntity> expenses = minorExpenseRepository.findByPurchaseNumberId(entity.getId());
         long expenseCount = expenses.size();
 
-        // Verificar si es editable (gastos / reembolsos)
-        boolean reimbursementsLocked = !expenses.isEmpty() && expenses.stream()
-                .allMatch(exp -> "PAGADO".equals(exp.getReimbursementStatus()));
+        boolean reimbursementsLocked = MinorExpenseService.allApplicableReimbursementsPaid(expenses);
         boolean purchaseFinalized = "PAGADO".equals(entity.getStatus());
         boolean isEditable = !purchaseFinalized && !reimbursementsLocked;
 

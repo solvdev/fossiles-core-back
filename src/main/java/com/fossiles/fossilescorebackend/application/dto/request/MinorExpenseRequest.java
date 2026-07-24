@@ -45,11 +45,14 @@ public class MinorExpenseRequest {
 
     private BigDecimal companyAmount;
 
+    /** @deprecated Prefer reimbursementAmount (MENSAJERO) or returnedAmount (EMPRESA). Kept for API compatibility. */
     private BigDecimal messengerAmount;
+
+    private BigDecimal reimbursementAmount; // Monto a reembolsar al mensajero (MENSAJERO)
 
     private BigDecimal initialAmountGiven; // Monto inicial que la empresa le dio al mensajero (caja chica)
 
-    private BigDecimal returnedAmount; // Monto que el mensajero devuelve a la empresa (cambio/sobrante)
+    private BigDecimal returnedAmount; // Vuelto/cambio que el mensajero devuelve (EMPRESA)
 
     @Size(max = 30, message = "Reimbursement status must not exceed 30 characters")
     private String reimbursementStatus; // PENDIENTE, PAGADO, NO_APLICA
