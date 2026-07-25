@@ -4328,11 +4328,16 @@ public class ProductDistributionService {
                             && item.getMaterialId() > 0
                             && item.getQuantity() != null
                             && item.getQuantity().compareTo(BigDecimal.ZERO) > 0)
-                    .map(item -> ProductShipmentResponse.PackingItemResponse.builder()
-                            .materialId(item.getMaterialId())
-                            .quantity(item.getQuantity())
-                            .unitPrice(item.getUnitPrice())
-                            .build())
+                    .map(item -> {
+                        MaterialEntity material = materialRepository.findById(item.getMaterialId()).orElse(null);
+                        return ProductShipmentResponse.PackingItemResponse.builder()
+                                .materialId(item.getMaterialId())
+                                .materialSku(material != null ? material.getSku() : null)
+                                .materialName(material != null ? material.getName() : null)
+                                .quantity(item.getQuantity())
+                                .unitPrice(item.getUnitPrice())
+                                .build();
+                    })
                     .collect(Collectors.toList());
         } catch (Exception _err) {
             return List.of();

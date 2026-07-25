@@ -45,6 +45,8 @@ public class ProductShipmentResponse {
     @AllArgsConstructor
     public static class PackingItemResponse {
         private Long materialId;
+        private String materialSku;
+        private String materialName;
         private java.math.BigDecimal quantity;
         private java.math.BigDecimal unitPrice;
     }
