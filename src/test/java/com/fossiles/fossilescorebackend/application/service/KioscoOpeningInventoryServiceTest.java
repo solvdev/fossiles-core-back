@@ -226,7 +226,7 @@ class KioscoOpeningInventoryServiceTest {
     }
 
     @Test
-    void apply_creaAjustesYMarcaAplicado() throws Exception {
+    void apply_creaEntradasYMarcaAplicado() throws Exception {
         stubDraftSession();
         KioscoOpeningInventoryItemEntity item = KioscoOpeningInventoryItemEntity.builder()
                 .openingInventoryId(sessionId)
@@ -248,7 +248,7 @@ class KioscoOpeningInventoryServiceTest {
                         .colorId(colorId)
                         .currentStock(0)
                         .build()));
-        when(kioscoInventoryService.registrarAjuste(
+        when(kioscoInventoryService.registrarInventarioInicial(
                 eq(locationId),
                 eq(productId),
                 eq(colorId),
@@ -263,7 +263,7 @@ class KioscoOpeningInventoryServiceTest {
                 sessionId, KioscoOpeningInventoryApplyRequest.builder().userId(userId).build());
 
         assertThat(report.getStatus()).isEqualTo("APLICADO");
-        verify(kioscoInventoryService).registrarAjuste(
+        verify(kioscoInventoryService).registrarInventarioInicial(
                 locationId, productId, colorId, 10, null,
                 KioscoOpeningInventoryService.OPENING_INVENTORY_REASON, userId, "NUEVO");
         ArgumentCaptor<KioscoOpeningInventoryEntity> captor =
@@ -310,7 +310,7 @@ class KioscoOpeningInventoryServiceTest {
 
         service.apply(sessionId, null);
 
-        verify(kioscoInventoryService).registrarAjuste(
+        verify(kioscoInventoryService).registrarInventarioInicial(
                 eq(locationId),
                 eq(fossProductId),
                 eq(colorId),
@@ -348,7 +348,8 @@ class KioscoOpeningInventoryServiceTest {
                         .colorId(colorId)
                         .currentStock(0)
                         .build()));
-        when(kioscoInventoryService.registrarAjuste(any(), any(), any(), any(), any(), any(), any()))
+        when(kioscoInventoryService.registrarInventarioInicial(
+                any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(KioscoStockResponse.builder().currentStock(5).build());
 
         KioscoOpeningInventoryReportResponse report = service.apply(sessionId, null);
@@ -379,7 +380,7 @@ class KioscoOpeningInventoryServiceTest {
     }
 
     @Test
-    void apply_noLlamaAjusteSiStockYaCoincide() throws Exception {
+    void apply_noLlamaInventarioInicialSiStockYaCoincide() throws Exception {
         stubDraftSession();
         when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
                 .thenReturn(List.of(KioscoOpeningInventoryItemEntity.builder()
@@ -405,7 +406,7 @@ class KioscoOpeningInventoryServiceTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("Ningún ítem difiere");
 
-        verify(kioscoInventoryService, never()).registrarAjuste(
+        verify(kioscoInventoryService, never()).registrarInventarioInicial(
                 any(), any(), any(), any(), any(), any(), any(), any());
     }
 

@@ -116,7 +116,7 @@ public class KioscoOpeningInventoryService {
                 : resolveCurrentUserId();
 
         Map<Long, ProductEntity> productsById = loadProducts(items);
-        int adjustmentsApplied = 0;
+        int entradasApplied = 0;
         for (KioscoOpeningInventoryItemEntity item : items) {
             ProductEntity product = productsById.get(item.getProductId());
             if (product == null) {
@@ -125,7 +125,7 @@ public class KioscoOpeningInventoryService {
             int targetQty = safeInt(item.getQuantity());
             Map<String, Integer> targetSizes = parseSizes(item.getSizesData());
             if (needsAdjustment(session.getLocationId(), item, product, targetQty, targetSizes)) {
-                kioscoInventoryService.registrarAjuste(
+                kioscoInventoryService.registrarInventarioInicial(
                         session.getLocationId(),
                         item.getProductId(),
                         item.getColorId(),
@@ -135,10 +135,10 @@ public class KioscoOpeningInventoryService {
                         userId,
                         item.getHardwareCondition()
                 );
-                adjustmentsApplied++;
+                entradasApplied++;
             }
         }
-        if (adjustmentsApplied == 0) {
+        if (entradasApplied == 0) {
             throw new BusinessException(
                     "Ningún ítem difiere del stock actual. Revise las cantidades capturadas.");
         }

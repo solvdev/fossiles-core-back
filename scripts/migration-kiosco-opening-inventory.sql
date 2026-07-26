@@ -40,5 +40,5 @@ CREATE TABLE IF NOT EXISTS kiosco_opening_inventory_item (
 CREATE INDEX IF NOT EXISTS idx_kiosco_opening_inventory_item_session
     ON kiosco_opening_inventory_item (opening_inventory_id);
 
-COMMENT ON TABLE kiosco_opening_inventory IS 'Sesión de inventario inicial kiosko (migración). Aplicar crea movimientos AJUSTE.';
+COMMENT ON TABLE kiosco_opening_inventory IS 'Sesión de inventario inicial kiosko (migración). Aplicar crea movimientos ENTRADA (por talla en cinchos).';
 COMMENT ON TABLE kiosco_opening_inventory_item IS 'Cantidades capturadas por producto/color; sizes_data JSON para cinchos FOSS.';

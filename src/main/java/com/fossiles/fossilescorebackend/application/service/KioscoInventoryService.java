@@ -982,6 +982,127 @@ public class KioscoInventoryService {
         return toStockResponse(savedStock);
     }
 
+    /**
+     * Inventario inicial (migración): lleva el stock al objetivo con ENTRADA (y MERMA si sobra).
+     * Cinchos FOSS: un movimiento por talla con {@code size_key} para que el conteo físico cuadre por talla.
+     */
+    public KioscoStockResponse registrarInventarioInicial(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer targetQuantity,
+            Map<String, Integer> targetSizes,
+            String reason,
+            Long userId,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
+        if (targetQuantity == null || targetQuantity < 0) {
+            throw new BusinessException("La cantidad objetivo no puede ser negativa.");
+        }
+        if (safeTrim(reason).isEmpty()) {
+            throw new BusinessException("El motivo del inventario inicial es obligatorio.");
+        }
+
+        Long resolvedUserId = resolveUserIdRequired(userId);
+        validateLocationIsKiosk(locationId);
+        validateProduct(productId);
+        validateColor(colorId);
+        ProductEntity product = productRepository.findById(productId)
+                .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
+
+        String hardware = resolveStockHardware(hardwareCondition);
+        String trimmedReason = reason.trim();
+        Map<String, BigDecimal> normalizedTargetSizes = normalizeRealSizesMap(targetSizes);
+
+        if (CinchoProductUtils.isFossCinchoProduct(product)) {
+            if (normalizedTargetSizes == null) {
+                throw new BusinessException(
+                        "Los cinchos FOSS requieren desglose por talla: envíe realSizes con la cantidad por talla.");
+            }
+            int targetTotal = ProductInventorySizesJson.sum(normalizedTargetSizes)
+                    .setScale(0, RoundingMode.HALF_UP).intValue();
+            if (targetQuantity != targetTotal) {
+                throw new BusinessException(
+                        "realQuantity debe coincidir con la suma de realSizes (" + targetTotal + ").");
+            }
+
+            KioscoStockEntity stock = getOrCreateLockedStock(
+                    locationId, productId, colorId, resolvedUserId, hardware);
+            syncFossCurrentStockFromSizes(stock);
+            stock = kioscoStockRepository.findForUpdateByHardware(locationId, productId, colorId, hardware)
+                    .orElse(stock);
+
+            Map<String, BigDecimal> currentSizes = ProductInventorySizesJson.parse(stock.getSizesData());
+            Set<String> allKeys = new LinkedHashSet<>();
+            allKeys.addAll(currentSizes.keySet());
+            allKeys.addAll(normalizedTargetSizes.keySet());
+
+            Map<String, Integer> deltasBySize = new LinkedHashMap<>();
+            for (String sizeKey : allKeys) {
+                int current = currentSizes.getOrDefault(sizeKey, BigDecimal.ZERO)
+                        .setScale(0, RoundingMode.HALF_UP).intValue();
+                int target = normalizedTargetSizes.getOrDefault(sizeKey, BigDecimal.ZERO)
+                        .setScale(0, RoundingMode.HALF_UP).intValue();
+                int delta = target - current;
+                if (delta != 0) {
+                    deltasBySize.put(sizeKey, delta);
+                }
+            }
+
+            KioscoStockResponse last = toStockResponse(stock);
+            boolean decreased = false;
+            for (Map.Entry<String, Integer> entry : deltasBySize.entrySet()) {
+                int delta = entry.getValue();
+                if (delta <= 0) {
+                    continue;
+                }
+                last = applyStockMovement(
+                        locationId, productId, colorId, delta, null, null, null,
+                        resolvedUserId, KioscoMovementType.ENTRADA, delta, true,
+                        trimmedReason, entry.getKey(), true, null, null, hardware);
+            }
+            for (Map.Entry<String, Integer> entry : deltasBySize.entrySet()) {
+                int delta = entry.getValue();
+                if (delta >= 0) {
+                    continue;
+                }
+                int qty = -delta;
+                last = applyStockMovement(
+                        locationId, productId, colorId, qty, null, null, null,
+                        resolvedUserId, KioscoMovementType.MERMA, -qty, true,
+                        trimmedReason, entry.getKey(), true, null, null, hardware);
+                decreased = true;
+            }
+
+            syncLegacyInventoryToTargetSizes(locationId, productId, colorId, normalizedTargetSizes);
+            if (decreased) {
+                verificarStockMinimo(locationId, productId, colorId);
+            }
+            return last;
+        }
+
+        KioscoStockEntity stock = getOrCreateLockedStock(
+                locationId, productId, colorId, resolvedUserId, hardware);
+        int before = safeInt(stock.getCurrentStock());
+        int delta = targetQuantity - before;
+        if (delta == 0) {
+            return toStockResponse(stock);
+        }
+        if (delta > 0) {
+            return applyStockMovement(
+                    locationId, productId, colorId, delta, null, null, null,
+                    resolvedUserId, KioscoMovementType.ENTRADA, delta, true,
+                    trimmedReason, null, true, null, null, hardware);
+        }
+        int qty = -delta;
+        KioscoStockResponse response = applyStockMovement(
+                locationId, productId, colorId, qty, null, null, null,
+                resolvedUserId, KioscoMovementType.MERMA, -qty, true,
+                trimmedReason, null, true, null, null, hardware);
+        verificarStockMinimo(locationId, productId, colorId);
+        return response;
+    }
+
     public KioscoStockResponse anularFactura(
             Long invoiceId,
             Long locationId,
