@@ -415,7 +415,7 @@ public class KioskLedgerLabService {
 
     @Transactional
     public KioskLedgerLabStockResponse replayStock(Long stockId)
-            throws ResourceNotFoundException {
+            throws BusinessException, ResourceNotFoundException {
         String actor = guard.requireEramirezUsername();
         if (!kioscoStockRepository.existsById(stockId)) {
             throw new ResourceNotFoundException("KioscoStock", stockId);

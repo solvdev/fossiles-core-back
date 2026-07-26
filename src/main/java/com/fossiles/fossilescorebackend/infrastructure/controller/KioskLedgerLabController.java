@@ -111,7 +111,7 @@ public class KioskLedgerLabController {
 
     @PostMapping("/stocks/{stockId}/replay")
     public ResponseEntity<KioskLedgerLabStockResponse> replayStock(@PathVariable Long stockId)
-            throws ResourceNotFoundException {
+            throws BusinessException, ResourceNotFoundException {
         guard.requireEramirez();
         return ResponseEntity.ok(ledgerLabService.replayStock(stockId));
     }
