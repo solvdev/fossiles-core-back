@@ -538,8 +538,71 @@ class KioskPosServiceTest {
                 .build());
 
         assertThat(sale.getSubtotal()).isEqualByComparingTo("300.00");
+        // dama 10% (tier) + unisex sin match → 10% base = 20 + 10
         assertThat(sale.getDiscountAmount()).isEqualByComparingTo("30.00");
         assertThat(sale.getTotalAmount()).isEqualByComparingTo("270.00");
+    }
+
+    @Test
+    void discount_tiered_percent_mixed_with_default_per_line() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        ProductCategoryEntity mariconerasCategory = productCategoryRepository.save(ProductCategoryEntity.builder()
+                .code("MAR")
+                .name("Mariconeras")
+                .build());
+
+        ProductEntity mariconera = productRepository.save(ProductEntity.builder()
+                .code("MR-4")
+                .name("Mariconera Multiple")
+                .salePrice(new BigDecimal("708.00"))
+                .audienceCategory("CABALLERO")
+                .categoryId(mariconerasCategory.getId())
+                .build());
+        ProductEntity billetera = productRepository.save(ProductEntity.builder()
+                .code("B-57")
+                .name("Billetera Florencia")
+                .salePrice(new BigDecimal("517.00"))
+                .audienceCategory("CABALLERO")
+                .categoryId(billeterasCategory.getId())
+                .build());
+
+        seedInventory(mariconera.getId(), 5);
+        seedInventory(billetera.getId(), 5);
+
+        var created = kioskPosService.createPromotion(KioskPromotionRequest.builder()
+                .name("BONO 14")
+                .discountType("TIERED_PERCENT")
+                .active(true)
+                .tiers(List.of(
+                        KioskPromotionTierRequest.builder()
+                                .audienceCategory("CABALLERO")
+                                .categoryId(billeterasCategory.getId())
+                                .discountValue(new BigDecimal("15"))
+                                .build(),
+                        KioskPromotionTierRequest.builder()
+                                .audienceCategory("DAMA")
+                                .categoryId(billeterasCategory.getId())
+                                .discountValue(new BigDecimal("15"))
+                                .build()))
+                .build());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("TARJETA")
+                .cardAuthNumber("123456")
+                .cardLast4("1234")
+                .cardBrand("VISA")
+                .promotionId(created.getId())
+                .items(List.of(
+                        item(mariconera.getId(), negro.getId(), BigDecimal.ONE),
+                        item(billetera.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        // 708*10% + 517*15% = 70.80 + 77.55 = 148.35 (no piso cart-level 10%)
+        assertThat(sale.getSubtotal()).isEqualByComparingTo("1225.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("148.35");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("1076.65");
     }
 
     @Test
