@@ -3104,7 +3104,7 @@ public class KioscoInventoryService {
                 .build();
     }
 
-    private KioscoMovementResponse toMovementResponse(KioscoMovementEntity entity) {
+    public KioscoMovementResponse toMovementResponse(KioscoMovementEntity entity) {
         KioscoStockEntity stock = entity.getKioscoStock();
         LocationEntity location = stock != null ? stock.getLocation() : null;
         ProductEntity product = stock != null ? stock.getProduct() : null;
