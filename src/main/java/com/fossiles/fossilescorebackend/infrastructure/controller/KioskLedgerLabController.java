@@ -52,6 +52,7 @@ public class KioskLedgerLabController {
     public ResponseEntity<List<KioskLedgerLabMovementResponse>> listMovements(
             @RequestParam(required = false) Long locationId,
             @RequestParam(required = false) Long stockId,
+            @RequestParam(required = false) Long productId,
             @RequestParam(required = false) KioscoMovementType type,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
@@ -64,7 +65,7 @@ public class KioskLedgerLabController {
     ) throws BusinessException, ResourceNotFoundException {
         guard.requireEramirez();
         return ResponseEntity.ok(ledgerLabService.listMovements(
-                locationId, stockId, type, from, to, referenceId, referenceTerm, reason,
+                locationId, stockId, productId, type, from, to, referenceId, referenceTerm, reason,
                 sizeKey, affectsStockOnly, movementId));
     }
 

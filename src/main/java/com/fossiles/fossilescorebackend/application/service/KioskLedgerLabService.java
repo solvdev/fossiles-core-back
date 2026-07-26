@@ -115,6 +115,7 @@ public class KioskLedgerLabService {
     public List<KioskLedgerLabMovementResponse> listMovements(
             Long locationId,
             Long stockId,
+            Long productId,
             KioscoMovementType type,
             LocalDate from,
             LocalDate to,
@@ -138,6 +139,8 @@ public class KioskLedgerLabService {
         List<KioscoMovementEntity> raw;
         if (stockId != null) {
             raw = kioscoMovementRepository.findByKioscoStockIdOrderByCreatedAtDescIdDesc(stockId);
+        } else if (locationId != null && productId != null) {
+            raw = kioscoMovementRepository.findByLocationAndFilters(locationId, productId, null);
         } else {
             raw = kioscoMovementRepository.findByLocationIdOrderByCreatedAtDesc(locationId);
         }
@@ -150,6 +153,15 @@ public class KioskLedgerLabService {
 
         List<KioskLedgerLabMovementResponse> out = new ArrayList<>();
         for (KioscoMovementEntity m : raw) {
+            if (productId != null) {
+                KioscoStockEntity stock = m.getKioscoStock();
+                if (stock == null && m.getKioscoStockId() != null) {
+                    stock = kioscoStockRepository.findById(m.getKioscoStockId()).orElse(null);
+                }
+                if (stock == null || !Objects.equals(stock.getProductId(), productId)) {
+                    continue;
+                }
+            }
             if (type != null && m.getMovementType() != type) {
                 continue;
             }
