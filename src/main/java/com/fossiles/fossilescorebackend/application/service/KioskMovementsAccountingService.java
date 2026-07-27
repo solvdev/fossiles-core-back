@@ -3,11 +3,9 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskMovementsAccountingResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaxInvoiceEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
@@ -43,6 +41,7 @@ public class KioskMovementsAccountingService {
             Long locationId,
             Long stockId,
             Long productId,
+            String productTerm,
             KioscoMovementType type,
             LocalDate from,
             LocalDate to,
@@ -68,6 +67,7 @@ public class KioskMovementsAccountingService {
         LocalDateTime toDtExclusive = to != null ? to.plusDays(1).atStartOfDay() : null;
         String reasonTerm = normalizeTerm(reasonContains);
         String refTerm = normalizeTerm(referenceTerm);
+        String prodTerm = normalizeTerm(productTerm);
         String sizeNorm = sizeKey != null ? ProductInventorySizesJson.normalizeKey(sizeKey) : null;
 
         List<KioskMovementsAccountingResponse> out = new ArrayList<>();
@@ -107,6 +107,16 @@ public class KioskMovementsAccountingService {
             }
 
             KioskMovementsAccountingResponse dto = toAccountingResponse(m);
+
+            if (prodTerm != null) {
+                String haystack = (
+                        nullToEmpty(dto.getCodigoProducto())
+                        + " " + nullToEmpty(dto.getProducto())
+                ).toLowerCase(Locale.ROOT);
+                if (!haystack.contains(prodTerm)) {
+                    continue;
+                }
+            }
 
             if (refTerm != null) {
                 String haystack = (

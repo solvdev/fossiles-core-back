@@ -6,6 +6,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
@@ -17,6 +19,7 @@ public class KioskMovementsAccountingResponse {
 
     // — Identificación del movimiento —
     private Long id;
+    @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
     private LocalDateTime fecha;
 
     // — Kiosko —

@@ -27,6 +27,7 @@ public class KioskMovementsAccountingController {
             @RequestParam(required = false) Long locationId,
             @RequestParam(required = false) Long stockId,
             @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) String productTerm,
             @RequestParam(required = false) KioscoMovementType type,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
@@ -36,7 +37,7 @@ public class KioskMovementsAccountingController {
             @RequestParam(required = false) Boolean affectsStockOnly
     ) throws BusinessException {
         return ResponseEntity.ok(service.listMovements(
-                locationId, stockId, productId, type, from, to,
+                locationId, stockId, productId, productTerm, type, from, to,
                 referenceTerm, reason, sizeKey, affectsStockOnly));
     }
 }
