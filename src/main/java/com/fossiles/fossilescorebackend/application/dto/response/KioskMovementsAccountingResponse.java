@@ -50,14 +50,13 @@ public class KioskMovementsAccountingResponse {
     private String numeroVenta;
     private BigDecimal totalVenta;
     private String formaPago;
-    private String cliente;
-    private String nit;
-    /** UUID FEL de SAT */
-    private String felUuid;
-    /** Serie FEL de SAT */
-    private String felSerie;
-    /** Número FEL de SAT */
-    private String felNumero;
+    // Detalle de pago con tarjeta
+    private String cardAuthNumber;
+    private String cardLast4;
+    private String cardBrand;
+    private String card2AuthNumber;
+    private String card2Last4;
+    private String card2Brand;
 
     // — Metadata —
     private String motivo;

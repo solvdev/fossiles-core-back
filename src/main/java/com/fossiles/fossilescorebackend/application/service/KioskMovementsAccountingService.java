@@ -179,8 +179,12 @@ public class KioskMovementsAccountingService {
                 builder.numeroVenta(sale.getSaleNumber())
                         .totalVenta(sale.getTotalAmount())
                         .formaPago(sale.getPaymentMethod())
-                        .cliente(sale.getCustomerName())
-                        .nit(sale.getCustomerTaxId());
+                        .cardAuthNumber(sale.getCardAuthNumber())
+                        .cardLast4(sale.getCardLast4())
+                        .cardBrand(sale.getCardBrand())
+                        .card2AuthNumber(sale.getCard2AuthNumber())
+                        .card2Last4(sale.getCard2Last4())
+                        .card2Brand(sale.getCard2Brand());
 
                 StringBuilder summary = new StringBuilder();
                 summary.append(sale.getSaleNumber() != null ? sale.getSaleNumber() : "Venta #" + sale.getId());
@@ -190,12 +194,9 @@ public class KioskMovementsAccountingService {
                 builder.resumenReferencia(summary.toString());
 
                 if (sale.getInvoiceId() != null) {
-                    taxInvoiceRepository.findById(sale.getInvoiceId()).ifPresent(invoice -> {
-                        builder.numeroInternoFactura(invoice.getInternalNumber())
-                                .felUuid(invoice.getFelUuid())
-                                .felSerie(invoice.getFelSerie())
-                                .felNumero(invoice.getFelNumero());
-                    });
+                    taxInvoiceRepository.findById(sale.getInvoiceId()).ifPresent(invoice ->
+                            builder.numeroInternoFactura(invoice.getInternalNumber())
+                    );
                 }
             });
             return;
