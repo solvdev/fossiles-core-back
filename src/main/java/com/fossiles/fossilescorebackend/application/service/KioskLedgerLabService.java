@@ -36,6 +36,8 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -206,6 +208,7 @@ public class KioskLedgerLabService {
             }
             out.add(dto);
         }
+        applySizeLevelStock(out, raw);
         return out;
     }
 
@@ -215,7 +218,13 @@ public class KioskLedgerLabService {
         guard.requireEramirez();
         KioscoMovementEntity entity = kioscoMovementRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("KioscoMovement", id));
-        return toLabMovement(entity);
+        KioskLedgerLabMovementResponse dto = toLabMovement(entity);
+        if (entity.getKioscoStockId() != null) {
+            List<KioscoMovementEntity> stockMoves = kioscoMovementRepository
+                    .findByKioscoStockIdOrderByCreatedAtAscIdAsc(entity.getKioscoStockId());
+            applySizeLevelStock(List.of(dto), stockMoves);
+        }
+        return dto;
     }
 
     @Transactional
@@ -574,6 +583,71 @@ public class KioskLedgerLabService {
         }
         String sizeKey = ProductInventorySizesJson.normalizeKey(movement.getSizeKey());
         return sizeKey.isEmpty();
+    }
+
+    /**
+     * Calcula saldo por talla para visualización. No modifica stockBefore/stockAfter
+     * del color (siguen siendo los del ledger / DB, usados al editar).
+     */
+    private void applySizeLevelStock(
+            List<KioskLedgerLabMovementResponse> out,
+            List<KioscoMovementEntity> raw
+    ) {
+        if (out == null || out.isEmpty() || raw == null || raw.isEmpty()) {
+            return;
+        }
+
+        Map<Long, List<KioscoMovementEntity>> byStock = raw.stream()
+                .filter(m -> m.getKioscoStockId() != null)
+                .collect(Collectors.groupingBy(KioscoMovementEntity::getKioscoStockId));
+
+        Map<Long, int[]> sizeBalanceByMovementId = new HashMap<>();
+        for (List<KioscoMovementEntity> stockMoves : byStock.values()) {
+            stockMoves.sort(Comparator
+                    .comparing(KioscoMovementEntity::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(KioscoMovementEntity::getId, Comparator.nullsLast(Comparator.naturalOrder())));
+
+            Map<String, Integer> runningBySize = new HashMap<>();
+            for (KioscoMovementEntity m : stockMoves) {
+                if (!Boolean.TRUE.equals(m.getAffectsStock())) {
+                    continue;
+                }
+                String size = ProductInventorySizesJson.normalizeKey(m.getSizeKey());
+                if (size.isEmpty()) {
+                    continue;
+                }
+                int before = runningBySize.getOrDefault(size, 0);
+                int after = Math.max(0, before + signedDelta(m));
+                runningBySize.put(size, after);
+                if (m.getId() != null) {
+                    sizeBalanceByMovementId.put(m.getId(), new int[]{before, after});
+                }
+            }
+        }
+
+        for (KioskLedgerLabMovementResponse dto : out) {
+            if (dto.getId() == null || dto.getSizeKey() == null || dto.getSizeKey().isBlank()) {
+                continue;
+            }
+            int[] bal = sizeBalanceByMovementId.get(dto.getId());
+            if (bal != null) {
+                dto.setSizeStockBefore(bal[0]);
+                dto.setSizeStockAfter(bal[1]);
+            }
+        }
+    }
+
+    private static int signedDelta(KioscoMovementEntity movement) {
+        if (movement == null || movement.getMovementType() == null) {
+            return safeInt(movement != null ? movement.getStockAfter() : null)
+                    - safeInt(movement != null ? movement.getStockBefore() : null);
+        }
+        int qty = safeInt(movement.getQuantity());
+        return switch (movement.getMovementType()) {
+            case ENTRADA, TRASLADO_ENTRADA, DEVOLUCION_CLIENTE, ANULACION -> qty;
+            case VENTA, DEVOLUCION_DEPOSITO, TRASLADO_SALIDA, MERMA -> -qty;
+            case AJUSTE, CAMBIO -> safeInt(movement.getStockAfter()) - safeInt(movement.getStockBefore());
+        };
     }
 
     private void validateUpsert(KioskLedgerLabMovementUpsertRequest request, boolean creating)

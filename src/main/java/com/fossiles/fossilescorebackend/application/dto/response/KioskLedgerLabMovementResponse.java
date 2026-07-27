@@ -28,6 +28,9 @@ public class KioskLedgerLabMovementResponse {
     private String sizeKey;
     private Integer stockBefore;
     private Integer stockAfter;
+    /** Saldo de la talla (visual). stockBefore/stockAfter siguen siendo totales del color. */
+    private Integer sizeStockBefore;
+    private Integer sizeStockAfter;
     private Long referenceId;
     private String referenceType;
     private String referenceNumber;
