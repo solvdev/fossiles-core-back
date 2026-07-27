@@ -23,10 +23,11 @@ public interface MinorExpenseRepository extends JpaRepository<MinorExpenseEntity
     long countByPurchaseNumberId(Long purchaseNumberId);
     
     @Query(value = "SELECT id, invoice_number, purchase_date, description, supplier, total_amount, " +
-           "purchaser_name, authorizer_name, company_amount, messenger_amount, initial_amount_given, " +
-           "returned_amount, reimbursement_status, reimbursement_date, reimbursement_payment_method, " +
-           "reimbursement_adjustment, initial_payment_method, observations, invoice_file_url, purchase_number_id, " +
-           "purchase_number_item_id, estimated_price, created_by, created_at, updated_by, updated_at " +
+           "purchaser_name, authorizer_name, company_amount, messenger_amount, reimbursement_amount, " +
+           "initial_amount_given, returned_amount, reimbursement_status, reimbursement_date, " +
+           "reimbursement_payment_method, reimbursement_adjustment, initial_payment_method, observations, " +
+           "invoice_file_url, purchase_number_id, purchase_number_item_id, estimated_price, " +
+           "created_by, created_at, updated_by, updated_at " +
            "FROM minor_expense WHERE " +
            "(:startDate IS NULL OR purchase_date >= :startDate) AND " +
            "(:endDate IS NULL OR purchase_date <= :endDate) AND " +
