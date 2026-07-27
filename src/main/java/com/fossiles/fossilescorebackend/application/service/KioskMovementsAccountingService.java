@@ -20,9 +20,13 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -131,7 +135,80 @@ public class KioskMovementsAccountingService {
             }
             out.add(dto);
         }
+
+        // stockAntes/stockDespues del ledger son totales del color.
+        // Si el movimiento tiene talla, mostrar el saldo de ESA talla.
+        applySizeLevelStock(out, raw);
         return out;
+    }
+
+    /**
+     * Recalcula stockAntes/stockDespues por size_key rejugando el historial completo
+     * de cada kiosco_stock. Sin talla se dejan los totales del color.
+     */
+    private void applySizeLevelStock(
+            List<KioskMovementsAccountingResponse> out,
+            List<KioscoMovementEntity> raw
+    ) {
+        if (out.isEmpty() || raw.isEmpty()) {
+            return;
+        }
+
+        Map<Long, List<KioscoMovementEntity>> byStock = raw.stream()
+                .filter(m -> m.getKioscoStockId() != null)
+                .collect(Collectors.groupingBy(KioscoMovementEntity::getKioscoStockId));
+
+        Map<Long, int[]> sizeBalanceByMovementId = new HashMap<>();
+        for (List<KioscoMovementEntity> stockMoves : byStock.values()) {
+            stockMoves.sort(Comparator
+                    .comparing(KioscoMovementEntity::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(KioscoMovementEntity::getId, Comparator.nullsLast(Comparator.naturalOrder())));
+
+            Map<String, Integer> runningBySize = new HashMap<>();
+            for (KioscoMovementEntity m : stockMoves) {
+                if (!Boolean.TRUE.equals(m.getAffectsStock())) {
+                    continue;
+                }
+                String size = ProductInventorySizesJson.normalizeKey(m.getSizeKey());
+                if (size.isEmpty()) {
+                    continue;
+                }
+                int before = runningBySize.getOrDefault(size, 0);
+                int after = Math.max(0, before + signedDelta(m));
+                runningBySize.put(size, after);
+                if (m.getId() != null) {
+                    sizeBalanceByMovementId.put(m.getId(), new int[]{before, after});
+                }
+            }
+        }
+
+        for (KioskMovementsAccountingResponse dto : out) {
+            if (dto.getId() == null || dto.getTalla() == null || dto.getTalla().isBlank()) {
+                continue;
+            }
+            int[] bal = sizeBalanceByMovementId.get(dto.getId());
+            if (bal != null) {
+                dto.setStockAntes(bal[0]);
+                dto.setStockDespues(bal[1]);
+            }
+        }
+    }
+
+    private static int signedDelta(KioscoMovementEntity movement) {
+        if (movement == null || movement.getMovementType() == null) {
+            return safeInt(movement != null ? movement.getStockAfter() : null)
+                    - safeInt(movement != null ? movement.getStockBefore() : null);
+        }
+        int qty = safeInt(movement.getQuantity());
+        return switch (movement.getMovementType()) {
+            case ENTRADA, TRASLADO_ENTRADA, DEVOLUCION_CLIENTE, ANULACION -> qty;
+            case VENTA, DEVOLUCION_DEPOSITO, TRASLADO_SALIDA, MERMA -> -qty;
+            case AJUSTE, CAMBIO -> safeInt(movement.getStockAfter()) - safeInt(movement.getStockBefore());
+        };
+    }
+
+    private static int safeInt(Integer value) {
+        return value != null ? value : 0;
     }
 
     private KioskMovementsAccountingResponse toAccountingResponse(KioscoMovementEntity entity) {
