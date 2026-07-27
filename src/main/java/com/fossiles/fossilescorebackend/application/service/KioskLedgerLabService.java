@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMo
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabMovementResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabSplitSizesResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -31,6 +32,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -440,6 +442,138 @@ public class KioskLedgerLabService {
         log.warn("LEDGER_LAB_REPLAY actor={} stockId={}", actor, stockId);
         KioscoStockEntity stock = kioscoStockRepository.findById(stockId).orElseThrow();
         return toStockResponse(stock, resolveProduct(stock), resolveColor(stock), resolveLocation(stock), null);
+    }
+
+    /**
+     * Reemplaza movimientos agregados de inventario inicial (sin size_key) por ENTRADA por talla
+     * según {@code sizes_data} del stock, y recalcula la cadena.
+     */
+    @Transactional
+    public KioskLedgerLabSplitSizesResponse splitOpeningBySizes(Long stockId)
+            throws BusinessException, ResourceNotFoundException {
+        String actor = guard.requireEramirezUsername();
+        KioscoStockEntity stock = kioscoStockRepository.findById(stockId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioscoStock", stockId));
+
+        Map<String, BigDecimal> sizes = ProductInventorySizesJson.parse(stock.getSizesData());
+        Map<String, Integer> positiveSizes = new LinkedHashMap<>();
+        for (Map.Entry<String, BigDecimal> entry : sizes.entrySet()) {
+            String key = ProductInventorySizesJson.normalizeKey(entry.getKey());
+            if (key.isEmpty()) {
+                continue;
+            }
+            int qty = entry.getValue() != null
+                    ? entry.getValue().setScale(0, RoundingMode.HALF_UP).intValue()
+                    : 0;
+            if (qty > 0) {
+                positiveSizes.put(key, qty);
+            }
+        }
+        if (positiveSizes.isEmpty()) {
+            throw new BusinessException(
+                    "El stock #" + stockId + " no tiene tallas con cantidad > 0 en sizes_data.");
+        }
+
+        List<KioscoMovementEntity> all = kioscoMovementRepository
+                .findByKioscoStockIdOrderByCreatedAtAscIdAsc(stockId);
+        List<KioscoMovementEntity> aggregated = all.stream()
+                .filter(this::isAggregatedOpeningMovement)
+                .collect(Collectors.toList());
+        if (aggregated.isEmpty()) {
+            throw new BusinessException(
+                    "No hay movimientos de inventario inicial sin size_key en stock #" + stockId + ".");
+        }
+
+        Long userId = aggregated.get(0).getUserId() != null
+                ? aggregated.get(0).getUserId()
+                : securityUtil.getCurrentUserId();
+        if (userId == null) {
+            throw new BusinessException("userId es obligatorio para crear las ENTRADAs.");
+        }
+        String reason = aggregated.stream()
+                .map(KioscoMovementEntity::getReason)
+                .filter(r -> r != null && !r.isBlank())
+                .findFirst()
+                .orElse(KioscoOpeningInventoryService.OPENING_INVENTORY_REASON);
+        LocalDateTime baseCreatedAt = aggregated.stream()
+                .map(KioscoMovementEntity::getCreatedAt)
+                .filter(Objects::nonNull)
+                .min(LocalDateTime::compareTo)
+                .orElse(LocalDateTime.now());
+
+        for (KioscoMovementEntity movement : aggregated) {
+            kioscoInventoryService.deleteAdminMovement(movement);
+        }
+        entityManager.flush();
+        entityManager.clear();
+
+        int running = 0;
+        int ord = 0;
+        List<String> createdKeys = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : positiveSizes.entrySet()) {
+            int qty = entry.getValue();
+            int before = running;
+            running += qty;
+            LocalDateTime createdAt = baseCreatedAt.plusNanos(ord * 1_000_000L);
+            KioscoMovementEntity entity = KioscoMovementEntity.builder()
+                    .kioscoStockId(stockId)
+                    .movementType(KioscoMovementType.ENTRADA)
+                    .quantity(qty)
+                    .sizeKey(entry.getKey())
+                    .stockBefore(before)
+                    .stockAfter(running)
+                    .reason(reason)
+                    .affectsStock(true)
+                    .userId(userId)
+                    .build();
+            entity = kioscoMovementRepository.save(entity);
+            entityManager.flush();
+            kioscoInventoryService.enableAdminMovementMutation();
+            try {
+                entityManager.createNativeQuery(
+                                "UPDATE kiosco_movement SET created_at = :createdAt WHERE id = :id")
+                        .unwrap(org.hibernate.query.NativeQuery.class)
+                        .setParameter("createdAt", createdAt, LocalDateTime.class)
+                        .setParameter("id", entity.getId(), Long.class)
+                        .executeUpdate();
+                entityManager.flush();
+            } finally {
+                kioscoInventoryService.disableAdminMovementMutation();
+            }
+            createdKeys.add(entry.getKey() + ":" + qty);
+            ord++;
+        }
+
+        try {
+            kioscoInventoryService.replayMovementStockChain(stockId);
+        } finally {
+            kioscoInventoryService.disableAdminMovementMutation();
+        }
+
+        stock = kioscoStockRepository.findById(stockId).orElseThrow();
+        log.warn(
+                "LEDGER_LAB_SPLIT_SIZES actor={} stockId={} deleted={} created={} sizes={}",
+                actor, stockId, aggregated.size(), createdKeys.size(), createdKeys);
+
+        return KioskLedgerLabSplitSizesResponse.builder()
+                .stockId(stockId)
+                .deletedAggregated(aggregated.size())
+                .createdEntradas(createdKeys.size())
+                .sizeKeysCreated(createdKeys)
+                .stock(toStockResponse(stock, resolveProduct(stock), resolveColor(stock), resolveLocation(stock), null))
+                .build();
+    }
+
+    private boolean isAggregatedOpeningMovement(KioscoMovementEntity movement) {
+        if (movement == null) {
+            return false;
+        }
+        String reason = movement.getReason();
+        if (reason == null || !reason.contains(KioscoOpeningInventoryService.OPENING_INVENTORY_REASON)) {
+            return false;
+        }
+        String sizeKey = ProductInventorySizesJson.normalizeKey(movement.getSizeKey());
+        return sizeKey.isEmpty();
     }
 
     private void validateUpsert(KioskLedgerLabMovementUpsertRequest request, boolean creating)
