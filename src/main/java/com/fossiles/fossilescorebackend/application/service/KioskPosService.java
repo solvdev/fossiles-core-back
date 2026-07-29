@@ -2500,7 +2500,7 @@ public class KioskPosService {
             return;
         }
         if (safeTrim(cardAuthNumber).isBlank()) {
-            throw new BusinessException("Debes indicar el número de autorización de la tarjeta.");
+            throw new BusinessException("Debes indicar el número de voucher de la tarjeta.");
         }
         if (!CARD_LAST4_PATTERN.matcher(safeTrim(cardLast4)).matches()) {
             throw new BusinessException("Los últimos 4 dígitos de la tarjeta deben ser 4 números.");
@@ -2541,7 +2541,7 @@ public class KioskPosService {
             throw new BusinessException("La suma de las dos tarjetas debe igualar el total de la venta.");
         }
         if (safeTrim(card2AuthNumber).isBlank()) {
-            throw new BusinessException("Debes indicar el número de autorización de la segunda tarjeta.");
+            throw new BusinessException("Debes indicar el número de voucher de la segunda tarjeta.");
         }
         if (!CARD_LAST4_PATTERN.matcher(safeTrim(card2Last4)).matches()) {
             throw new BusinessException("Los últimos 4 dígitos de la segunda tarjeta deben ser 4 números.");
