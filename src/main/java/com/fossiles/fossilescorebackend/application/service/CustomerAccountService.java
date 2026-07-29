@@ -1632,10 +1632,13 @@ public class CustomerAccountService {
             ProductShipmentDetailEntity detail,
             Map<String, BigDecimal> unitPriceByKey,
             List<ProductionOrderItemEntity> orderItems) {
+        ProductionOrderItemEntity matched = findMatchingOrderItem(detail, orderItems);
+        if (matched != null && ProductionOrderItemPricing.hasExplicitUnitPrice(matched)) {
+            return resolveUnitPriceForSize(matched, detail.getSizeLabel());
+        }
         if (detail.getUnitPrice() != null && detail.getUnitPrice().compareTo(BigDecimal.ZERO) >= 0) {
             return detail.getUnitPrice();
         }
-        ProductionOrderItemEntity matched = findMatchingOrderItem(detail, orderItems);
         if (matched != null) {
             BigDecimal sized = resolveUnitPriceForSize(matched, detail.getSizeLabel());
             if (sized.compareTo(BigDecimal.ZERO) >= 0) {

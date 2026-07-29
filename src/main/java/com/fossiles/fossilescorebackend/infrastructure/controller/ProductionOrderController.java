@@ -2,10 +2,12 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.PartialReleaseUpsertRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemPricesRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.application.dto.response.*;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -360,6 +362,62 @@ public class ProductionOrderController {
         }
 
         return ResponseEntity.ok(toResponse(updated));
+    }
+
+    /**
+     * Actualiza precios unitarios (y por talla) sin borrar/recrear ítems.
+     * También sincroniza {@code product_shipment_detail.unit_price} de envíos ya existentes.
+     */
+    @PutMapping("/{id}/item-prices")
+    @Transactional(rollbackFor = Exception.class)
+    public ResponseEntity<ProductionOrderResponse> updateItemPrices(
+            @PathVariable Long id,
+            @RequestBody ProductionOrderItemPricesRequest request) throws ResourceNotFoundException, BusinessException {
+        ProductionOrderEntity entity = productionOrderRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
+        if (request == null || request.getItems() == null || request.getItems().isEmpty()) {
+            throw new BusinessException("Debe enviar al menos un ítem con precio.");
+        }
+
+        if (request.getShippingCost() != null) {
+            OrderMeta existingMeta = parseOrderMeta(entity.getObservations());
+            List<ProductionOrderRequest.PackingItemRequest> packing = existingMeta.packingItems.stream()
+                    .map(item -> ProductionOrderRequest.PackingItemRequest.builder()
+                            .materialId(item.materialId)
+                            .quantity(item.quantity)
+                            .unitPrice(item.unitPrice)
+                            .build())
+                    .collect(Collectors.toList());
+            entity.setObservations(composeOrderObservations(
+                    existingMeta.baseObservations, packing, request.getShippingCost()));
+            productionOrderRepository.save(entity);
+        }
+
+        List<ProductionOrderItemEntity> existingItems = productionOrderItemRepository.findByProductionOrderId(id);
+        Map<String, ProductionOrderItemEntity> byKey = new LinkedHashMap<>();
+        for (ProductionOrderItemEntity item : existingItems) {
+            byKey.put(itemPriceMatchKey(item.getProductId(), item.getColorId()), item);
+        }
+
+        for (ProductionOrderItemPricesRequest.ItemPrice priceRow : request.getItems()) {
+            if (priceRow == null || priceRow.getProductId() == null) {
+                continue;
+            }
+            ProductionOrderItemEntity item = byKey.get(itemPriceMatchKey(priceRow.getProductId(), priceRow.getColorId()));
+            if (item == null) {
+                continue;
+            }
+            if (priceRow.getUnitPrice() != null) {
+                item.setUnitPrice(priceRow.getUnitPrice());
+            }
+            item.setUnitPricesJson(convertUnitPricesToJson(priceRow.getUnitPrices()));
+            productionOrderItemRepository.save(item);
+        }
+
+        List<ProductionOrderItemEntity> refreshedItems = productionOrderItemRepository.findByProductionOrderId(id);
+        syncShipmentDetailUnitPrices(id, refreshedItems);
+
+        return ResponseEntity.ok(toResponse(entity));
     }
 
     @DeleteMapping("/{id}")
@@ -1910,6 +1968,59 @@ public class ProductionOrderController {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static String itemPriceMatchKey(Long productId, Long colorId) {
+        return String.valueOf(productId) + ":" + (colorId != null ? colorId : "");
+    }
+
+    private void syncShipmentDetailUnitPrices(Long productionOrderId, List<ProductionOrderItemEntity> orderItems) {
+        if (productionOrderId == null || orderItems == null || orderItems.isEmpty()) {
+            return;
+        }
+        List<ProductShipmentEntity> shipments = shipmentRepository.findByProductionOrderId(productionOrderId);
+        if (shipments == null || shipments.isEmpty()) {
+            return;
+        }
+        List<Long> shipmentIds = shipments.stream()
+                .map(ProductShipmentEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (shipmentIds.isEmpty()) {
+            return;
+        }
+        List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentIdIn(shipmentIds);
+        if (details == null || details.isEmpty()) {
+            return;
+        }
+        Map<String, ProductionOrderItemEntity> byKey = new LinkedHashMap<>();
+        for (ProductionOrderItemEntity item : orderItems) {
+            byKey.putIfAbsent(itemPriceMatchKey(item.getProductId(), item.getColorId()), item);
+        }
+        for (ProductShipmentDetailEntity detail : details) {
+            if (detail == null || detail.getProductId() == null) {
+                continue;
+            }
+            ProductionOrderItemEntity matched = byKey.get(itemPriceMatchKey(detail.getProductId(), detail.getColorId()));
+            if (matched == null) {
+                matched = byKey.values().stream()
+                        .filter(item -> detail.getProductId().equals(item.getProductId()))
+                        .findFirst()
+                        .orElse(null);
+            }
+            if (matched == null) {
+                continue;
+            }
+            BigDecimal unitPrice = ProductionOrderItemPricing.resolveForSize(
+                    matched,
+                    detail.getSizeLabel(),
+                    productId -> productRepository.findById(productId)
+                            .map(ProductEntity::getSellerPrice)
+                            .filter(p -> p != null && p.compareTo(BigDecimal.ZERO) >= 0)
+                            .orElse(BigDecimal.ZERO));
+            detail.setUnitPrice(unitPrice);
+        }
+        shipmentDetailRepository.saveAll(details);
     }
 
     private void createReprocessTask(

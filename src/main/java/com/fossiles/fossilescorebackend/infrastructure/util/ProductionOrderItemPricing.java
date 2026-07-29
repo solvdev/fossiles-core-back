@@ -23,6 +23,18 @@ public final class ProductionOrderItemPricing {
         return ProductInventorySizesJson.serialize(unitPrices);
     }
 
+    /** True si el ítem tiene precio guardado en OP (global > 0 o mapa por talla). */
+    public static boolean hasExplicitUnitPrice(ProductionOrderItemEntity item) {
+        if (item == null) {
+            return false;
+        }
+        String json = item.getUnitPricesJson();
+        if (json != null && !json.isBlank() && !parseUnitPrices(json).isEmpty()) {
+            return true;
+        }
+        return item.getUnitPrice() != null && item.getUnitPrice().compareTo(BigDecimal.ZERO) > 0;
+    }
+
     /**
      * Precio para una talla concreta. Si no hay override en el mapa, usa {@code unitPrice} del ítem
      * y, en su defecto, el precio de catálogo vía {@code productFallback}.

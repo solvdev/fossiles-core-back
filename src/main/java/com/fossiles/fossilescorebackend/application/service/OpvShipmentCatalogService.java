@@ -430,9 +430,6 @@ public class OpvShipmentCatalogService {
     private BigDecimal resolveShipmentDetailUnitPrice(
             ProductShipmentDetailEntity detail,
             List<ProductionOrderItemEntity> orderItems) {
-        if (detail.getUnitPrice() != null && detail.getUnitPrice().compareTo(BigDecimal.ZERO) >= 0) {
-            return detail.getUnitPrice();
-        }
         ProductionOrderItemEntity matched = null;
         for (ProductionOrderItemEntity item : orderItems) {
             if (item.getProductId() == null || !item.getProductId().equals(detail.getProductId())) {
@@ -446,6 +443,12 @@ public class OpvShipmentCatalogService {
                 matched = item;
                 break;
             }
+        }
+        if (matched != null && ProductionOrderItemPricing.hasExplicitUnitPrice(matched)) {
+            return resolveUnitPriceForSize(matched, detail.getSizeLabel());
+        }
+        if (detail.getUnitPrice() != null && detail.getUnitPrice().compareTo(BigDecimal.ZERO) >= 0) {
+            return detail.getUnitPrice();
         }
         if (matched != null) {
             return resolveUnitPriceForSize(matched, detail.getSizeLabel());
