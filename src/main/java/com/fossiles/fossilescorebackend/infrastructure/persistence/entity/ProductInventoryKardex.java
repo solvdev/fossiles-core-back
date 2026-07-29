@@ -30,6 +30,10 @@ public class ProductInventoryKardex {
     @Column(name = "color_id")
     private Long colorId;
 
+    /** Talla del movimiento en cinchos FOSS con desglose; null si el producto no maneja tallas. */
+    @Column(name = "size_label", length = 50)
+    private String sizeLabel;
+
     @Column(name = "movement_type", nullable = false, length = 50)
     private String movementType; // PRODUCTION_ENTRY, SALE_EXIT, TRANSFER_IN, TRANSFER_OUT, ADJUSTMENT, RETURN
 
@@ -56,6 +60,13 @@ public class ProductInventoryKardex {
 
     @Column(name = "reference_number", length = 100)
     private String referenceNumber; // Ej: OP-00001, V-00001
+
+    /**
+     * Línea del documento que originó el movimiento (product_shipment_detail, online_sale_item,
+     * envio_detalle). Distingue dos tallas del mismo producto+color dentro del mismo documento.
+     */
+    @Column(name = "reference_line_id")
+    private Long referenceLineId;
 
     @Column(length = 500)
     private String description;

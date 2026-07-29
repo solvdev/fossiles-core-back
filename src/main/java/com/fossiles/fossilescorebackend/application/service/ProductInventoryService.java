@@ -30,6 +30,11 @@ import java.util.stream.Collectors;
 @Transactional
 public class ProductInventoryService {
 
+    public static final String MOVEMENT_SHIPMENT = "SHIPMENT";
+    private static final String REVERSAL_SUFFIX = "_REVERSAL";
+    /** Salidas de reenvío escritas por versiones anteriores; se netean junto a las de tipo SHIPMENT. */
+    private static final String LEGACY_MOVEMENT_SHIPMENT_REDISPATCH = "SHIPMENT_REDISPATCH";
+
     private final ProductInventoryLocationRepository productInventoryLocationRepository;
     private final ProductInventoryKardexRepository productInventoryKardexRepository;
     private final ProductRepository productRepository;
@@ -100,6 +105,57 @@ public class ProductInventoryService {
         return total;
     }
 
+    /**
+     * Tipos de movimiento que participan del neto de una salida: la salida original, su reversión y
+     * las variantes históricas de reenvío. Las salidas son negativas y las reversiones positivas,
+     * de modo que el neto es lo que sigue realmente descargado del inventario.
+     */
+    private List<String> movementFamily(String movementType) {
+        List<String> family = new ArrayList<>();
+        family.add(movementType);
+        family.add(reversalMovementType(movementType));
+        if (MOVEMENT_SHIPMENT.equals(movementType)) {
+            family.add(LEGACY_MOVEMENT_SHIPMENT_REDISPATCH);
+            family.add(reversalMovementType(LEGACY_MOVEMENT_SHIPMENT_REDISPATCH));
+        }
+        return family;
+    }
+
+    public static String reversalMovementType(String movementType) {
+        return movementType + REVERSAL_SUFFIX;
+    }
+
+    /**
+     * Cantidad de una línea de documento que sigue descargada del inventario, ya descontadas las
+     * reversiones. {@code locationId} null netea sobre todas las ubicaciones.
+     */
+    @Transactional(readOnly = true)
+    public BigDecimal getNetConsumedForLine(
+            String referenceType,
+            Long referenceId,
+            String movementType,
+            Long productId,
+            Long locationId,
+            Long colorId,
+            Long referenceLineId) {
+        if (referenceType == null || referenceId == null || movementType == null || productId == null) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal signedSum = productInventoryKardexRepository.sumSignedQuantityForLine(
+                referenceType, referenceId, movementFamily(movementType), productId,
+                locationId, colorId, referenceLineId);
+        if (signedSum == null) {
+            return BigDecimal.ZERO;
+        }
+        // Las salidas se guardan en negativo: el neto consumido es su opuesto.
+        return signedSum.negate().max(BigDecimal.ZERO);
+    }
+
+    /**
+     * @deprecated usar {@link #getNetConsumedForLine} indicando la línea del documento; sin línea no
+     *             se distinguen dos tallas del mismo producto+color dentro del mismo documento.
+     */
+    @Deprecated
     @Transactional(readOnly = true)
     public BigDecimal getConsumedQuantityForReference(
             String referenceType,
@@ -110,17 +166,17 @@ public class ProductInventoryService {
         if (referenceType == null || referenceId == null || movementType == null || productId == null) {
             return BigDecimal.ZERO;
         }
-        return productInventoryKardexRepository.findByReferenceTypeAndReferenceId(referenceType, referenceId).stream()
-                .filter(k -> movementType.equals(k.getMovementType()))
+        List<String> family = movementFamily(movementType);
+        BigDecimal signedSum = productInventoryKardexRepository
+                .findByReferenceTypeAndReferenceId(referenceType, referenceId).stream()
+                .filter(k -> family.contains(k.getMovementType()))
                 .filter(k -> productId.equals(k.getProductId()))
                 .filter(k -> Objects.equals(colorId, k.getColorId()))
-                .map(k -> k.getQuantity() != null ? k.getQuantity().abs() : BigDecimal.ZERO)
+                .map(k -> k.getQuantity() != null ? k.getQuantity() : BigDecimal.ZERO)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return signedSum.negate().max(BigDecimal.ZERO);
     }
 
-    /**
-     * Descuenta inventario para envío/distribución: consume primero Devoluciones y luego Bodega PT.
-     */
     public void decrementFromDispatchWarehouses(
             Long productId,
             Long colorId,
@@ -131,6 +187,28 @@ public class ProductInventoryService {
             String referenceNumber,
             String description,
             String kardexMovementType) throws BusinessException {
+        decrementFromDispatchWarehouses(productId, colorId, sizeLabel, quantity, referenceType,
+                referenceId, referenceNumber, description, kardexMovementType, null);
+    }
+
+    /**
+     * Descuenta inventario para envío/distribución: consume primero Devoluciones y luego Bodega PT.
+     * <p>
+     * {@code referenceLineId} identifica la línea del documento y es lo que hace idempotente la
+     * operación sin colisionar entre tallas del mismo producto+color. Omitirlo mantiene el
+     * comportamiento antiguo (una sola línea por producto+color) y no debería usarse en código nuevo.
+     */
+    public void decrementFromDispatchWarehouses(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String kardexMovementType,
+            Long referenceLineId) throws BusinessException {
         if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
@@ -138,48 +216,187 @@ public class ProductInventoryService {
                 ? kardexMovementType
                 : referenceType;
 
-        BigDecimal alreadyConsumed = getConsumedQuantityForReference(
-                referenceType, referenceId, movementType, productId, colorId);
+        assertSizeProvidedWhenRequired(productId, sizeLabel);
+        Long effectiveColorId = resolveDispatchColorId(productId, colorId);
+
+        BigDecimal alreadyConsumed = getNetConsumedForLine(
+                referenceType, referenceId, movementType, productId, null, effectiveColorId, referenceLineId);
         BigDecimal remaining = quantity.subtract(alreadyConsumed);
         if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
 
-        List<LocationEntity> warehouses = getDispatchSourceWarehouses();
-        for (LocationEntity loc : warehouses) {
+        for (LocationEntity loc : getDispatchSourceWarehouses()) {
             if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
                 break;
             }
-            if (hasProductKardexMovement(referenceType, referenceId, movementType, productId, loc.getId(), colorId)) {
-                continue;
-            }
-            BigDecimal available = getAvailableQuantity(productId, loc.getId(), colorId, sizeLabel);
+            BigDecimal available = getAvailableQuantity(productId, loc.getId(), effectiveColorId, sizeLabel);
             if (available.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
             BigDecimal toConsume = available.min(remaining);
+            BigDecimal consumed;
             try {
-                decrementInventory(
+                consumed = applyDecrementToLocation(
                         productId,
                         loc.getId(),
-                        colorId,
+                        effectiveColorId,
                         toConsume,
                         referenceType,
                         referenceId,
                         referenceNumber,
                         description,
                         sizeLabel,
-                        movementType);
+                        movementType,
+                        referenceLineId);
             } catch (ResourceNotFoundException e) {
                 throw new BusinessException("Sin inventario registrado para producto en ubicacion " + loc.getName());
             }
-            remaining = remaining.subtract(toConsume);
+            // Solo se descuenta lo realmente aplicado: si el movimiento ya existía, consumed es cero
+            // y la línea sigue buscando en la siguiente bodega en lugar de darse por cumplida.
+            remaining = remaining.subtract(consumed);
         }
 
         if (remaining.compareTo(BigDecimal.ZERO) > 0) {
             throw new BusinessException(
                     "Stock insuficiente en Devoluciones / Bodega PT (faltan " + remaining + " unidades).");
         }
+    }
+
+    /**
+     * Devuelve al inventario las salidas de un documento y deja constancia en el kardex.
+     * <p>
+     * Es idempotente por neto: una línea ya revertida queda en cero y se ignora en llamadas
+     * posteriores, de modo que editar dos veces un envío en tránsito no acredita el stock dos veces.
+     *
+     * @return unidades devueltas al inventario
+     */
+    public BigDecimal reverseDispatchOutflows(
+            String referenceType,
+            Long referenceId,
+            String movementType,
+            String referenceNumber,
+            String description) throws BusinessException {
+        if (referenceType == null || referenceId == null || movementType == null) {
+            return BigDecimal.ZERO;
+        }
+        List<ProductInventoryKardex> rows = productInventoryKardexRepository
+                .findByReferenceAndMovementTypes(referenceType, referenceId, movementFamily(movementType));
+
+        // Una línea puede haber salido de varias bodegas: se revierte por (producto, ubicación,
+        // color, talla, línea) para devolver cada unidad exactamente a donde salió.
+        Map<String, ProductInventoryKardex> groups = new LinkedHashMap<>();
+        for (ProductInventoryKardex row : rows) {
+            groups.putIfAbsent(reversalGroupKey(row), row);
+        }
+
+        BigDecimal restoredTotal = BigDecimal.ZERO;
+        for (ProductInventoryKardex sample : groups.values()) {
+            BigDecimal net = getNetConsumedForLine(
+                    referenceType,
+                    referenceId,
+                    movementType,
+                    sample.getProductId(),
+                    sample.getLocationId(),
+                    sample.getColorId(),
+                    sample.getReferenceLineId());
+            if (net.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            try {
+                BigDecimal before = readQuantity(sample.getProductId(), sample.getLocationId(), sample.getColorId());
+                incrementInventory(
+                        sample.getProductId(),
+                        sample.getLocationId(),
+                        sample.getColorId(),
+                        net,
+                        null,
+                        referenceType,
+                        referenceId,
+                        referenceNumber,
+                        description,
+                        sample.getSizeLabel());
+                BigDecimal after = readQuantity(sample.getProductId(), sample.getLocationId(), sample.getColorId());
+                recordMovement(
+                        sample.getProductId(),
+                        sample.getLocationId(),
+                        sample.getColorId(),
+                        reversalMovementType(movementType),
+                        net,
+                        before,
+                        after,
+                        null,
+                        referenceType,
+                        referenceId,
+                        referenceNumber,
+                        description,
+                        sample.getSizeLabel(),
+                        sample.getReferenceLineId());
+                restoredTotal = restoredTotal.add(net);
+            } catch (ResourceNotFoundException e) {
+                throw new BusinessException("No se pudo revertir inventario del documento: " + e.getMessage());
+            }
+        }
+        return restoredTotal;
+    }
+
+    private String reversalGroupKey(ProductInventoryKardex row) {
+        return row.getProductId() + "|" + row.getLocationId() + "|" + row.getColorId()
+                + "|" + ProductInventorySizesJson.normalizeKey(row.getSizeLabel())
+                + "|" + row.getReferenceLineId();
+    }
+
+    private BigDecimal readQuantity(Long productId, Long locationId, Long colorId) {
+        return productInventoryLocationRepository
+                .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
+                .map(pil -> pil.getQuantity() != null ? pil.getQuantity() : BigDecimal.ZERO)
+                .orElse(BigDecimal.ZERO);
+    }
+
+    /**
+     * Los cinchos FOSS con desglose por talla no se pueden descargar sin talla: sin ella la
+     * disponibilidad calculada es cero y la salida se perdería en silencio.
+     */
+    private void assertSizeProvidedWhenRequired(Long productId, String sizeLabel) throws BusinessException {
+        if (!ProductInventorySizesJson.normalizeKey(sizeLabel).isEmpty()) {
+            return;
+        }
+        ProductEntity product = productRepository.findById(productId).orElse(null);
+        if (!CinchoProductUtils.isFossCinchoProduct(product)) {
+            return;
+        }
+        boolean hasBreakdown = productInventoryLocationRepository.findByProductId(productId).stream()
+                .anyMatch(pil -> !ProductInventorySizesJson.parse(pil.getSizesData()).isEmpty());
+        if (hasBreakdown) {
+            String name = product != null && product.getCode() != null ? product.getCode() : "#" + productId;
+            throw new BusinessException("El producto " + name
+                    + " maneja inventario por talla: el documento debe indicar la talla para descargar bodega.");
+        }
+    }
+
+    /**
+     * Resuelve la variante de color cuando el documento no la trae (envíos legacy) y el producto
+     * tiene una única variante en las bodegas de despacho. Con varias variantes se respeta el null
+     * recibido y la descarga fallará de forma visible en vez de descontar la fila equivocada.
+     */
+    public Long resolveDispatchColorId(Long productId, Long colorId) throws BusinessException {
+        if (colorId != null) {
+            return colorId;
+        }
+        List<Long> dispatchLocationIds = getDispatchSourceWarehouses().stream()
+                .map(LocationEntity::getId)
+                .collect(Collectors.toList());
+        List<ProductInventoryLocation> rows = productInventoryLocationRepository.findByProductId(productId).stream()
+                .filter(pil -> dispatchLocationIds.contains(pil.getLocationId()))
+                .collect(Collectors.toList());
+        if (rows.stream().anyMatch(pil -> pil.getColorId() == null)) {
+            return null;
+        }
+        List<Long> distinctColors = rows.stream()
+                .map(ProductInventoryLocation::getColorId)
+                .distinct()
+                .collect(Collectors.toList());
+        return distinctColors.size() == 1 ? distinctColors.get(0) : null;
     }
 
     private LocationEntity findBodegaPtLocation() {
@@ -563,8 +780,8 @@ public class ProductInventoryService {
     }
 
     public ProductInventoryLocationResponse decrementInventory(
-            Long productId, 
-            Long locationId, 
+            Long productId,
+            Long locationId,
             Long colorId,
             BigDecimal quantity,
             String referenceType,
@@ -572,24 +789,79 @@ public class ProductInventoryService {
             String referenceNumber,
             String description,
             String sizeKey,
-            String kardexMovementType) 
+            String kardexMovementType)
+            throws ResourceNotFoundException, BusinessException {
+        return decrementInventory(productId, locationId, colorId, quantity, referenceType, referenceId,
+                referenceNumber, description, sizeKey, kardexMovementType, null);
+    }
+
+    /**
+     * Decrementa inventario en una ubicación. {@code referenceLineId} identifica la línea del
+     * documento y evita que dos tallas del mismo producto+color se confundan entre sí.
+     */
+    public ProductInventoryLocationResponse decrementInventory(
+            Long productId,
+            Long locationId,
+            Long colorId,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String sizeKey,
+            String kardexMovementType,
+            Long referenceLineId)
+            throws ResourceNotFoundException, BusinessException {
+        applyDecrementToLocation(productId, locationId, colorId, quantity, referenceType, referenceId,
+                referenceNumber, description, sizeKey, kardexMovementType, referenceLineId);
+        return toProductInventoryLocationResponse(productInventoryLocationRepository
+                .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Product Inventory Location",
+                        "Product: " + productId +
+                        ", Location: " + locationId +
+                        (colorId != null ? ", Color: " + colorId : ", Color: NULL"))));
+    }
+
+    /**
+     * Aplica el decremento y devuelve las unidades realmente descontadas: cero cuando el movimiento
+     * de esa línea ya estaba registrado en esta ubicación. Quien llama debe usar este valor en lugar
+     * de asumir que se consumió todo lo solicitado.
+     */
+    private BigDecimal applyDecrementToLocation(
+            Long productId,
+            Long locationId,
+            Long colorId,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String sizeKey,
+            String kardexMovementType,
+            Long referenceLineId)
             throws ResourceNotFoundException, BusinessException {
         ProductInventoryLocation entity = productInventoryLocationRepository
                 .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
                 .orElseThrow(() -> new ResourceNotFoundException(
-                    "Product Inventory Location", 
-                    "Product: " + productId + 
-                    ", Location: " + locationId + 
+                    "Product Inventory Location",
+                    "Product: " + productId +
+                    ", Location: " + locationId +
                     (colorId != null ? ", Color: " + colorId : ", Color: NULL")));
+
+        String movementType = (kardexMovementType != null && !kardexMovementType.isBlank())
+                ? kardexMovementType
+                : referenceType;
 
         if (quantity != null && quantity.compareTo(BigDecimal.ZERO) > 0
                 && referenceType != null && !referenceType.isBlank()
                 && referenceId != null) {
-            String movementTypeCheck = (kardexMovementType != null && !kardexMovementType.isBlank())
-                    ? kardexMovementType
-                    : referenceType;
-            if (hasProductKardexMovement(referenceType, referenceId, movementTypeCheck, productId, locationId, colorId)) {
-                return toProductInventoryLocationResponse(entity);
+            // Neto y no mera existencia: tras revertir un envío el neto vuelve a cero y la línea
+            // puede volver a descargarse, cosa que un simple "ya existe el movimiento" impedía.
+            BigDecimal alreadyHere = getNetConsumedForLine(
+                    referenceType, referenceId, movementType, productId, locationId, colorId, referenceLineId);
+            if (alreadyHere.compareTo(quantity) >= 0) {
+                return BigDecimal.ZERO;
             }
         }
 
@@ -599,7 +871,7 @@ public class ProductInventoryService {
         applyFossDecrementToEntity(entity, product, quantity, sizeKey);
 
         BigDecimal quantityAfter = entity.getQuantity() != null ? entity.getQuantity() : BigDecimal.ZERO;
-        ProductInventoryLocation saved = productInventoryLocationRepository.save(entity);
+        productInventoryLocationRepository.save(entity);
 
         // Consumir lotes FIFO (más antiguos primero) y calcular costo promedio
         BigDecimal remainingQuantity = quantity;
@@ -646,36 +918,37 @@ public class ProductInventoryService {
             // El inventario se decrementa de todas formas
         }
 
-        // Registrar kardex (salida = cantidad negativa), idempotente por referencia
+        // Registrar kardex (salida = cantidad negativa). El candado de idempotencia ya se evaluó
+        // arriba, así que aquí siempre se escribe: si la fila faltara, el neto de la línea quedaría
+        // en cero y un reintento volvería a descontar el mismo stock.
         if (quantity != null && quantity.compareTo(BigDecimal.ZERO) > 0
                 && referenceType != null && !referenceType.isBlank()
                 && referenceId != null) {
-            String movementType = (kardexMovementType != null && !kardexMovementType.isBlank())
-                    ? kardexMovementType
-                    : referenceType;
             try {
-                if (!hasProductKardexMovement(referenceType, referenceId, movementType, productId, locationId, colorId)) {
-                    recordMovement(
-                            productId,
-                            locationId,
-                            colorId,
-                            movementType,
-                            quantity.negate(),
-                            quantityBefore,
-                            quantityAfter,
-                            null,
-                            referenceType,
-                            referenceId,
-                            referenceNumber,
-                            description
-                    );
-                }
+                recordMovement(
+                        productId,
+                        locationId,
+                        colorId,
+                        movementType,
+                        quantity.negate(),
+                        quantityBefore,
+                        quantityAfter,
+                        null,
+                        referenceType,
+                        referenceId,
+                        referenceNumber,
+                        description,
+                        sizeKey,
+                        referenceLineId
+                );
             } catch (ResourceNotFoundException e) {
-                // Si algo falla al registrar kardex, no impedir la venta/operación de inventario.
+                throw new BusinessException(
+                        "No se pudo registrar el movimiento de kardex de la salida; se revierte la operación: "
+                                + e.getMessage());
             }
         }
 
-        return toProductInventoryLocationResponse(saved);
+        return quantity;
     }
 
     public boolean hasProductKardexMovement(
@@ -765,6 +1038,29 @@ public class ProductInventoryService {
             Long referenceId,
             String referenceNumber,
             String description) throws ResourceNotFoundException {
+        return recordMovement(productId, locationId, colorId, movementType, quantity, quantityBefore,
+                quantityAfter, unitCost, referenceType, referenceId, referenceNumber, description, null, null);
+    }
+
+    /**
+     * Registra un movimiento en el kardex dejando trazada la talla y la línea del documento, que es
+     * lo que permite revertir la salida exacta y distinguir tallas dentro del mismo documento.
+     */
+    public ProductInventoryKardexResponse recordMovement(
+            Long productId,
+            Long locationId,
+            Long colorId,
+            String movementType,
+            BigDecimal quantity,
+            BigDecimal quantityBefore,
+            BigDecimal quantityAfter,
+            BigDecimal unitCost,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String sizeLabel,
+            Long referenceLineId) throws ResourceNotFoundException {
 
         // Validar que el producto existe
         if (!productRepository.existsById(productId)) {
@@ -850,10 +1146,14 @@ public class ProductInventoryService {
 
         Long createdBy = securityUtil != null ? securityUtil.getCurrentUserId() : null;
 
+        String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeLabel);
+
         ProductInventoryKardex entity = ProductInventoryKardex.builder()
                 .productId(productId)
                 .locationId(locationId)
                 .colorId(colorId)
+                .sizeLabel(normalizedSize.isEmpty() ? null : normalizedSize)
+                .referenceLineId(referenceLineId)
                 .movementType(movementType)
                 .quantity(quantity)
                 .quantityBefore(quantityBefore)

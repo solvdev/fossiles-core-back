@@ -272,21 +272,26 @@ public class DistribucionService {
 
         LocationEntity kiosk = locationRepository.findById(envio.getLocationId()).orElse(null);
 
+        // envio_detalle no guarda color ni talla: se resuelve la variante cuando el producto tiene
+        // una sola en las bodegas de despacho. Con varias, la descarga falla de forma visible en
+        // lugar de descontar la fila equivocada.
         List<String> shortages = new ArrayList<>();
         for (EnvioDetalleEntity detalle : detalles) {
             if (detalle == null || isPackagingProduct(detalle.getProductId())) continue;
             BigDecimal qty = detalle.getCantidad() != null ? detalle.getCantidad() : BigDecimal.ZERO;
             if (qty.compareTo(BigDecimal.ZERO) <= 0) continue;
 
-            BigDecimal alreadyOut = productInventoryService.getConsumedQuantityForReference(
-                    "DISTRIBUTION_EXIT", envio.getId(), "DISTRIBUTION_EXIT", detalle.getProductId(), null);
+            Long colorId = productInventoryService.resolveDispatchColorId(detalle.getProductId(), null);
+            BigDecimal alreadyOut = productInventoryService.getNetConsumedForLine(
+                    "DISTRIBUTION_EXIT", envio.getId(), "DISTRIBUTION_EXIT",
+                    detalle.getProductId(), null, colorId, detalle.getId());
             BigDecimal stillNeeded = qty.subtract(alreadyOut);
             if (stillNeeded.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
 
             BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
-                    detalle.getProductId(), null, null);
+                    detalle.getProductId(), colorId, null);
             if (availableTotal.compareTo(stillNeeded) < 0) {
                 ProductEntity product = productRepository.findById(detalle.getProductId()).orElse(null);
                 String name = product != null ? product.getCode() + " - " + product.getName() : "Producto #" + detalle.getProductId();
@@ -304,7 +309,7 @@ public class DistribucionService {
             if (qty.compareTo(BigDecimal.ZERO) <= 0) continue;
             productInventoryService.decrementFromDispatchWarehouses(
                     detalle.getProductId(),
-                    null,
+                    productInventoryService.resolveDispatchColorId(detalle.getProductId(), null),
                     null,
                     qty,
                     "DISTRIBUTION_EXIT",
@@ -313,7 +318,8 @@ public class DistribucionService {
                     "Salida por envio " + envio.getNumeroEnvio()
                             + " (" + distribucion.getNumeroDistribucion() + ") hacia "
                             + (kiosk != null ? kiosk.getName() : "kiosko"),
-                    "DISTRIBUTION_EXIT");
+                    "DISTRIBUTION_EXIT",
+                    detalle.getId());
         }
 
         envio.setEstado("EN_TRANSITO");

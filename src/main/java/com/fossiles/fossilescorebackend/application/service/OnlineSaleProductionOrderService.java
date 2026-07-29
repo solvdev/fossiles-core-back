@@ -584,12 +584,12 @@ public class OnlineSaleProductionOrderService {
             for (OnlineSaleItemEntity item : items) {
                 if (item.getProductId() == null) continue;
                 int qty = item.getQuantity() != null ? item.getQuantity() : 1;
-                consumeAcrossWarehouses(sale, item.getProductId(), item.getColorId(), BigDecimal.valueOf(qty), sourceWarehouses, item.getSize());
+                consumeAcrossWarehouses(sale, item.getId(), item.getProductId(), item.getColorId(), BigDecimal.valueOf(qty), item.getSize());
             }
         } else {
             if (sale.getProductId() != null) {
                 int qty = sale.getQuantity() != null ? sale.getQuantity() : 1;
-                consumeAcrossWarehouses(sale, sale.getProductId(), sale.getColorId(), BigDecimal.valueOf(qty), sourceWarehouses, sale.getSize());
+                consumeAcrossWarehouses(sale, null, sale.getProductId(), sale.getColorId(), BigDecimal.valueOf(qty), sale.getSize());
             }
         }
     }
@@ -720,7 +720,7 @@ public class OnlineSaleProductionOrderService {
                 continue;
             }
             int qty = item.getQuantity() != null ? item.getQuantity() : 1;
-            consumeAcrossWarehouses(sale, item.getProductId(), item.getColorId(), BigDecimal.valueOf(qty), sourceWarehouses, item.getSize());
+            consumeAcrossWarehouses(sale, item.getId(), item.getProductId(), item.getColorId(), BigDecimal.valueOf(qty), item.getSize());
         }
     }
 
@@ -737,7 +737,7 @@ public class OnlineSaleProductionOrderService {
                 continue;
             }
             int qty = item.getQuantity() != null ? item.getQuantity() : 1;
-            consumeAcrossWarehouses(sale, item.getProductId(), item.getColorId(), BigDecimal.valueOf(qty), sourceWarehouses, item.getSize());
+            consumeAcrossWarehouses(sale, item.getId(), item.getProductId(), item.getColorId(), BigDecimal.valueOf(qty), item.getSize());
         }
     }
 
@@ -789,47 +789,33 @@ public class OnlineSaleProductionOrderService {
         return returnsWarehouseLocator.matchesReturnsWarehouse(loc);
     }
 
+    /**
+     * Descuenta el inventario de una línea de venta consumiendo Devoluciones primero y luego Bodega
+     * PT. El id de la línea es el candado de idempotencia: sin él, dos tallas del mismo producto y
+     * color dentro de la misma venta se tomaban por el mismo movimiento y la segunda no se descargaba.
+     */
     private void consumeAcrossWarehouses(
             OnlineSaleEntity sale,
+            Long saleItemId,
             Long productId,
             Long colorId,
             BigDecimal qty,
-            List<LocationEntity> sourceWarehouses,
             String sizeLabel) throws BusinessException {
-        BigDecimal remaining = qty != null ? qty : BigDecimal.ZERO;
-        if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+        if (qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
-
-        for (LocationEntity loc : orderWarehousesReturnsFirst(sourceWarehouses)) {
-            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
-                break;
-            }
-            BigDecimal available = getStock(productId, loc.getId(), colorId, sizeLabel);
-            if (available.compareTo(BigDecimal.ZERO) <= 0) {
-                continue;
-            }
-            BigDecimal toConsume = available.min(remaining);
-            try {
-                String desc = "Prep venta online #" + (sale.getSaleNumber() != null ? sale.getSaleNumber() : sale.getId());
-                productInventoryService.decrementInventory(
-                        productId,
-                        loc.getId(),
-                        colorId,
-                        toConsume,
-                        "ONLINE_SALE_PREPARE",
-                        sale.getId(),
-                        sale.getSaleNumber(),
-                        desc,
-                        sizeLabel);
-            } catch (ResourceNotFoundException e) {
-                throw new BusinessException("Sin inventario registrado para producto en ubicación " + loc.getName());
-            }
-            remaining = remaining.subtract(toConsume);
-        }
-        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
-            throw new BusinessException("No se pudo completar el consumo desde PT/Devoluciones (stock insuficiente o sin registro).");
-        }
+        String desc = "Prep venta online #" + (sale.getSaleNumber() != null ? sale.getSaleNumber() : sale.getId());
+        productInventoryService.decrementFromDispatchWarehouses(
+                productId,
+                colorId,
+                sizeLabel,
+                qty,
+                "ONLINE_SALE_PREPARE",
+                sale.getId(),
+                sale.getSaleNumber(),
+                desc,
+                "ONLINE_SALE_PREPARE",
+                saleItemId);
     }
 
     /**

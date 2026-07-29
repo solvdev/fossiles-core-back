@@ -1217,7 +1217,7 @@ public class ProductDistributionService {
         }
 
         if (sentStatus && dispatchInventory) {
-            redispatchShipmentProducts(shipment, normalized);
+            redispatchShipmentProducts(shipment);
         }
 
         shipment.setUpdatedBy(securityUtil.getCurrentUserId());
@@ -1234,6 +1234,11 @@ public class ProductDistributionService {
         }
     }
 
+    /**
+     * Un envío descarga Devoluciones/Bodega PT salvo que sea un documento OPI sin movimiento de
+     * inventario. Los envíos a kiosko también descargan: la recepción en el kiosko carga stock allá,
+     * así que sin esta salida las unidades se duplicarían entre bodega y kiosko.
+     */
     private boolean shipmentDispatchesFromPtWarehouses(ProductShipmentEntity shipment) {
         Long shipmentLocationId = shipment.getLocationId();
         Optional<ProductionOrderEntity> linkedPoOpt = shipment.getProductionOrderId() == null
@@ -1245,62 +1250,34 @@ public class ProductDistributionService {
                 && linkedPoOpt
                 .map(po -> "INTERNA".equalsIgnoreCase(po.getOrderType() == null ? "" : po.getOrderType().trim()))
                 .orElse(false);
-        boolean opcPtOutOnly = shipmentLocationId == null
-                && linkedPoOpt
+        if (opiDocumentOnly) {
+            return false;
+        }
+        if (shipmentLocationId != null) {
+            return true;
+        }
+        boolean opcPtOutOnly = linkedPoOpt
                 .map(po -> isCinchoOrderType(po.getOrderType())
                         && !extractDestinationFromNotes(shipment.getNotes()).isBlank())
                 .orElse(false);
-        boolean ptWarehouseOut = opcPtOutOnly || standaloneInternalEnvi;
-        if (opiDocumentOnly || shipmentLocationId != null) {
-            return false;
-        }
-        return ptWarehouseOut;
+        return opcPtOutOnly || standaloneInternalEnvi;
     }
 
     private void reverseSentShipmentDispatchInventory(ProductShipmentEntity shipment) throws BusinessException {
-        List<com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryKardex> rows =
-                productInventoryKardexRepository.findByReferenceTypeAndReferenceId("SHIPMENT", shipment.getId());
-        for (com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryKardex row : rows) {
-            if (!"SHIPMENT".equalsIgnoreCase(row.getMovementType())) {
-                continue;
-            }
-            BigDecimal qty = row.getQuantity();
-            if (qty == null || qty.compareTo(BigDecimal.ZERO) >= 0) {
-                continue;
-            }
-            BigDecimal restore = qty.abs();
-            try {
-                productInventoryService.incrementInventory(
-                        row.getProductId(),
-                        row.getLocationId(),
-                        row.getColorId(),
-                        restore,
-                        null,
-                        "SHIPMENT",
-                        shipment.getId(),
-                        shipment.getShipmentNumber(),
-                        "Reversión por edición de envío en tránsito",
-                        null);
-            } catch (ResourceNotFoundException e) {
-                throw new BusinessException("No se pudo revertir inventario del envío: " + e.getMessage());
-            }
-        }
+        productInventoryService.reverseDispatchOutflows(
+                "SHIPMENT",
+                shipment.getId(),
+                ProductInventoryService.MOVEMENT_SHIPMENT,
+                shipment.getShipmentNumber(),
+                "Reversión de salida del envío " + shipment.getShipmentNumber());
     }
 
-    private void redispatchShipmentProducts(
-            ProductShipmentEntity shipment,
-            List<ProductShipmentRequest.ProductShipmentDetailRequest> lines) throws BusinessException {
-        LocationEntity targetLocation = shipment.getLocationId() == null
-                ? null
-                : locationRepository.findById(shipment.getLocationId()).orElse(null);
-        String destinationLabel = targetLocation != null
-                ? targetLocation.getName()
-                : extractDestinationFromNotes(shipment.getNotes());
-        if (destinationLabel == null || destinationLabel.isBlank()) {
-            destinationLabel = "kiosko";
-        }
+    private void redispatchShipmentProducts(ProductShipmentEntity shipment) throws BusinessException {
+        String destinationLabel = resolveDispatchDestinationLabel(shipment);
 
-        for (ProductShipmentRequest.ProductShipmentDetailRequest detail : lines) {
+        // Las líneas se reescribieron en product_shipment_detail: se releen para descargar contra el
+        // id de cada línea, que es lo que hace idempotente la salida sin confundir tallas.
+        for (ProductShipmentDetailEntity detail : shipmentDetailRepository.findByShipmentId(shipment.getId())) {
             BigDecimal qty = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
             if (qty.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
@@ -1311,13 +1288,14 @@ public class ProductDistributionService {
             productInventoryService.decrementFromDispatchWarehouses(
                     detail.getProductId(),
                     detail.getColorId(),
-                    normalizeSize(detail.getSize()),
+                    detail.getSizeLabel(),
                     qty,
                     "SHIPMENT",
                     shipment.getId(),
                     shipment.getShipmentNumber(),
                     "Reenvío tras edición hacia " + destinationLabel,
-                    "SHIPMENT_REDISPATCH");
+                    ProductInventoryService.MOVEMENT_SHIPMENT,
+                    detail.getId());
         }
     }
 
@@ -1638,22 +1616,14 @@ public class ProductDistributionService {
         }
 
         List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
-        String opcDestinationLabel = opcPtOutOnly || standaloneInternalEnvi
-                ? extractDestinationFromNotes(shipment.getNotes())
-                : null;
         List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipmentId);
         if (details.isEmpty()) {
             throw new BusinessException("No se puede enviar un envío sin productos.");
         }
 
-        // Envío a kiosko: tránsito documental; la recepción en POS carga inventario del kiosko.
-        if (shipmentLocationId != null) {
-            return transitionConfirmedShipmentToSent(shipmentId, shipment);
-        }
-
-        String destinationLabel = opcDestinationLabel != null && !opcDestinationLabel.isBlank()
-                ? opcDestinationLabel
-                : "destino";
+        // El envío a kiosko también descarga bodega: su recepción carga stock del kiosko y sin esta
+        // salida las mismas unidades quedarían contadas en los dos lados.
+        String destinationLabel = resolveDispatchDestinationLabel(shipment);
 
         // Pre-validar stock: Devoluciones primero, luego Bodega PT (total combinado).
         List<String> shortages = new java.util.ArrayList<>();
@@ -1663,8 +1633,9 @@ public class ProductDistributionService {
             if (isPackagingProduct(detail.getProductId())) continue;
 
             String sizeLabel = detail.getSizeLabel();
-            BigDecimal alreadyOut = productInventoryService.getConsumedQuantityForReference(
-                    "SHIPMENT", shipment.getId(), "SHIPMENT", detail.getProductId(), detail.getColorId());
+            BigDecimal alreadyOut = productInventoryService.getNetConsumedForLine(
+                    "SHIPMENT", shipment.getId(), ProductInventoryService.MOVEMENT_SHIPMENT,
+                    detail.getProductId(), null, detail.getColorId(), detail.getId());
             BigDecimal stillNeeded = qtyToSend.subtract(alreadyOut);
             if (stillNeeded.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
@@ -1705,10 +1676,26 @@ public class ProductDistributionService {
                     shipment.getId(),
                     shipment.getShipmentNumber(),
                     "Salida a envio en transito hacia " + destinationLabel,
-                    "SHIPMENT");
+                    ProductInventoryService.MOVEMENT_SHIPMENT,
+                    detail.getId());
         }
 
         return transitionConfirmedShipmentToSent(shipmentId, shipment);
+    }
+
+    /**
+     * Nombre del destino para la descripción del movimiento: kiosko destino si el envío lo tiene,
+     * y si no la línea DESTINO de las notas (OPC / ENVI interno).
+     */
+    private String resolveDispatchDestinationLabel(ProductShipmentEntity shipment) {
+        if (shipment.getLocationId() != null) {
+            LocationEntity target = locationRepository.findById(shipment.getLocationId()).orElse(null);
+            if (target != null && target.getName() != null && !target.getName().isBlank()) {
+                return target.getName();
+            }
+        }
+        String fromNotes = extractDestinationFromNotes(shipment.getNotes());
+        return fromNotes.isBlank() ? "destino" : fromNotes;
     }
 
     private ProductShipmentResponse transitionConfirmedShipmentToSent(

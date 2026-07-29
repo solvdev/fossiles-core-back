@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -84,6 +85,45 @@ public interface ProductInventoryKardexRepository extends JpaRepository<ProductI
             @Param("locationId") Long locationId,
             @Param("colorId") Long colorId,
             @Param("referenceNumber") String referenceNumber);
+
+    /**
+     * Suma con signo de los movimientos de una línea de documento: las salidas son negativas y
+     * las reversiones positivas, de modo que el neto refleja lo que sigue realmente descargado.
+     *
+     * @param locationId null para netear sobre todas las ubicaciones
+     * @param referenceLineId null equivale a movimientos sin línea (previos a la migración)
+     */
+    @Query("""
+        SELECT coalesce(sum(k.quantity), 0) FROM ProductInventoryKardex k
+        WHERE k.referenceType = :referenceType
+          AND k.referenceId = :referenceId
+          AND k.movementType IN :movementTypes
+          AND k.productId = :productId
+          AND ((:colorId IS NULL AND k.colorId IS NULL) OR k.colorId = :colorId)
+          AND (:locationId IS NULL OR k.locationId = :locationId)
+          AND ((:referenceLineId IS NULL AND k.referenceLineId IS NULL)
+               OR k.referenceLineId = :referenceLineId)
+        """)
+    BigDecimal sumSignedQuantityForLine(
+            @Param("referenceType") String referenceType,
+            @Param("referenceId") Long referenceId,
+            @Param("movementTypes") List<String> movementTypes,
+            @Param("productId") Long productId,
+            @Param("locationId") Long locationId,
+            @Param("colorId") Long colorId,
+            @Param("referenceLineId") Long referenceLineId);
+
+    @Query("""
+        SELECT k FROM ProductInventoryKardex k
+        WHERE k.referenceType = :referenceType
+          AND k.referenceId = :referenceId
+          AND k.movementType IN :movementTypes
+        ORDER BY k.id ASC
+        """)
+    List<ProductInventoryKardex> findByReferenceAndMovementTypes(
+            @Param("referenceType") String referenceType,
+            @Param("referenceId") Long referenceId,
+            @Param("movementTypes") List<String> movementTypes);
 
     @Query("""
         SELECT k FROM ProductInventoryKardex k

@@ -2,6 +2,9 @@
 
 Vista web: `/admin/warehouse-view` — recepción y despacho **por pieza física** (color/talla).
 
+Reglas de movimiento de existencias (qué carga, qué descarga, idempotencia y auditoría):
+[BODEGA-PT-INVENTARIO.md](BODEGA-PT-INVENTARIO.md).
+
 ## Modelo
 
 Tabla `production_order_warehouse_unit`: una fila por unidad planificada (`PENDING` | `RECEIVED` | `REJECTED`), con referencia de envío al despachar (`ONLINE_SALE` o `PRODUCT_SHIPMENT`).
