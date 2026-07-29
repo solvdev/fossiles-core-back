@@ -34,11 +34,18 @@ public class KioskPosSaleRequest {
     private String cardLast4;
     /** Marca de tarjeta: VISA, MC o AMEX. */
     private String cardBrand;
+    /**
+     * Monto del voucher físico (puede diferir del total facturado).
+     * No altera el total de la venta ni FEL.
+     */
+    private BigDecimal cardVoucherAmount;
     /** Monto cobrado en la segunda tarjeta (pago TARJETA dividido). */
     private BigDecimal card2Amount;
     private String card2AuthNumber;
     private String card2Last4;
     private String card2Brand;
+    /** Monto del voucher físico de la segunda tarjeta. */
+    private BigDecimal card2VoucherAmount;
     private String notes;
     private String comments;
     private Long promotionId;

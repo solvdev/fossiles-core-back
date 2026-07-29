@@ -95,6 +95,13 @@ public class KioskSaleEntity {
     @Column(name = "card_brand", length = 10)
     private String cardBrand;
 
+    /**
+     * Monto del voucher físico (terminal). Puede diferir de {@link #cardAmount} / total de factura.
+     * La factura FEL usa siempre {@link #totalAmount}.
+     */
+    @Column(name = "card_voucher_amount", precision = 12, scale = 2)
+    private BigDecimal cardVoucherAmount;
+
     /** Segunda tarjeta cuando el pago TARJETA se divide en dos vouchers. */
     @Column(name = "card2_amount", precision = 12, scale = 2)
     private BigDecimal card2Amount;
@@ -107,6 +114,10 @@ public class KioskSaleEntity {
 
     @Column(name = "card2_brand", length = 10)
     private String card2Brand;
+
+    /** Monto del voucher físico de la segunda tarjeta. */
+    @Column(name = "card2_voucher_amount", precision = 12, scale = 2)
+    private BigDecimal card2VoucherAmount;
 
     @Column(name = "promotion_id")
     private Long promotionId;

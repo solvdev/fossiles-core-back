@@ -252,6 +252,8 @@ public class KioskExchangeService {
                 .cardAmount(request.getCardAmount())
                 .cardAuthNumber(request.getCardAuthNumber())
                 .cardLast4(request.getCardLast4())
+                .cardBrand(request.getCardBrand())
+                .cardVoucherAmount(request.getCardVoucherAmount())
                 .notes(joinNotes(request.getNotes(), request.getReason()))
                 .comments(request.getComments())
                 .requestInvoice(request.getRequestInvoice())

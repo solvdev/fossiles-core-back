@@ -46,10 +46,18 @@ public class KioskPosSaleResponse {
     private String cardAuthNumber;
     private String cardLast4;
     private String cardBrand;
+    /** Monto del voucher físico (tarjeta 1). Puede diferir de cardAmount. */
+    private BigDecimal cardVoucherAmount;
     private BigDecimal card2Amount;
     private String card2AuthNumber;
     private String card2Last4;
     private String card2Brand;
+    /** Monto del voucher físico (tarjeta 2). */
+    private BigDecimal card2VoucherAmount;
+    /** Diferencia voucher − monto de tarjeta en factura (tarjeta 1). */
+    private BigDecimal cardVoucherDifference;
+    /** Diferencia voucher − monto de tarjeta en factura (tarjeta 2). */
+    private BigDecimal card2VoucherDifference;
     private String notes;
     private String comments;
     private Long promotionId;

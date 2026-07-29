@@ -25,6 +25,8 @@ public class KioskExchangeCompleteRequest extends KioskExchangePreviewRequest {
     private BigDecimal cardAmount;
     private String cardAuthNumber;
     private String cardLast4;
+    private String cardBrand;
+    private BigDecimal cardVoucherAmount;
     private String notes;
     private String comments;
     private Boolean requestInvoice;

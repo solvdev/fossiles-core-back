@@ -60,6 +60,16 @@ public class KioskCashCloseReportResponse {
         private String paymentKind;
         private BigDecimal amount;
         private LocalDateTime soldAt;
+        /** Monto de tarjeta en factura (no cambia con el voucher). */
+        private BigDecimal cardInvoiceAmount;
+        private BigDecimal cardVoucherAmount;
+        /** voucher − factura (positivo = cobró de más en terminal). */
+        private BigDecimal cardVoucherDifference;
+        private BigDecimal card2InvoiceAmount;
+        private BigDecimal card2VoucherAmount;
+        private BigDecimal card2VoucherDifference;
+        /** Texto legible de diferencias de voucher, si aplica. */
+        private String voucherDifferenceNote;
     }
 
     @Data
@@ -72,4 +82,9 @@ public class KioskCashCloseReportResponse {
         private BigDecimal amount;
         private LocalDateTime createdAt;
     }
+
+    /** Resumen de diferencias voucher vs factura del turno (informativo; no altera efectivo/FEL). */
+    private BigDecimal cardVoucherTotal;
+    private BigDecimal cardInvoiceCardTotal;
+    private BigDecimal cardVoucherDifferencesTotal;
 }

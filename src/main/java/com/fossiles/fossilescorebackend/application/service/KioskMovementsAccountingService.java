@@ -17,6 +17,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -259,9 +261,15 @@ public class KioskMovementsAccountingService {
                         .cardAuthNumber(sale.getCardAuthNumber())
                         .cardLast4(sale.getCardLast4())
                         .cardBrand(sale.getCardBrand())
+                        .cardAmount(sale.getCardAmount())
+                        .cardVoucherAmount(sale.getCardVoucherAmount())
+                        .cardVoucherDifference(diffMoney(sale.getCardVoucherAmount(), sale.getCardAmount()))
                         .card2AuthNumber(sale.getCard2AuthNumber())
                         .card2Last4(sale.getCard2Last4())
-                        .card2Brand(sale.getCard2Brand());
+                        .card2Brand(sale.getCard2Brand())
+                        .card2Amount(sale.getCard2Amount())
+                        .card2VoucherAmount(sale.getCard2VoucherAmount())
+                        .card2VoucherDifference(diffMoney(sale.getCard2VoucherAmount(), sale.getCard2Amount()));
 
                 StringBuilder summary = new StringBuilder();
                 summary.append(sale.getSaleNumber() != null ? sale.getSaleNumber() : "Venta #" + sale.getId());
@@ -297,5 +305,12 @@ public class KioskMovementsAccountingService {
 
     private static String nullToEmpty(String value) {
         return value != null ? value : "";
+    }
+
+    private static BigDecimal diffMoney(BigDecimal voucher, BigDecimal expected) {
+        if (voucher == null || expected == null) {
+            return null;
+        }
+        return voucher.subtract(expected).setScale(2, RoundingMode.HALF_UP);
     }
 }

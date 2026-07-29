@@ -308,7 +308,9 @@ public class KioskPosService {
                 request.getCardAmount(),
                 request.getCardAuthNumber(),
                 request.getCardLast4(),
-                request.getCardBrand()
+                request.getCardBrand(),
+                request.getCardVoucherAmount(),
+                true
         );
 
         String normalizedTaxId = normalizeTaxId(request.getCustomerTaxId());
@@ -403,7 +405,9 @@ public class KioskPosService {
                 request.getCard2Amount(),
                 request.getCard2AuthNumber(),
                 request.getCard2Last4(),
-                request.getCard2Brand()
+                request.getCard2Brand(),
+                request.getCard2VoucherAmount(),
+                true
         );
 
         PaymentSnapshot payment = resolvePaymentSnapshot(
@@ -455,6 +459,16 @@ public class KioskPosService {
                         ),
                         request.getCardBrand()
                 ))
+                .cardVoucherAmount(resolveStoredCardVoucherAmount(
+                        normalizedPaymentMethod,
+                        resolveStoredCardAmount(
+                                normalizedPaymentMethod,
+                                payment.cardAmount(),
+                                request.getCardAmount(),
+                                request.getCard2Amount()
+                        ),
+                        request.getCardVoucherAmount()
+                ))
                 .card2Amount(isSplitCardPayment(request.getCard2Amount())
                         ? request.getCard2Amount().setScale(2, RoundingMode.HALF_UP)
                         : null)
@@ -471,6 +485,12 @@ public class KioskPosService {
                                 request.getCard2Brand()
                         )
                         : "")
+                .card2VoucherAmount(isSplitCardPayment(request.getCard2Amount())
+                        ? (request.getCard2VoucherAmount() != null
+                                && request.getCard2VoucherAmount().compareTo(BigDecimal.ZERO) > 0
+                                ? request.getCard2VoucherAmount().setScale(2, RoundingMode.HALF_UP)
+                                : request.getCard2Amount().setScale(2, RoundingMode.HALF_UP))
+                        : null)
                 .promotionId(exchangeSale
                         ? null
                         : (promotion != null ? promotion.getId() : discountResolution.promotionId()))
@@ -575,7 +595,9 @@ public class KioskPosService {
                 request.getCardAmount(),
                 request.getCardAuthNumber(),
                 request.getCardLast4(),
-                request.getCardBrand()
+                request.getCardBrand(),
+                null,
+                false
         );
 
         String normalizedTaxId = normalizeTaxId(request.getCustomerTaxId());
@@ -884,7 +906,9 @@ public class KioskPosService {
                 request.getCardAmount(),
                 request.getCardAuthNumber(),
                 request.getCardLast4(),
-                request.getCardBrand()
+                request.getCardBrand(),
+                request.getCardVoucherAmount(),
+                true
         );
         BigDecimal totalAmount = sale.getTotalAmount() != null ? sale.getTotalAmount() : BigDecimal.ZERO;
         validateSplitCardPayment(
@@ -894,7 +918,9 @@ public class KioskPosService {
                 request.getCard2Amount(),
                 request.getCard2AuthNumber(),
                 request.getCard2Last4(),
-                request.getCard2Brand()
+                request.getCard2Brand(),
+                request.getCard2VoucherAmount(),
+                true
         );
         PaymentSnapshot payment = resolvePaymentSnapshot(
                 normalizedPaymentMethod,
@@ -937,6 +963,18 @@ public class KioskPosService {
                         request.getCardBrand()
                 )
                 : "");
+        sale.setCardVoucherAmount(hasCardData
+                ? resolveStoredCardVoucherAmount(
+                        normalizedPaymentMethod,
+                        resolveStoredCardAmount(
+                                normalizedPaymentMethod,
+                                payment.cardAmount(),
+                                request.getCardAmount(),
+                                request.getCard2Amount()
+                        ),
+                        request.getCardVoucherAmount()
+                )
+                : null);
         if (isSplitCardPayment(request.getCard2Amount())) {
             sale.setCard2Amount(request.getCard2Amount().setScale(2, RoundingMode.HALF_UP));
             sale.setCard2AuthNumber(safeTrim(request.getCard2AuthNumber()));
@@ -946,11 +984,18 @@ public class KioskPosService {
                     request.getCard2Amount(),
                     request.getCard2Brand()
             ));
+            sale.setCard2VoucherAmount(
+                    request.getCard2VoucherAmount() != null
+                            && request.getCard2VoucherAmount().compareTo(BigDecimal.ZERO) > 0
+                            ? request.getCard2VoucherAmount().setScale(2, RoundingMode.HALF_UP)
+                            : request.getCard2Amount().setScale(2, RoundingMode.HALF_UP)
+            );
         } else {
             sale.setCard2Amount(null);
             sale.setCard2AuthNumber("");
             sale.setCard2Last4("");
             sale.setCard2Brand("");
+            sale.setCard2VoucherAmount(null);
         }
         KioskSaleEntity saved = kioskSaleRepository.save(sale);
         return toSaleResponse(saved, kiosk, user);
@@ -2447,7 +2492,9 @@ public class KioskPosService {
             BigDecimal cardAmount,
             String cardAuthNumber,
             String cardLast4,
-            String cardBrand
+            String cardBrand,
+            BigDecimal cardVoucherAmount,
+            boolean requireVoucherAmount
     ) throws BusinessException {
         if (!requiresCardData(paymentMethod, cardAmount)) {
             return;
@@ -2462,6 +2509,11 @@ public class KioskPosService {
             throw new BusinessException("Debes indicar la marca de la tarjeta (VISA, MC o AMEX).");
         }
         normalizeCardBrand(cardBrand);
+        if (requireVoucherAmount
+                && cardVoucherAmount != null
+                && cardVoucherAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("El monto del voucher de la tarjeta debe ser mayor a cero.");
+        }
     }
 
     private void validateSplitCardPayment(
@@ -2471,7 +2523,9 @@ public class KioskPosService {
             BigDecimal card2Amount,
             String card2AuthNumber,
             String card2Last4,
-            String card2Brand
+            String card2Brand,
+            BigDecimal card2VoucherAmount,
+            boolean requireVoucherAmount
     ) throws BusinessException {
         if (!"TARJETA".equals(paymentMethod) || !isSplitCardPayment(card2Amount)) {
             return;
@@ -2496,6 +2550,11 @@ public class KioskPosService {
             throw new BusinessException("Debes indicar la marca de la segunda tarjeta (VISA, MC o AMEX).");
         }
         normalizeCardBrand(card2Brand);
+        if (requireVoucherAmount
+                && card2VoucherAmount != null
+                && card2VoucherAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("El monto del voucher de la segunda tarjeta debe ser mayor a cero.");
+        }
     }
 
     static boolean isSplitCardPayment(BigDecimal card2Amount) {
@@ -2520,6 +2579,55 @@ public class KioskPosService {
         return paymentCardAmount;
     }
 
+    /**
+     * Persiste el monto del voucher físico. No se usa para total_amount ni FEL.
+     * Si no viene, se usa el monto de tarjeta de la factura (sin diferencia).
+     */
+    private BigDecimal resolveStoredCardVoucherAmount(
+            String paymentMethod,
+            BigDecimal storedCardAmount,
+            BigDecimal cardVoucherAmount
+    ) {
+        if (!requiresCardData(paymentMethod, storedCardAmount)) {
+            return null;
+        }
+        if (cardVoucherAmount != null && cardVoucherAmount.compareTo(BigDecimal.ZERO) > 0) {
+            return cardVoucherAmount.setScale(2, RoundingMode.HALF_UP);
+        }
+        return storedCardAmount != null
+                ? storedCardAmount.setScale(2, RoundingMode.HALF_UP)
+                : null;
+    }
+
+    private BigDecimal voucherDifference(BigDecimal voucherAmount, BigDecimal expectedCardAmount) {
+        if (voucherAmount == null || expectedCardAmount == null) {
+            return null;
+        }
+        return voucherAmount.subtract(expectedCardAmount).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal resolveVoucherAmountForReport(KioskSaleEntity sale, int cardSlot) {
+        if (cardSlot == 2) {
+            if (sale.getCard2VoucherAmount() != null) {
+                return sale.getCard2VoucherAmount();
+            }
+            return sale.getCard2Amount() != null ? sale.getCard2Amount() : BigDecimal.ZERO;
+        }
+        if (cardSlot == 1) {
+            if (sale.getCardVoucherAmount() != null) {
+                return sale.getCardVoucherAmount();
+            }
+            return sale.getCardAmount() != null ? sale.getCardAmount() : BigDecimal.ZERO;
+        }
+        if (sale.getCardVoucherAmount() != null) {
+            BigDecimal second = sale.getCard2VoucherAmount() != null
+                    ? sale.getCard2VoucherAmount()
+                    : (sale.getCard2Amount() != null ? sale.getCard2Amount() : BigDecimal.ZERO);
+            return sale.getCardVoucherAmount().add(second);
+        }
+        return resolveCardAmountForReport(sale);
+    }
+
     private KioskVoucherReportRowResponse buildVoucherReportRow(
             KioskSaleEntity sale,
             LocationEntity kiosk,
@@ -2531,31 +2639,40 @@ public class KioskPosService {
         String cardLast4;
         String cardBrand;
         BigDecimal amount;
+        BigDecimal invoiceCardAmount;
         if (cardSlot == 2) {
             voucherNumber = safeTrim(sale.getCard2AuthNumber());
             cardLast4 = safeTrim(sale.getCard2Last4());
             cardBrand = resolveCardBrandForReport(sale.getCard2Brand(), defaultCardBrand);
-            amount = sale.getCard2Amount() != null ? sale.getCard2Amount() : BigDecimal.ZERO;
+            amount = resolveVoucherAmountForReport(sale, 2);
+            invoiceCardAmount = sale.getCard2Amount() != null ? sale.getCard2Amount() : BigDecimal.ZERO;
         } else if (cardSlot == 1) {
             voucherNumber = safeTrim(sale.getCardAuthNumber());
             cardLast4 = safeTrim(sale.getCardLast4());
             cardBrand = resolveCardBrandForReport(sale.getCardBrand(), defaultCardBrand);
-            amount = sale.getCardAmount() != null ? sale.getCardAmount() : BigDecimal.ZERO;
+            amount = resolveVoucherAmountForReport(sale, 1);
+            invoiceCardAmount = sale.getCardAmount() != null ? sale.getCardAmount() : BigDecimal.ZERO;
         } else {
             voucherNumber = safeTrim(sale.getCardAuthNumber());
             cardLast4 = safeTrim(sale.getCardLast4());
             cardBrand = resolveCardBrandForReport(sale, defaultCardBrand);
-            amount = resolveCardAmountForReport(sale);
+            amount = resolveVoucherAmountForReport(sale, 0);
+            invoiceCardAmount = resolveCardAmountForReport(sale);
         }
+        BigDecimal scaledAmount = amount.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal scaledInvoice = invoiceCardAmount.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal difference = scaledAmount.subtract(scaledInvoice).setScale(2, RoundingMode.HALF_UP);
         return KioskVoucherReportRowResponse.builder()
                 .id(sale.getId())
                 .saleId(sale.getId())
                 .invoiceNumber(resolveSaleInvoiceLabel(sale, invoicesById))
                 .cardBrand(cardBrand)
-                .amount(amount.setScale(2, RoundingMode.HALF_UP))
+                .amount(scaledAmount)
+                .invoiceCardAmount(scaledInvoice)
+                .difference(difference)
                 .voucherNumber(voucherNumber)
                 .cardLast4(cardLast4)
-                .description(buildVoucherDescription(voucherNumber, cardLast4))
+                .description(buildVoucherDescription(voucherNumber, cardLast4, difference))
                 .soldAt(sale.getSoldAt())
                 .kioskLocationId(sale.getKioskLocationId())
                 .kioskCode(kiosk != null ? kiosk.getCode() : "")
@@ -3221,10 +3338,14 @@ public class KioskPosService {
                 .cardAuthNumber(sale.getCardAuthNumber())
                 .cardLast4(sale.getCardLast4())
                 .cardBrand(sale.getCardBrand())
+                .cardVoucherAmount(sale.getCardVoucherAmount())
                 .card2Amount(sale.getCard2Amount())
                 .card2AuthNumber(sale.getCard2AuthNumber())
                 .card2Last4(sale.getCard2Last4())
                 .card2Brand(sale.getCard2Brand())
+                .card2VoucherAmount(sale.getCard2VoucherAmount())
+                .cardVoucherDifference(voucherDifference(sale.getCardVoucherAmount(), sale.getCardAmount()))
+                .card2VoucherDifference(voucherDifference(sale.getCard2VoucherAmount(), sale.getCard2Amount()))
                 .notes(sale.getNotes())
                 .comments(sale.getComments())
                 .promotionId(sale.getPromotionId())
@@ -3890,6 +4011,9 @@ public class KioskPosService {
         BigDecimal cashTotal = BigDecimal.ZERO;
         BigDecimal cardTotal = BigDecimal.ZERO;
         BigDecimal salesSubtotal = BigDecimal.ZERO;
+        BigDecimal cardVoucherTotal = BigDecimal.ZERO;
+        BigDecimal cardInvoiceCardTotal = BigDecimal.ZERO;
+        BigDecimal cardVoucherDifferencesTotal = BigDecimal.ZERO;
         List<KioskCashCloseReportResponse.SaleLine> saleLines = new ArrayList<>();
         List<String> depositSlips = new ArrayList<>();
 
@@ -3913,6 +4037,38 @@ public class KioskPosService {
             if (sale.getDepositSlipNumber() != null && !sale.getDepositSlipNumber().isBlank()) {
                 depositSlips.add(sale.getDepositSlipNumber().trim());
             }
+
+            BigDecimal cardInvoice = resolveCardInvoiceAmountForClose(sale, method);
+            BigDecimal cardVoucher = resolveCardVoucherAmountForClose(sale, method);
+            BigDecimal cardDiff = voucherDifference(cardVoucher, cardInvoice);
+            BigDecimal card2Invoice = isSplitCardPayment(sale.getCard2Amount())
+                    ? safeAmount(sale.getCard2Amount()).setScale(2, RoundingMode.HALF_UP)
+                    : null;
+            BigDecimal card2Voucher = isSplitCardPayment(sale.getCard2Amount())
+                    ? (sale.getCard2VoucherAmount() != null
+                            ? sale.getCard2VoucherAmount().setScale(2, RoundingMode.HALF_UP)
+                            : card2Invoice)
+                    : null;
+            BigDecimal card2Diff = voucherDifference(card2Voucher, card2Invoice);
+            if (cardInvoice != null) {
+                cardInvoiceCardTotal = cardInvoiceCardTotal.add(cardInvoice);
+            }
+            if (card2Invoice != null) {
+                cardInvoiceCardTotal = cardInvoiceCardTotal.add(card2Invoice);
+            }
+            if (cardVoucher != null) {
+                cardVoucherTotal = cardVoucherTotal.add(cardVoucher);
+            }
+            if (card2Voucher != null) {
+                cardVoucherTotal = cardVoucherTotal.add(card2Voucher);
+            }
+            if (cardDiff != null) {
+                cardVoucherDifferencesTotal = cardVoucherDifferencesTotal.add(cardDiff);
+            }
+            if (card2Diff != null) {
+                cardVoucherDifferencesTotal = cardVoucherDifferencesTotal.add(card2Diff);
+            }
+
             saleLines.add(KioskCashCloseReportResponse.SaleLine.builder()
                     .saleId(sale.getId())
                     .saleNumber(sale.getSaleNumber())
@@ -3922,6 +4078,13 @@ public class KioskPosService {
                     .paymentKind(resolvePaymentKind(method))
                     .amount(amount)
                     .soldAt(sale.getSoldAt())
+                    .cardInvoiceAmount(cardInvoice)
+                    .cardVoucherAmount(cardVoucher)
+                    .cardVoucherDifference(cardDiff)
+                    .card2InvoiceAmount(card2Invoice)
+                    .card2VoucherAmount(card2Voucher)
+                    .card2VoucherDifference(card2Diff)
+                    .voucherDifferenceNote(buildVoucherDifferenceNote(sale, cardDiff, card2Diff))
                     .build());
         }
 
@@ -3993,6 +4156,9 @@ public class KioskPosService {
                 .countedCash(session.getCountedCash())
                 .expectedCash(session.getExpectedCash())
                 .variance(session.getVariance())
+                .cardVoucherTotal(cardVoucherTotal.setScale(2, RoundingMode.HALF_UP))
+                .cardInvoiceCardTotal(cardInvoiceCardTotal.setScale(2, RoundingMode.HALF_UP))
+                .cardVoucherDifferencesTotal(cardVoucherDifferencesTotal.setScale(2, RoundingMode.HALF_UP))
                 .sales(saleLines)
                 .disbursements(disbursementLines)
                 .build();
@@ -4101,16 +4267,77 @@ public class KioskPosService {
     private String buildCardPaymentLabel(KioskSaleEntity sale) {
         String auth = safeTrim(sale.getCardAuthNumber());
         String last4 = safeTrim(sale.getCardLast4());
+        String base;
         if (!auth.isBlank() && !last4.isBlank()) {
-            return "No. Voucher: " + auth + ", No. Tarjeta: " + last4;
+            base = "No. Voucher: " + auth + ", No. Tarjeta: " + last4;
+        } else if (!auth.isBlank()) {
+            base = "No. Voucher: " + auth;
+        } else if (!last4.isBlank()) {
+            base = "No. Tarjeta: " + last4;
+        } else {
+            base = "TARJETA";
         }
-        if (!auth.isBlank()) {
-            return "No. Voucher: " + auth;
+        BigDecimal diff1 = voucherDifference(sale.getCardVoucherAmount(), sale.getCardAmount());
+        BigDecimal diff2 = voucherDifference(sale.getCard2VoucherAmount(), sale.getCard2Amount());
+        String note = buildVoucherDifferenceNote(sale, diff1, diff2);
+        if (note != null && !note.isBlank()) {
+            return base + " · " + note;
         }
-        if (!last4.isBlank()) {
-            return "No. Tarjeta: " + last4;
+        return base;
+    }
+
+    private BigDecimal resolveCardInvoiceAmountForClose(KioskSaleEntity sale, String method) {
+        if ("TARJETA".equals(method) || "TRANSFERENCIA".equals(method) || "MIXTO".equals(method)) {
+            if (sale.getCardAmount() != null) {
+                return sale.getCardAmount().setScale(2, RoundingMode.HALF_UP);
+            }
+            if ("TARJETA".equals(method) || "TRANSFERENCIA".equals(method)) {
+                return safeAmount(sale.getTotalAmount()).setScale(2, RoundingMode.HALF_UP);
+            }
         }
-        return "TARJETA";
+        return null;
+    }
+
+    private BigDecimal resolveCardVoucherAmountForClose(KioskSaleEntity sale, String method) {
+        BigDecimal invoice = resolveCardInvoiceAmountForClose(sale, method);
+        if (invoice == null) {
+            return null;
+        }
+        if (sale.getCardVoucherAmount() != null) {
+            return sale.getCardVoucherAmount().setScale(2, RoundingMode.HALF_UP);
+        }
+        return invoice;
+    }
+
+    private String buildVoucherDifferenceNote(
+            KioskSaleEntity sale,
+            BigDecimal cardDiff,
+            BigDecimal card2Diff
+    ) {
+        List<String> parts = new ArrayList<>();
+        if (cardDiff != null && cardDiff.compareTo(BigDecimal.ZERO) != 0) {
+            parts.add(formatVoucherDiffPhrase(cardDiff, hasSplitCardPayment(sale) ? "Tarjeta 1" : null));
+        }
+        if (card2Diff != null && card2Diff.compareTo(BigDecimal.ZERO) != 0) {
+            parts.add(formatVoucherDiffPhrase(card2Diff, "Tarjeta 2"));
+        }
+        if (parts.isEmpty()) {
+            return null;
+        }
+        return String.join(" · ", parts);
+    }
+
+    private String formatVoucherDiffPhrase(BigDecimal diff, String prefix) {
+        if (diff == null || diff.compareTo(BigDecimal.ZERO) == 0) {
+            return null;
+        }
+        String side = diff.compareTo(BigDecimal.ZERO) > 0 ? "de más" : "de menos";
+        String amount = formatMoneyPlain(diff.abs());
+        String body = "Dif. voucher " + amount + " " + side;
+        if (prefix != null && !prefix.isBlank()) {
+            return prefix + ": " + body;
+        }
+        return body;
     }
 
     private String formatMoneyPlain(BigDecimal value) {
@@ -4286,6 +4513,10 @@ public class KioskPosService {
     }
 
     private String buildVoucherDescription(String voucherNumber, String cardLast4) {
+        return buildVoucherDescription(voucherNumber, cardLast4, null);
+    }
+
+    private String buildVoucherDescription(String voucherNumber, String cardLast4, BigDecimal difference) {
         String voucher = safeTrim(voucherNumber);
         String last4 = safeTrim(cardLast4);
         List<String> parts = new ArrayList<>();
@@ -4294,6 +4525,10 @@ public class KioskPosService {
         }
         if (!last4.isBlank()) {
             parts.add("No. Tarjeta: " + last4);
+        }
+        if (difference != null && difference.compareTo(BigDecimal.ZERO) != 0) {
+            String side = difference.compareTo(BigDecimal.ZERO) > 0 ? "de más" : "de menos";
+            parts.add("Dif. " + formatMoneyPlain(difference.abs()) + " " + side + " (factura sin cambio)");
         }
         return parts.isEmpty() ? "—" : String.join(", ", parts);
     }

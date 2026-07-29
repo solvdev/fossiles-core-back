@@ -54,9 +54,15 @@ public class KioskMovementsAccountingResponse {
     private String cardAuthNumber;
     private String cardLast4;
     private String cardBrand;
+    private BigDecimal cardAmount;
+    private BigDecimal cardVoucherAmount;
+    private BigDecimal cardVoucherDifference;
     private String card2AuthNumber;
     private String card2Last4;
     private String card2Brand;
+    private BigDecimal card2Amount;
+    private BigDecimal card2VoucherAmount;
+    private BigDecimal card2VoucherDifference;
 
     // — Metadata —
     private String motivo;
