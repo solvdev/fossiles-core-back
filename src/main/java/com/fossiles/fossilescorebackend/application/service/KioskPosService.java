@@ -4316,10 +4316,20 @@ public class KioskPosService {
     ) {
         List<String> parts = new ArrayList<>();
         if (cardDiff != null && cardDiff.compareTo(BigDecimal.ZERO) != 0) {
-            parts.add(formatVoucherDiffPhrase(cardDiff, hasSplitCardPayment(sale) ? "Tarjeta 1" : null));
+            parts.add(formatVoucherDiffPhrase(
+                    cardDiff,
+                    hasSplitCardPayment(sale) ? "Tarjeta 1" : null,
+                    sale.getCardBrand(),
+                    sale.getCardAuthNumber()
+            ));
         }
         if (card2Diff != null && card2Diff.compareTo(BigDecimal.ZERO) != 0) {
-            parts.add(formatVoucherDiffPhrase(card2Diff, "Tarjeta 2"));
+            parts.add(formatVoucherDiffPhrase(
+                    card2Diff,
+                    "Tarjeta 2",
+                    sale.getCard2Brand(),
+                    sale.getCard2AuthNumber()
+            ));
         }
         if (parts.isEmpty()) {
             return null;
@@ -4327,17 +4337,31 @@ public class KioskPosService {
         return String.join(" · ", parts);
     }
 
-    private String formatVoucherDiffPhrase(BigDecimal diff, String prefix) {
+    private String formatVoucherDiffPhrase(
+            BigDecimal diff,
+            String prefix,
+            String cardBrand,
+            String voucherNumber
+    ) {
         if (diff == null || diff.compareTo(BigDecimal.ZERO) == 0) {
             return null;
         }
         String side = diff.compareTo(BigDecimal.ZERO) > 0 ? "de más" : "de menos";
         String amount = formatMoneyPlain(diff.abs());
-        String body = "Dif. voucher " + amount + " " + side;
+        List<String> bits = new ArrayList<>();
         if (prefix != null && !prefix.isBlank()) {
-            return prefix + ": " + body;
+            bits.add(prefix);
         }
-        return body;
+        String brand = safeTrim(cardBrand).toUpperCase(Locale.ROOT);
+        if (!brand.isBlank()) {
+            bits.add(brand);
+        }
+        String voucher = safeTrim(voucherNumber);
+        if (!voucher.isBlank()) {
+            bits.add("No. voucher " + voucher);
+        }
+        bits.add("Dif. " + amount + " " + side);
+        return String.join(" · ", bits);
     }
 
     private String formatMoneyPlain(BigDecimal value) {
