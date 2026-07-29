@@ -4214,7 +4214,39 @@ public class KioskPosService {
                 .countedCash(session.getCountedCash())
                 .expectedCash(session.getExpectedCash())
                 .variance(session.getVariance())
+                .cardVoucherDifferencesTotal(sumCardVoucherDifferences(sales))
                 .build();
+    }
+
+    /** Suma neta de diferencias voucher − factura del turno (informativo). */
+    private BigDecimal sumCardVoucherDifferences(List<KioskSaleEntity> sales) {
+        BigDecimal total = BigDecimal.ZERO;
+        if (sales == null) {
+            return total.setScale(2, RoundingMode.HALF_UP);
+        }
+        for (KioskSaleEntity sale : sales) {
+            if (isVoidSale(sale)) {
+                continue;
+            }
+            String method = safeTrim(sale.getPaymentMethod()).toUpperCase(Locale.ROOT);
+            BigDecimal cardInvoice = resolveCardInvoiceAmountForClose(sale, method);
+            BigDecimal cardVoucher = resolveCardVoucherAmountForClose(sale, method);
+            BigDecimal cardDiff = voucherDifference(cardVoucher, cardInvoice);
+            if (cardDiff != null) {
+                total = total.add(cardDiff);
+            }
+            if (isSplitCardPayment(sale.getCard2Amount())) {
+                BigDecimal card2Invoice = safeAmount(sale.getCard2Amount()).setScale(2, RoundingMode.HALF_UP);
+                BigDecimal card2Voucher = sale.getCard2VoucherAmount() != null
+                        ? sale.getCard2VoucherAmount().setScale(2, RoundingMode.HALF_UP)
+                        : card2Invoice;
+                BigDecimal card2Diff = voucherDifference(card2Voucher, card2Invoice);
+                if (card2Diff != null) {
+                    total = total.add(card2Diff);
+                }
+            }
+        }
+        return total.setScale(2, RoundingMode.HALF_UP);
     }
 
     private String resolveSaleInvoiceNumber(KioskSaleEntity sale) {
