@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderR
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.application.dto.response.*;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -405,12 +406,29 @@ public class ProductionOrderController {
             }
             ProductionOrderItemEntity item = byKey.get(itemPriceMatchKey(priceRow.getProductId(), priceRow.getColorId()));
             if (item == null) {
+                item = existingItems.stream()
+                        .filter(row -> priceRow.getProductId().equals(row.getProductId()))
+                        .findFirst()
+                        .orElse(null);
+            }
+            if (item == null) {
                 continue;
             }
             if (priceRow.getUnitPrice() != null) {
                 item.setUnitPrice(priceRow.getUnitPrice());
             }
-            item.setUnitPricesJson(convertUnitPricesToJson(priceRow.getUnitPrices()));
+            Map<String, BigDecimal> normalizedPrices = null;
+            if (priceRow.getUnitPrices() != null && !priceRow.getUnitPrices().isEmpty()) {
+                normalizedPrices = new LinkedHashMap<>();
+                for (Map.Entry<String, BigDecimal> e : priceRow.getUnitPrices().entrySet()) {
+                    String k = ProductInventorySizesJson.normalizeKey(e.getKey());
+                    if (k.isEmpty() || e.getValue() == null) {
+                        continue;
+                    }
+                    normalizedPrices.put(k, e.getValue());
+                }
+            }
+            item.setUnitPricesJson(convertUnitPricesToJson(normalizedPrices));
             productionOrderItemRepository.save(item);
         }
 
