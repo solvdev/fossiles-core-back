@@ -55,6 +55,10 @@ public class ProductionOrderItemEntity {
     @Column(name = "unit_price", precision = 12, scale = 2)
     private BigDecimal unitPrice;
 
+    /** Precios unitarios por talla (JSON), ej. {"46":125,"30":80}. Si falta una talla, se usa unitPrice. */
+    @Column(name = "unit_prices_json", columnDefinition = "TEXT")
+    private String unitPricesJson;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

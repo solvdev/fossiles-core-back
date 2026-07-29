@@ -199,6 +199,7 @@ public class WarehouseOrderViewAssembler {
                             .colorName(colorName)
                             .size(detail.getSizeLabel())
                             .quantity(detail.getQuantity())
+                            .unitPrice(detail.getUnitPrice())
                             .quantityReceived(detail.getQuantityReceived())
                             .build();
                 }).collect(Collectors.toList()))

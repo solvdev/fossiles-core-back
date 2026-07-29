@@ -7,6 +7,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.OpvShipmentCata
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -246,12 +247,6 @@ public class OpvShipmentCatalogService {
     private List<OpvShipmentCatalogLineResponse> buildShipmentDetailLines(
             List<ProductShipmentDetailEntity> details,
             List<ProductionOrderItemEntity> orderItems) {
-        Map<String, BigDecimal> unitPriceByProductColor = new HashMap<>();
-        for (ProductionOrderItemEntity item : orderItems) {
-            String key = item.getProductId() + ":" + (item.getColorId() != null ? item.getColorId() : "");
-            unitPriceByProductColor.putIfAbsent(key, resolveUnitPrice(item));
-        }
-
         List<OpvShipmentCatalogLineResponse> lines = new ArrayList<>();
         for (ProductShipmentDetailEntity detail : details) {
             ProductEntity product = detail.getProductId() != null
@@ -260,8 +255,7 @@ public class OpvShipmentCatalogService {
             ColorEntity color = detail.getColorId() != null
                     ? colorRepository.findById(detail.getColorId()).orElse(null)
                     : null;
-            String key = detail.getProductId() + ":" + (detail.getColorId() != null ? detail.getColorId() : "");
-            BigDecimal unitPrice = unitPriceByProductColor.getOrDefault(key, BigDecimal.ZERO);
+            BigDecimal unitPrice = resolveShipmentDetailUnitPrice(detail, orderItems);
             int qty = detail.getQuantity() != null ? detail.getQuantity().intValue() : 0;
             BigDecimal lineTotal = unitPrice.multiply(BigDecimal.valueOf(qty)).setScale(2, RoundingMode.HALF_UP);
 
@@ -294,18 +288,18 @@ public class OpvShipmentCatalogService {
             ColorEntity color = item.getColorId() != null
                     ? colorRepository.findById(item.getColorId()).orElse(null)
                     : null;
-            BigDecimal unitPrice = resolveUnitPrice(item);
             Map<String, Integer> sizes = parseSizes(item.getSizesData());
             if (!sizes.isEmpty()) {
                 for (Map.Entry<String, Integer> entry : sizes.entrySet()) {
                     int qty = entry.getValue() != null ? entry.getValue() : 0;
                     if (qty <= 0) continue;
+                    BigDecimal unitPrice = resolveUnitPriceForSize(item, entry.getKey());
                     lines.add(productLine(product, color, entry.getKey(), qty, unitPrice));
                 }
             } else {
                 int qty = item.getQuantity() != null ? item.getQuantity() : 0;
                 if (qty > 0) {
-                    lines.add(productLine(product, color, null, qty, unitPrice));
+                    lines.add(productLine(product, color, null, qty, resolveUnitPrice(item)));
                 }
             }
         }
@@ -352,11 +346,12 @@ public class OpvShipmentCatalogService {
     private OrderPricing buildOrderPricing(ProductionOrderEntity order, List<ProductionOrderItemEntity> items) {
         BigDecimal itemsSubtotal = BigDecimal.ZERO;
         for (ProductionOrderItemEntity item : items) {
-            BigDecimal unitPrice = resolveUnitPrice(item);
-            int qty = resolveItemQuantity(item);
-            if (qty > 0) {
-                itemsSubtotal = itemsSubtotal.add(unitPrice.multiply(BigDecimal.valueOf(qty)));
-            }
+            itemsSubtotal = itemsSubtotal.add(ProductionOrderItemPricing.itemSubtotal(
+                    item,
+                    productId -> productRepository.findById(productId)
+                            .map(ProductEntity::getSellerPrice)
+                            .filter(p -> p != null && p.compareTo(BigDecimal.ZERO) >= 0)
+                            .orElse(BigDecimal.ZERO)));
         }
         OrderMeta meta = parseOrderMeta(order.getObservations());
         BigDecimal packingSubtotal = meta.packingItems.stream()
@@ -419,11 +414,44 @@ public class OpvShipmentCatalogService {
     }
 
     private BigDecimal resolveUnitPrice(ProductionOrderItemEntity item) {
-        if (item.getUnitPrice() != null && item.getUnitPrice().compareTo(BigDecimal.ZERO) >= 0) {
-            return item.getUnitPrice();
+        return resolveUnitPriceForSize(item, null);
+    }
+
+    private BigDecimal resolveUnitPriceForSize(ProductionOrderItemEntity item, String sizeLabel) {
+        return ProductionOrderItemPricing.resolveForSize(
+                item,
+                sizeLabel,
+                productId -> productRepository.findById(productId)
+                        .map(ProductEntity::getSellerPrice)
+                        .filter(p -> p != null && p.compareTo(BigDecimal.ZERO) >= 0)
+                        .orElse(BigDecimal.ZERO));
+    }
+
+    private BigDecimal resolveShipmentDetailUnitPrice(
+            ProductShipmentDetailEntity detail,
+            List<ProductionOrderItemEntity> orderItems) {
+        if (detail.getUnitPrice() != null && detail.getUnitPrice().compareTo(BigDecimal.ZERO) >= 0) {
+            return detail.getUnitPrice();
         }
-        if (item.getProductId() != null) {
-            return productRepository.findById(item.getProductId())
+        ProductionOrderItemEntity matched = null;
+        for (ProductionOrderItemEntity item : orderItems) {
+            if (item.getProductId() == null || !item.getProductId().equals(detail.getProductId())) {
+                continue;
+            }
+            if (detail.getColorId() == null && item.getColorId() == null) {
+                matched = item;
+                break;
+            }
+            if (detail.getColorId() != null && detail.getColorId().equals(item.getColorId())) {
+                matched = item;
+                break;
+            }
+        }
+        if (matched != null) {
+            return resolveUnitPriceForSize(matched, detail.getSizeLabel());
+        }
+        if (detail.getProductId() != null) {
+            return productRepository.findById(detail.getProductId())
                     .map(ProductEntity::getSellerPrice)
                     .filter(p -> p != null && p.compareTo(BigDecimal.ZERO) >= 0)
                     .orElse(BigDecimal.ZERO);

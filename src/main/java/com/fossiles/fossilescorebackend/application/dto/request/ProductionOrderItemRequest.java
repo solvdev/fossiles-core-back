@@ -36,5 +36,8 @@ public class ProductionOrderItemRequest {
 
     /** Precio unitario acordado (OPV/MARCAS). */
     private BigDecimal unitPrice;
+
+    /** Precios unitarios por talla (cinchos especiales), ej. {"46":125,"30":80}. */
+    private Map<String, BigDecimal> unitPrices;
 }
 

@@ -1206,6 +1206,7 @@ public class ProductDistributionService {
                         .sizeLabel(normalizeSize(line.getSize()))
                         .hardwareCondition(normalizeHardwareCondition(line.getHardwareCondition()))
                         .quantity(line.getQuantity())
+                        .unitPrice(line.getUnitPrice())
                         .build();
                 shipmentDetailRepository.save(detail);
             }
@@ -4085,6 +4086,7 @@ public class ProductDistributionService {
                 .size(entity.getSizeLabel())
                 .hardwareCondition(entity.getHardwareCondition())
                 .quantity(entity.getQuantity())
+                .unitPrice(entity.getUnitPrice())
                 .quantityReceived(entity.getQuantityReceived())
                 .quantityDifference(entity.getQuantityDifference())
                 .receivedLineNotes(entity.getReceivedLineNotes())
@@ -4127,6 +4129,7 @@ public class ProductDistributionService {
         Map<String, Long> keyToProductId = new HashMap<>();
         Map<String, Long> keyToColorId = new HashMap<>();
         Map<String, String> keyToSize = new HashMap<>();
+        Map<String, BigDecimal> keyToUnitPrice = new HashMap<>();
 
         if (products != null) {
             for (ProductShipmentRequest.ProductShipmentDetailRequest productRequest : products) {
@@ -4146,6 +4149,9 @@ public class ProductDistributionService {
                 keyToProductId.put(key, productRequest.getProductId());
                 keyToColorId.put(key, productRequest.getColorId());
                 keyToSize.put(key, normalizedSize);
+                if (productRequest.getUnitPrice() != null && !keyToUnitPrice.containsKey(key)) {
+                    keyToUnitPrice.put(key, productRequest.getUnitPrice());
+                }
             }
         }
 
@@ -4155,6 +4161,7 @@ public class ProductDistributionService {
                         .colorId(keyToColorId.get(entry.getKey()))
                         .size(keyToSize.getOrDefault(entry.getKey(), ""))
                         .quantity(entry.getValue())
+                        .unitPrice(keyToUnitPrice.get(entry.getKey()))
                         .build())
                 .collect(Collectors.toList());
     }

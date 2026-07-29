@@ -47,6 +47,9 @@ public class ProductShipmentRequest {
         
         @NotNull(message = "Quantity is required")
         private java.math.BigDecimal quantity;
+
+        /** Precio unitario de la línea (opcional; cinchos con precio por talla). */
+        private java.math.BigDecimal unitPrice;
     }
 
     @Data

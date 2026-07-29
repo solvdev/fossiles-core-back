@@ -26,6 +26,8 @@ public class ProductShipmentDetailResponse {
     /** NUEVO | VIEJO */
     private String hardwareCondition;
     private BigDecimal quantity;
+    /** Precio unitario de la línea (override por talla / cliente). */
+    private BigDecimal unitPrice;
     private BigDecimal quantityReceived;
     private BigDecimal quantityDifference;
     private String receivedLineNotes;

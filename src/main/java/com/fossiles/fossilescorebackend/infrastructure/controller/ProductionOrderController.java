@@ -247,6 +247,7 @@ public class ProductionOrderController {
                                         convertSizesToJson(itemRequest.getSizes()) : null)
                                 .observations(itemRequest.getObservations())
                                 .unitPrice(itemRequest.getUnitPrice())
+                                .unitPricesJson(convertUnitPricesToJson(itemRequest.getUnitPrices()))
                                 .build();
                         return productionOrderItemRepository.save(item);
                     })
@@ -350,6 +351,7 @@ public class ProductionOrderController {
                                         convertSizesToJson(itemRequest.getSizes()) : null)
                                 .observations(itemRequest.getObservations())
                                 .unitPrice(itemRequest.getUnitPrice())
+                                .unitPricesJson(convertUnitPricesToJson(itemRequest.getUnitPrices()))
                                 .build();
                             return productionOrderItemRepository.save(item);
                         })
@@ -1156,6 +1158,16 @@ public class ProductionOrderController {
                         }
                     }
 
+                    Map<String, BigDecimal> unitPrices = null;
+                    if (item.getUnitPricesJson() != null && !item.getUnitPricesJson().isEmpty()) {
+                        try {
+                            unitPrices = objectMapper.readValue(item.getUnitPricesJson(),
+                                    new TypeReference<Map<String, BigDecimal>>() {});
+                        } catch (Exception e) {
+                            // Si hay error parseando JSON, dejar unitPrices como null
+                        }
+                    }
+
                     java.math.BigDecimal leatherCons = product != null ? product.getLeatherConsumption() : null;
                     java.math.BigDecimal leatherTotal = null;
                     if (leatherCons != null && item.getQuantity() != null) {
@@ -1179,6 +1191,7 @@ public class ProductionOrderController {
                             .sizes(sizes)
                             .observations(item.getObservations())
                             .unitPrice(item.getUnitPrice())
+                            .unitPrices(unitPrices)
                             .createdAt(item.getCreatedAt())
                             .createdBy(item.getCreatedBy())
                             .updatedAt(item.getUpdatedAt())
@@ -1883,6 +1896,17 @@ public class ProductionOrderController {
     private String convertSizesToJson(Map<String, Integer> sizes) {
         try {
             return objectMapper.writeValueAsString(sizes);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String convertUnitPricesToJson(Map<String, BigDecimal> unitPrices) {
+        if (unitPrices == null || unitPrices.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(unitPrices);
         } catch (Exception e) {
             return null;
         }

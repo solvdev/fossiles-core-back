@@ -43,6 +43,10 @@ public class ProductShipmentDetailEntity {
     @Column(name = "quantity", nullable = false, precision = 12, scale = 3)
     private BigDecimal quantity;
 
+    /** Precio unitario de esta línea (permite override por talla / cliente). */
+    @Column(name = "unit_price", precision = 12, scale = 2)
+    private BigDecimal unitPrice;
+
     @Column(name = "quantity_received", precision = 12, scale = 3)
     private BigDecimal quantityReceived;
 

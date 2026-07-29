@@ -30,6 +30,8 @@ public class ProductionOrderItemResponse {
     private Map<String, Integer> sizes; // Para cinchos: talla -> cantidad
     private String observations;
     private BigDecimal unitPrice;
+    /** Precios unitarios por talla cuando difieren del unitPrice global. */
+    private Map<String, BigDecimal> unitPrices;
     private LocalDateTime createdAt;
     private Long createdBy;
     private LocalDateTime updatedAt;
