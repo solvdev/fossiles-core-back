@@ -2758,7 +2758,7 @@ public class KioscoInventoryService {
         String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
         BigDecimal qtyBd = BigDecimal.valueOf(quantity);
 
-        if (breakdown || !normalizedSize.isEmpty()) {
+        if (breakdown) {
             if (normalizedSize.isEmpty()) {
                 throw new BusinessException("Indique la talla para esta operación de inventario kiosko.");
             }
@@ -2780,6 +2780,8 @@ public class KioscoInventoryService {
             return total;
         }
 
+        // Sin sizes_data: NO inventar un mapa de una sola talla (eso ponía current=qty y borraba el resto).
+        // Solo mover el total agregado. El desglose se recupera con replay desde movimientos.
         int next = safeInt(stock.getCurrentStock()) + delta;
         if (next < 0) {
             throw new BusinessException("Stock insuficiente en kiosko. Disponible: " + safeInt(stock.getCurrentStock())
@@ -3513,7 +3515,7 @@ public class KioscoInventoryService {
         }
         entityManager.flush();
         stock.setCurrentStock(running);
-        reconcileStaleSizeBreakdown(stock);
+        rebuildSizesDataFromMovements(stock, movements);
         kioscoStockRepository.save(stock);
         return 1;
     }
@@ -3542,9 +3544,56 @@ public class KioscoInventoryService {
             }
         }
         stock.setCurrentStock(running);
-        reconcileStaleSizeBreakdown(stock);
+        rebuildSizesDataFromMovements(stock, movements);
         kioscoStockRepository.save(stock);
         return 1;
+    }
+
+    /**
+     * Reconstruye {@code sizes_data} rejugando todos los movimientos con {@code size_key}.
+     * Si hay desglose por talla, alinea {@code current_stock} con la suma de tallas (>= 0).
+     */
+    public void rebuildSizesDataFromMovements(KioscoStockEntity stock, List<KioscoMovementEntity> movements) {
+        if (stock == null) {
+            return;
+        }
+        List<KioscoMovementEntity> list = movements != null
+                ? movements
+                : kioscoMovementRepository.findByKioscoStockIdOrderByCreatedAtAscIdAsc(stock.getId());
+        Map<String, Integer> bySize = new LinkedHashMap<>();
+        boolean anySized = false;
+        for (KioscoMovementEntity movement : list) {
+            if (movement == null || !Boolean.TRUE.equals(movement.getAffectsStock())) {
+                continue;
+            }
+            String sizeKey = ProductInventorySizesJson.normalizeKey(movement.getSizeKey());
+            if (sizeKey.isEmpty()) {
+                continue;
+            }
+            anySized = true;
+            int next = bySize.getOrDefault(sizeKey, 0) + movementSignedDelta(movement);
+            bySize.put(sizeKey, Math.max(0, next));
+        }
+        if (!anySized) {
+            return;
+        }
+        Map<String, BigDecimal> sizes = new LinkedHashMap<>();
+        int sum = 0;
+        for (Map.Entry<String, Integer> e : bySize.entrySet()) {
+            int qty = e.getValue() != null ? e.getValue() : 0;
+            if (qty <= 0) {
+                continue;
+            }
+            sizes.put(e.getKey(), BigDecimal.valueOf(qty));
+            sum += qty;
+        }
+        stock.setSizesData(sizes.isEmpty() ? null : ProductInventorySizesJson.serialize(sizes));
+        // Con desglose por talla el vendible POS es la suma de tallas (no un current huérfano).
+        stock.setCurrentStock(sum);
+        stock.setLastUpdatedAt(LocalDateTime.now());
+        log.info(
+                "KIOSCO_REBUILD_SIZES stockId={} productId={} colorId={} sizesTotal={} sizes={}",
+                stock.getId(), stock.getProductId(), stock.getColorId(), sum, sizes.keySet());
     }
 
     private int movementSignedDelta(KioscoMovementEntity movement) {
@@ -3614,7 +3663,8 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Tras replay de movimientos (cuadre): si sizes_data quedó inflado respecto al ledger, limpiarlo.
+     * Si sizes_data quedó inconsistente con current_stock, reconstruir desde movimientos
+     * en lugar de borrar el desglose (borrar ocultaba tallas con entrada real en el kardex).
      */
     public void reconcileStaleSizeBreakdown(KioscoStockEntity stock) {
         if (stock == null || stock.getId() == null) {
@@ -3622,16 +3672,20 @@ public class KioscoInventoryService {
         }
         Map<String, BigDecimal> sizes = ProductInventorySizesJson.parse(stock.getSizesData());
         if (sizes.isEmpty()) {
+            // Sin desglose: intentar recuperar desde kardex con size_key.
+            rebuildSizesDataFromMovements(stock, null);
+            if (stock.getSizesData() != null) {
+                kioscoStockRepository.save(stock);
+            }
             return;
         }
         int totalFromSizes = ProductInventorySizesJson.sum(sizes).setScale(0, RoundingMode.HALF_UP).intValue();
         int current = safeInt(stock.getCurrentStock());
-        if (totalFromSizes > current) {
+        if (totalFromSizes != current) {
             log.warn(
-                    "KIOSCO_CLEAR_STALE_SIZES stockId={} productId={} colorId={} sizesTotal={} currentStock={}",
+                    "KIOSCO_RECONCILE_SIZES_REBUILD stockId={} productId={} colorId={} sizesTotal={} currentStock={}",
                     stock.getId(), stock.getProductId(), stock.getColorId(), totalFromSizes, current);
-            stock.setSizesData(null);
-            stock.setLastUpdatedAt(LocalDateTime.now());
+            rebuildSizesDataFromMovements(stock, null);
             kioscoStockRepository.save(stock);
         }
     }
