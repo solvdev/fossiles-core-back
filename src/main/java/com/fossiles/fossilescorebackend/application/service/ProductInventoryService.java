@@ -257,10 +257,11 @@ public class ProductInventoryService {
             remaining = remaining.subtract(consumed);
         }
 
-        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
-            throw new BusinessException(
-                    "Stock insuficiente en Devoluciones / Bodega PT (faltan " + remaining + " unidades).");
-        }
+        // TEMPORAL (prueba): validación de stock desactivada a pedido, revertir luego de la prueba.
+        // if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+        //     throw new BusinessException(
+        //             "Stock insuficiente en Devoluciones / Bodega PT (faltan " + remaining + " unidades).");
+        // }
     }
 
     /**
