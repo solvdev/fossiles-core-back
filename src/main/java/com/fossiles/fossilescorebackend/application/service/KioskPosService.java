@@ -1277,6 +1277,47 @@ public class KioskPosService {
         return result;
     }
 
+    /**
+     * Reporte de ventas consolidadas (contabilidad): incluye anuladas, acepta varios
+     * kioskos y siempre excluye kioskos/ventas piloto. Orden cronológico ascendente.
+     */
+    @Transactional(readOnly = true)
+    public List<KioskPosSaleResponse> getConsolidatedSalesReport(
+            LocalDate startDate,
+            LocalDate endDate,
+            List<Long> kioskLocationIds
+    ) throws BusinessException {
+        UserEntity user = getCurrentUserOrThrow();
+        if (!KioskAccessHelper.hasKioskReportsAccess(user)) {
+            throw new BusinessException(
+                    "Solo administradores, logística o contabilidad pueden ver el reporte de ventas consolidadas.");
+        }
+        Map<Long, LocationEntity> nonPilotKioskById = locationRepository.findAll().stream()
+                .filter(this::isKioskLocation)
+                .filter(location -> !isPosTestSale(location))
+                .collect(Collectors.toMap(LocationEntity::getId, item -> item, (a, b) -> a));
+
+        Set<Long> targetKioskIds = (kioskLocationIds == null || kioskLocationIds.isEmpty())
+                ? nonPilotKioskById.keySet()
+                : kioskLocationIds.stream().filter(nonPilotKioskById::containsKey).collect(Collectors.toSet());
+
+        List<KioskSaleEntity> sales = findSalesByDateRange(startDate, endDate).stream()
+                .filter(sale -> !Boolean.TRUE.equals(sale.getTestSale()))
+                .filter(sale -> targetKioskIds.contains(sale.getKioskLocationId()))
+                .sorted(Comparator.comparing(KioskSaleEntity::getSoldAt, Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList();
+
+        List<KioskPosSaleResponse> result = new ArrayList<>();
+        for (KioskSaleEntity sale : sales) {
+            LocationEntity kiosk = nonPilotKioskById.get(sale.getKioskLocationId());
+            if (kiosk == null) {
+                continue;
+            }
+            result.add(toSaleResponse(sale, kiosk, user));
+        }
+        return result;
+    }
+
     @Transactional(readOnly = true)
     public List<KioskDisbursementReportRowResponse> getGeneralDisbursements(
             LocalDate startDate,

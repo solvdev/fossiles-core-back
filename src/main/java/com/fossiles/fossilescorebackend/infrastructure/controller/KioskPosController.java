@@ -238,6 +238,15 @@ public class KioskPosController {
         return ResponseEntity.ok(kioskPosService.getGeneralSalesDetail(startDate, endDate, kioskLocationId, paymentKind));
     }
 
+    @GetMapping("/reports/consolidated-sales")
+    public ResponseEntity<List<KioskPosSaleResponse>> getConsolidatedSalesReport(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false) List<Long> kioskLocationIds
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosService.getConsolidatedSalesReport(startDate, endDate, kioskLocationIds));
+    }
+
     @GetMapping("/reports/general/disbursements")
     public ResponseEntity<List<KioskDisbursementReportRowResponse>> getGeneralDisbursements(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
