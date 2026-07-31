@@ -161,11 +161,6 @@ public class KioskPosService {
                 .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(kiosk.getId());
         List<ProductInventoryLocation> legacyRowsAtKiosk = productInventoryLocationRepository
                 .findByLocationId(kiosk.getId());
-        Map<String, ProductInventoryLocation> legacyByKey = legacyRowsAtKiosk.stream()
-                .collect(Collectors.toMap(
-                        row -> inventoryKey(row.getProductId(), row.getColorId()),
-                        row -> row,
-                        (a, b) -> a));
 
         List<ProductInventoryLocation> legacyRows = kioscoStockRows.isEmpty()
                 ? legacyRowsAtKiosk
@@ -223,12 +218,15 @@ public class KioskPosService {
                     ProductCategoryEntity category = product != null && product.getCategoryId() != null
                             ? categoriesById.get(product.getCategoryId())
                             : null;
-                    ProductInventoryLocation legacy = legacyByKey.get(
-                            inventoryKey(row.getProductId(), row.getColorId()));
                     String hardware = ProductHardwareCondition.normalize(row.getHardwareCondition());
                     if (hardware == null) {
                         hardware = ProductHardwareCondition.NUEVO;
                     }
+                    // Solo kiosco_stock: no mezclar tallas legacy (causaba "hay stock" en UI y 0 al cobrar).
+                    Map<String, BigDecimal> sizes = resolveKioscoSizes(row);
+                    BigDecimal quantity = sizes != null && !sizes.isEmpty()
+                            ? sizes.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add)
+                            : BigDecimal.valueOf(row.getCurrentStock() != null ? row.getCurrentStock() : 0);
                     return KioskPosContextResponse.InventoryItem.builder()
                             .productId(row.getProductId())
                             .productCode(product != null ? product.getCode() : "")
@@ -241,9 +239,9 @@ public class KioskPosService {
                             .audienceCategory(product != null
                                     ? ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory())
                                     : ProductAudienceCategory.UNISEX)
-                            .quantity(BigDecimal.valueOf(row.getCurrentStock() != null ? row.getCurrentStock() : 0))
+                            .quantity(quantity)
                             .suggestedUnitPrice(resolvePosUnitPrice(product))
-                            .sizes(resolveKioscoSizes(row, legacy))
+                            .sizes(sizes)
                             .hardwareCondition(hardware)
                             .hardwareLabel(ProductHardwareCondition.label(hardware))
                             .build();
@@ -362,11 +360,17 @@ public class KioskPosService {
                     .findByProductIdAndLocationIdAndColorId(
                             itemRequest.getProductId(), kiosk.getId(), itemRequest.getColorId());
             boolean requiresSize = kioscoRowOpt
-                    .map(row -> ProductInventorySizesJson.hasNonEmptyBreakdown(row.getSizesData()))
-                    .orElse(false)
-                    || invRowOpt
-                            .map(row -> ProductInventorySizesJson.hasNonEmptyBreakdown(row.getSizesData()))
-                            .orElse(false);
+                    .map(row -> hasPositiveSizeBreakdown(row.getSizesData()))
+                    .orElse(false);
+            boolean kioscoModuleActive = !kioscoStockRepository
+                    .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(kiosk.getId())
+                    .isEmpty();
+            // Con módulo kiosco activo no exigir talla por inventario legacy (desfasado).
+            if (!kioscoModuleActive) {
+                requiresSize = requiresSize || invRowOpt
+                        .map(row -> hasPositiveSizeBreakdown(row.getSizesData()))
+                        .orElse(false);
+            }
             if (requiresSize && sizeLabel.isEmpty()) {
                 throw new BusinessException("Debe seleccionar talla para " + product.getName() + ".");
             }
@@ -1965,15 +1969,24 @@ public class KioskPosService {
             BigDecimal requested,
             String label
     ) throws BusinessException {
-        Map<String, BigDecimal> sizesMap = ProductInventorySizesJson.parse(row.getSizesData());
+        Map<String, BigDecimal> positiveSizes = positiveSizesMap(row.getSizesData());
         BigDecimal available;
-        if (!sizesMap.isEmpty()) {
+        if (positiveSizes != null && !positiveSizes.isEmpty()) {
             String sizeKey = ProductInventorySizesJson.normalizeKey(parsed.size());
             if (sizeKey.isEmpty()) {
                 throw new BusinessException("Debe seleccionar talla para " + label + ".");
             }
-            available = sizesMap.getOrDefault(sizeKey, BigDecimal.ZERO);
+            available = positiveSizes.getOrDefault(sizeKey, BigDecimal.ZERO);
+            if (available.compareTo(BigDecimal.ZERO) <= 0) {
+                available = positiveSizes.entrySet().stream()
+                        .filter(e -> ProductInventorySizesJson.normalizeKey(e.getKey())
+                                .equalsIgnoreCase(sizeKey))
+                        .map(Map.Entry::getValue)
+                        .findFirst()
+                        .orElse(BigDecimal.ZERO);
+            }
         } else {
+            // sizes_data vacío o solo ceros: no inventar tallas desde legacy; usar current_stock.
             available = BigDecimal.valueOf(row.getCurrentStock() != null ? row.getCurrentStock() : 0);
         }
         if (requested.compareTo(available) > 0) {
@@ -1987,14 +2000,22 @@ public class KioskPosService {
             BigDecimal requested,
             String label
     ) throws BusinessException {
-        Map<String, BigDecimal> sizesMap = ProductInventorySizesJson.parse(row.getSizesData());
+        Map<String, BigDecimal> positiveSizes = positiveSizesMap(row.getSizesData());
         BigDecimal available;
-        if (!sizesMap.isEmpty()) {
+        if (positiveSizes != null && !positiveSizes.isEmpty()) {
             String sizeKey = ProductInventorySizesJson.normalizeKey(parsed.size());
             if (sizeKey.isEmpty()) {
                 throw new BusinessException("Debe seleccionar talla para " + label + ".");
             }
-            available = sizesMap.getOrDefault(sizeKey, BigDecimal.ZERO);
+            available = positiveSizes.getOrDefault(sizeKey, BigDecimal.ZERO);
+            if (available.compareTo(BigDecimal.ZERO) <= 0) {
+                available = positiveSizes.entrySet().stream()
+                        .filter(e -> ProductInventorySizesJson.normalizeKey(e.getKey())
+                                .equalsIgnoreCase(sizeKey))
+                        .map(Map.Entry::getValue)
+                        .findFirst()
+                        .orElse(BigDecimal.ZERO);
+            }
         } else {
             available = row.getQuantity() != null ? row.getQuantity() : BigDecimal.ZERO;
         }
@@ -2018,12 +2039,16 @@ public class KioskPosService {
                 requested.stripTrailingZeros().toPlainString()));
     }
 
-    private Map<String, BigDecimal> resolveKioscoSizes(KioscoStockEntity kioscoRow, ProductInventoryLocation legacy) {
-        Map<String, BigDecimal> fromKiosco = positiveSizesMap(kioscoRow.getSizesData());
-        if (fromKiosco != null) {
-            return fromKiosco;
+    /** Solo tallas con stock > 0 desde kiosco_stock (sin fallback a inventario legacy). */
+    private Map<String, BigDecimal> resolveKioscoSizes(KioscoStockEntity kioscoRow) {
+        if (kioscoRow == null) {
+            return null;
         }
-        return legacy != null ? positiveSizesMap(legacy.getSizesData()) : null;
+        return positiveSizesMap(kioscoRow.getSizesData());
+    }
+
+    private boolean hasPositiveSizeBreakdown(String sizesDataJson) {
+        return positiveSizesMap(sizesDataJson) != null;
     }
 
     private String extractSizeFromSaleItemName(String productName) {
