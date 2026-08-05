@@ -193,6 +193,13 @@ public class KioscoInventoryController {
         ));
     }
 
+    @GetMapping("/reporte/existencias")
+    public ResponseEntity<List<KioscoStockResponse>> getStockReport(
+            @RequestParam List<Long> locationIds
+    ) {
+        return ResponseEntity.ok(kioscoInventoryService.getStockReportByLocations(locationIds));
+    }
+
     @GetMapping("/{locationId}/stock")
     public ResponseEntity<List<KioscoStockResponse>> getStock(
             @PathVariable Long locationId

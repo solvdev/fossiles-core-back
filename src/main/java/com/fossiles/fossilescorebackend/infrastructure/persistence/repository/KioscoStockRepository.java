@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
 import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -59,6 +60,28 @@ public interface KioscoStockRepository extends JpaRepository<KioscoStockEntity, 
             @Param("locationId") Long locationId,
             @Param("productId") Long productId,
             @Param("colorId") Long colorId,
+            @Param("hardwareCondition") String hardwareCondition
+    );
+
+    @Modifying
+    @Query(value = """
+            INSERT INTO kiosco_stock (
+                location_id, product_id, color_id, hardware_condition,
+                current_stock, minimum_stock, last_updated_at, created_at, updated_at,
+                created_by, updated_by
+            )
+            VALUES (
+                :locationId, :productId, :colorId, :hardwareCondition,
+                0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                :userId, :userId
+            )
+            ON CONFLICT (location_id, product_id, color_id, hardware_condition) DO NOTHING
+            """, nativeQuery = true)
+    int insertIfAbsent(
+            @Param("locationId") Long locationId,
+            @Param("productId") Long productId,
+            @Param("colorId") Long colorId,
+            @Param("userId") Long userId,
             @Param("hardwareCondition") String hardwareCondition
     );
 

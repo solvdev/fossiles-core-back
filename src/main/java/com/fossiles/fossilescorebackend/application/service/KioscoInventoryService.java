@@ -84,6 +84,7 @@ public class KioscoInventoryService {
     private static final String ADMIN_MOVEMENT_MUTATION_KEY = "app.kiosco_movement_admin_mutation";
 
     private final KioscoStockRepository kioscoStockRepository;
+    private final KioscoStockProvisioningService kioscoStockProvisioningService;
     private final KioscoMovementRepository kioscoMovementRepository;
     private final LocationRepository locationRepository;
     private final ProductRepository productRepository;
@@ -1374,6 +1375,37 @@ public class KioscoInventoryService {
         validateLocationIsKiosk(locationId);
         return kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId).stream()
                 .map(this::toStockResponse)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<KioscoStockResponse> getStockReportByLocations(List<Long> locationIds) {
+        if (locationIds == null || locationIds.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> kioskIds = locationIds.stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (kioskIds.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> validKioskIds = locationRepository.findAllById(kioskIds).stream()
+                .filter(kioskInventoryGuard::isKioskLocation)
+                .map(LocationEntity::getId)
+                .collect(Collectors.toSet());
+        if (validKioskIds.isEmpty()) {
+            return List.of();
+        }
+        return kioscoStockRepository.findByLocationIdIn(new ArrayList<>(validKioskIds)).stream()
+                .map(this::toStockResponse)
+                .sorted(Comparator.comparing(KioscoStockResponse::getLocationName,
+                                Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER))
+                        .thenComparing(KioscoStockResponse::getProductCode,
+                                Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER))
+                        .thenComparing(KioscoStockResponse::getColorName,
+                                Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER))
+                        .thenComparing(KioscoStockResponse::getHardwareCondition,
+                                Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
                 .collect(Collectors.toList());
     }
 
@@ -2923,22 +2955,8 @@ public class KioscoInventoryService {
             String hardwareCondition
     ) throws BusinessException {
         String hardware = resolveStockHardware(hardwareCondition);
-        try {
-            return kioscoStockRepository.findForUpdateByHardware(locationId, productId, colorId, hardware)
-                    .orElseGet(() -> kioscoStockRepository.save(KioscoStockEntity.builder()
-                            .locationId(locationId)
-                            .productId(productId)
-                            .colorId(colorId)
-                            .hardwareCondition(hardware)
-                            .currentStock(0)
-                            .minimumStock(0)
-                            .createdBy(userId)
-                            .updatedBy(userId)
-                            .build()));
-        } catch (DataIntegrityViolationException ex) {
-            return kioscoStockRepository.findForUpdateByHardware(locationId, productId, colorId, hardware)
-                    .orElseThrow(() -> new BusinessException("No se pudo preparar el stock de kiosko para la operación.", ex));
-        }
+        return kioscoStockProvisioningService.ensureStockRow(
+                locationId, productId, colorId, userId, hardware);
     }
 
     private void syncLegacyInventory(Long locationId, Long productId, Long colorId, int delta, String sizeKey)

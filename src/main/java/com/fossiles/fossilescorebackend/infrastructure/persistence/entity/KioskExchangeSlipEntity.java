@@ -38,10 +38,10 @@ public class KioskExchangeSlipEntity {
     @Column(name = "kiosk_location_id", nullable = false)
     private Long kioskLocationId;
 
-    @Column(name = "original_sale_id", nullable = false)
+    @Column(name = "original_sale_id")
     private Long originalSaleId;
 
-    @Column(name = "original_sale_item_id", nullable = false)
+    @Column(name = "original_sale_item_id")
     private Long originalSaleItemId;
 
     @Column(name = "returned_product_id", nullable = false)

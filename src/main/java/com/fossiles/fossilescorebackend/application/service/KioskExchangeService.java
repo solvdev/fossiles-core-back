@@ -483,29 +483,55 @@ public class KioskExchangeService {
             throw new BusinessException("Debes indicar los datos del cambio.");
         }
         AccessContext access = resolveAccessContext(request.getKioskLocationId());
-        KioskSaleEntity sale = kioskSaleRepository.findById(request.getOriginalSaleId())
-                .orElseThrow(() -> new ResourceNotFoundException("KioskSale", request.getOriginalSaleId()));
-        if (!Objects.equals(sale.getKioskLocationId(), access.kiosk().getId())) {
-            throw new BusinessException("La venta no pertenece al kiosko seleccionado.");
+        boolean hasOriginalSale = request.getOriginalSaleId() != null || request.getOriginalSaleItemId() != null;
+        if (hasOriginalSale && (request.getOriginalSaleId() == null || request.getOriginalSaleItemId() == null)) {
+            throw new BusinessException("Indica la venta y la línea original, o registra el cambio libre.");
         }
-        validateOriginalSale(sale);
-        KioskSaleItemEntity item = kioskSaleItemRepository.findByIdAndKioskSale_Id(
-                        request.getOriginalSaleItemId(), sale.getId())
-                .orElseThrow(() -> new BusinessException("La línea seleccionada no pertenece a la venta original."));
 
-        BigDecimal returnedQty = normalizeQuantity(request.getReturnedQuantity(), item.getQuantity());
+        KioskSaleEntity sale = null;
+        KioskSaleItemEntity item = null;
+        ProductEntity returnedProduct;
+        ColorEntity returnedColor = null;
+        String returnedSize;
+        BigDecimal returnedQty;
+
+        if (hasOriginalSale) {
+            sale = kioskSaleRepository.findById(request.getOriginalSaleId())
+                    .orElseThrow(() -> new ResourceNotFoundException("KioskSale", request.getOriginalSaleId()));
+            if (!Objects.equals(sale.getKioskLocationId(), access.kiosk().getId())) {
+                throw new BusinessException("La venta no pertenece al kiosko seleccionado.");
+            }
+            validateOriginalSale(sale);
+            item = kioskSaleItemRepository.findByIdAndKioskSale_Id(
+                            request.getOriginalSaleItemId(), sale.getId())
+                    .orElseThrow(() -> new BusinessException("La línea seleccionada no pertenece a la venta original."));
+            Long returnedProductId = item.getProductId();
+            returnedProduct = productRepository.findById(returnedProductId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Product", returnedProductId));
+            returnedQty = normalizeQuantity(request.getReturnedQuantity(), item.getQuantity());
+            returnedSize = extractSizeFromProductName(item.getProductName());
+        } else {
+            if (request.getReturnedProductId() == null) {
+                throw new BusinessException("Debes seleccionar el producto que ingresa al kiosko.");
+            }
+            returnedProduct = productRepository.findById(request.getReturnedProductId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Product", request.getReturnedProductId()));
+            if (request.getReturnedColorId() != null) {
+                returnedColor = colorRepository.findById(request.getReturnedColorId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Color", request.getReturnedColorId()));
+            }
+            returnedSize = ProductInventorySizesJson.normalizeKey(request.getReturnedSize());
+            returnedSize = returnedSize.isEmpty() ? null : returnedSize;
+            returnedQty = normalizeQuantity(request.getReturnedQuantity(), BigDecimal.ONE);
+        }
+
         BigDecimal givenQty = requireGiven
                 ? normalizeQuantity(request.getGivenQuantity(), returnedQty)
                 : normalizeQuantity(request.getGivenQuantity(), BigDecimal.ONE);
-        if (requireGiven && request.getGivenProductId() == null) {
-            throw new BusinessException("Debes seleccionar el producto nuevo.");
-        }
-        if (!requireGiven && request.getGivenProductId() == null) {
+        if (request.getGivenProductId() == null) {
             throw new BusinessException("Debes seleccionar el producto nuevo.");
         }
 
-        ProductEntity returnedProduct = productRepository.findById(item.getProductId())
-                .orElseThrow(() -> new ResourceNotFoundException("Product", item.getProductId()));
         ProductEntity givenProduct = productRepository.findById(request.getGivenProductId())
                 .orElseThrow(() -> new ResourceNotFoundException("Product", request.getGivenProductId()));
         ColorEntity givenColor = null;
@@ -523,6 +549,8 @@ public class KioskExchangeService {
                 sale,
                 item,
                 returnedProduct,
+                returnedColor,
+                returnedSize,
                 returnedQty,
                 givenProduct,
                 givenColor,
@@ -835,6 +863,8 @@ public class KioskExchangeService {
             KioskSaleEntity sale,
             KioskSaleItemEntity item,
             ProductEntity returnedProduct,
+            ColorEntity returnedColor,
+            String returnedSize,
             BigDecimal returnedQty,
             ProductEntity givenProduct,
             ColorEntity givenColor,
@@ -846,7 +876,12 @@ public class KioskExchangeService {
         }
 
         private KioskExchangePreviewResponse buildPreview() throws BusinessException {
-            BigDecimal returnedUnitPaid = computeEffectivePaidUnitPrice(sale, item);
+            BigDecimal returnedUnitPaid = item != null
+                    ? computeEffectivePaidUnitPrice(sale, item)
+                    : resolveCatalogUnitPrice(returnedProduct);
+            if (returnedUnitPaid.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BusinessException("El producto que ingresa no tiene precio de catálogo configurado.");
+            }
             BigDecimal returnedAmount = returnedUnitPaid.multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
 
             BigDecimal givenUnitPrice;
@@ -861,13 +896,12 @@ public class KioskExchangeService {
             BigDecimal givenAmount = givenUnitPrice.multiply(givenQty).setScale(2, RoundingMode.HALF_UP);
             BigDecimal difference = givenAmount.subtract(returnedAmount).setScale(2, RoundingMode.HALF_UP);
 
-            String returnedSize = extractSizeFromProductName(item.getProductName());
             KioskExchangePreviewResponse.ProductLine returnedLine = KioskExchangePreviewResponse.ProductLine.builder()
-                    .productId(item.getProductId())
-                    .productCode(item.getProductCode())
-                    .productName(stripSizeFromProductName(item.getProductName()))
-                    .colorId(item.getColorId())
-                    .colorName(item.getColorName())
+                    .productId(returnedProduct.getId())
+                    .productCode(returnedProduct.getCode())
+                    .productName(item != null ? stripSizeFromProductName(item.getProductName()) : returnedProduct.getName())
+                    .colorId(item != null ? item.getColorId() : returnedColor != null ? returnedColor.getId() : null)
+                    .colorName(item != null ? item.getColorName() : returnedColor != null ? returnedColor.getName() : null)
                     .size(returnedSize)
                     .quantity(returnedQty)
                     .unitPrice(returnedUnitPaid)
@@ -887,10 +921,10 @@ public class KioskExchangeService {
                     .build();
 
             return KioskExchangePreviewResponse.builder()
-                    .originalSaleId(sale.getId())
-                    .originalSaleNumber(sale.getSaleNumber())
-                    .originalSaleDate(sale.getSaleDate())
-                    .originalSaleItemId(item.getId())
+                    .originalSaleId(sale != null ? sale.getId() : null)
+                    .originalSaleNumber(sale != null ? sale.getSaleNumber() : null)
+                    .originalSaleDate(sale != null ? sale.getSaleDate() : null)
+                    .originalSaleItemId(item != null ? item.getId() : null)
                     .returned(returnedLine)
                     .given(givenLine)
                     .returnedAmount(returnedAmount)
