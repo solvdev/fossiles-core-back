@@ -573,7 +573,14 @@ public class KioskExchangeService {
     }
 
     private static boolean allowsExchangePriceEdit(LocationEntity kiosk) {
-        return kiosk != null && EXCHANGE_PRICE_EDIT_KIOSK_CODE.equalsIgnoreCase(safeTrim(kiosk.getCode()));
+        if (kiosk == null) {
+            return false;
+        }
+        if (EXCHANGE_PRICE_EDIT_KIOSK_CODE.equalsIgnoreCase(safeTrim(kiosk.getCode()))) {
+            return true;
+        }
+        String name = safeTrim(kiosk.getName()).toUpperCase(Locale.ROOT);
+        return name.contains("MIRAFLORES");
     }
 
     private static BigDecimal normalizePriceOverride(BigDecimal value) {
