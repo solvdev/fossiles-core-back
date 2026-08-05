@@ -81,5 +81,8 @@ public class KioskPosSaleRequest {
         @NotNull(message = "La cantidad es obligatoria.")
         @Positive(message = "La cantidad debe ser mayor a cero.")
         private BigDecimal quantity;
+
+        /** Precio unitario override (venta de cambio / restore). Null = precio de catálogo POS. */
+        private BigDecimal unitPrice;
     }
 }

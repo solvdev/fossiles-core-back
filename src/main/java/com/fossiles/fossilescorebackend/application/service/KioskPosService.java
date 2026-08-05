@@ -376,6 +376,11 @@ public class KioskPosService {
             }
 
             BigDecimal unitPrice = resolvePosUnitPrice(product);
+            if (exchangeSale
+                    && itemRequest.getUnitPrice() != null
+                    && itemRequest.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
+                unitPrice = itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
+            }
             BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
 
             preparedLines.add(new PreparedLine(

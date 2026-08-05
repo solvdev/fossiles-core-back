@@ -60,6 +60,8 @@ public class KioskExchangeService {
     private static final String STATUS_REINTEGRATED = "REINTEGRATED";
     private static final String STATUS_PENDING_AUTHORIZATION = "PENDING_AUTHORIZATION";
     private static final String STATUS_REJECTED = "REJECTED";
+    /** Solo Miraflores puede editar precios unitarios del cambio para empatar cobro POS. */
+    private static final String EXCHANGE_PRICE_EDIT_KIOSK_CODE = "A15";
 
     private final KioskExchangeSlipRepository exchangeSlipRepository;
     private final KioscoMovementRepository kioscoMovementRepository;
@@ -263,6 +265,7 @@ public class KioskExchangeService {
                         .colorId(preview.getGiven().getColorId())
                         .size(preview.getGiven().getSize())
                         .quantity(preview.getGiven().getQuantity())
+                        .unitPrice(preview.getGiven().getUnitPrice())
                         .build()))
                 .build();
 
@@ -544,6 +547,14 @@ public class KioskExchangeService {
             givenSize = null;
         }
 
+        boolean allowPriceOverride = allowsExchangePriceEdit(access.kiosk());
+        BigDecimal returnedUnitOverride = normalizePriceOverride(request.getReturnedUnitPrice());
+        BigDecimal givenUnitOverride = normalizePriceOverride(request.getGivenUnitPrice());
+        if ((returnedUnitOverride != null || givenUnitOverride != null) && !allowPriceOverride) {
+            throw new BusinessException(
+                    "Solo el kiosko Miraflores (A15) puede editar precios del cambio.");
+        }
+
         return new ExchangeContext(
                 access,
                 sale,
@@ -555,8 +566,21 @@ public class KioskExchangeService {
                 givenProduct,
                 givenColor,
                 givenSize,
-                givenQty
+                givenQty,
+                returnedUnitOverride,
+                givenUnitOverride
         );
+    }
+
+    private static boolean allowsExchangePriceEdit(LocationEntity kiosk) {
+        return kiosk != null && EXCHANGE_PRICE_EDIT_KIOSK_CODE.equalsIgnoreCase(safeTrim(kiosk.getCode()));
+    }
+
+    private static BigDecimal normalizePriceOverride(BigDecimal value) {
+        if (value == null || value.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+        return value.setScale(2, RoundingMode.HALF_UP);
     }
 
     private KioskSaleEntity findSaleByQuery(Long kioskLocationId, String query) throws ResourceNotFoundException {
@@ -869,23 +893,29 @@ public class KioskExchangeService {
             ProductEntity givenProduct,
             ColorEntity givenColor,
             String givenSize,
-            BigDecimal givenQty
+            BigDecimal givenQty,
+            BigDecimal returnedUnitPriceOverride,
+            BigDecimal givenUnitPriceOverride
     ) {
         KioskExchangePreviewResponse preview() throws BusinessException {
             return buildPreview();
         }
 
         private KioskExchangePreviewResponse buildPreview() throws BusinessException {
-            BigDecimal returnedUnitPaid = item != null
-                    ? computeEffectivePaidUnitPrice(sale, item)
-                    : resolveCatalogUnitPrice(returnedProduct);
+            BigDecimal returnedUnitPaid = returnedUnitPriceOverride != null
+                    ? returnedUnitPriceOverride
+                    : (item != null
+                            ? computeEffectivePaidUnitPrice(sale, item)
+                            : resolveCatalogUnitPrice(returnedProduct));
             if (returnedUnitPaid.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new BusinessException("El producto que ingresa no tiene precio de catálogo configurado.");
             }
             BigDecimal returnedAmount = returnedUnitPaid.multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
 
             BigDecimal givenUnitPrice;
-            if (shouldPreservePaidPriceOnExchange(item, returnedProduct, givenProduct)) {
+            if (givenUnitPriceOverride != null) {
+                givenUnitPrice = givenUnitPriceOverride;
+            } else if (shouldPreservePaidPriceOnExchange(item, returnedProduct, givenProduct)) {
                 givenUnitPrice = returnedUnitPaid;
             } else {
                 givenUnitPrice = resolveCatalogUnitPrice(givenProduct);

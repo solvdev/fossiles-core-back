@@ -138,6 +138,7 @@ class KioskExchangeServiceTest {
                 .kioskLocationId(kiosk.getId())
                 .paymentMethod("EFECTIVO")
                 .amountReceived(new BigDecimal("180.00"))
+                .chargeWithoutDiscount(true)
                 .items(List.of(item(originalProduct.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
     }

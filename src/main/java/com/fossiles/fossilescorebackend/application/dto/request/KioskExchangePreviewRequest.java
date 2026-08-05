@@ -33,4 +33,10 @@ public class KioskExchangePreviewRequest {
 
     @Positive(message = "La cantidad devuelta debe ser mayor a cero.")
     private BigDecimal returnedQuantity;
+
+    /** Solo kiosko A15 (Miraflores): precio unitario cobrado/acreditado del producto que ingresa. */
+    private BigDecimal returnedUnitPrice;
+
+    /** Solo kiosko A15 (Miraflores): precio unitario del producto que egresa. */
+    private BigDecimal givenUnitPrice;
 }
