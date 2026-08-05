@@ -376,9 +376,12 @@ public class KioskPosService {
             }
 
             BigDecimal unitPrice = resolvePosUnitPrice(product);
-            if (exchangeSale
-                    && itemRequest.getUnitPrice() != null
+            if (itemRequest.getUnitPrice() != null
                     && itemRequest.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
+                if (!exchangeSale && !allowsPosUnitPriceEdit(kiosk)) {
+                    throw new BusinessException(
+                            "Solo el kiosko Miraflores (A15) puede editar precios de venta.");
+                }
                 unitPrice = itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
             }
             BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
@@ -2869,6 +2872,13 @@ public class KioskPosService {
     /** Descuento base POS sobre precio de catálogo (no acumula con promos; la promo mayor reemplaza). */
     private static final BigDecimal DEFAULT_POS_DISCOUNT_PERCENT = new BigDecimal("10");
     private static final String DEFAULT_POS_DISCOUNT_NAME = "Descuento 10%";
+    /** Solo Miraflores puede enviar unitPrice override en venta POS. */
+    private static final String POS_UNIT_PRICE_EDIT_KIOSK_CODE = "A15";
+
+    private static boolean allowsPosUnitPriceEdit(LocationEntity kiosk) {
+        return kiosk != null
+                && POS_UNIT_PRICE_EDIT_KIOSK_CODE.equalsIgnoreCase(safeTrimStatic(kiosk.getCode()));
+    }
 
     private BigDecimal resolvePosUnitPrice(ProductEntity product) {
         if (product == null) {
