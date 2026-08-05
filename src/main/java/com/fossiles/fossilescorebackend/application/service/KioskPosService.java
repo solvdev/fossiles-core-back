@@ -376,6 +376,8 @@ public class KioskPosService {
             }
 
             BigDecimal unitPrice = resolvePosUnitPrice(product);
+            // Línea con precio editado (Miraflores): monto final, sin descuento sobre esa línea.
+            boolean finalUnitPrice = false;
             if (itemRequest.getUnitPrice() != null
                     && itemRequest.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
                 if (!exchangeSale && !allowsPosUnitPriceEdit(kiosk)) {
@@ -383,6 +385,9 @@ public class KioskPosService {
                             "Solo el kiosko Miraflores (A15) puede editar precios de venta.");
                 }
                 unitPrice = itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
+                if (!exchangeSale && allowsPosUnitPriceEdit(kiosk)) {
+                    finalUnitPrice = true;
+                }
             }
             BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
 
@@ -392,7 +397,8 @@ public class KioskPosService {
                     sizeLabel.isEmpty() ? null : sizeLabel,
                     quantity,
                     unitPrice,
-                    lineTotal
+                    lineTotal,
+                    finalUnitPrice
             ));
             subtotal = subtotal.add(lineTotal);
             totalItems = totalItems.add(quantity);
@@ -650,7 +656,8 @@ public class KioskPosService {
                     sizeLabel.isEmpty() ? null : sizeLabel,
                     quantity,
                     unitPrice,
-                    lineTotal
+                    lineTotal,
+                    false
             ));
             subtotal = subtotal.add(lineTotal);
             totalItems = totalItems.add(quantity);
@@ -2224,7 +2231,7 @@ public class KioskPosService {
         BigDecimal discount = BigDecimal.ZERO;
         boolean anyTierMatch = false;
         for (PreparedLine line : lines) {
-            if (!isDiscountEligibleProduct(line.product())) {
+            if (line.finalUnitPrice() || !isDiscountEligibleProduct(line.product())) {
                 continue;
             }
             BigDecimal promoPct = resolveBestTierPercentForLine(line, promotions);
@@ -2431,6 +2438,7 @@ public class KioskPosService {
             return List.of();
         }
         return lines.stream()
+                .filter(line -> !line.finalUnitPrice())
                 .filter(line -> line.product() != null && isDiscountEligibleProduct(line.product()))
                 .toList();
     }
@@ -2468,7 +2476,8 @@ public class KioskPosService {
                     sizeLabel.isEmpty() ? null : sizeLabel,
                     quantity,
                     unitPrice,
-                    lineTotal
+                    lineTotal,
+                    false
             ));
         }
         return preparedLines;
@@ -2479,6 +2488,7 @@ public class KioskPosService {
             return List.of();
         }
         return lines.stream()
+                .filter(line -> !line.finalUnitPrice())
                 .filter(line -> line.product() != null && isDiscountEligibleProduct(line.product()))
                 .filter(line -> ProductAudienceCategory.productMatchesPromotion(
                         line.product().getAudienceCategory(), promotionAudience))
@@ -4786,7 +4796,9 @@ public class KioskPosService {
             String size,
             BigDecimal quantity,
             BigDecimal unitPrice,
-            BigDecimal lineTotal
+            BigDecimal lineTotal,
+            /** Precio editado (Miraflores): no recibe descuento POS/promo sobre esa línea. */
+            boolean finalUnitPrice
     ) {}
 
     record PaymentSnapshot(
