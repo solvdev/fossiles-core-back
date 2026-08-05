@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -262,4 +263,12 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
     );
 
     List<KioscoMovementEntity> findByPhysicalSlipNumber(String physicalSlipNumber);
+
+    @Modifying
+    @Query("UPDATE KioscoMovementEntity m SET m.kioscoStockId = :toStockId "
+            + "WHERE m.kioscoStockId = :fromStockId")
+    int reassignKioscoStockId(
+            @Param("fromStockId") Long fromStockId,
+            @Param("toStockId") Long toStockId
+    );
 }

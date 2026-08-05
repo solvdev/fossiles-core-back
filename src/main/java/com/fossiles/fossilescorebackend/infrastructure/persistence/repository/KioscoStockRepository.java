@@ -55,14 +55,31 @@ public interface KioscoStockRepository extends JpaRepository<KioscoStockEntity, 
     @Query("SELECT s FROM KioscoStockEntity s WHERE s.locationId = :locationId "
             + "AND s.productId = :productId "
             + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
-            + "AND s.hardwareCondition = :hardwareCondition")
-    Optional<KioscoStockEntity> findForUpdateByHardware(
+            + "AND s.hardwareCondition = :hardwareCondition "
+            + "ORDER BY s.id ASC")
+    List<KioscoStockEntity> findAllForUpdateByHardware(
             @Param("locationId") Long locationId,
             @Param("productId") Long productId,
             @Param("colorId") Long colorId,
             @Param("hardwareCondition") String hardwareCondition
     );
 
+    /**
+     * Bloquea la fila de stock por herraje. Si hay duplicados (p. ej. color_id NULL
+     * con UNIQUE clásico de Postgres), toma la fila más antigua.
+     */
+    default Optional<KioscoStockEntity> findForUpdateByHardware(
+            Long locationId, Long productId, Long colorId, String hardwareCondition
+    ) {
+        List<KioscoStockEntity> rows = findAllForUpdateByHardware(
+                locationId, productId, colorId, hardwareCondition);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+    }
+
+    /**
+     * Inserta solo si no hay fila equivalente. Usa IS NOT DISTINCT FROM para
+     * color_id NULL (ON CONFLICT clásico de Postgres no protege NULLs).
+     */
     @Modifying
     @Query(value = """
             INSERT INTO kiosco_stock (
@@ -70,12 +87,18 @@ public interface KioscoStockRepository extends JpaRepository<KioscoStockEntity, 
                 current_stock, minimum_stock, last_updated_at, created_at, updated_at,
                 created_by, updated_by
             )
-            VALUES (
+            SELECT
                 :locationId, :productId, :colorId, :hardwareCondition,
                 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                 :userId, :userId
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM kiosco_stock s
+                WHERE s.location_id = :locationId
+                  AND s.product_id = :productId
+                  AND s.color_id IS NOT DISTINCT FROM :colorId
+                  AND s.hardware_condition = :hardwareCondition
             )
-            ON CONFLICT (location_id, product_id, color_id, hardware_condition) DO NOTHING
             """, nativeQuery = true)
     int insertIfAbsent(
             @Param("locationId") Long locationId,
