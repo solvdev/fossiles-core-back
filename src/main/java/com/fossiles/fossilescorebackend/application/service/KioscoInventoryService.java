@@ -2032,8 +2032,8 @@ public class KioscoInventoryService {
     }
 
     /**
-     * ENTRADAs entre el corte del conteo fisico anterior y el inicio del periodo actual.
-     * En conteo fisico se muestran en Ent., no en Ini. (primer conteo: todas las ENTRADAs previas al periodo).
+     * ENTRADAs en el hueco entre el cierre del conteo físico anterior y el inicio del periodo actual.
+     * En conteo físico se suman a Ent. sin restar del Ini. (Ini. = cierre del conteo anterior).
      */
     @Transactional(readOnly = true)
     public Map<Long, Integer> computePrePeriodEntradasByStockId(

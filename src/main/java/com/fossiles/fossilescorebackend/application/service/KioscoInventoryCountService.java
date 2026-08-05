@@ -420,27 +420,29 @@ public class KioscoInventoryCountService {
                         count.getLocationId(), count.getPeriodFrom(), kardexTo, count.getId());
         applyPendingReturnSalidasForCount(count, kardexRows, kardexByStockAndSize, stockByKey);
 
+        // Ini. = cierre del conteo anterior (Fin. previo). Sin conteo previo = saldo al inicio del periodo.
+        // Nunca se vacía Ini. ni se vuelcan ENTRADAs históricas al Ent. del periodo actual.
         Optional<KioscoPhysicalCountEntity> previousCount = resolvePreviousPhysicalCount(count);
+        LocalDateTime periodStart = count.getPeriodFrom().atStartOfDay();
         LocalDateTime openingCutoffExclusive = previousCount
                 .map(c -> c.getPeriodTo().plusDays(1).atStartOfDay())
-                .orElse(null);
-        Map<Long, Integer> openingBalanceByStockId = openingCutoffExclusive != null
-                ? kioscoInventoryService.computeStockBalanceByStockId(count.getLocationId(), openingCutoffExclusive)
-                : Map.of();
-        Map<Long, Map<String, Integer>> openingBalanceByStockAndSize = openingCutoffExclusive != null
-                ? kioscoInventoryService.computeSizeBalanceByStockAndSize(
-                        count.getLocationId(), openingCutoffExclusive)
-                : Map.of();
+                .orElse(periodStart);
+        Map<Long, Integer> openingBalanceByStockId = kioscoInventoryService.computeStockBalanceByStockId(
+                count.getLocationId(), openingCutoffExclusive);
+        Map<Long, Map<String, Integer>> openingBalanceByStockAndSize =
+                kioscoInventoryService.computeSizeBalanceByStockAndSize(
+                        count.getLocationId(), openingCutoffExclusive);
 
-        LocalDateTime periodStart = count.getPeriodFrom().atStartOfDay();
-        Map<Long, Integer> prePeriodEntradasByStockId = kioscoInventoryService.computePrePeriodEntradasByStockId(
-                count.getLocationId(), openingCutoffExclusive, periodStart);
-        Map<Long, Map<String, Integer>> prePeriodEntradasByStockAndSize =
-                kioscoInventoryService.computePrePeriodEntradasByStockAndSize(
-                        count.getLocationId(), openingCutoffExclusive, periodStart);
-        applyPrePeriodEntradasToKardexBySize(kardexByStockAndSize, prePeriodEntradasByStockAndSize);
-        openingBalanceByStockAndSize = subtractQuantityMapsByStock(
-                openingBalanceByStockAndSize, prePeriodEntradasByStockAndSize);
+        // Solo el hueco entre conteos (si periodFrom > periodTo anterior) va a Ent.; el primer conteo no.
+        Map<Long, Integer> gapEntradasByStockId = previousCount.isPresent()
+                ? kioscoInventoryService.computePrePeriodEntradasByStockId(
+                        count.getLocationId(), openingCutoffExclusive, periodStart)
+                : Map.of();
+        Map<Long, Map<String, Integer>> gapEntradasByStockAndSize = previousCount.isPresent()
+                ? kioscoInventoryService.computePrePeriodEntradasByStockAndSize(
+                        count.getLocationId(), openingCutoffExclusive, periodStart)
+                : Map.of();
+        applyPrePeriodEntradasToKardexBySize(kardexByStockAndSize, gapEntradasByStockAndSize);
 
         Map<String, KioscoPhysicalCountItemEntity> itemsByKey = itemRepository.findByCountId(count.getId()).stream()
                 .collect(Collectors.toMap(i -> itemKey(i.getProductId(), i.getColorId()), i -> i, (a, b) -> a));
@@ -514,14 +516,15 @@ public class KioscoInventoryCountService {
             Map<String, Integer> inventarioFinalByHardware = inventarioFinalByHardwareLookup.getOrDefault(
                     productColorKey, Map.of());
 
-            int prePeriodEntradas = stocksForRow.stream()
-                    .mapToInt(s -> prePeriodEntradasByStockId.getOrDefault(s.getId(), 0))
+            int gapEntradas = stocksForRow.stream()
+                    .mapToInt(s -> gapEntradasByStockId.getOrDefault(s.getId(), 0))
                     .sum();
-            int inventarioInicial = stocksForRow.stream()
+            // Cierre del conteo anterior (o saldo al inicio del periodo en el primer conteo).
+            int inventarioInicial = Math.max(0, stocksForRow.stream()
                     .mapToInt(s -> openingBalanceByStockId.getOrDefault(s.getId(), 0))
-                    .sum();
-            inventarioInicial = Math.max(0, inventarioInicial - prePeriodEntradas);
-            int entradas = kardexRow.getEntradas() + prePeriodEntradas;
+                    .sum());
+            // Ent. = periodo + hueco entre conteos (nunca historial previo al primer/anterior conteo).
+            int entradas = kardexRow.getEntradas() + gapEntradas;
             // Fin. = Ini. + movimientos del periodo (algebraico): +Ent -Vtas +Anul.Vta -Sal (+Compras -Anul.Compras)
             int inventarioFinal = Math.max(0, inventarioInicial + kardexRowNetDelta(kardexRow, entradas));
 
@@ -575,9 +578,8 @@ public class KioscoInventoryCountService {
                                     ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()),
                                     kardexRow.getSalidaDevolucion())))
                     .build();
-            Map<String, Integer> openingBalanceBySize = stock != null
-                    ? openingBalanceByStockAndSize.getOrDefault(stock.getId(), Map.of())
-                    : Map.of();
+            Map<String, Integer> openingBalanceBySize = mergeOpeningBalanceBySize(
+                    stocksForRow, openingBalanceByStockAndSize);
             List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> displayRows = isSubcount
                     ? List.of(applyRowObservation(row, generalObservation, null))
                     : expandRowsForDisplay(
@@ -1264,42 +1266,24 @@ public class KioscoInventoryCountService {
         }
     }
 
-    private static Map<Long, Map<String, Integer>> subtractQuantityMapsByStock(
-            Map<Long, Map<String, Integer>> baseByStock,
-            Map<Long, Map<String, Integer>> subtractByStock
+    private static Map<String, Integer> mergeOpeningBalanceBySize(
+            List<KioscoStockEntity> stocks,
+            Map<Long, Map<String, Integer>> openingBalanceByStockAndSize
     ) {
-        if (baseByStock == null || baseByStock.isEmpty()) {
+        if (stocks == null || stocks.isEmpty() || openingBalanceByStockAndSize == null) {
             return Map.of();
         }
-        Map<Long, Map<String, Integer>> adjusted = new LinkedHashMap<>();
-        for (Map.Entry<Long, Map<String, Integer>> stockEntry : baseByStock.entrySet()) {
-            Map<String, Integer> adjustedBySize = subtractQuantityMap(
-                    stockEntry.getValue(),
-                    subtractByStock != null
-                            ? subtractByStock.getOrDefault(stockEntry.getKey(), Map.of())
-                            : Map.of());
-            if (!adjustedBySize.isEmpty()) {
-                adjusted.put(stockEntry.getKey(), adjustedBySize);
+        Map<String, Integer> merged = new LinkedHashMap<>();
+        for (KioscoStockEntity stock : stocks) {
+            if (stock == null || stock.getId() == null) {
+                continue;
+            }
+            Map<String, Integer> bySize = openingBalanceByStockAndSize.getOrDefault(stock.getId(), Map.of());
+            for (Map.Entry<String, Integer> entry : bySize.entrySet()) {
+                merged.merge(entry.getKey(), Math.max(0, entry.getValue()), Integer::sum);
             }
         }
-        return adjusted;
-    }
-
-    private static Map<String, Integer> subtractQuantityMap(
-            Map<String, Integer> base,
-            Map<String, Integer> subtract
-    ) {
-        if (base == null || base.isEmpty()) {
-            return Map.of();
-        }
-        Map<String, Integer> result = new LinkedHashMap<>();
-        for (Map.Entry<String, Integer> entry : base.entrySet()) {
-            int adjusted = Math.max(0, entry.getValue() - subtract.getOrDefault(entry.getKey(), 0));
-            if (adjusted > 0) {
-                result.put(entry.getKey(), adjusted);
-            }
-        }
-        return result;
+        return merged;
     }
 
     private List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> expandRowsForDisplay(

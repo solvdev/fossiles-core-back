@@ -106,6 +106,8 @@ class KioscoInventoryCountServiceTest {
         when(exchangeSlipRepository.findByPhysicalCountId(any())).thenReturn(List.of());
         when(exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
         try {
+            when(kioscoInventoryService.computeStockBalanceByStockId(any(), any())).thenReturn(Map.of());
+            when(kioscoInventoryService.computeSizeBalanceByStockAndSize(any(), any())).thenReturn(Map.of());
             when(kioscoInventoryService.computePrePeriodEntradasByStockId(any(), any(), any())).thenReturn(Map.of());
             when(kioscoInventoryService.computePrePeriodEntradasByStockAndSize(any(), any(), any())).thenReturn(Map.of());
         } catch (BusinessException | ResourceNotFoundException e) {
@@ -769,8 +771,9 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
-    void buildReport_entradaPrePeriodoApareceEnEntradasNoEnInicial() throws Exception {
+    void buildReport_primerConteo_entradaPreviaVaAInicialNoAEntradas() throws Exception {
         long stockId = 913L;
+        LocalDateTime periodStart = from.atStartOfDay();
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
                 com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
                         .id(stockId)
@@ -786,7 +789,7 @@ class KioscoInventoryCountServiceTest {
                         .ventas(1)
                         .build()
         ));
-        when(kioscoInventoryService.computePrePeriodEntradasByStockId(eq(locationId), eq(null), any(LocalDateTime.class)))
+        when(kioscoInventoryService.computeStockBalanceByStockId(eq(locationId), eq(periodStart)))
                 .thenReturn(Map.of(stockId, 1));
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
         when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
@@ -798,14 +801,14 @@ class KioscoInventoryCountServiceTest {
         KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
 
         var row = report.getCategories().get(0).getRows().get(0);
-        assertThat(row.getInventarioInicial()).isZero();
-        assertThat(row.getEntradas()).isEqualTo(1);
+        assertThat(row.getInventarioInicial()).isEqualTo(1);
+        assertThat(row.getEntradas()).isZero();
         assertThat(row.getVentas()).isEqualTo(1);
         assertThat(row.getInventarioFinal()).isZero();
     }
 
     @Test
-    void buildReport_entradaEnGapEntreConteosApareceEnEntradasNoEnInicial() throws Exception {
+    void buildReport_segundoConteo_iniEsCierreAnterior_gapVaAEntradas() throws Exception {
         long stockId = 913L;
         LocalDate previousTo = LocalDate.of(2026, 5, 31);
         LocalDateTime openingCutoff = previousTo.plusDays(1).atStartOfDay();
@@ -845,8 +848,8 @@ class KioscoInventoryCountServiceTest {
         KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
 
         var row = report.getCategories().get(0).getRows().get(0);
-        assertThat(row.getInventarioInicial()).isZero();
+        assertThat(row.getInventarioInicial()).isEqualTo(1);
         assertThat(row.getEntradas()).isEqualTo(1);
-        assertThat(row.getInventarioFinal()).isEqualTo(1);
+        assertThat(row.getInventarioFinal()).isEqualTo(2);
     }
 }
