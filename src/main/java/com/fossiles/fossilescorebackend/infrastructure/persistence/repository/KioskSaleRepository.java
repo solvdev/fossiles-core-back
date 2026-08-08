@@ -19,6 +19,24 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             String saleNumber
     );
     boolean existsByKioskLocationIdAndSaleNumberIgnoreCase(Long kioskLocationId, String saleNumber);
+
+    /** Busca venta del kiosko por correlativo interno de factura (ej. A45-241). */
+    @Query("""
+            SELECT s FROM KioskSaleEntity s
+            WHERE s.kioskLocationId = :kioskLocationId
+              AND EXISTS (
+                  SELECT 1 FROM TaxInvoiceEntity t
+                  WHERE (
+                      t.id = s.invoiceId
+                      OR (UPPER(TRIM(t.sourceType)) = 'KIOSK_SALE' AND t.sourceId = s.id)
+                  )
+                  AND UPPER(TRIM(COALESCE(t.internalNumber, ''))) = UPPER(TRIM(:internalNumber))
+              )
+            """)
+    Optional<KioskSaleEntity> findByKioskLocationIdAndInvoiceInternalNumber(
+            @Param("kioskLocationId") Long kioskLocationId,
+            @Param("internalNumber") String internalNumber
+    );
     List<KioskSaleEntity> findByKioskLocationIdOrderBySoldAtDesc(Long kioskLocationId);
 
     @Query("""

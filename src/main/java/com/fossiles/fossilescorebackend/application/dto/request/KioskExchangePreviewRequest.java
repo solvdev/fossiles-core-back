@@ -39,4 +39,13 @@ public class KioskExchangePreviewRequest {
 
     /** Solo kiosko A15 (Miraflores): precio unitario del producto que egresa. */
     private BigDecimal givenUnitPrice;
+
+    /**
+     * Si el producto que ingresa se había vendido con descuento.
+     * Con true/false se calcula el crédito desde precio de venta de catálogo ± %.
+     */
+    private Boolean returnedSoldWithDiscount;
+
+    /** Porcentaje de descuento aplicado en la venta original del producto que ingresa (0–99). */
+    private BigDecimal returnedDiscountPercent;
 }

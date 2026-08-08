@@ -38,3 +38,14 @@ WHERE r.name = 'ENCARGADA_KIOSKO'
       SELECT 1 FROM role_permission rp
       WHERE rp.role_id = r.id AND rp.permission_id = p.id
   );
+
+-- Encargada no autoriza cambios (solo supervisora/admin).
+DELETE FROM role_permission rp
+USING role r, permission p
+WHERE rp.role_id = r.id
+  AND rp.permission_id = p.id
+  AND r.name = 'ENCARGADA_KIOSKO'
+  AND p.code IN (
+      'KIOSCOS.CAMBIOS.AUTORIZAR.VER',
+      'KIOSCOS.CAMBIOS.AUTORIZAR.APROBAR'
+  );

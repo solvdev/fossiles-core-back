@@ -47,6 +47,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Service
@@ -548,12 +549,13 @@ public class KioskExchangeService {
         }
 
         boolean allowPriceOverride = allowsExchangePriceEdit(access.kiosk());
-        BigDecimal returnedUnitOverride = normalizePriceOverride(request.getReturnedUnitPrice());
         BigDecimal givenUnitOverride = normalizePriceOverride(request.getGivenUnitPrice());
-        if ((returnedUnitOverride != null || givenUnitOverride != null) && !allowPriceOverride) {
+        if (givenUnitOverride != null && !allowPriceOverride) {
             throw new BusinessException(
                     "Solo el kiosko Miraflores (A15) puede editar precios del cambio.");
         }
+        BigDecimal returnedUnitOverride = resolveReturnedUnitPriceOverride(
+                request, returnedProduct, allowPriceOverride);
 
         return new ExchangeContext(
                 access,
@@ -590,15 +592,72 @@ public class KioskExchangeService {
         return value.setScale(2, RoundingMode.HALF_UP);
     }
 
+    /**
+     * Precio unitario del producto que ingresa:
+     * - returnedUnitPrice manual solo Miraflores (A15);
+     * - con toggle de descuento → salePrice × (1 − %/100).
+     */
+    private static BigDecimal resolveReturnedUnitPriceOverride(
+            KioskExchangePreviewRequest request,
+            ProductEntity returnedProduct,
+            boolean allowPriceOverride
+    ) throws BusinessException {
+        BigDecimal manual = normalizePriceOverride(request.getReturnedUnitPrice());
+        if (manual != null) {
+            if (!allowPriceOverride) {
+                throw new BusinessException(
+                        "Solo el kiosko Miraflores (A15) puede editar precios del cambio.");
+            }
+            return manual;
+        }
+        if (request.getReturnedSoldWithDiscount() != null || request.getReturnedDiscountPercent() != null) {
+            BigDecimal catalog = resolveFullSaleUnitPrice(returnedProduct);
+            if (catalog.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BusinessException("El producto que ingresa no tiene precio de venta configurado.");
+            }
+            boolean withDiscount = Boolean.TRUE.equals(request.getReturnedSoldWithDiscount());
+            BigDecimal percent = request.getReturnedDiscountPercent() != null
+                    ? request.getReturnedDiscountPercent()
+                    : BigDecimal.ZERO;
+            if (!withDiscount || percent.compareTo(BigDecimal.ZERO) <= 0) {
+                return catalog;
+            }
+            if (percent.compareTo(new BigDecimal("100")) >= 0) {
+                throw new BusinessException("El porcentaje de descuento debe ser menor a 100.");
+            }
+            BigDecimal factor = BigDecimal.ONE.subtract(
+                    percent.divide(new BigDecimal("100"), 6, RoundingMode.HALF_UP));
+            return catalog.multiply(factor).setScale(2, RoundingMode.HALF_UP);
+        }
+        return null;
+    }
+
     private KioskSaleEntity findSaleByQuery(Long kioskLocationId, String query) throws ResourceNotFoundException {
-        if (query.matches("\\d+")) {
-            Long saleId = Long.parseLong(query);
+        String normalized = normalizeInternalNumberQuery(query);
+        if (normalized.matches("\\d+")) {
+            Long saleId = Long.parseLong(normalized);
             return kioskSaleRepository.findById(saleId)
                     .filter(sale -> Objects.equals(sale.getKioskLocationId(), kioskLocationId))
                     .orElseThrow(() -> new ResourceNotFoundException("KioskSale", saleId));
         }
-        return kioskSaleRepository.findByKioskLocationIdAndSaleNumberIgnoreCase(kioskLocationId, query)
+        // Preferir serie-correlativo de establecimiento (A45-241).
+        Optional<KioskSaleEntity> byInternal = kioskSaleRepository
+                .findByKioskLocationIdAndInvoiceInternalNumber(kioskLocationId, normalized);
+        if (byInternal.isPresent()) {
+            return byInternal.get();
+        }
+        // Compatibilidad interna con saleNumber POS-… (no se muestra en UI).
+        return kioskSaleRepository.findByKioskLocationIdAndSaleNumberIgnoreCase(kioskLocationId, query.trim())
+                .or(() -> kioskSaleRepository.findByKioskLocationIdAndSaleNumberIgnoreCase(kioskLocationId, normalized))
                 .orElseThrow(() -> new ResourceNotFoundException("KioskSale", query));
+    }
+
+    /** Normaliza A45-241 / A45 241 → A45-241 (sin espacios). */
+    private static String normalizeInternalNumberQuery(String query) {
+        if (query == null) {
+            return "";
+        }
+        return query.trim().replaceAll("\\s+", "").toUpperCase(Locale.ROOT);
     }
 
     private void validateOriginalSale(KioskSaleEntity sale) throws BusinessException {
@@ -818,20 +877,15 @@ public class KioskExchangeService {
                 .replace("Ú", "U");
     }
 
-    private static BigDecimal resolveCatalogUnitPrice(ProductEntity product) {
-        if (product == null) {
+    /** Precio de venta de catálogo (sin descuento ni promo). Usado en egreso y crédito por %. */
+    private static BigDecimal resolveFullSaleUnitPrice(ProductEntity product) {
+        if (product == null || product.getSalePrice() == null) {
             return BigDecimal.ZERO;
         }
-        if (product.getSalePrice() != null && product.getSalePrice().compareTo(BigDecimal.ZERO) > 0) {
-            return product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
+        if (product.getSalePrice().compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
         }
-        if (product.getDiscountedPrice() != null && product.getDiscountedPrice().compareTo(BigDecimal.ZERO) > 0) {
-            return product.getDiscountedPrice().setScale(2, RoundingMode.HALF_UP);
-        }
-        if (product.getSellerPrice() != null && product.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
-            return product.getSellerPrice().setScale(2, RoundingMode.HALF_UP);
-        }
-        return BigDecimal.ZERO;
+        return product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
     }
 
     private static String extractSizeFromProductName(String productName) {
@@ -913,9 +967,9 @@ public class KioskExchangeService {
                     ? returnedUnitPriceOverride
                     : (item != null
                             ? computeEffectivePaidUnitPrice(sale, item)
-                            : resolveCatalogUnitPrice(returnedProduct));
+                            : resolveFullSaleUnitPrice(returnedProduct));
             if (returnedUnitPaid.compareTo(BigDecimal.ZERO) <= 0) {
-                throw new BusinessException("El producto que ingresa no tiene precio de catálogo configurado.");
+                throw new BusinessException("El producto que ingresa no tiene precio de venta configurado.");
             }
             BigDecimal returnedAmount = returnedUnitPaid.multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
 
@@ -923,11 +977,13 @@ public class KioskExchangeService {
             if (givenUnitPriceOverride != null) {
                 givenUnitPrice = givenUnitPriceOverride;
             } else if (shouldPreservePaidPriceOnExchange(item, returnedProduct, givenProduct)) {
+                // Mismo producto / cincho: conserva pagado → diferencia 0 → autorización.
                 givenUnitPrice = returnedUnitPaid;
             } else {
-                givenUnitPrice = resolveCatalogUnitPrice(givenProduct);
+                // Con diferencia: siempre precio normal de catálogo (nunca discountedPrice / promo).
+                givenUnitPrice = resolveFullSaleUnitPrice(givenProduct);
                 if (givenUnitPrice.compareTo(BigDecimal.ZERO) <= 0) {
-                    throw new BusinessException("El producto nuevo no tiene precio de catálogo configurado.");
+                    throw new BusinessException("El producto nuevo no tiene precio de venta configurado.");
                 }
             }
             BigDecimal givenAmount = givenUnitPrice.multiply(givenQty).setScale(2, RoundingMode.HALF_UP);
