@@ -94,6 +94,42 @@ public class ProductionOrderController {
         return ResponseEntity.ok(orders);
     }
 
+    /**
+     * Búsqueda rápida para filtros de Preparar envíos.
+     * Devuelve solo campos de listado (sin ítems). Sin query: recientes; con query: todos los matches (tope alto).
+     */
+    @GetMapping("/prepare-search")
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<PrepareOrderSearchItemResponse>> searchForPrepare(
+            @RequestParam String kind,
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) Integer limit
+    ) throws BusinessException {
+        String normalizedKind = kind == null ? "" : kind.trim().toUpperCase(Locale.ROOT);
+        if (!Set.of("OPV", "OPI", "OPC", "OPCK", "OPK").contains(normalizedKind)) {
+            throw new BusinessException("kind inválido. Use OPV, OPI, OPC, OPCK u OPK.");
+        }
+        String normalizedQ = q == null ? "" : q.trim();
+        // Sin texto: preview reciente (rápido). Con texto: sin tope práctico bajo.
+        int defaultLimit = normalizedQ.isEmpty() ? 80 : 5000;
+        int maxLimit = normalizedQ.isEmpty() ? 120 : 10000;
+        int safeLimit = limit == null ? defaultLimit : Math.min(Math.max(limit, 1), maxLimit);
+        List<PrepareOrderSearchItemResponse> rows = productionOrderRepository
+                .searchForPrepare(normalizedKind, normalizedQ, safeLimit)
+                .stream()
+                .map(row -> PrepareOrderSearchItemResponse.builder()
+                        .id(row[0] == null ? null : ((Number) row[0]).longValue())
+                        .code(row[1] == null ? null : String.valueOf(row[1]))
+                        .customerName(row[2] == null ? null : String.valueOf(row[2]))
+                        .sellerName(row[3] == null ? null : String.valueOf(row[3]))
+                        .status(row[4] == null ? null : String.valueOf(row[4]))
+                        .orderType(row[5] == null ? null : String.valueOf(row[5]))
+                        .vendorShipmentNumber(row[6] == null ? null : String.valueOf(row[6]))
+                        .build())
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(rows);
+    }
+
     @GetMapping("/{id}")
     @Transactional
     public ResponseEntity<ProductionOrderResponse> getById(@PathVariable Long id) throws ResourceNotFoundException {

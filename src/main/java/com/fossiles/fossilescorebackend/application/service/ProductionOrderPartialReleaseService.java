@@ -92,7 +92,10 @@ public class ProductionOrderPartialReleaseService {
     @Transactional(readOnly = true)
     public List<PartialReleaseSearchItemResponse> searchForPrepare(String query, Integer limit) {
         String normalized = query == null ? "" : query.trim();
-        int safeLimit = limit == null ? 150 : Math.min(Math.max(limit, 1), 300);
+        // Sin texto: preview reciente rápido. Con texto: sin tope bajo (encuentra todos los matches).
+        int defaultLimit = normalized.isEmpty() ? 80 : 5000;
+        int maxLimit = normalized.isEmpty() ? 150 : 10000;
+        int safeLimit = limit == null ? defaultLimit : Math.min(Math.max(limit, 1), maxLimit);
         List<ProductionOrderPartialReleaseEntity> rows = releaseRepository.searchForPrepare(normalized, safeLimit);
         if (rows.isEmpty()) {
             return List.of();

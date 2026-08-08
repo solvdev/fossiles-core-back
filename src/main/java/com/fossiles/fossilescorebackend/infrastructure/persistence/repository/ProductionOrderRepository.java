@@ -65,5 +65,77 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT po FROM ProductionOrderEntity po WHERE po.id = :id")
     Optional<ProductionOrderEntity> findByIdForUpdate(@Param("id") Long id);
+
+    /**
+     * Búsqueda liviana para filtros de Preparar envíos (sin ítems ni joins pesados).
+     * kind: OPV | OPI | OPC | OPCK | OPK
+     * Columnas: id, code, customer_name, seller_name, status, order_type, vendor_shipment_number
+     */
+    @Query(value = """
+            SELECT po.id,
+                   po.code,
+                   po.customer_name,
+                   po.seller_name,
+                   po.status,
+                   po.order_type,
+                   po.vendor_shipment_number
+            FROM production_order po
+            WHERE UPPER(COALESCE(po.status, '')) <> 'CANCELLED'
+              AND (
+                (:kind = 'OPI' AND UPPER(TRIM(COALESCE(po.order_type, ''))) = 'INTERNA')
+                OR (
+                  :kind = 'OPCK'
+                  AND (
+                    UPPER(TRIM(COALESCE(po.order_type, ''))) = 'CLIENTE_KIOSKO'
+                    OR UPPER(COALESCE(po.code, '')) LIKE 'OPCK%'
+                  )
+                )
+                OR (
+                  :kind = 'OPC'
+                  AND (
+                    UPPER(TRIM(COALESCE(po.order_type, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+                    OR UPPER(COALESCE(po.code, '')) ~ '^OPC(F|M)?-'
+                  )
+                )
+                OR (
+                  :kind = 'OPV'
+                  AND (
+                    UPPER(TRIM(COALESCE(po.order_type, ''))) IN ('MARCAS', 'OPV')
+                    OR UPPER(COALESCE(po.code, '')) LIKE 'OPV-%'
+                    OR (
+                      UPPER(COALESCE(po.seller_name, '')) LIKE '%LUIS FELIPE%'
+                      AND UPPER(TRIM(COALESCE(po.order_type, ''))) NOT IN (
+                        'CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS', 'INTERNA', 'CLIENTE_KIOSKO'
+                      )
+                    )
+                  )
+                )
+                OR (
+                  :kind = 'OPK'
+                  AND (
+                    UPPER(TRIM(COALESCE(po.order_type, ''))) = 'NORMAL'
+                    OR UPPER(COALESCE(po.code, '')) LIKE 'OPK-%'
+                  )
+                  AND UPPER(TRIM(COALESCE(po.order_type, ''))) NOT IN ('MARCAS', 'OPV')
+                  AND UPPER(COALESCE(po.code, '')) NOT LIKE 'OPV-%'
+                  AND UPPER(COALESCE(po.seller_name, '')) NOT LIKE '%LUIS FELIPE%'
+                )
+              )
+              AND (
+                :q = ''
+                OR LOWER(COALESCE(po.code, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+                OR LOWER(COALESCE(po.customer_name, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+                OR LOWER(COALESCE(po.seller_name, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+                OR LOWER(COALESCE(po.vendor_shipment_number, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+                OR LOWER(COALESCE(po.status, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+              )
+            ORDER BY po.updated_at DESC NULLS LAST, po.id DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<Object[]> searchForPrepare(
+            @Param("kind") String kind,
+            @Param("q") String q,
+            @Param("limit") int limit
+    );
 }
 

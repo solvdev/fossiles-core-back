@@ -1618,8 +1618,14 @@ public class ProductDistributionService {
 
         List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
         List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipmentId);
+        boolean hasPacking = shipment.getPackingItems() != null && !shipment.getPackingItems().trim().isEmpty();
+        if (details.isEmpty() && !hasPacking) {
+            throw new BusinessException("No se puede enviar un envío sin productos ni empaques.");
+        }
+        // Empaques SUM- solos: no hay líneas de producto ni salida de Bodega PT;
+        // al recibir en kiosko el material se convierte en producto de stock.
         if (details.isEmpty()) {
-            throw new BusinessException("No se puede enviar un envío sin productos.");
+            return transitionConfirmedShipmentToSent(shipmentId, shipment);
         }
 
         // El envío a kiosko también descarga bodega: su recepción carga stock del kiosko y sin esta
