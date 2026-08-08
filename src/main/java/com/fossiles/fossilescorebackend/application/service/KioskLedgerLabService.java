@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMo
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabMovementResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabSplitSizesResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -451,6 +452,34 @@ public class KioskLedgerLabService {
         log.warn("LEDGER_LAB_REPLAY actor={} stockId={}", actor, stockId);
         KioscoStockEntity stock = kioscoStockRepository.findById(stockId).orElseThrow();
         return toStockResponse(stock, resolveProduct(stock), resolveColor(stock), resolveLocation(stock), null);
+    }
+
+    /** Recalcula stock_before/after y current_stock de todos los kiosco_stock del kiosko. */
+    @Transactional
+    public KioskLedgerLabReplayAllResponse replayAllStocks(Long locationId)
+            throws BusinessException, ResourceNotFoundException {
+        String actor = guard.requireEramirezUsername();
+        if (locationId == null) {
+            throw new BusinessException("Indica locationId.");
+        }
+        if (!locationRepository.existsById(locationId)) {
+            throw new ResourceNotFoundException("Location", locationId);
+        }
+        List<KioscoStockEntity> stocks = kioscoStockRepository
+                .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId);
+        int stockCount = 0;
+        try {
+            for (KioscoStockEntity stock : stocks) {
+                stockCount += kioscoInventoryService.replayMovementStockChain(stock.getId());
+            }
+        } finally {
+            kioscoInventoryService.disableAdminMovementMutation();
+        }
+        log.warn("LEDGER_LAB_REPLAY_ALL actor={} locationId={} stockCount={}", actor, locationId, stockCount);
+        return KioskLedgerLabReplayAllResponse.builder()
+                .locationId(locationId)
+                .stockCount(stockCount)
+                .build();
     }
 
     /**

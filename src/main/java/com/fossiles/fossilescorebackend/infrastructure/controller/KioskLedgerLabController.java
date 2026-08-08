@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMovementUpsertRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabMovementResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabSplitSizesResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -116,6 +117,13 @@ public class KioskLedgerLabController {
             throws BusinessException, ResourceNotFoundException {
         guard.requireEramirez();
         return ResponseEntity.ok(ledgerLabService.replayStock(stockId));
+    }
+
+    @PostMapping("/locations/{locationId}/replay-all")
+    public ResponseEntity<KioskLedgerLabReplayAllResponse> replayAllStocks(@PathVariable Long locationId)
+            throws BusinessException, ResourceNotFoundException {
+        guard.requireEramirez();
+        return ResponseEntity.ok(ledgerLabService.replayAllStocks(locationId));
     }
 
     @PostMapping("/stocks/{stockId}/split-opening-by-sizes")
