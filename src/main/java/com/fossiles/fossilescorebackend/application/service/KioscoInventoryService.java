@@ -120,7 +120,21 @@ public class KioscoInventoryService {
             Long userId,
             String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
-        return registrarEntradaInternal(locationId, productId, colorId, quantity, referenceId, userId, true, sizeKey);
+        return registrarEntrada(locationId, productId, colorId, quantity, referenceId, userId, sizeKey, null);
+    }
+
+    public KioscoStockResponse registrarEntrada(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarEntradaInternal(
+                locationId, productId, colorId, quantity, referenceId, userId, true, sizeKey, null, hardwareCondition);
     }
 
     public KioscoStockResponse registrarVenta(
@@ -131,7 +145,7 @@ public class KioscoInventoryService {
             Long invoiceId,
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
-        return registrarVenta(locationId, productId, colorId, quantity, invoiceId, userId, null);
+        return registrarVenta(locationId, productId, colorId, quantity, invoiceId, userId, null, null);
     }
 
     public KioscoStockResponse registrarVenta(
@@ -143,9 +157,22 @@ public class KioscoInventoryService {
             Long userId,
             String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarVenta(locationId, productId, colorId, quantity, invoiceId, userId, sizeKey, null);
+    }
+
+    public KioscoStockResponse registrarVenta(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long invoiceId,
+            Long userId,
+            String sizeKey,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
         return registrarVentaInternal(
                 locationId, productId, colorId, quantity, invoiceId, userId, true, sizeKey,
-                ProductHardwareCondition.NUEVO);
+                resolveStockHardware(hardwareCondition));
     }
 
     public KioscoStockResponse registrarDevolucionDeposito(
@@ -198,9 +225,27 @@ public class KioscoInventoryService {
             String reason,
             Long physicalCountId
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarDevolucionDeposito(
+                locationId, productId, colorId, quantity, referenceId, userId, sizeKey, physicalSlipNumber, reason,
+                physicalCountId, null);
+    }
+
+    public KioscoStockResponse registrarDevolucionDeposito(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String physicalSlipNumber,
+            String reason,
+            Long physicalCountId,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
         return registrarDevolucionDepositoWithMovement(
                 locationId, productId, colorId, quantity, referenceId, userId, sizeKey, physicalSlipNumber, reason,
-                physicalCountId
+                physicalCountId, hardwareCondition
         ).stockResponse();
     }
 
@@ -215,6 +260,24 @@ public class KioscoInventoryService {
             String physicalSlipNumber,
             String reason,
             Long physicalCountId
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarDevolucionDepositoWithMovement(
+                locationId, productId, colorId, quantity, referenceId, userId, sizeKey, physicalSlipNumber, reason,
+                physicalCountId, null);
+    }
+
+    public KioscoMovementWithStock registrarDevolucionDepositoWithMovement(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String physicalSlipNumber,
+            String reason,
+            Long physicalCountId,
+            String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
         String trimmedReason = safeTrim(reason);
         return applyStockMovementWithMovement(
@@ -233,7 +296,8 @@ public class KioscoInventoryService {
                 sizeKey,
                 true,
                 physicalSlipNumber,
-                physicalCountId
+                physicalCountId,
+                resolveStockHardware(hardwareCondition)
         );
     }
 
@@ -413,6 +477,7 @@ public class KioscoInventoryService {
             String sizeKey = ProductInventorySizesJson.normalizeKey(item.getSizeKey());
             String sizeKeyOrNull = sizeKey.isEmpty() ? null : sizeKey;
 
+            String hardware = resolveStockHardware(item.getHardwareCondition());
             lastOrigin = applyStockMovement(
                     originId,
                     item.getProductId(),
@@ -428,7 +493,9 @@ public class KioscoInventoryService {
                     trasladoReason,
                     sizeKeyOrNull,
                     true,
-                    slip
+                    slip,
+                    null,
+                    hardware
             );
             lastDestination = applyStockMovement(
                     destId,
@@ -445,7 +512,9 @@ public class KioscoInventoryService {
                     trasladoReason,
                     sizeKeyOrNull,
                     true,
-                    slip
+                    slip,
+                    null,
+                    hardware
             );
         }
 
@@ -545,6 +614,7 @@ public class KioscoInventoryService {
                 .colorId(request.getColorId())
                 .quantity(request.getQuantity())
                 .sizeKey(request.getSizeKey())
+                .hardwareCondition(request.getHardwareCondition())
                 .build());
     }
 
@@ -859,6 +929,19 @@ public class KioscoInventoryService {
             Long userId,
             String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarMerma(locationId, productId, colorId, quantity, reason, userId, sizeKey, null);
+    }
+
+    public KioscoStockResponse registrarMerma(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            String reason,
+            Long userId,
+            String sizeKey,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
         if (safeTrim(reason).isEmpty()) {
             throw new BusinessException("El motivo de merma es obligatorio.");
         }
@@ -876,7 +959,10 @@ public class KioscoInventoryService {
                 true,
                 reason.trim(),
                 sizeKey,
-                true
+                true,
+                null,
+                null,
+                resolveStockHardware(hardwareCondition)
         );
     }
 
@@ -2363,7 +2449,8 @@ public class KioscoInventoryService {
             boolean syncLegacy,
             String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
-        return registrarEntradaInternal(locationId, productId, colorId, quantity, referenceId, userId, syncLegacy, sizeKey, null);
+        return registrarEntradaInternal(
+                locationId, productId, colorId, quantity, referenceId, userId, syncLegacy, sizeKey, null, null);
     }
 
     private KioscoStockResponse registrarEntradaInternal(
@@ -2376,6 +2463,22 @@ public class KioscoInventoryService {
             boolean syncLegacy,
             String sizeKey,
             String reason
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarEntradaInternal(
+                locationId, productId, colorId, quantity, referenceId, userId, syncLegacy, sizeKey, reason, null);
+    }
+
+    private KioscoStockResponse registrarEntradaInternal(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            boolean syncLegacy,
+            String sizeKey,
+            String reason,
+            String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
         return applyStockMovement(
                 locationId,
@@ -2391,7 +2494,10 @@ public class KioscoInventoryService {
                 true,
                 reason,
                 sizeKey,
-                syncLegacy
+                syncLegacy,
+                null,
+                null,
+                resolveStockHardware(hardwareCondition)
         );
     }
 

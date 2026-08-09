@@ -75,7 +75,8 @@ public class KioscoInventoryController {
                 request.getQuantity(),
                 request.getReferenceId(),
                 request.getUserId(),
-                request.getSizeKey()
+                request.getSizeKey(),
+                request.getHardwareCondition()
         ));
     }
 
@@ -91,7 +92,8 @@ public class KioscoInventoryController {
                 request.getQuantity(),
                 request.getInvoiceId(),
                 request.getUserId(),
-                request.getSizeKey()
+                request.getSizeKey(),
+                request.getHardwareCondition()
         ));
     }
 
@@ -110,7 +112,8 @@ public class KioscoInventoryController {
                 request.getSizeKey(),
                 request.getPhysicalSlipNumber(),
                 request.getReason(),
-                request.getPhysicalCountId()
+                request.getPhysicalCountId(),
+                request.getHardwareCondition()
         ));
     }
 
@@ -156,7 +159,8 @@ public class KioscoInventoryController {
                 request.getQuantity(),
                 request.getReason(),
                 request.getUserId(),
-                request.getSizeKey()
+                request.getSizeKey(),
+                request.getHardwareCondition()
         ));
     }
 
@@ -172,7 +176,8 @@ public class KioscoInventoryController {
                 request.getRealQuantity(),
                 request.getRealSizes(),
                 request.getReason(),
-                request.getUserId()
+                request.getUserId(),
+                request.getHardwareCondition()
         ));
     }
 

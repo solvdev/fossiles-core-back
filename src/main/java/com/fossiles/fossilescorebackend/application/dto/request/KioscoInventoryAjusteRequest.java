@@ -32,4 +32,7 @@ public class KioscoInventoryAjusteRequest {
 
     /** Cinchos FOSS: cantidad real por talla; actualiza sizes_data e inventario final. */
     private Map<String, Integer> realSizes;
+
+    /** Herraje: NUEVO o VIEJO. */
+    private String hardwareCondition;
 }

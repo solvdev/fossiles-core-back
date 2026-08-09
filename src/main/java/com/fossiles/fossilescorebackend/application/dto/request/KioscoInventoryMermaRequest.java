@@ -30,4 +30,7 @@ public class KioscoInventoryMermaRequest {
 
     /** Talla para cinchos FOSS cuando el stock tiene desglose por talla. */
     private String sizeKey;
+
+    /** Herraje: NUEVO o VIEJO. */
+    private String hardwareCondition;
 }

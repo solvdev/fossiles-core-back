@@ -39,4 +39,7 @@ public class KioscoInventoryDevolucionDepositoRequest {
     private Long physicalCountId;
 
     private Long userId;
+
+    /** Herraje: NUEVO o VIEJO. */
+    private String hardwareCondition;
 }
