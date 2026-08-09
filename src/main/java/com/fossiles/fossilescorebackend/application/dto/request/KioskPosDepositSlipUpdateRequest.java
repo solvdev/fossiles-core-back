@@ -15,4 +15,9 @@ public class KioskPosDepositSlipUpdateRequest {
     @NotBlank(message = "Debes indicar el número de boleta de depósito.")
     @Size(max = 40, message = "El número de boleta no puede exceder 40 caracteres.")
     private String depositSlipNumber;
+
+    /** GT_CONTINENTAL o INDUSTRIAL. */
+    @NotBlank(message = "Debes indicar el banco del depósito.")
+    @Size(max = 40, message = "El banco no puede exceder 40 caracteres.")
+    private String depositBank;
 }

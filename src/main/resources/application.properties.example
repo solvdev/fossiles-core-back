@@ -122,6 +122,8 @@ fel.emission.moneda=GTQ
 kiosk-pos.deposit-report.bank-account=061-0016829-2
 kiosk-pos.deposit-report.account-name=CUEROGLAM, S.A.
 kiosk-pos.deposit-report.bank-name=Banco G&T Continental
+kiosk-pos.deposit-report.industrial-bank-account=
+kiosk-pos.deposit-report.industrial-bank-name=Banco Industrial
 
 # Reporte de voucher (ventas con tarjeta)
 kiosk-pos.voucher-report.default-card-brand=VISA

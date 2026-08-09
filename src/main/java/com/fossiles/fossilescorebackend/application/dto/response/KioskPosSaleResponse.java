@@ -75,6 +75,10 @@ public class KioskPosSaleResponse {
     private InvoiceInfo invoice;
 
     private String depositSlipNumber;
+    /** Código: GT_CONTINENTAL | INDUSTRIAL. */
+    private String depositBank;
+    /** Nombre legible del banco del depósito. */
+    private String depositBankName;
     private LocalDateTime depositRecordedAt;
     private Long depositRecordedByUserId;
     private String depositRecordedByName;

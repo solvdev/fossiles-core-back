@@ -120,6 +120,8 @@ public class KioskPosService {
             "ROBERTO LIQUE",
             "FATIMA ZACARIAS"
     );
+    static final String DEPOSIT_BANK_GT_CONTINENTAL = "GT_CONTINENTAL";
+    static final String DEPOSIT_BANK_INDUSTRIAL = "INDUSTRIAL";
 
     private final SecurityUtil securityUtil;
     private final UserRepository userRepository;
@@ -1110,6 +1112,11 @@ public class KioskPosService {
         if (request == null || safeTrim(request.getDepositSlipNumber()).isBlank()) {
             throw new BusinessException("Debes indicar el número de boleta de depósito.");
         }
+        String depositBank = normalizeDepositBankCode(request.getDepositBank());
+        if (depositBank == null) {
+            throw new BusinessException(
+                    "Debes indicar el banco del depósito (Banco G&T Continental o Banco Industrial).");
+        }
         UserEntity user = getCurrentUserOrThrow();
         boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
@@ -1130,6 +1137,7 @@ public class KioskPosService {
         }
 
         sale.setDepositSlipNumber(safeTrim(request.getDepositSlipNumber()));
+        sale.setDepositBank(depositBank);
         sale.setDepositRecordedAt(GuatemalaDateTime.now());
         sale.setDepositRecordedBy(user.getId());
         KioskSaleEntity saved = kioskSaleRepository.save(sale);
@@ -1474,8 +1482,8 @@ public class KioskPosService {
         Set<Long> saleIds = sales.stream().map(KioskSaleEntity::getId).filter(Objects::nonNull).collect(Collectors.toSet());
         Map<Long, BigDecimal> disbursementTotals = loadDisbursementTotalsBySaleIds(saleIds);
 
-        String accountNumber = safeTrim(depositReportProperties.getBankAccount());
-        String bankName = safeTrim(depositReportProperties.getBankName());
+        String defaultAccountNumber = safeTrim(depositReportProperties.getBankAccount());
+        String defaultBankName = resolveDepositBankDisplayName(DEPOSIT_BANK_GT_CONTINENTAL);
         String accountName = safeTrim(depositReportProperties.getAccountName());
 
         List<KioskBankDepositReportRowResponse> rows = new ArrayList<>();
@@ -1498,11 +1506,15 @@ public class KioskPosService {
             BigDecimal linkedDisbursements = disbursementTotals.getOrDefault(sale.getId(), BigDecimal.ZERO)
                     .setScale(2, RoundingMode.HALF_UP);
             BigDecimal netAmount = resolveNetDepositAmount(sale, linkedDisbursements);
+            String bankCode = normalizeDepositBankCode(sale.getDepositBank());
+            if (bankCode == null) {
+                bankCode = DEPOSIT_BANK_GT_CONTINENTAL;
+            }
             rows.add(KioskBankDepositReportRowResponse.builder()
                     .id(sale.getId())
                     .saleId(sale.getId())
-                    .accountNumber(accountNumber)
-                    .bankName(bankName)
+                    .accountNumber(resolveDepositBankAccount(bankCode))
+                    .bankName(resolveDepositBankDisplayName(bankCode))
                     .documentNumber(safeTrim(sale.getDepositSlipNumber()))
                     .grossCashAmount(grossCash)
                     .disbursementsTotal(linkedDisbursements)
@@ -1517,9 +1529,9 @@ public class KioskPosService {
         }
 
         return KioskBankDepositReportResponse.builder()
-                .accountNumber(accountNumber)
+                .accountNumber(defaultAccountNumber)
                 .accountName(accountName)
-                .bankName(bankName)
+                .bankName(defaultBankName)
                 .rows(rows)
                 .build();
     }
@@ -3456,6 +3468,8 @@ public class KioskPosService {
                 .internalNumber(invoiceInfo != null ? invoiceInfo.getInternalNumber() : null)
                 .invoice(invoiceInfo)
                 .depositSlipNumber(sale.getDepositSlipNumber())
+                .depositBank(sale.getDepositBank())
+                .depositBankName(resolveDepositBankDisplayName(sale.getDepositBank()))
                 .depositRecordedAt(sale.getDepositRecordedAt())
                 .depositRecordedByUserId(sale.getDepositRecordedBy())
                 .depositRecordedByName(depositRecordedBy != null ? buildUserFullName(depositRecordedBy) : null)
@@ -4132,7 +4146,9 @@ public class KioskPosService {
                 cashTotal = cashTotal.add(amount);
             }
             if (sale.getDepositSlipNumber() != null && !sale.getDepositSlipNumber().isBlank()) {
-                depositSlips.add(sale.getDepositSlipNumber().trim());
+                String bankLabel = resolveDepositBankDisplayName(sale.getDepositBank());
+                depositSlips.add(sale.getDepositSlipNumber().trim()
+                        + (bankLabel.isBlank() ? "" : " (" + bankLabel + ")"));
             }
 
             BigDecimal cardInvoice = resolveCardInvoiceAmountForClose(sale, method);
@@ -4772,6 +4788,53 @@ public class KioskPosService {
         String lastName = safeTrim(user.getLastName());
         String fullName = (firstName + " " + lastName).trim();
         return fullName.isBlank() ? user.getUsername() : fullName;
+    }
+
+    static String normalizeDepositBankCode(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String normalized = raw.trim().toUpperCase(Locale.ROOT)
+                .replace("&", "")
+                .replace("Á", "A")
+                .replace("É", "E")
+                .replace("Í", "I")
+                .replace("Ó", "O")
+                .replace("Ú", "U")
+                .replaceAll("[^A-Z0-9]+", "_")
+                .replaceAll("_+", "_")
+                .replaceAll("^_|_$", "");
+        if (DEPOSIT_BANK_GT_CONTINENTAL.equals(normalized)
+                || "BANCO_GT_CONTINENTAL".equals(normalized)
+                || "GT".equals(normalized)
+                || "G_T_CONTINENTAL".equals(normalized)
+                || "BANCO_G_T_CONTINENTAL".equals(normalized)) {
+            return DEPOSIT_BANK_GT_CONTINENTAL;
+        }
+        if (DEPOSIT_BANK_INDUSTRIAL.equals(normalized)
+                || "BANCO_INDUSTRIAL".equals(normalized)
+                || "BI".equals(normalized)) {
+            return DEPOSIT_BANK_INDUSTRIAL;
+        }
+        return null;
+    }
+
+    private String resolveDepositBankDisplayName(String bankCode) {
+        String code = normalizeDepositBankCode(bankCode);
+        if (DEPOSIT_BANK_INDUSTRIAL.equals(code)) {
+            String name = safeTrim(depositReportProperties.getIndustrialBankName());
+            return name.isBlank() ? "Banco Industrial" : name;
+        }
+        String name = safeTrim(depositReportProperties.getBankName());
+        return name.isBlank() ? "Banco G&T Continental" : name;
+    }
+
+    private String resolveDepositBankAccount(String bankCode) {
+        String code = normalizeDepositBankCode(bankCode);
+        if (DEPOSIT_BANK_INDUSTRIAL.equals(code)) {
+            return safeTrim(depositReportProperties.getIndustrialBankAccount());
+        }
+        return safeTrim(depositReportProperties.getBankAccount());
     }
 
     private String safeTrim(String value) {

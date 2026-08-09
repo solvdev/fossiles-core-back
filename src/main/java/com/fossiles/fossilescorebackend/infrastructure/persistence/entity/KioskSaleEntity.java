@@ -163,6 +163,10 @@ public class KioskSaleEntity {
     @Column(name = "deposit_slip_number", length = 40)
     private String depositSlipNumber;
 
+    /** Código de banco del depósito: GT_CONTINENTAL | INDUSTRIAL. */
+    @Column(name = "deposit_bank", length = 40)
+    private String depositBank;
+
     @Column(name = "deposit_recorded_at")
     private LocalDateTime depositRecordedAt;
 
