@@ -416,7 +416,7 @@ public class TaxInvoiceService {
         TaxInvoiceDocument document = onlineSaleInvoiceMapper.fromSale(sale);
         enrichEmitterForCueroGlamCentral(document);
         applyDocumentTypeByEstablishment(document);
-        enrichReceptorFromLookup(document);
+        enrichReceptorFromLookup(document, true);
         validateDocument(document);
 
         TaxInvoiceEntity invoice = persistDraft("ONLINE_SALE", sale.getId(), document, sale.getCreatedBy());
@@ -651,7 +651,7 @@ public class TaxInvoiceService {
             TaxInvoiceDocument document = onlineSaleInvoiceMapper.fromSale(sale);
             enrichEmitterForCueroGlamCentral(document);
             applyDocumentTypeByEstablishment(document);
-            enrichReceptorFromLookup(document);
+            enrichReceptorFromLookup(document, true);
             return document;
         }
         if ("KIOSK_SALE".equals(invoice.getSourceType()) && invoice.getSourceId() != null) {
@@ -896,18 +896,31 @@ public class TaxInvoiceService {
     }
 
     private void enrichReceptorFromLookup(TaxInvoiceDocument document) throws BusinessException {
+        enrichReceptorFromLookup(document, false);
+    }
+
+    /**
+     * @param preferSatName si true (ventas online), siempre usa el nombre de la consulta FEL/SAT
+     *                      del NIT y no el nombre operativo de la venta (WhatsApp, etc.).
+     */
+    private void enrichReceptorFromLookup(TaxInvoiceDocument document, boolean preferSatName)
+            throws BusinessException {
         String taxId = normalizeTaxId(document.getCustomerTaxId());
         document.setCustomerTaxId(taxId);
         if ("CF".equals(taxId)) {
             document.setCustomerName("CONSUMIDOR FINAL");
             return;
         }
-        if (document.getCustomerName() != null && !document.getCustomerName().isBlank()) {
+        if (!preferSatName && document.getCustomerName() != null && !document.getCustomerName().isBlank()) {
             return;
         }
         TaxpayerLookupResponse lookup = receptorLookupService.lookup(taxId);
         if (lookup.getCustomerName() != null && !lookup.getCustomerName().isBlank()) {
             document.setCustomerName(lookup.getCustomerName());
+            return;
+        }
+        if (preferSatName || document.getCustomerName() == null || document.getCustomerName().isBlank()) {
+            throw new BusinessException("No se obtuvo el nombre del NIT en la consulta SAT.");
         }
     }
 

@@ -12,7 +12,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 @Component
 @RequiredArgsConstructor
@@ -78,7 +77,9 @@ public class OnlineSaleInvoiceMapper {
                 .transactionId(buildTransactionId(sale))
                 .issuedAt(GuatemalaDateTime.now())
                 .customerTaxId(sale.getInvoiceTaxId())
-                .customerName(sale.getCustomerName())
+                // Nombre fiscal lo resuelve TaxInvoiceService vía consulta SAT del NIT.
+                // No usar sale.customerName (nombre operativo WhatsApp / pedido).
+                .customerName(null)
                 .address(sale.getAddress())
                 .phone(sale.getPhone())
                 .email(sale.getEmail())

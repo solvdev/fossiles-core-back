@@ -61,6 +61,9 @@ class OnlineSaleInvoiceMapperTest {
         assertThat(document.getLines()).hasSize(3);
         assertThat(document.getTotalAmount()).isEqualByComparingTo("615.00");
         assertThat(document.getSubtotal()).isEqualByComparingTo("615.00");
+        assertThat(document.getCustomerTaxId()).isEqualTo("7969244");
+        // Nombre fiscal lo resuelve la consulta SAT; no el nombre operativo de la venta.
+        assertThat(document.getCustomerName()).isNull();
     }
 
     @Test
