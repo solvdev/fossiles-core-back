@@ -105,6 +105,8 @@ class KioscoInventoryCountServiceTest {
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of());
         when(exchangeSlipRepository.findByPhysicalCountId(any())).thenReturn(List.of());
         when(exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+                any(), any(), any(), any())).thenReturn(Optional.empty());
         try {
             when(kioscoInventoryService.computeStockBalanceByStockId(any(), any())).thenReturn(Map.of());
             when(kioscoInventoryService.computeSizeBalanceByStockAndSize(any(), any())).thenReturn(Map.of());
@@ -808,20 +810,43 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
-    void buildReport_segundoConteo_iniEsCierreAnterior_gapVaAEntradas() throws Exception {
+    void buildReport_segundoConteo_iniEsFinDelConteoCerrado_gapVaAEntradas() throws Exception {
         long stockId = 913L;
+        long previousCountId = 100L;
+        LocalDate previousFrom = LocalDate.of(2026, 5, 1);
         LocalDate previousTo = LocalDate.of(2026, 5, 31);
         LocalDateTime openingCutoff = previousTo.plusDays(1).atStartOfDay();
-        when(countRepository.findFirstByLocationIdAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(from), eq(countId)))
-                .thenReturn(Optional.of(KioscoPhysicalCountEntity.builder()
-                        .id(100L)
-                        .locationId(locationId)
-                        .periodFrom(LocalDate.of(2026, 5, 1))
-                        .periodTo(previousTo)
-                        .build()));
-        when(kioscoInventoryService.computeStockBalanceByStockId(eq(locationId), eq(openingCutoff)))
-                .thenReturn(Map.of(stockId, 1));
+
+        KioscoPhysicalCountEntity previousClosed = KioscoPhysicalCountEntity.builder()
+                .id(previousCountId)
+                .locationId(locationId)
+                .periodFrom(previousFrom)
+                .periodTo(previousTo)
+                .status(KioscoPhysicalCountStatus.CERRADO)
+                .build();
+
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(from), eq(countId)))
+                .thenReturn(Optional.of(previousClosed));
+        // Al reconstruir el conteo cerrado previo no hay otro CERRADO anterior.
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(previousFrom), eq(previousCountId)))
+                .thenReturn(Optional.empty());
+
+        // Fin. del conteo cerrado = Ini 0 + Ent 1 = 1 (aunque el ledger floored diga otra cosa).
+        when(kioscoInventoryService.buildKardexRows(
+                eq(locationId), eq(previousFrom), eq(previousTo), eq(true), eq(previousTo), eq(previousCountId)))
+                .thenReturn(List.of(
+                        KioscoKardexReportResponse.KioscoKardexRow.builder()
+                                .productId(productId).productCode("BD-8").productName("Bolso Perla")
+                                .colorId(colorId).colorName("Salmon Acabado Flores")
+                                .entradas(1)
+                                .build()
+                ));
+        when(kioscoInventoryService.buildKardexByStockAndSize(
+                eq(locationId), eq(previousFrom), eq(previousTo), eq(previousCountId)))
+                .thenReturn(Map.of());
+
         when(kioscoInventoryService.computePrePeriodEntradasByStockId(eq(locationId), eq(openingCutoff), any(LocalDateTime.class)))
                 .thenReturn(Map.of(stockId, 1));
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
@@ -851,5 +876,123 @@ class KioscoInventoryCountServiceTest {
         assertThat(row.getInventarioInicial()).isEqualTo(1);
         assertThat(row.getEntradas()).isEqualTo(1);
         assertThat(row.getInventarioFinal()).isEqualTo(2);
+    }
+
+    @Test
+    void buildReport_segundoConteo_iniUsaFinCeroDelCerrado_aunqueLedgerDigaUno() throws Exception {
+        long stockId = 7574L;
+        long previousCountId = 100L;
+        LocalDate previousFrom = LocalDate.of(2026, 7, 28);
+        LocalDate previousTo = LocalDate.of(2026, 8, 3);
+        LocalDate currentFrom = LocalDate.of(2026, 8, 4);
+        LocalDate currentTo = LocalDate.of(2026, 8, 10);
+        LocalDateTime openingCutoff = previousTo.plusDays(1).atStartOfDay();
+
+        KioscoPhysicalCountEntity previousClosed = KioscoPhysicalCountEntity.builder()
+                .id(previousCountId)
+                .locationId(locationId)
+                .periodFrom(previousFrom)
+                .periodTo(previousTo)
+                .status(KioscoPhysicalCountStatus.CERRADO)
+                .build();
+
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, currentFrom, currentTo))
+                .thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(currentFrom), eq(countId)))
+                .thenReturn(Optional.of(previousClosed));
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(previousFrom), eq(previousCountId)))
+                .thenReturn(Optional.empty());
+
+        // Conteo cerrado: Ini 0 + Ent 1 - Vtas 2 + AV 1 = Fin 0 (caso B-22 CAFE).
+        when(kioscoInventoryService.buildKardexRows(
+                eq(locationId), eq(previousFrom), eq(previousTo), eq(true), eq(previousTo), eq(previousCountId)))
+                .thenReturn(List.of(
+                        KioscoKardexReportResponse.KioscoKardexRow.builder()
+                                .productId(productId).productCode("B-22").productName("BILLETERA EDWARD")
+                                .colorId(colorId).colorName("CAFE")
+                                .entradas(1)
+                                .ventas(2)
+                                .anulacionVenta(1)
+                                .build()
+                ));
+        when(kioscoInventoryService.buildKardexByStockAndSize(
+                eq(locationId), eq(previousFrom), eq(previousTo), eq(previousCountId)))
+                .thenReturn(Map.of());
+
+        // Ledger floored incorrecto / divergente: diría Ini=1 si se usara.
+        when(kioscoInventoryService.computeStockBalanceByStockId(eq(locationId), eq(openingCutoff)))
+                .thenReturn(Map.of(stockId, 1));
+        when(kioscoInventoryService.computePrePeriodEntradasByStockId(eq(locationId), eq(openingCutoff), any(LocalDateTime.class)))
+                .thenReturn(Map.of());
+
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .id(stockId)
+                        .locationId(locationId)
+                        .productId(productId)
+                        .colorId(colorId)
+                        .build()
+        ));
+        when(kioscoInventoryService.buildKardexRows(
+                eq(locationId), eq(currentFrom), eq(currentTo), eq(true), eq(currentTo), eq(countId)))
+                .thenReturn(List.of(
+                        KioscoKardexReportResponse.KioscoKardexRow.builder()
+                                .productId(productId).productCode("B-22").productName("BILLETERA EDWARD")
+                                .colorId(colorId).colorName("CAFE")
+                                .build()
+                ));
+        when(kioscoInventoryService.buildKardexByStockAndSize(
+                eq(locationId), eq(currentFrom), eq(currentTo), eq(countId)))
+                .thenReturn(Map.of());
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, currentFrom, currentTo);
+
+        var row = report.getCategories().get(0).getRows().get(0);
+        assertThat(row.getInventarioInicial()).isZero();
+        assertThat(row.getInventarioFinal()).isZero();
+        // No debe usarse el saldo floored del ledger (=1).
+        org.mockito.Mockito.verify(kioscoInventoryService, org.mockito.Mockito.never())
+                .computeStockBalanceByStockId(eq(locationId), eq(openingCutoff));
+    }
+
+    @Test
+    void extractClosingBalances_incluyeFinCeroParaHeredarIni() {
+        KioscoPhysicalCountReportResponse report = KioscoPhysicalCountReportResponse.builder()
+                .categories(List.of(
+                        KioscoPhysicalCountReportResponse.KioscoPhysicalCountCategoryGroup.builder()
+                                .categoryName("Billeteras")
+                                .rows(List.of(
+                                        KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
+                                                .productId(productId)
+                                                .colorId(colorId)
+                                                .inventarioFinal(0)
+                                                .build(),
+                                        KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
+                                                .productId(productId + 1)
+                                                .colorId(colorId)
+                                                .inventarioFinal(5)
+                                                .build()
+                                ))
+                                .build()
+                ))
+                .build();
+
+        var closing = KioscoInventoryCountService.extractClosingBalances(report);
+
+        assertThat(closing.byProductColor).containsEntry(productId + ":" + colorId, 0);
+        assertThat(closing.byProductColor).containsEntry((productId + 1) + ":" + colorId, 5);
+        assertThat(KioscoInventoryCountService.resolveOpeningInventarioInicial(
+                productId + ":" + colorId, closing, 1)).isZero();
+        assertThat(KioscoInventoryCountService.resolveOpeningInventarioInicial(
+                (productId + 1) + ":" + colorId, closing, 99)).isEqualTo(5);
+        assertThat(KioscoInventoryCountService.resolveOpeningInventarioInicial(
+                "999:1", closing, 7)).isZero();
     }
 }

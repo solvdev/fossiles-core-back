@@ -420,25 +420,31 @@ public class KioscoInventoryCountService {
                         count.getLocationId(), count.getPeriodFrom(), kardexTo, count.getId());
         applyPendingReturnSalidasForCount(count, kardexRows, kardexByStockAndSize, stockByKey);
 
-        // Ini. = cierre del conteo anterior (Fin. previo). Sin conteo previo = saldo al inicio del periodo.
-        // Nunca se vacía Ini. ni se vuelcan ENTRADAs históricas al Ent. del periodo actual.
-        Optional<KioscoPhysicalCountEntity> previousCount = resolvePreviousPhysicalCount(count);
+        // Ini. = Fin. del último conteo CERRADO anterior (no replay floored del ledger).
+        // Sin conteo cerrado previo = saldo kardex al inicio del periodo.
+        Optional<KioscoPhysicalCountEntity> previousClosedCount = resolvePreviousClosedPhysicalCount(count);
+        PreviousClosingBalances previousClosing = previousClosedCount
+                .map(this::loadPreviousClosingBalances)
+                .orElse(null);
         LocalDateTime periodStart = count.getPeriodFrom().atStartOfDay();
-        LocalDateTime openingCutoffExclusive = previousCount
+        LocalDateTime openingCutoffExclusive = previousClosedCount
                 .map(c -> c.getPeriodTo().plusDays(1).atStartOfDay())
                 .orElse(periodStart);
-        Map<Long, Integer> openingBalanceByStockId = kioscoInventoryService.computeStockBalanceByStockId(
-                count.getLocationId(), openingCutoffExclusive);
-        Map<Long, Map<String, Integer>> openingBalanceByStockAndSize =
-                kioscoInventoryService.computeSizeBalanceByStockAndSize(
-                        count.getLocationId(), openingCutoffExclusive);
+        Map<Long, Integer> openingBalanceByStockId = previousClosing == null
+                ? kioscoInventoryService.computeStockBalanceByStockId(
+                        count.getLocationId(), openingCutoffExclusive)
+                : Map.of();
+        Map<Long, Map<String, Integer>> openingBalanceByStockAndSize = previousClosing == null
+                ? kioscoInventoryService.computeSizeBalanceByStockAndSize(
+                        count.getLocationId(), openingCutoffExclusive)
+                : Map.of();
 
         // Solo el hueco entre conteos (si periodFrom > periodTo anterior) va a Ent.; el primer conteo no.
-        Map<Long, Integer> gapEntradasByStockId = previousCount.isPresent()
+        Map<Long, Integer> gapEntradasByStockId = previousClosedCount.isPresent()
                 ? kioscoInventoryService.computePrePeriodEntradasByStockId(
                         count.getLocationId(), openingCutoffExclusive, periodStart)
                 : Map.of();
-        Map<Long, Map<String, Integer>> gapEntradasByStockAndSize = previousCount.isPresent()
+        Map<Long, Map<String, Integer>> gapEntradasByStockAndSize = previousClosedCount.isPresent()
                 ? kioscoInventoryService.computePrePeriodEntradasByStockAndSize(
                         count.getLocationId(), openingCutoffExclusive, periodStart)
                 : Map.of();
@@ -519,10 +525,12 @@ public class KioscoInventoryCountService {
             int gapEntradas = stocksForRow.stream()
                     .mapToInt(s -> gapEntradasByStockId.getOrDefault(s.getId(), 0))
                     .sum();
-            // Cierre del conteo anterior (o saldo al inicio del periodo en el primer conteo).
-            int inventarioInicial = Math.max(0, stocksForRow.stream()
+            int ledgerOpening = Math.max(0, stocksForRow.stream()
                     .mapToInt(s -> openingBalanceByStockId.getOrDefault(s.getId(), 0))
                     .sum());
+            // Cierre del conteo CERRADO anterior (Fin. previo). Si el SKU no estaba, 0; sin conteo previo = ledger.
+            int inventarioInicial = resolveOpeningInventarioInicial(
+                    productColorKey, previousClosing, ledgerOpening);
             // Ent. = periodo + hueco entre conteos (nunca historial previo al primer/anterior conteo).
             int entradas = kardexRow.getEntradas() + gapEntradas;
             // Fin. = Ini. + movimientos del periodo (algebraico): +Ent -Vtas +Anul.Vta -Sal (+Compras -Anul.Compras)
@@ -578,8 +586,8 @@ public class KioscoInventoryCountService {
                                     ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()),
                                     kardexRow.getSalidaDevolucion())))
                     .build();
-            Map<String, Integer> openingBalanceBySize = mergeOpeningBalanceBySize(
-                    stocksForRow, openingBalanceByStockAndSize);
+            Map<String, Integer> openingBalanceBySize = resolveOpeningBalanceBySize(
+                    productColorKey, previousClosing, stocksForRow, openingBalanceByStockAndSize);
             List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> displayRows = isSubcount
                     ? List.of(applyRowObservation(row, generalObservation, null))
                     : expandRowsForDisplay(
@@ -957,12 +965,107 @@ public class KioscoInventoryCountService {
         return "Unisex";
     }
 
-    private Optional<KioscoPhysicalCountEntity> resolvePreviousPhysicalCount(KioscoPhysicalCountEntity count) {
+    private Optional<KioscoPhysicalCountEntity> resolvePreviousClosedPhysicalCount(KioscoPhysicalCountEntity count) {
         if (count == null || count.getLocationId() == null || count.getPeriodFrom() == null) {
             return Optional.empty();
         }
-        return countRepository.findFirstByLocationIdAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
-                count.getLocationId(), count.getPeriodFrom(), count.getId());
+        Long excludeId = count.getId() != null ? count.getId() : -1L;
+        return countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+                count.getLocationId(),
+                KioscoPhysicalCountStatus.CERRADO,
+                count.getPeriodFrom(),
+                excludeId);
+    }
+
+    private PreviousClosingBalances loadPreviousClosingBalances(KioscoPhysicalCountEntity previousCount) {
+        try {
+            return extractClosingBalances(buildReport(previousCount));
+        } catch (BusinessException | ResourceNotFoundException e) {
+            throw new IllegalStateException(
+                    "No se pudo cargar el Fin. del conteo cerrado #" + previousCount.getId()
+                            + " para usarlo como Ini. del siguiente periodo",
+                    e);
+        }
+    }
+
+    /**
+     * Extrae Fin. del reporte anterior por producto+color (y por talla si aplica).
+     * Incluye Fin.=0 para que el siguiente Ini. no caiga al replay del ledger.
+     */
+    static PreviousClosingBalances extractClosingBalances(KioscoPhysicalCountReportResponse report) {
+        Map<String, Integer> byProductColor = new LinkedHashMap<>();
+        Map<String, Map<String, Integer>> byProductColorAndSize = new LinkedHashMap<>();
+        if (report == null || report.getCategories() == null) {
+            return new PreviousClosingBalances(byProductColor, byProductColorAndSize);
+        }
+        for (KioscoPhysicalCountReportResponse.KioscoPhysicalCountCategoryGroup category : report.getCategories()) {
+            if (category == null || category.getRows() == null) {
+                continue;
+            }
+            for (KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow row : category.getRows()) {
+                if (row == null || row.getProductId() == null) {
+                    continue;
+                }
+                String key = row.getProductId() + ":" + (row.getColorId() != null ? row.getColorId() : "");
+                int fin = Math.max(0, row.getInventarioFinal());
+                byProductColor.merge(key, fin, Integer::sum);
+                String sizeLabel = row.getSizeLabel();
+                if (sizeLabel != null && !sizeLabel.isBlank()) {
+                    byProductColorAndSize
+                            .computeIfAbsent(key, k -> new LinkedHashMap<>())
+                            .merge(sizeLabel.trim(), fin, Integer::sum);
+                }
+            }
+        }
+        return new PreviousClosingBalances(byProductColor, byProductColorAndSize);
+    }
+
+    static int resolveOpeningInventarioInicial(
+            String productColorKey,
+            PreviousClosingBalances previousClosing,
+            int ledgerOpening
+    ) {
+        if (previousClosing == null) {
+            return Math.max(0, ledgerOpening);
+        }
+        if (previousClosing.byProductColor.containsKey(productColorKey)) {
+            return Math.max(0, previousClosing.byProductColor.get(productColorKey));
+        }
+        // SKU nuevo respecto al conteo cerrado: no hereda ledger pre-cierre; arranca en 0
+        // (las entradas del hueco van a Ent.).
+        return 0;
+    }
+
+    private static Map<String, Integer> resolveOpeningBalanceBySize(
+            String productColorKey,
+            PreviousClosingBalances previousClosing,
+            List<KioscoStockEntity> stocksForRow,
+            Map<Long, Map<String, Integer>> openingBalanceByStockAndSize
+    ) {
+        if (previousClosing != null) {
+            Map<String, Integer> fromPrevious = previousClosing.byProductColorAndSize.get(productColorKey);
+            if (fromPrevious != null) {
+                return fromPrevious;
+            }
+            if (previousClosing.byProductColor.containsKey(productColorKey)) {
+                return Map.of();
+            }
+            return Map.of();
+        }
+        return mergeOpeningBalanceBySize(stocksForRow, openingBalanceByStockAndSize);
+    }
+
+    static final class PreviousClosingBalances {
+        final Map<String, Integer> byProductColor;
+        final Map<String, Map<String, Integer>> byProductColorAndSize;
+
+        PreviousClosingBalances(
+                Map<String, Integer> byProductColor,
+                Map<String, Map<String, Integer>> byProductColorAndSize
+        ) {
+            this.byProductColor = byProductColor != null ? byProductColor : Map.of();
+            this.byProductColorAndSize = byProductColorAndSize != null ? byProductColorAndSize : Map.of();
+        }
     }
 
     private void applyPendingReturnSalidasForCount(
@@ -1331,8 +1434,11 @@ public class KioscoInventoryCountService {
             } else {
                 bucket = first ? bucketFromAggregateRow(base) : KioscoInventoryService.SizeKardexBucket.empty();
             }
-            // Inv. inicial = cierre del conteo físico anterior (0 si es el primer corte).
+            // Inv. inicial = Fin. del conteo cerrado anterior por talla; si no hay desglose, el agregado va a la 1ª.
             int inventarioInicial = Math.max(0, openingBalanceBySize.getOrDefault(size, 0));
+            if (inventarioInicial == 0 && first && openingBalanceBySize.isEmpty()) {
+                inventarioInicial = Math.max(0, base.getInventarioInicial());
+            }
             int inventarioFinal = Math.max(0, inventarioInicial + bucket.netDelta());
             expanded.add(buildExpandedRowForSize(
                     base, product, size, bucket, inventarioInicial, inventarioFinal, sizeObservations));
