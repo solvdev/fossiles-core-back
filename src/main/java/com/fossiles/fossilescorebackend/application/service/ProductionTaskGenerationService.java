@@ -605,15 +605,20 @@ public class ProductionTaskGenerationService {
 
     private double getTaskBaseHours(TaskEntity task) {
         if (task == null) return 0.0;
-        double total = task.getEstimatedHours() != null ? task.getEstimatedHours() : 0.0;
-        if (task.getId() == null) return total;
-        double extra = taskItemRepository.findByTaskId(task.getId()).stream()
-                .filter(item -> Boolean.TRUE.equals(item.getDaySaleExtra()))
-                .map(TaskItemEntity::getEstimatedHours)
-                .filter(Objects::nonNull)
-                .mapToDouble(Double::doubleValue)
-                .sum();
-        return Math.max(total - extra, 0.0);
+        if (ProductionPlanningConstants.isOnlineSaleOrder(null, task.getProductionOrderCode())) {
+            return 0.0;
+        }
+        double extra = 0.0;
+        if (task.getId() != null) {
+            extra = taskItemRepository.findByTaskId(task.getId()).stream()
+                    .filter(item -> Boolean.TRUE.equals(item.getDaySaleExtra()))
+                    .map(TaskItemEntity::getEstimatedHours)
+                    .filter(Objects::nonNull)
+                    .mapToDouble(Double::doubleValue)
+                    .sum();
+        }
+        return ProductionPlanningConstants.deskCupoBaseHours(
+                task.getEstimatedHours(), task.getProductionOrderCode(), extra);
     }
 
     @Builder

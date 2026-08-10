@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
+import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
@@ -15,10 +16,12 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 
 /**
@@ -34,6 +37,12 @@ class ProductDispatchInventoryTest {
 
     @Autowired
     private ProductInventoryService productInventoryService;
+
+    @Autowired
+    private CustomerShipmentDispatchService customerShipmentDispatchService;
+
+    @Autowired
+    private OnlineSaleProductionOrderService onlineSaleProductionOrderService;
 
     @Autowired
     private ProductShipmentRepository shipmentRepository;
@@ -58,6 +67,15 @@ class ProductDispatchInventoryTest {
 
     @Autowired
     private LocationRepository locationRepository;
+
+    @Autowired
+    private ProductionOrderRepository productionOrderRepository;
+
+    @Autowired
+    private OnlineSaleRepository onlineSaleRepository;
+
+    @Autowired
+    private OnlineSaleItemRepository onlineSaleItemRepository;
 
     @Autowired
     private EntityManager entityManager;
@@ -206,6 +224,124 @@ class ProductDispatchInventoryTest {
         assertThat(productInventoryService.getNetConsumedForLine("SHIPMENT", shipment.getId(),
                 ProductInventoryService.MOVEMENT_SHIPMENT, product.getId(), null, color.getId(), detail.getId()))
                 .isEqualByComparingTo("0");
+    }
+
+    @Test
+    void sendShipment_sinStockSuficiente_fallaYNoMarcaSent() {
+        ProductEntity product = saveProduct("PT-DISP-05", "Producto sin stock");
+        seedStock(product, BigDecimal.valueOf(1), null);
+
+        ProductShipmentEntity shipment = saveShipment("SHP-SHORT-1", kiosko.getId());
+        saveDetail(shipment, product, null, BigDecimal.valueOf(3));
+
+        assertThatThrownBy(() -> productDistributionService.sendShipment(shipment.getId()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Stock insuficiente");
+
+        ProductShipmentEntity refreshed = shipmentRepository.findById(shipment.getId()).orElseThrow();
+        assertThat(refreshed.getStatus()).isEqualTo("CONFIRMED");
+        assertThat(stockAt(product, bodegaPt)).isEqualByComparingTo("1");
+    }
+
+    @Test
+    void packingOnly_sendShipment_noDescargaPt() throws Exception {
+        ProductEntity product = saveProduct("PT-DISP-06", "Producto packing");
+        seedStock(product, BigDecimal.valueOf(5), null);
+
+        ProductShipmentEntity shipment = shipmentRepository.save(ProductShipmentEntity.builder()
+                .shipmentNumber("SHP-PACK-1")
+                .status("CONFIRMED")
+                .locationId(kiosko.getId())
+                .packingItems("[{\"code\":\"SUM-01\",\"qty\":2}]")
+                .build());
+
+        productDistributionService.sendShipment(shipment.getId());
+
+        assertThat(shipmentRepository.findById(shipment.getId()).orElseThrow().getStatus()).isEqualTo("SENT");
+        assertThat(stockAt(product, bodegaPt)).isEqualByComparingTo("5");
+        assertThat(kardexRepository.findByReferenceTypeAndReferenceId("SHIPMENT", shipment.getId())).isEmpty();
+    }
+
+    @Test
+    void opiDocumentOnly_sendShipment_noDescargaPt() throws Exception {
+        ProductEntity product = saveProduct("PT-DISP-07", "Producto OPI");
+        seedStock(product, BigDecimal.valueOf(4), null);
+
+        ProductionOrderEntity po = productionOrderRepository.save(ProductionOrderEntity.builder()
+                .code("OPI-DISP-01")
+                .orderType("INTERNA")
+                .status("IN_PROGRESS")
+                .startDate(LocalDate.now())
+                .build());
+
+        ProductShipmentEntity shipment = shipmentRepository.save(ProductShipmentEntity.builder()
+                .shipmentNumber("SHP-OPI-1")
+                .status("CONFIRMED")
+                .productionOrderId(po.getId())
+                .locationId(null)
+                .build());
+        saveDetail(shipment, product, null, BigDecimal.valueOf(2));
+
+        productDistributionService.sendShipment(shipment.getId());
+
+        assertThat(shipmentRepository.findById(shipment.getId()).orElseThrow().getStatus()).isEqualTo("SENT");
+        assertThat(stockAt(product, bodegaPt)).isEqualByComparingTo("4");
+        assertThat(kardexRepository.findByReferenceTypeAndReferenceId("SHIPMENT", shipment.getId())).isEmpty();
+    }
+
+    @Test
+    void directInventoryFulfill_prepareDescuentaYDispatchNoVuelveADescontar() throws Exception {
+        inventoryLocationTypeRepository.save(InventoryLocationTypeEntity.builder()
+                .code("BODEGA_DEV")
+                .name("Bodega Devoluciones")
+                .isActive(true)
+                .build());
+        locationRepository.save(LocationEntity.builder()
+                .code("BODEGA_DEV")
+                .name("Bodega Devoluciones")
+                .categoria("BODEGA_DEV")
+                .build());
+
+        ProductEntity product = saveProduct("PT-DISP-08", "Producto fulfill");
+        seedStock(product, BigDecimal.valueOf(6), null);
+
+        OnlineSaleEntity sale = onlineSaleRepository.save(OnlineSaleEntity.builder()
+                .saleNumber("V-FULFILL-01")
+                .customerName("Cliente Fulfill")
+                .status("PENDIENTE")
+                .paymentMethod("TARJETA_PAGADO")
+                .saleDate(LocalDate.now())
+                .inProductionOrder(false)
+                .build());
+        OnlineSaleItemEntity item = onlineSaleItemRepository.save(OnlineSaleItemEntity.builder()
+                .onlineSaleId(sale.getId())
+                .productId(product.getId())
+                .productCode(product.getCode())
+                .productName(product.getName())
+                .colorId(color.getId())
+                .colorName(color.getName())
+                .quantity(2)
+                .unitPrice(BigDecimal.TEN)
+                .build());
+
+        onlineSaleProductionOrderService.prepareDirectSaleFromInventory(sale.getId());
+        assertThat(stockAt(product, bodegaPt)).isEqualByComparingTo("4");
+        assertThat(productInventoryService.hasNetOutboundForReference(
+                ProductInventoryService.REF_ONLINE_SALE_PREPARE, sale.getId())).isTrue();
+
+        Map<String, Object> dispatched = customerShipmentDispatchService.dispatchDirectOnlineSale(sale.getId(), Map.of());
+        assertThat(dispatched.get("saleStatus")).isEqualTo("ENVIADO");
+        assertThat(stockAt(product, bodegaPt)).isEqualByComparingTo("4");
+        assertThat(kardexRepository.findByReferenceTypeAndReferenceId(
+                ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH, sale.getId())).isEmpty();
+        assertThat(productInventoryService.getNetConsumedForLine(
+                ProductInventoryService.REF_ONLINE_SALE_PREPARE,
+                sale.getId(),
+                ProductInventoryService.REF_ONLINE_SALE_PREPARE,
+                product.getId(),
+                null,
+                color.getId(),
+                item.getId())).isEqualByComparingTo("2");
     }
 
     // ===== helpers =====

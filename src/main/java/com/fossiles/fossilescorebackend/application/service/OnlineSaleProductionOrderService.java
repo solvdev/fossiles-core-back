@@ -810,11 +810,11 @@ public class OnlineSaleProductionOrderService {
                 colorId,
                 sizeLabel,
                 qty,
-                "ONLINE_SALE_PREPARE",
+                ProductInventoryService.REF_ONLINE_SALE_PREPARE,
                 sale.getId(),
                 sale.getSaleNumber(),
                 desc,
-                "ONLINE_SALE_PREPARE",
+                ProductInventoryService.REF_ONLINE_SALE_PREPARE,
                 saleItemId);
     }
 

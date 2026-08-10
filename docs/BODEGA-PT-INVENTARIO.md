@@ -58,8 +58,10 @@ allá, así que si el envío no descargara, las mismas unidades quedarían conta
 Conviene tenerlo explícito porque es fuente recurrente de confusión:
 
 - Confirmar un borrador de envío (`confirm-draft`): solo marca piezas PT como asignadas al envío.
-- Despachar una venta en línea a cliente (`dispatch-customer`): el inventario ya salió en la
-  preparación; aquí solo cambia el estado de la venta.
+- Despachar venta en línea ya preparada desde inventario (`dispatchDirectOnlineSale` / prepare previo
+  con `ONLINE_SALE_PREPARE`): no vuelve a descontar; el stock ya salió en la preparación.
+- Despachar OPL producida (`dispatchCustomerShipment` con unidades RECEIVED en bodega PT): **sí
+  descuenta** Devoluciones/PT por unidad (`ONLINE_SALE_DISPATCH`, idempotente por `unit.id`).
 - Documentos OPI (orden interna sin ubicación destino): son documento, no traslado.
 - Empaques `SUM-`: su salida ocurre en entrega de materiales, no en el envío.
 

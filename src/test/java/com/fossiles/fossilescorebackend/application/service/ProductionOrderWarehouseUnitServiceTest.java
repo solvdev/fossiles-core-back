@@ -6,7 +6,6 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
-import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,6 +15,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -59,6 +59,9 @@ class ProductionOrderWarehouseUnitServiceTest {
 
     @Autowired
     private ProductInventoryLocationRepository inventoryLocationRepository;
+
+    @Autowired
+    private ProductInventoryKardexRepository kardexRepository;
 
     @Autowired
     private OnlineSaleRepository onlineSaleRepository;
@@ -309,6 +312,119 @@ class ProductionOrderWarehouseUnitServiceTest {
         assertThat(result.get("saleStatus")).isEqualTo("ENVIADO");
         OnlineSaleEntity updated = onlineSaleRepository.findById(sale.getId()).orElseThrow();
         assertThat(updated.getStatus()).isEqualTo("ENVIADO");
+        assertThat(kardexRepository.findByReferenceTypeAndReferenceId(
+                ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH, sale.getId())).isEmpty();
+    }
+
+    @Test
+    void dispatchOplReceivedUnits_decrementsPtByExactQty() throws Exception {
+        OnlineSaleEntity sale = onlineSaleRepository.save(OnlineSaleEntity.builder()
+                .saleNumber("V-TEST-PT-OUT")
+                .customerName("Cliente PT Out")
+                .status("PRODUCIDO")
+                .saleDate(LocalDate.now())
+                .inProductionOrder(true)
+                .build());
+
+        ProductionOrderEntity po = productionOrderRepository.save(ProductionOrderEntity.builder()
+                .code("OP-WH-010")
+                .orderType("VENTA_EN_LINEA")
+                .status("IN_PROGRESS")
+                .startDate(LocalDate.now())
+                .build());
+
+        ProductionOrderItemEntity item = productionOrderItemRepository.save(ProductionOrderItemEntity.builder()
+                .productionOrderId(po.getId())
+                .productId(product.getId())
+                .colorId(color.getId())
+                .onlineSaleId(sale.getId())
+                .quantity(2)
+                .warehouseReceivedQty(0)
+                .build());
+
+        WarehouseWorkspaceResponse workspace = warehouseUnitService.getWorkspace(po.getId());
+        warehouseUnitService.updateUnitsReceipt(po.getId(), WarehouseUnitReceiptRequest.builder()
+                .units(workspace.getUnits().stream()
+                        .map(u -> WarehouseUnitReceiptRequest.UnitUpdate.builder()
+                                .unitId(u.getId())
+                                .receiptStatus("RECEIVED")
+                                .build())
+                        .collect(Collectors.toList()))
+                .build());
+
+        assertThat(stockAtPt()).isEqualByComparingTo("2");
+
+        Map<String, Object> result = customerShipmentDispatchService.dispatchCustomerShipment(
+                po.getId(), sale.getId(), Map.of());
+
+        assertThat(result.get("saleStatus")).isEqualTo("ENVIADO");
+        assertThat(stockAtPt()).isEqualByComparingTo("0");
+
+        List<ProductInventoryKardex> outflows = kardexRepository
+                .findByReferenceTypeAndReferenceId(ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH, sale.getId())
+                .stream()
+                .filter(k -> k.getQuantity() != null && k.getQuantity().signum() < 0)
+                .toList();
+        assertThat(outflows).hasSize(2);
+        assertThat(outflows).allMatch(k -> k.getReferenceLineId() != null);
+
+        List<ProductionOrderWarehouseUnitEntity> units = unitRepository.findByProductionOrderIdAndProductionOrderItemIdIn(
+                po.getId(), List.of(item.getId()));
+        assertThat(units).allMatch(u -> u.getShippedAt() != null);
+    }
+
+    @Test
+    void redispatchOpl_doesNotDoubleDeductPt() throws Exception {
+        OnlineSaleEntity sale = onlineSaleRepository.save(OnlineSaleEntity.builder()
+                .saleNumber("V-TEST-REDISP")
+                .customerName("Cliente Redispatch")
+                .status("PRODUCIDO")
+                .saleDate(LocalDate.now())
+                .inProductionOrder(true)
+                .build());
+
+        ProductionOrderEntity po = productionOrderRepository.save(ProductionOrderEntity.builder()
+                .code("OP-WH-011")
+                .orderType("VENTA_EN_LINEA")
+                .status("IN_PROGRESS")
+                .startDate(LocalDate.now())
+                .build());
+
+        productionOrderItemRepository.save(ProductionOrderItemEntity.builder()
+                .productionOrderId(po.getId())
+                .productId(product.getId())
+                .colorId(color.getId())
+                .onlineSaleId(sale.getId())
+                .quantity(2)
+                .warehouseReceivedQty(0)
+                .build());
+
+        WarehouseWorkspaceResponse workspace = warehouseUnitService.getWorkspace(po.getId());
+        warehouseUnitService.updateUnitsReceipt(po.getId(), WarehouseUnitReceiptRequest.builder()
+                .units(workspace.getUnits().stream()
+                        .map(u -> WarehouseUnitReceiptRequest.UnitUpdate.builder()
+                                .unitId(u.getId())
+                                .receiptStatus("RECEIVED")
+                                .build())
+                        .collect(Collectors.toList()))
+                .build());
+
+        customerShipmentDispatchService.dispatchCustomerShipment(po.getId(), sale.getId(), Map.of());
+        assertThat(stockAtPt()).isEqualByComparingTo("0");
+
+        OnlineSaleEntity afterFirst = onlineSaleRepository.findById(sale.getId()).orElseThrow();
+        afterFirst.setStatus("PRODUCIDO");
+        onlineSaleRepository.save(afterFirst);
+
+        customerShipmentDispatchService.dispatchCustomerShipment(po.getId(), sale.getId(), Map.of());
+        assertThat(stockAtPt()).isEqualByComparingTo("0");
+
+        long outflowCount = kardexRepository
+                .findByReferenceTypeAndReferenceId(ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH, sale.getId())
+                .stream()
+                .filter(k -> k.getQuantity() != null && k.getQuantity().signum() < 0)
+                .count();
+        assertThat(outflowCount).isEqualTo(2);
     }
 
     @Test
@@ -352,6 +468,13 @@ class ProductionOrderWarehouseUnitServiceTest {
         List<ProductionOrderWarehouseUnitEntity> units = unitRepository.findByProductionOrderIdAndProductionOrderItemIdIn(
                 po.getId(), List.of(item.getId()));
         assertThat(units).allMatch(u -> u.getShippedAt() != null);
+    }
+
+    private BigDecimal stockAtPt() {
+        return inventoryLocationRepository
+                .findByProductIdAndLocationIdAndColorId(product.getId(), bodegaPt.getId(), color.getId())
+                .map(ProductInventoryLocation::getQuantity)
+                .orElse(BigDecimal.ZERO);
     }
 
     private ProductionOrderEntity createOrder(String code) {

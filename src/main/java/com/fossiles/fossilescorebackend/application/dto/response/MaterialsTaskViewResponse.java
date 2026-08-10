@@ -23,6 +23,8 @@ public class MaterialsTaskViewResponse {
     private String taskCode;
     private String productionOrderCode;
     private Long productionOrderId;
+    /** Cliente de la OP (para búsqueda en vista materiales). */
+    private String customerName;
     private String orderType;
     private Integer desk;
     private LocalDate scheduledDate;

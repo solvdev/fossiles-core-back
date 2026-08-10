@@ -31,6 +31,9 @@ import java.util.stream.Collectors;
 public class ProductInventoryService {
 
     public static final String MOVEMENT_SHIPMENT = "SHIPMENT";
+    /** Salida de PT/Devoluciones al despachar una venta OPL a cliente. */
+    public static final String MOVEMENT_ONLINE_SALE_DISPATCH = "ONLINE_SALE_DISPATCH";
+    public static final String REF_ONLINE_SALE_PREPARE = "ONLINE_SALE_PREPARE";
     private static final String REVERSAL_SUFFIX = "_REVERSAL";
     /** Salidas de reenvío escritas por versiones anteriores; se netean junto a las de tipo SHIPMENT. */
     private static final String LEGACY_MOVEMENT_SHIPMENT_REDISPATCH = "SHIPMENT_REDISPATCH";
@@ -257,11 +260,23 @@ public class ProductInventoryService {
             remaining = remaining.subtract(consumed);
         }
 
-        // TEMPORAL (prueba): validación de stock desactivada a pedido, revertir luego de la prueba.
-        // if (remaining.compareTo(BigDecimal.ZERO) > 0) {
-        //     throw new BusinessException(
-        //             "Stock insuficiente en Devoluciones / Bodega PT (faltan " + remaining + " unidades).");
-        // }
+        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            throw new BusinessException(
+                    "Stock insuficiente en Devoluciones / Bodega PT (faltan " + remaining + " unidades).");
+        }
+    }
+
+    /**
+     * True si ya hubo salida neta para esa referencia (p. ej. venta preparada desde inventario).
+     */
+    public boolean hasNetOutboundForReference(String referenceType, Long referenceId) {
+        if (referenceType == null || referenceId == null) {
+            return false;
+        }
+        return productInventoryKardexRepository.findByReferenceTypeAndReferenceId(referenceType, referenceId).stream()
+                .map(k -> k.getQuantity() != null ? k.getQuantity() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .compareTo(BigDecimal.ZERO) < 0;
     }
 
     /**

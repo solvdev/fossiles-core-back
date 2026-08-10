@@ -23,8 +23,8 @@ import java.util.stream.Collectors;
 /**
  * Organizador de Tareas: reemplaza la generación automática por un flujo manual.
  * El usuario arma tareas seleccionando cantidades (parciales o totales) de ítems
- * de OP con cantidad restante; el cupo base es 4h por tarea y los ítems de OPL
- * (VENTA_EN_LINEA) pueden agregarse como extra sobre el cupo (daySaleExtra).
+ * de OP con cantidad restante; el cupo base es 4h por tarea. Las líneas OPL
+ * (VENTA_EN_LINEA / OPL-*) nunca cuentan contra el cupo (daySaleExtra automático).
  */
 @Service
 @RequiredArgsConstructor
@@ -239,7 +239,6 @@ public class TaskOrganizerService {
 
         for (CreateManualTaskRequest.ManualTaskItemRequest line : lines) {
             ProductionOrderItemEntity item = lockedById.get(line.getProductionOrderItemId());
-            boolean extra = Boolean.TRUE.equals(line.getDaySaleExtra());
 
             ProductionOrderEntity itemOrder = ordersById.computeIfAbsent(item.getProductionOrderId(),
                     id -> productionOrderRepository.findById(id).orElse(null));
@@ -247,12 +246,15 @@ public class TaskOrganizerService {
                 throw new BusinessException("El ítem " + item.getId() + " pertenece a una orden inexistente.");
             }
 
-            if (extra) {
-                if (!isOnlineSaleOrder(itemOrder)) {
-                    throw new BusinessException("Solo los productos de órdenes VENTA_EN_LINEA (OPL) "
-                            + "pueden agregarse como extra sobre las 4 horas.");
-                }
-            } else if (!Objects.equals(itemOrder.getId(), headerOrder.getId())) {
+            boolean onlineSale = isOnlineSaleOrder(itemOrder);
+            // OPL never consumes desk cupo — force daySaleExtra regardless of client flag.
+            boolean extra = onlineSale || Boolean.TRUE.equals(line.getDaySaleExtra());
+
+            if (Boolean.TRUE.equals(line.getDaySaleExtra()) && !onlineSale) {
+                throw new BusinessException("Solo los productos de órdenes VENTA_EN_LINEA (OPL) "
+                        + "pueden agregarse como extra sobre las 4 horas.");
+            }
+            if (!extra && !Objects.equals(itemOrder.getId(), headerOrder.getId())) {
                 throw new BusinessException("El producto " + item.getId() + " pertenece a la orden "
                         + itemOrder.getCode() + ", distinta a la orden base de la tarea. "
                         + "Solo los extras OPL pueden mezclar órdenes.");
@@ -309,10 +311,14 @@ public class TaskOrganizerService {
                     .build());
         }
 
+        // Pure OPL tasks (header OPL) never consume cupo even if a flag were missing.
+        if (isOnlineSaleOrder(headerOrder)) {
+            baseHours = 0.0;
+        }
         if (baseHours > ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP + EPSILON) {
             throw new BusinessException(String.format(Locale.ROOT,
                     "La carga base de la tarea (%.2f h) excede el máximo de %.1f horas. "
-                            + "Divida los productos en otra tarea o márquelos como extra OPL.",
+                            + "Divida los productos en otra tarea (las OPL no cuentan contra el cupo).",
                     baseHours, ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP));
         }
 
@@ -421,11 +427,7 @@ public class TaskOrganizerService {
         if (po == null) {
             return false;
         }
-        if ("VENTA_EN_LINEA".equals(String.valueOf(po.getOrderType()).trim().toUpperCase(Locale.ROOT))) {
-            return true;
-        }
-        String code = po.getCode() == null ? "" : po.getCode().trim().toUpperCase(Locale.ROOT);
-        return code.startsWith("OPL-") || code.startsWith("OPL");
+        return ProductionPlanningConstants.isOnlineSaleOrder(po.getOrderType(), po.getCode());
     }
 
     private static boolean isCinchoOrderType(String orderType) {

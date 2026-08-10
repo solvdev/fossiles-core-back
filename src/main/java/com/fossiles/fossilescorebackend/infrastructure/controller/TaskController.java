@@ -971,7 +971,7 @@ public class TaskController {
                 ProductionOrderEntity order = entity.getProductionOrderId() != null
                         ? productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null)
                         : null;
-                boolean alreadyConsumedAtOrderLevel = order != null && Boolean.TRUE.equals(order.getMaterialsConsumed());
+                Boolean orderConsumed = order != null ? order.getMaterialsConsumed() : null;
 
                 for (TaskItemEntity item : taskItems) {
                     if (!isTaskItemRequiresMaterials(item)) {
@@ -983,7 +983,8 @@ public class TaskController {
                         continue;
                     }
                     if (!Boolean.TRUE.equals(item.getMaterialsDelivered())) {
-                        if (!alreadyConsumedAtOrderLevel) {
+                        if (materialConsumptionService.shouldConsumeOnItemMaterialsDelivery(
+                                orderConsumed, entity.getProductionOrderId(), item.getId())) {
                             materialConsumptionService.consumeMaterialsForTaskItem(entity.getId(), item.getId(), force);
                         }
                         item.setMaterialsDelivered(true);
@@ -992,6 +993,7 @@ public class TaskController {
                     }
                 }
             } else {
+                // Undeliver clears flags/picks only — does NOT reverse material kardex/consumption.
                 for (TaskItemEntity item : taskItems) {
                     if (isTaskItemRequiresMaterials(item)) {
                         if (item.getId() != null) {
@@ -1048,10 +1050,10 @@ public class TaskController {
                 ProductionOrderEntity order = entity.getProductionOrderId() != null
                         ? productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null)
                         : null;
-                boolean alreadyConsumedAtOrderLevel = order != null && Boolean.TRUE.equals(order.getMaterialsConsumed());
-                boolean itemAlreadyConsumed = entity.getProductionOrderId() != null
-                        && materialConsumptionService.hasConsumptionForTaskItem(entity.getProductionOrderId(), item.getId());
-                if (!alreadyConsumedAtOrderLevel || !itemAlreadyConsumed) {
+                Boolean orderConsumed = order != null ? order.getMaterialsConsumed() : null;
+                // Skip deduct when already consumed at OP level OR for this item (prevents double MP deduct).
+                if (materialConsumptionService.shouldConsumeOnItemMaterialsDelivery(
+                        orderConsumed, entity.getProductionOrderId(), item.getId())) {
                     Map<String, Object> consumptionResult = materialConsumptionService.consumeMaterialsForTaskItem(
                             entity.getId(), item.getId(), force);
                     Object rawCount = consumptionResult.get("materialsConsumed");
@@ -1066,6 +1068,7 @@ public class TaskController {
             if ("IN_PROGRESS".equals(entity.getStatus()) || "COMPLETED".equals(entity.getStatus())) {
                 throw new BusinessException("No se puede desmarcar materiales cuando la tarea ya está en proceso o completada.");
             }
+            // Undeliver clears delivery flags/picks only — does NOT reverse material kardex/consumption.
             taskItemMaterialPickRepository.deleteByTaskItemId(item.getId());
             item.setMaterialsDelivered(false);
             item.setMaterialsDeliveredAt(null);
@@ -1363,13 +1366,16 @@ public class TaskController {
     // ==================== MATERIALS VIEW ====================
 
     /**
-     * Vista para el equipo de materiales: tareas con recetas (BOM) para saber qué despachar.
-     * Filtra por fecha programada (por defecto hoy en zona Guatemala).
-     *
-     * @param scheduleDay si true (con {@code date}), devuelve todas las tareas con {@code scheduledDate} en ese día
-     *                    (no canceladas), incluidas las que ya tienen materiales entregados — para la vista “día de trabajo”.
-     * @param includeDelivered si true (y {@code scheduleDay} es false), devuelve tareas con entrega de materiales
-     *                         registrada en {@code date} (día completo, por timestamp).
+     * Vista materiales: “qué produce / despachar” por día (zona Guatemala).
+     * <ul>
+     *   <li>Default ({@code scheduleDay=false}, {@code includeDelivered=false}):
+     *       tareas del día programado + backlog de hoy, solo pendientes de materiales
+     *       ({@link #isPendingMaterialsViewTask}).</li>
+     *   <li>{@code includeDelivered=true}: tareas con entrega de materiales registrada en {@code date}
+     *       (por timestamp del día).</li>
+     *   <li>{@code scheduleDay=true}: todas las tareas del día de trabajo (programadas + backlog si es hoy),
+     *       pendientes y ya entregadas (no canceladas).</li>
+     * </ul>
      */
     @GetMapping("/materials-view")
     @Transactional(readOnly = true)
@@ -1402,6 +1408,7 @@ public class TaskController {
             return ResponseEntity.ok(responses);
         }
 
+        // Pendientes del día: scheduledDate = date (+ backlog activo si date es hoy) y aún sin materiales.
         List<TaskEntity> tasks = mergeActiveMaterialsBacklogForToday(
                 targetDate, taskRepository.findByScheduledDate(targetDate));
 
@@ -1543,6 +1550,7 @@ public class TaskController {
                 .taskCode(task.getCode())
                 .productionOrderCode(task.getProductionOrderCode())
                 .productionOrderId(task.getProductionOrderId())
+                .customerName(po != null ? po.getCustomerName() : null)
                 .orderType(po != null ? po.getOrderType() : null)
                 .desk(task.getDesk())
                 .scheduledDate(task.getScheduledDate())
@@ -1810,15 +1818,20 @@ public class TaskController {
 
     private double getTaskBaseHours(TaskEntity task) {
         if (task == null) return 0.0;
-        double total = task.getEstimatedHours() != null ? task.getEstimatedHours() : 0.0;
-        if (task.getId() == null) return total;
-        double extra = taskItemRepository.findByTaskId(task.getId()).stream()
-                .filter(item -> Boolean.TRUE.equals(item.getDaySaleExtra()))
-                .map(TaskItemEntity::getEstimatedHours)
-                .filter(Objects::nonNull)
-                .mapToDouble(Double::doubleValue)
-                .sum();
-        return Math.max(total - extra, 0.0);
+        if (ProductionPlanningConstants.isOnlineSaleOrder(null, task.getProductionOrderCode())) {
+            return 0.0;
+        }
+        double extra = 0.0;
+        if (task.getId() != null) {
+            extra = taskItemRepository.findByTaskId(task.getId()).stream()
+                    .filter(item -> Boolean.TRUE.equals(item.getDaySaleExtra()))
+                    .map(TaskItemEntity::getEstimatedHours)
+                    .filter(Objects::nonNull)
+                    .mapToDouble(Double::doubleValue)
+                    .sum();
+        }
+        return ProductionPlanningConstants.deskCupoBaseHours(
+                task.getEstimatedHours(), task.getProductionOrderCode(), extra);
     }
 
     private int findLeastLoadedDesk(Map<Integer, Double> deskLoads) {
@@ -1946,6 +1959,10 @@ public class TaskController {
         return sd == null || sd.isBefore(targetDate);
     }
 
+    /**
+     * Pendiente de materiales: tarea/OP activas, requiere MP, y aún faltan ítems requeridos por entregar.
+     * Usado por materials-view default (“Pendientes hoy”) y materials-view por OP.
+     */
     private boolean isPendingMaterialsViewTask(TaskEntity entity) {
         if (entity == null || "CANCELLED".equals(entity.getStatus()) || "COMPLETED".equals(entity.getStatus())) {
             return false;
@@ -2283,20 +2300,10 @@ public class TaskController {
     // ==================== INNER CLASSES ====================
 
     /**
-     * OPV / OPK / OPI / OPCK según tipo o prefijo de código; null si no aplica al tablero de prioridad.
+     * OPV / OPK / OPI / OPCK / OPL según tipo o prefijo de código; null si no aplica al tablero de prioridad.
      */
     private static String distributionFamilyLabel(String orderType, String code) {
-        String ot = orderType == null ? "" : orderType.trim();
-        String c = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
-        if ("NORMAL".equalsIgnoreCase(ot)) return "OPK";
-        if ("MARCAS".equalsIgnoreCase(ot) || "OPV".equalsIgnoreCase(ot)) return "OPV";
-        if ("INTERNA".equalsIgnoreCase(ot)) return "OPI";
-        if ("CLIENTE_KIOSKO".equalsIgnoreCase(ot)) return "OPCK";
-        if (c.startsWith("OPK-")) return "OPK";
-        if (c.startsWith("OPV-")) return "OPV";
-        if (c.startsWith("OPI-")) return "OPI";
-        if (c.startsWith("OPCK-")) return "OPCK";
-        return null;
+        return ProductionPlanningConstants.distributionFamilyLabel(orderType, code);
     }
 
     private static boolean canOvercapDeskDay(String orderType) {

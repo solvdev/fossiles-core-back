@@ -1664,11 +1664,10 @@ public class ProductDistributionService {
                         + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido " + stillNeeded);
             }
         }
-        // TEMPORAL (prueba): validación de stock desactivada a pedido, revertir luego de la prueba.
-        // if (!shortages.isEmpty()) {
-        //     throw new BusinessException("Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• "
-        //             + String.join("\n• ", shortages));
-        // }
+        if (!shortages.isEmpty()) {
+            throw new BusinessException("Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• "
+                    + String.join("\n• ", shortages));
+        }
 
         for (ProductShipmentDetailEntity detail : details) {
             BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;

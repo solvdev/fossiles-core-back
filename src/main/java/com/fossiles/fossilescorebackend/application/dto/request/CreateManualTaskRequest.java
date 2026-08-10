@@ -10,8 +10,8 @@ import java.util.List;
 
 /**
  * Creación manual de una tarea desde el Organizador: ítems de OP con cantidad
- * (parcial o total). Los ítems daySaleExtra (solo VENTA_EN_LINEA) no cuentan
- * contra el cupo de 4 horas.
+ * (parcial o total). Las líneas OPL (VENTA_EN_LINEA) se tratan siempre como
+ * daySaleExtra y no cuentan contra el cupo de 4/5 horas.
  */
 @Data
 @Builder
@@ -34,7 +34,7 @@ public class CreateManualTaskRequest {
     public static class ManualTaskItemRequest {
         private Long productionOrderItemId;
         private Integer quantity;
-        /** true = extra OPL sobre el cupo de 4h. */
+        /** true = extra sobre el cupo; las líneas OPL se fuerzan a true en el servidor. */
         private Boolean daySaleExtra;
     }
 }

@@ -665,6 +665,18 @@ public class MaterialConsumptionService {
         return materialConsumptionRepository.existsByProductionOrderIdAndNotesLike(productionOrderId, pattern);
     }
 
+    /**
+     * Idempotency gate for item-level materials delivery: consume only when neither the OP
+     * nor this task item already has consumption. Undeliver does not reverse kardex.
+     */
+    public boolean shouldConsumeOnItemMaterialsDelivery(
+            Boolean orderMaterialsConsumed, Long productionOrderId, Long taskItemId) {
+        if (Boolean.TRUE.equals(orderMaterialsConsumed)) {
+            return false;
+        }
+        return !hasConsumptionForTaskItem(productionOrderId, taskItemId);
+    }
+
     private Map<Long, BigDecimal> calculateTaskRequirements(TaskEntity task) {
         Map<Long, BigDecimal> requirements = new LinkedHashMap<>();
 
