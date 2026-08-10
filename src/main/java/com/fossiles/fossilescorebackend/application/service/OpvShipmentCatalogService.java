@@ -444,19 +444,25 @@ public class OpvShipmentCatalogService {
                 break;
             }
         }
-        if (matched != null && ProductionOrderItemPricing.hasExplicitUnitPrice(matched)) {
-            return resolveUnitPriceForSize(matched, detail.getSizeLabel());
-        }
-        if (detail.getUnitPrice() != null && detail.getUnitPrice().compareTo(BigDecimal.ZERO) >= 0) {
+        // 1) Precio congelado en el envío
+        if (detail.getUnitPrice() != null && detail.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
             return detail.getUnitPrice();
         }
+        // 2) Precio de la OP (sin catálogo)
+        if (matched != null) {
+            BigDecimal opPrice = ProductionOrderItemPricing.resolveForSize(matched, detail.getSizeLabel(), null);
+            if (opPrice.compareTo(BigDecimal.ZERO) > 0) {
+                return opPrice;
+            }
+        }
+        // 3) Catálogo solo si no hubo precio congelado
         if (matched != null) {
             return resolveUnitPriceForSize(matched, detail.getSizeLabel());
         }
         if (detail.getProductId() != null) {
             return productRepository.findById(detail.getProductId())
                     .map(ProductEntity::getSellerPrice)
-                    .filter(p -> p != null && p.compareTo(BigDecimal.ZERO) >= 0)
+                    .filter(p -> p != null && p.compareTo(BigDecimal.ZERO) > 0)
                     .orElse(BigDecimal.ZERO);
         }
         return BigDecimal.ZERO;

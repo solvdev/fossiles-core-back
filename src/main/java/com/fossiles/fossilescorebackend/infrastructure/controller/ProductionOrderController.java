@@ -2065,14 +2065,17 @@ public class ProductionOrderController {
             if (matched == null) {
                 continue;
             }
+            // Revisión de precios en OP: sincroniza a líneas del envío (precio del documento).
             BigDecimal unitPrice = ProductionOrderItemPricing.resolveForSize(
                     matched,
                     detail.getSizeLabel(),
                     productId -> productRepository.findById(productId)
                             .map(ProductEntity::getSellerPrice)
-                            .filter(p -> p != null && p.compareTo(BigDecimal.ZERO) >= 0)
+                            .filter(p -> p != null && p.compareTo(BigDecimal.ZERO) > 0)
                             .orElse(BigDecimal.ZERO));
-            detail.setUnitPrice(unitPrice);
+            if (unitPrice.compareTo(BigDecimal.ZERO) > 0) {
+                detail.setUnitPrice(unitPrice);
+            }
         }
         shipmentDetailRepository.saveAll(details);
     }

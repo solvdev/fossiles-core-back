@@ -1632,30 +1632,37 @@ public class CustomerAccountService {
             ProductShipmentDetailEntity detail,
             Map<String, BigDecimal> unitPriceByKey,
             List<ProductionOrderItemEntity> orderItems) {
-        ProductionOrderItemEntity matched = findMatchingOrderItem(detail, orderItems);
-        if (matched != null && ProductionOrderItemPricing.hasExplicitUnitPrice(matched)) {
-            return resolveUnitPriceForSize(matched, detail.getSizeLabel());
-        }
-        if (detail.getUnitPrice() != null && detail.getUnitPrice().compareTo(BigDecimal.ZERO) >= 0) {
+        // 1) Precio congelado en la línea del envío (lo que se usó al despachar; no catálogo actual).
+        if (detail.getUnitPrice() != null && detail.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
             return detail.getUnitPrice();
         }
+
+        ProductionOrderItemEntity matched = findMatchingOrderItem(detail, orderItems);
+        // 2) Precio guardado en la OP (unit_price / unit_prices_json), sin catálogo.
         if (matched != null) {
-            BigDecimal sized = resolveUnitPriceForSize(matched, detail.getSizeLabel());
-            if (sized.compareTo(BigDecimal.ZERO) >= 0) {
-                return sized;
+            BigDecimal opPrice = ProductionOrderItemPricing.resolveForSize(matched, detail.getSizeLabel(), null);
+            if (opPrice.compareTo(BigDecimal.ZERO) > 0) {
+                return opPrice;
             }
         }
         String key = detail.getProductId() + ":" + (detail.getColorId() != null ? detail.getColorId() : "");
-        BigDecimal unitPrice = unitPriceByKey.get(key);
-        if (unitPrice != null && unitPrice.compareTo(BigDecimal.ZERO) > 0) {
-            return unitPrice;
+        BigDecimal mapped = unitPriceByKey.get(key);
+        if (mapped != null && mapped.compareTo(BigDecimal.ZERO) > 0) {
+            return mapped;
         }
         for (ProductionOrderItemEntity item : orderItems) {
-            if (detail.getProductId().equals(item.getProductId())) {
-                BigDecimal price = resolveUnitPriceForSize(item, detail.getSizeLabel());
-                if (price.compareTo(BigDecimal.ZERO) > 0) {
-                    return price;
+            if (detail.getProductId() != null && detail.getProductId().equals(item.getProductId())) {
+                BigDecimal opPrice = ProductionOrderItemPricing.resolveForSize(item, detail.getSizeLabel(), null);
+                if (opPrice.compareTo(BigDecimal.ZERO) > 0) {
+                    return opPrice;
                 }
+            }
+        }
+        // 3) Último recurso: catálogo (solo envíos viejos sin precio congelado).
+        if (matched != null) {
+            BigDecimal sized = resolveUnitPriceForSize(matched, detail.getSizeLabel());
+            if (sized.compareTo(BigDecimal.ZERO) > 0) {
+                return sized;
             }
         }
         if (detail.getProductId() != null) {

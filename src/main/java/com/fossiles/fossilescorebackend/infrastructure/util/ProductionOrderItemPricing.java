@@ -50,16 +50,18 @@ public final class ProductionOrderItemPricing {
         String sizeKey = ProductInventorySizesJson.normalizeKey(sizeLabel);
         if (!sizeKey.isEmpty() && !bySize.isEmpty()) {
             BigDecimal sized = lookupSizePrice(bySize, sizeKey);
-            if (sized != null && sized.compareTo(BigDecimal.ZERO) >= 0) {
+            // Precio explícito por talla (incluye 0 = cortesía). Si no hay clave, seguir cascada.
+            if (sized != null) {
                 return sized;
             }
         }
-        if (item.getUnitPrice() != null && item.getUnitPrice().compareTo(BigDecimal.ZERO) >= 0) {
+        // unit_price = 0 suele venir de formularios que mandan 0 por defecto; no bloquear catálogo.
+        if (item.getUnitPrice() != null && item.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
             return item.getUnitPrice();
         }
         if (productFallback != null && item.getProductId() != null) {
             BigDecimal fallback = productFallback.apply(item.getProductId());
-            if (fallback != null && fallback.compareTo(BigDecimal.ZERO) >= 0) {
+            if (fallback != null && fallback.compareTo(BigDecimal.ZERO) > 0) {
                 return fallback;
             }
         }

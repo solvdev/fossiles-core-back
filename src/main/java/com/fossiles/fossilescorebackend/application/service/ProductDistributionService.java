@@ -26,6 +26,7 @@ import com.fossiles.fossilescorebackend.application.util.ProductHardwareConditio
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -469,6 +470,8 @@ public class ProductDistributionService {
         if (details.isEmpty() && !hasPacking) {
             throw new BusinessException("No se puede confirmar un envío sin productos ni empaques.");
         }
+        // Congela precios en la línea del envío al confirmar (CxC usa este precio, no el catálogo futuro).
+        freezeMissingShipmentDetailUnitPrices(shipment, details);
         shipment.setStatus("CONFIRMED");
         ProductShipmentEntity saved = shipmentRepository.save(shipment);
         if (saved.getProductionOrderId() != null) {
@@ -1002,11 +1005,13 @@ public class ProductDistributionService {
                         if (qty <= 0) {
                             continue;
                         }
+                        BigDecimal unitPrice = resolveShipmentUnitPriceFromOrderItem(item, entry.getKey());
                         lines.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
                                 .productId(item.getProductId())
                                 .colorId(item.getColorId())
                                 .size(entry.getKey())
                                 .quantity(BigDecimal.valueOf(qty))
+                                .unitPrice(unitPrice)
                                 .build());
                         addedFromSizes = true;
                     }
@@ -1015,15 +1020,106 @@ public class ProductDistributionService {
                 }
             }
             if (!addedFromSizes && item.getQuantity() != null && item.getQuantity() > 0) {
+                BigDecimal unitPrice = resolveShipmentUnitPriceFromOrderItem(item, null);
                 lines.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
                         .productId(item.getProductId())
                         .colorId(item.getColorId())
                         .size("")
                         .quantity(BigDecimal.valueOf(item.getQuantity()))
+                        .unitPrice(unitPrice)
                         .build());
             }
         }
         return normalizeShipmentProducts(lines);
+    }
+
+    private BigDecimal resolveShipmentUnitPriceFromOrderItem(ProductionOrderItemEntity item, String sizeLabel) {
+        BigDecimal price = ProductionOrderItemPricing.resolveForSize(
+                item,
+                sizeLabel,
+                this::resolveProductCatalogUnitPrice);
+        return price.compareTo(BigDecimal.ZERO) > 0 ? price : null;
+    }
+
+    /**
+     * Escribe unit_price en líneas del envío que aún no lo tienen.
+     * No pisa precios ya guardados (pueden haberse editado al preparar el envío).
+     */
+    private void freezeMissingShipmentDetailUnitPrices(
+            ProductShipmentEntity shipment,
+            List<ProductShipmentDetailEntity> details) {
+        if (shipment == null || details == null || details.isEmpty()) {
+            return;
+        }
+        List<ProductionOrderItemEntity> orderItems = shipment.getProductionOrderId() != null
+                ? productionOrderItemRepository.findByProductionOrderId(shipment.getProductionOrderId())
+                : List.of();
+        boolean dirty = false;
+        for (ProductShipmentDetailEntity detail : details) {
+            if (detail == null) {
+                continue;
+            }
+            if (detail.getUnitPrice() != null && detail.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
+                continue;
+            }
+            BigDecimal frozen = null;
+            ProductionOrderItemEntity matched = null;
+            for (ProductionOrderItemEntity item : orderItems) {
+                if (item.getProductId() == null || !item.getProductId().equals(detail.getProductId())) {
+                    continue;
+                }
+                if (detail.getColorId() == null && item.getColorId() == null) {
+                    matched = item;
+                    break;
+                }
+                if (detail.getColorId() != null && detail.getColorId().equals(item.getColorId())) {
+                    matched = item;
+                    break;
+                }
+            }
+            if (matched == null) {
+                matched = orderItems.stream()
+                        .filter(i -> detail.getProductId() != null && detail.getProductId().equals(i.getProductId()))
+                        .findFirst()
+                        .orElse(null);
+            }
+            if (matched != null) {
+                frozen = resolveShipmentUnitPriceFromOrderItem(matched, detail.getSizeLabel());
+            }
+            if (frozen == null && detail.getProductId() != null) {
+                BigDecimal catalog = resolveProductCatalogUnitPrice(detail.getProductId());
+                if (catalog.compareTo(BigDecimal.ZERO) > 0) {
+                    frozen = catalog;
+                }
+            }
+            if (frozen != null) {
+                detail.setUnitPrice(frozen);
+                dirty = true;
+            }
+        }
+        if (dirty) {
+            shipmentDetailRepository.saveAll(details);
+        }
+    }
+
+    private BigDecimal resolveProductCatalogUnitPrice(Long productId) {
+        if (productId == null) {
+            return BigDecimal.ZERO;
+        }
+        return productRepository.findById(productId)
+                .map(p -> {
+                    if (p.getSellerPrice() != null && p.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
+                        return p.getSellerPrice();
+                    }
+                    if (p.getSalePrice() != null && p.getSalePrice().compareTo(BigDecimal.ZERO) > 0) {
+                        return p.getSalePrice();
+                    }
+                    if (p.getDiscountedPrice() != null && p.getDiscountedPrice().compareTo(BigDecimal.ZERO) > 0) {
+                        return p.getDiscountedPrice();
+                    }
+                    return BigDecimal.ZERO;
+                })
+                .orElse(BigDecimal.ZERO);
     }
 
     private String generateOpcShipmentNumber(ProductionOrderEntity order) {
