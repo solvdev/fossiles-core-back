@@ -3201,15 +3201,8 @@ public class ProductDistributionService {
         if (lineRef == null || lineRef.isBlank()) {
             return strictLineOnly ? List.of() : movements;
         }
-        String lineReasonKey = KioscoInventoryService.shipmentReceiptLineReason(lineRef);
         List<KioscoMovementEntity> matches = movements.stream()
-                .filter(m -> {
-                    String reason = m.getReason();
-                    if (reason == null || reason.isBlank()) {
-                        return false;
-                    }
-                    return reason.contains(lineRef) || reason.contains(lineReasonKey);
-                })
+                .filter(m -> KioscoInventoryService.reasonContainsShipmentReceiptLine(m.getReason(), lineRef))
                 .toList();
         if (strictLineOnly) {
             return matches;
@@ -3407,8 +3400,8 @@ public class ProductDistributionService {
             if (currentStock >= qtyExpected.intValue()) {
                 return false;
             }
-            BigDecimal missing = qtyExpected.subtract(BigDecimal.valueOf(currentStock));
-            applyKioscoReceiptLineOnly(shipment, detail, missing, lineRef);
+            // Never create a second ENTRADA with the same lineRef; top up via AJUSTE.
+            applyKioscoReceiptForceRepairAjuste(shipment, detail, qtyExpected.intValue(), lineRef);
             return true;
         }
         boolean kardexApplied = productInventoryService.hasProductKardexMovement(
@@ -3427,6 +3420,10 @@ public class ProductDistributionService {
             ProductShipmentDetailEntity detail,
             BigDecimal qtyExpected,
             String lineRef) throws BusinessException, ResourceNotFoundException {
+        if (kioscoInventoryService.hasShipmentReceiptLineApplied(
+                shipment.getLocationId(), shipment.getId(), lineRef)) {
+            return;
+        }
         String sizeKey = detail.getSizeLabel() != null ? detail.getSizeLabel().trim() : "";
         String sizeKeyForInventory = sizeKey.isEmpty() ? null : sizeKey;
         kioscoInventoryService.registrarEntradaDesdeIntegracion(
@@ -3438,6 +3435,25 @@ public class ProductDistributionService {
                 securityUtil.getCurrentUserId(),
                 sizeKeyForInventory,
                 lineRef,
+                detail.getHardwareCondition());
+    }
+
+    private void applyKioscoReceiptForceRepairAjuste(
+            ProductShipmentEntity shipment,
+            ProductShipmentDetailEntity detail,
+            int targetStock,
+            String lineRef) throws BusinessException, ResourceNotFoundException {
+        String reason = "Reparación recepción envío · "
+                + KioscoInventoryService.shipmentReceiptLineReason(lineRef)
+                + "#REPAIR";
+        kioscoInventoryService.registrarAjuste(
+                shipment.getLocationId(),
+                detail.getProductId(),
+                detail.getColorId(),
+                targetStock,
+                null,
+                reason,
+                securityUtil.getCurrentUserId(),
                 detail.getHardwareCondition());
     }
 
@@ -3454,16 +3470,21 @@ public class ProductDistributionService {
             ProductShipmentDetailEntity detail,
             BigDecimal qtyReceived,
             String lineRef) throws ResourceNotFoundException, BusinessException {
-        if (kioscoInventoryService.hasShipmentReceiptLineApplied(
-                shipment.getLocationId(), shipment.getId(), lineRef)
-                && productInventoryService.hasProductKardexMovement(
+        boolean kioscoApplied = kioscoInventoryService.hasShipmentReceiptLineApplied(
+                shipment.getLocationId(), shipment.getId(), lineRef);
+        boolean kardexApplied = productInventoryService.hasProductKardexMovement(
                 "SHIPMENT", shipment.getId(), "TRANSFER_IN",
-                detail.getProductId(), shipment.getLocationId(), detail.getColorId(), lineRef)) {
+                detail.getProductId(), shipment.getLocationId(), detail.getColorId(), lineRef);
+
+        if (kioscoApplied && kardexApplied) {
             return;
         }
-        if (productInventoryService.hasProductKardexMovement(
-                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
-                detail.getProductId(), shipment.getLocationId(), detail.getColorId(), lineRef)) {
+        if (kioscoApplied) {
+            // Kardex missing: backfill kardex only — never re-apply kiosco ENTRADA.
+            backfillReceiptKardexForDetail(shipment, detail, qtyReceived, lineRef);
+            return;
+        }
+        if (kardexApplied) {
             applyKioscoReceiptLineOnly(shipment, detail, qtyReceived, lineRef);
             return;
         }
@@ -3509,6 +3530,35 @@ public class ProductDistributionService {
                 qtyReceived,
                 before,
                 after,
+                null,
+                "SHIPMENT",
+                shipment.getId(),
+                lineRef,
+                "Recepcion de envio en kiosko"
+        );
+    }
+
+    private void backfillReceiptKardexForDetail(
+            ProductShipmentEntity shipment,
+            ProductShipmentDetailEntity detail,
+            BigDecimal qtyReceived,
+            String lineRef) throws ResourceNotFoundException {
+        BigDecimal current = productInventoryService
+                .getInventoryByProductAndLocationAndColor(
+                        detail.getProductId(), shipment.getLocationId(), detail.getColorId())
+                .getQuantity();
+        if (current == null) {
+            current = BigDecimal.ZERO;
+        }
+        // Inventory qty already reflects the kiosco ENTRADA sync; only record the missing kardex row.
+        productInventoryService.recordProductMovementIfAbsent(
+                detail.getProductId(),
+                shipment.getLocationId(),
+                detail.getColorId(),
+                "TRANSFER_IN",
+                qtyReceived,
+                current.subtract(qtyReceived),
+                current,
                 null,
                 "SHIPMENT",
                 shipment.getId(),
@@ -3623,8 +3673,19 @@ public class ProductDistributionService {
                 if (currentStock >= item.getQuantity().intValue()) {
                     continue;
                 }
-                BigDecimal missing = item.getQuantity().subtract(BigDecimal.valueOf(currentStock));
-                applyReceiptInventoryForPackagingProduct(shipment, product, missing, item.getMaterialId());
+                // Never create a second ENTRADA with the same packing lineRef; top up via AJUSTE.
+                String repairReason = "Reparación recepción empaque · "
+                        + KioscoInventoryService.shipmentReceiptLineReason(lineRef)
+                        + "#REPAIR";
+                kioscoInventoryService.registrarAjuste(
+                        shipment.getLocationId(),
+                        product.getId(),
+                        null,
+                        item.getQuantity().intValue(),
+                        null,
+                        repairReason,
+                        securityUtil.getCurrentUserId(),
+                        null);
                 repaired++;
                 continue;
             }
@@ -3640,25 +3701,51 @@ public class ProductDistributionService {
             BigDecimal qtyReceived,
             Long materialId) throws ResourceNotFoundException, BusinessException {
         String lineRef = shipmentPackingLineReference(shipment, materialId);
-        if (kioscoInventoryService.hasShipmentReceiptLineApplied(
-                shipment.getLocationId(), shipment.getId(), lineRef)
-                && productInventoryService.hasProductKardexMovement(
+        boolean kioscoApplied = kioscoInventoryService.hasShipmentReceiptLineApplied(
+                shipment.getLocationId(), shipment.getId(), lineRef);
+        boolean kardexApplied = productInventoryService.hasProductKardexMovement(
                 "SHIPMENT", shipment.getId(), "TRANSFER_IN",
-                product.getId(), shipment.getLocationId(), null, lineRef)) {
+                product.getId(), shipment.getLocationId(), null, lineRef);
+
+        if (kioscoApplied && kardexApplied) {
             return;
         }
-        if (productInventoryService.hasProductKardexMovement(
-                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
-                product.getId(), shipment.getLocationId(), null, lineRef)) {
-            kioscoInventoryService.registrarEntradaDesdeIntegracion(
-                    shipment.getLocationId(),
+        if (kioscoApplied) {
+            BigDecimal current = productInventoryService
+                    .getInventoryByProductAndLocationAndColor(
+                            product.getId(), shipment.getLocationId(), null)
+                    .getQuantity();
+            if (current == null) {
+                current = BigDecimal.ZERO;
+            }
+            productInventoryService.recordProductMovementIfAbsent(
                     product.getId(),
+                    shipment.getLocationId(),
                     null,
+                    "TRANSFER_IN",
                     qtyReceived,
-                    shipment.getId(),
-                    securityUtil.getCurrentUserId(),
+                    current.subtract(qtyReceived),
+                    current,
                     null,
-                    lineRef);
+                    "SHIPMENT",
+                    shipment.getId(),
+                    lineRef,
+                    "Recepcion de empaque SUM- en kiosko");
+            return;
+        }
+        if (kardexApplied) {
+            if (!kioscoInventoryService.hasShipmentReceiptLineApplied(
+                    shipment.getLocationId(), shipment.getId(), lineRef)) {
+                kioscoInventoryService.registrarEntradaDesdeIntegracion(
+                        shipment.getLocationId(),
+                        product.getId(),
+                        null,
+                        qtyReceived,
+                        shipment.getId(),
+                        securityUtil.getCurrentUserId(),
+                        null,
+                        lineRef);
+            }
             return;
         }
 

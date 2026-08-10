@@ -54,6 +54,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -79,6 +80,37 @@ public class KioscoInventoryService {
             return SHIPMENT_RECEIPT_LINE_PREFIX + "UNKNOWN";
         }
         return SHIPMENT_RECEIPT_LINE_PREFIX + lineRef.trim();
+    }
+
+    /**
+     * Match a shipment receipt line token without confusing L1 with L10/L12.
+     * Accepts either the raw lineRef ({@code ENV#L1}) or the prefixed reason key.
+     */
+    public static boolean reasonContainsShipmentReceiptLine(String reason, String lineRef) {
+        if (reason == null || reason.isBlank() || lineRef == null || lineRef.isBlank()) {
+            return false;
+        }
+        String trimmed = lineRef.trim();
+        return containsExactLineToken(reason, shipmentReceiptLineReason(trimmed))
+                || containsExactLineToken(reason, trimmed);
+    }
+
+    private static boolean containsExactLineToken(String reason, String token) {
+        if (token == null || token.isBlank()) {
+            return false;
+        }
+        int from = 0;
+        while (true) {
+            int idx = reason.indexOf(token, from);
+            if (idx < 0) {
+                return false;
+            }
+            int end = idx + token.length();
+            if (end >= reason.length() || !Character.isDigit(reason.charAt(end))) {
+                return true;
+            }
+            from = idx + 1;
+        }
     }
     private static final String REFERENCE_KIOSCO_INVENTORY = "KIOSCO_INVENTORY";
     private static final String ADMIN_MOVEMENT_MUTATION_KEY = "app.kiosco_movement_admin_mutation";
@@ -432,9 +464,22 @@ public class KioscoInventoryService {
             BigDecimal quantity,
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarTrasladoDesdeIntegracion(
+                locationOriginId, locationDestinationId, productId, colorId, quantity, userId, null);
+    }
+
+    public TrasladoResult registrarTrasladoDesdeIntegracion(
+            Long locationOriginId,
+            Long locationDestinationId,
+            Long productId,
+            Long colorId,
+            BigDecimal quantity,
+            Long userId,
+            Long transferId
+    ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
         return registrarTrasladoInternal(
-                locationOriginId, locationDestinationId, productId, colorId, qty, userId, false, null, null, null);
+                locationOriginId, locationDestinationId, productId, colorId, qty, userId, false, null, null, transferId);
     }
 
     public TrasladoResult registrarTraslado(KioscoInventoryTrasladoRequest request)
@@ -460,6 +505,7 @@ public class KioscoInventoryService {
             throw new BusinessException("Debes indicar el número de boleta física.");
         }
         ExistingTrasladoBoleta existing = resolveExistingTrasladoBoleta(slip, originId, destId);
+        rejectDuplicateTrasladoBoletaLines(slip, items);
         Long transferReferenceId = existing != null && existing.referenceId() != null
                 ? existing.referenceId()
                 : generateTransferReferenceId();
@@ -621,6 +667,39 @@ public class KioscoInventoryService {
     private record ExistingTrasladoBoleta(Long referenceId, Long originId, Long destinationId) {}
 
     /**
+     * Rechaza líneas duplicadas (mismo producto+color+talla+cantidad) en la solicitud
+     * o ya registradas en la misma boleta física.
+     */
+    private void rejectDuplicateTrasladoBoletaLines(
+            String slip,
+            List<KioscoInventoryTrasladoRequest.Item> items
+    ) throws BusinessException {
+        Set<String> seenInRequest = new HashSet<>();
+        for (KioscoInventoryTrasladoRequest.Item item : items) {
+            String key = trasladoBoletaLineKey(item.getProductId(), item.getColorId(), item.getSizeKey(), item.getQuantity());
+            if (!seenInRequest.add(key)) {
+                throw new BusinessException(
+                        "La boleta tiene una línea duplicada (mismo producto, color, talla y cantidad).");
+            }
+            String sizeKey = ProductInventorySizesJson.normalizeKey(item.getSizeKey());
+            String sizeKeyOrNull = sizeKey.isEmpty() ? null : sizeKey;
+            if (kioscoMovementRepository.existsTrasladoBoletaDuplicateLine(
+                    slip, item.getProductId(), item.getColorId(), sizeKeyOrNull, item.getQuantity())) {
+                throw new BusinessException(
+                        "Esa línea ya está registrada en la boleta (mismo producto, color, talla y cantidad).");
+            }
+        }
+    }
+
+    private static String trasladoBoletaLineKey(Long productId, Long colorId, String sizeKey, Integer quantity) {
+        String size = ProductInventorySizesJson.normalizeKey(sizeKey);
+        return String.valueOf(productId) + '|'
+                + (colorId == null ? "" : colorId) + '|'
+                + size + '|'
+                + (quantity == null ? "" : quantity);
+    }
+
+    /**
      * Si la boleta ya existe como traslado entre los mismos kioskos, permite anexar productos.
      * Si existe con otra ruta u otro tipo de movimiento, rechaza.
      */
@@ -675,17 +754,39 @@ public class KioscoInventoryService {
             validateProduct(productId);
             validateColor(colorId);
             Long transferReferenceId = reuseReferenceId != null ? reuseReferenceId : generateTransferReferenceId();
+            String sizeKeyOrNull = ProductInventorySizesJson.normalizeKey(sizeKey);
+            sizeKeyOrNull = sizeKeyOrNull.isEmpty() ? null : sizeKeyOrNull;
+
+            boolean salidaDone = reuseReferenceId != null
+                    && kioscoMovementRepository.existsInventoryTransferMovement(
+                    locationOriginId, productId, colorId, reuseReferenceId, KioscoMovementType.TRASLADO_SALIDA);
+            boolean entradaDone = reuseReferenceId != null
+                    && kioscoMovementRepository.existsInventoryTransferMovement(
+                    locationDestinationId, productId, colorId, reuseReferenceId, KioscoMovementType.TRASLADO_ENTRADA);
+            if (salidaDone && entradaDone) {
+                log.info(
+                        "KIOSCO_TRASLADO_INTEGRACION_SKIPPED origin={} dest={} productId={} colorId={} transferId={} (already applied)",
+                        locationOriginId, locationDestinationId, productId, colorId, reuseReferenceId);
+                return TrasladoResult.builder()
+                        .referenceId(transferReferenceId)
+                        .originStock(resolveStockResponseForNoOp(locationOriginId, productId, colorId, null))
+                        .destinationStock(resolveStockResponseForNoOp(locationDestinationId, productId, colorId, null))
+                        .build();
+            }
+
             LocationEntity fromLocation = locationRepository.findById(locationOriginId).orElse(null);
             LocationEntity toLocation = locationRepository.findById(locationDestinationId).orElse(null);
             String trasladoReason = buildTransferReason(fromLocation, toLocation);
-            String sizeKeyOrNull = ProductInventorySizesJson.normalizeKey(sizeKey);
-            sizeKeyOrNull = sizeKeyOrNull.isEmpty() ? null : sizeKeyOrNull;
-            KioscoStockResponse origin = applyStockMovement(
+            KioscoStockResponse origin = salidaDone
+                    ? resolveStockResponseForNoOp(locationOriginId, productId, colorId, null)
+                    : applyStockMovement(
                     locationOriginId, productId, colorId, quantity, transferReferenceId,
                     locationOriginId, locationDestinationId, resolvedUserId,
                     KioscoMovementType.TRASLADO_SALIDA, -quantity, true, trasladoReason,
                     sizeKeyOrNull, false, physicalSlipNumber);
-            KioscoStockResponse destination = applyStockMovement(
+            KioscoStockResponse destination = entradaDone
+                    ? resolveStockResponseForNoOp(locationDestinationId, productId, colorId, null)
+                    : applyStockMovement(
                     locationDestinationId, productId, colorId, quantity, transferReferenceId,
                     locationOriginId, locationDestinationId, resolvedUserId,
                     KioscoMovementType.TRASLADO_ENTRADA, quantity, true, trasladoReason,
@@ -1223,6 +1324,13 @@ public class KioscoInventoryService {
         if (productLeftKiosk == null) {
             throw new BusinessException("Debes indicar si el producto salió del kiosko.");
         }
+        if (hasPosReferenceMovementApplied(
+                locationId, productId, colorId, invoiceId, KioscoMovementType.ANULACION, sizeKey)) {
+            log.info(
+                    "KIOSCO_ANULACION_SKIPPED locationId={} productId={} colorId={} invoiceId={} (already applied)",
+                    locationId, productId, colorId, invoiceId);
+            return resolveStockResponseForNoOp(locationId, productId, colorId, null);
+        }
         int delta = Boolean.TRUE.equals(productLeftKiosk) ? 0 : quantity;
         return applyStockMovement(
                 locationId,
@@ -1309,6 +1417,14 @@ public class KioscoInventoryService {
             }
         }
 
+        if (referenceId != null && receiptLineRef != null && !receiptLineRef.isBlank()
+                && hasShipmentReceiptLineApplied(destinationLocationId, referenceId, receiptLineRef)) {
+            log.info(
+                    "KIOSCO_ENTRADA_SHIPMENT_LINE_SKIPPED locationId={} shipmentId={} lineRef={} (already applied)",
+                    destinationLocationId, referenceId, receiptLineRef.trim());
+            return resolveStockResponseForNoOp(destinationLocationId, productId, colorId, hardwareCondition);
+        }
+
         KioscoStockResponse response = applyStockMovement(
                 locationId,
                 productId,
@@ -1331,6 +1447,32 @@ public class KioscoInventoryService {
         return response;
     }
 
+    private KioscoStockResponse resolveStockResponseForNoOp(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            String hardwareCondition
+    ) {
+        String hardware = resolveStockHardware(hardwareCondition);
+        Optional<KioscoStockEntity> byHardware = kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        locationId, productId, colorId, hardware);
+        if (byHardware.isPresent()) {
+            return toStockResponse(byHardware.get());
+        }
+        return kioscoStockRepository.findByLocationIdAndProductIdAndColorId(locationId, productId, colorId)
+                .map(this::toStockResponse)
+                .orElseGet(() -> KioscoStockResponse.builder()
+                        .locationId(locationId)
+                        .productId(productId)
+                        .colorId(colorId)
+                        .hardwareCondition(hardware)
+                        .currentStock(0)
+                        .minimumStock(0)
+                        .lowStock(true)
+                        .build());
+    }
+
     private void applyHardwareConditionToStock(
             Long locationId,
             Long productId,
@@ -1344,7 +1486,10 @@ public class KioscoInventoryService {
         if (locationId == null || shipmentId == null || lineRef == null || lineRef.isBlank()) {
             return false;
         }
-        return kioscoMovementRepository.existsShipmentReceiptLine(locationId, shipmentId, lineRef.trim());
+        String trimmed = lineRef.trim();
+        String reasonKey = shipmentReceiptLineReason(trimmed);
+        return kioscoMovementRepository.existsShipmentReceiptLine(locationId, shipmentId, reasonKey)
+                || kioscoMovementRepository.existsShipmentReceiptLine(locationId, shipmentId, trimmed);
     }
 
     /**
@@ -1655,9 +1800,12 @@ public class KioscoInventoryService {
         LocalDateTime toDtExclusive = to.plusDays(1).atStartOfDay();
 
         Map<Long, Integer> initialBalanceByStockId = computeBalanceByStockId(locationId, fromDt);
-        Map<Long, Integer> balanceAtCutoffByStockId = balanceAsOf != null
-                ? computeBalanceByStockId(locationId, balanceAsOf.plusDays(1).atStartOfDay())
-                : null;
+        // Period-end ledger (or as-of cutoff): do not use live current_stock, which may include
+        // post-period moves or diverge from sizes after mixed sized/unsized history.
+        LocalDateTime endCutoffExclusive = balanceAsOf != null
+                ? balanceAsOf.plusDays(1).atStartOfDay()
+                : toDtExclusive;
+        Map<Long, Integer> endBalanceByStockId = computeBalanceByStockId(locationId, endCutoffExclusive);
 
         Map<Long, KardexAccumulator> accByStockId = new LinkedHashMap<>();
         for (KioscoMovementEntity m : collectPeriodMovements(locationId, fromDt, toDtExclusive, physicalCountId)) {
@@ -1679,9 +1827,7 @@ public class KioscoInventoryService {
             KardexAccumulator acc = accByStockId.getOrDefault(stock.getId(), new KardexAccumulator());
             ProductEntity product = stock.getProduct();
             syncFossCurrentStockFromSizes(stock);
-            int finalBalance = balanceAtCutoffByStockId != null
-                    ? balanceAtCutoffByStockId.getOrDefault(stock.getId(), 0)
-                    : resolveInventarioFinal(stock, product);
+            int finalBalance = endBalanceByStockId.getOrDefault(stock.getId(), 0);
             if (!includeZeroRows && initial == 0 && finalBalance == 0 && acc.isEmpty()) {
                 continue;
             }
@@ -2512,6 +2658,13 @@ public class KioscoInventoryService {
             String sizeKey,
             String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
+        if (hasPosReferenceMovementApplied(
+                locationId, productId, colorId, invoiceId, KioscoMovementType.VENTA, sizeKey)) {
+            log.info(
+                    "KIOSCO_VENTA_SKIPPED locationId={} productId={} colorId={} invoiceId={} (already applied)",
+                    locationId, productId, colorId, invoiceId);
+            return resolveStockResponseForNoOp(locationId, productId, colorId, hardwareCondition);
+        }
         KioscoStockResponse response = applyStockMovement(
                 locationId,
                 productId,
@@ -2533,6 +2686,23 @@ public class KioscoInventoryService {
         );
         verificarStockMinimo(locationId, productId, colorId);
         return response;
+    }
+
+    private boolean hasPosReferenceMovementApplied(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Long referenceId,
+            KioscoMovementType movementType,
+            String sizeKey
+    ) {
+        if (referenceId == null || locationId == null || productId == null || movementType == null) {
+            return false;
+        }
+        String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
+        String sizeKeyOrNull = normalizedSize.isEmpty() ? null : normalizedSize;
+        return kioscoMovementRepository.existsPosReferenceMovement(
+                locationId, productId, colorId, referenceId, movementType, sizeKeyOrNull);
     }
 
     private boolean shouldSplitVentaByHardware(Long productId, String hardwareCondition) {
@@ -2558,6 +2728,13 @@ public class KioscoInventoryService {
             String sizeKey,
             boolean syncLegacy
     ) throws BusinessException, ResourceNotFoundException {
+        if (hasPosReferenceMovementApplied(
+                locationId, productId, colorId, invoiceId, KioscoMovementType.VENTA, sizeKey)) {
+            log.info(
+                    "KIOSCO_VENTA_FIFO_SKIPPED locationId={} productId={} colorId={} invoiceId={} (already applied)",
+                    locationId, productId, colorId, invoiceId);
+            return resolveStockResponseForNoOp(locationId, productId, colorId, null);
+        }
         int remaining = quantity;
         KioscoStockResponse last = null;
         for (String hardware : List.of(ProductHardwareCondition.NUEVO, ProductHardwareCondition.VIEJO)) {
@@ -3603,8 +3780,12 @@ public class KioscoInventoryService {
 
     public record EntradaPrunePlan(int removedCount, List<PlannedEntradaAction> actions) {}
 
+    /** Marker appended to movement.reason when replay clamps a negative running stock to 0. */
+    static final String REPLAY_CLAMP_REASON_MARKER = "REPLAY_CLAMP";
+
     /**
      * Recalcula stock_before/stock_after y current_stock (requiere flag admin en la transaccion).
+     * Clamps negativos a 0 for safety, but logs and annotates each clamp on the movement reason.
      */
     public int replayMovementStockChain(Long kioscoStockId) {
         if (kioscoStockId == null) {
@@ -3624,20 +3805,31 @@ public class KioscoInventoryService {
             }
             int delta = movementSignedDelta(movement);
             movement.setStockBefore(running);
-            running += delta;
-            if (running < 0) {
-                running = 0;
-            }
+            int rawAfter = running + delta;
+            running = applyReplayClamp(stock.getId(), movement, rawAfter);
             movement.setStockAfter(running);
             enableAdminMovementMutation();
-            entityManager.createNativeQuery(
-                            "UPDATE kiosco_movement SET stock_before = :before, stock_after = :after WHERE id = :id")
-                    .setParameter("before", movement.getStockBefore())
-                    .setParameter("after", movement.getStockAfter())
-                    .setParameter("id", movement.getId())
-                    .executeUpdate();
+            boolean reasonTouched = movement.getReason() != null
+                    && movement.getReason().contains(REPLAY_CLAMP_REASON_MARKER);
+            if (reasonTouched) {
+                entityManager.createNativeQuery(
+                                "UPDATE kiosco_movement SET stock_before = :before, stock_after = :after, reason = :reason WHERE id = :id")
+                        .setParameter("before", movement.getStockBefore())
+                        .setParameter("after", movement.getStockAfter())
+                        .setParameter("reason", movement.getReason())
+                        .setParameter("id", movement.getId())
+                        .executeUpdate();
+            } else {
+                entityManager.createNativeQuery(
+                                "UPDATE kiosco_movement SET stock_before = :before, stock_after = :after WHERE id = :id")
+                        .setParameter("before", movement.getStockBefore())
+                        .setParameter("after", movement.getStockAfter())
+                        .setParameter("id", movement.getId())
+                        .executeUpdate();
+            }
         }
         entityManager.flush();
+        // Full ledger total (sized + unsized). rebuildSizes may refine when history is sized-only.
         stock.setCurrentStock(running);
         rebuildSizesDataFromMovements(stock, movements);
         kioscoStockRepository.save(stock);
@@ -3662,10 +3854,8 @@ public class KioscoInventoryService {
             if (!Boolean.TRUE.equals(movement.getAffectsStock())) {
                 continue;
             }
-            running += movementSignedDelta(movement);
-            if (running < 0) {
-                running = 0;
-            }
+            int rawAfter = running + movementSignedDelta(movement);
+            running = applyReplayClamp(stock.getId(), movement, rawAfter);
         }
         stock.setCurrentStock(running);
         rebuildSizesDataFromMovements(stock, movements);
@@ -3674,8 +3864,42 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Reconstruye {@code sizes_data} rejugando todos los movimientos con {@code size_key}.
-     * Si hay desglose por talla, alinea {@code current_stock} con la suma de tallas (>= 0).
+     * Safety clamp for replay: never persist negative stock_after / current_stock.
+     * Leaves a clear log + reason marker so clamps are not silent history destruction.
+     */
+    int applyReplayClamp(Long stockId, KioscoMovementEntity movement, int rawAfter) {
+        if (rawAfter >= 0) {
+            return rawAfter;
+        }
+        Long movementId = movement != null ? movement.getId() : null;
+        String type = movement != null && movement.getMovementType() != null
+                ? movement.getMovementType().name()
+                : "?";
+        log.warn(
+                "KIOSCO_REPLAY_CLAMP stockId={} movementId={} type={} rawAfter={} -> 0",
+                stockId, movementId, type, rawAfter);
+        if (movement != null) {
+            String note = REPLAY_CLAMP_REASON_MARKER + " rawAfter=" + rawAfter + " -> 0";
+            String existing = movement.getReason();
+            if (existing == null || existing.isBlank()) {
+                movement.setReason(note);
+            } else if (!existing.contains(REPLAY_CLAMP_REASON_MARKER)) {
+                movement.setReason(existing + " · " + note);
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Reconstruye {@code sizes_data} rejugando movimientos con {@code size_key}.
+     * <p>
+     * Rule:
+     * <ul>
+     *   <li>sizes_data rebuilt only from sized (size_key) stock-affecting movements</li>
+     *   <li>only sized history → current_stock = sum(positive sizes)</li>
+     *   <li>only unsized history → current_stock left as full-ledger total; sizes_data cleared</li>
+     *   <li>mixed sized+unsized → current_stock kept from full ledger replay (not wiped to sizes sum)</li>
+     * </ul>
      */
     public void rebuildSizesDataFromMovements(KioscoStockEntity stock, List<KioscoMovementEntity> movements) {
         if (stock == null) {
@@ -3684,40 +3908,72 @@ public class KioscoInventoryService {
         List<KioscoMovementEntity> list = movements != null
                 ? movements
                 : kioscoMovementRepository.findByKioscoStockIdOrderByCreatedAtAscIdAsc(stock.getId());
+        if (list == null) {
+            list = List.of();
+        }
         Map<String, Integer> bySize = new LinkedHashMap<>();
         boolean anySized = false;
+        boolean anyUnsized = false;
+        int runningTotal = 0;
         for (KioscoMovementEntity movement : list) {
             if (movement == null || !Boolean.TRUE.equals(movement.getAffectsStock())) {
                 continue;
             }
+            int delta = movementSignedDelta(movement);
+            int rawAfter = runningTotal + delta;
+            // Mirror replay clamp for the aggregate chain used when mixed/unsized.
+            runningTotal = rawAfter < 0 ? 0 : rawAfter;
             String sizeKey = ProductInventorySizesJson.normalizeKey(movement.getSizeKey());
             if (sizeKey.isEmpty()) {
+                anyUnsized = true;
                 continue;
             }
             anySized = true;
-            int next = bySize.getOrDefault(sizeKey, 0) + movementSignedDelta(movement);
+            int next = bySize.getOrDefault(sizeKey, 0) + delta;
             bySize.put(sizeKey, Math.max(0, next));
         }
         if (!anySized) {
+            // Only unsized (or empty ledger): clear stale size breakdown.
+            boolean cleared = false;
+            if (stock.getSizesData() != null) {
+                stock.setSizesData(null);
+                cleared = true;
+            }
+            if (anyUnsized) {
+                stock.setCurrentStock(runningTotal);
+            }
+            if (cleared || anyUnsized) {
+                stock.setLastUpdatedAt(LocalDateTime.now());
+                log.info(
+                        "KIOSCO_REBUILD_SIZES_CLEAR stockId={} productId={} colorId={} reason=no_sized_movements ledgerTotal={} currentStock={}",
+                        stock.getId(), stock.getProductId(), stock.getColorId(), runningTotal,
+                        safeInt(stock.getCurrentStock()));
+            }
             return;
         }
         Map<String, BigDecimal> sizes = new LinkedHashMap<>();
-        int sum = 0;
+        int sizesSum = 0;
         for (Map.Entry<String, Integer> e : bySize.entrySet()) {
             int qty = e.getValue() != null ? e.getValue() : 0;
             if (qty <= 0) {
                 continue;
             }
             sizes.put(e.getKey(), BigDecimal.valueOf(qty));
-            sum += qty;
+            sizesSum += qty;
         }
         stock.setSizesData(sizes.isEmpty() ? null : ProductInventorySizesJson.serialize(sizes));
-        // Con desglose por talla el vendible POS es la suma de tallas (no un current huérfano).
-        stock.setCurrentStock(sum);
+        if (anyUnsized) {
+            // Mixed: preserve full ledger total (already set by replay, or recompute here).
+            stock.setCurrentStock(runningTotal);
+        } else {
+            // Pure sized: current equals positive sizes sum.
+            stock.setCurrentStock(sizesSum);
+        }
         stock.setLastUpdatedAt(LocalDateTime.now());
         log.info(
-                "KIOSCO_REBUILD_SIZES stockId={} productId={} colorId={} sizesTotal={} sizes={}",
-                stock.getId(), stock.getProductId(), stock.getColorId(), sum, sizes.keySet());
+                "KIOSCO_REBUILD_SIZES stockId={} productId={} colorId={} mixed={} sizesTotal={} ledgerTotal={} currentStock={} sizes={}",
+                stock.getId(), stock.getProductId(), stock.getColorId(), anyUnsized, sizesSum, runningTotal,
+                safeInt(stock.getCurrentStock()), sizes.keySet());
     }
 
     private int movementSignedDelta(KioscoMovementEntity movement) {
@@ -3734,7 +3990,10 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Cinchos FOSS: el inventario final es la suma de tallas en sizes_data cuando existe desglose.
+     * Inventario final vendible/reportable.
+     * FOSS con desglose: max(current_stock, sum(sizes)) so mixed ledger totals
+     * (unsized history) are not understated by sizes-only sums, while size-only
+     * undercounts on current_stock are still corrected upward.
      */
     public int resolveInventarioFinal(KioscoStockEntity stock, ProductEntity product) {
         if (stock == null) {
@@ -3752,12 +4011,14 @@ public class KioscoInventoryService {
         if (sizes.isEmpty()) {
             return current;
         }
-        return ProductInventorySizesJson.sum(sizes).setScale(0, RoundingMode.HALF_UP).intValue();
+        int sizesTotal = ProductInventorySizesJson.sum(sizes).setScale(0, RoundingMode.HALF_UP).intValue();
+        return Math.max(current, sizesTotal);
     }
 
     /**
      * Cinchos FOSS: si sizes_data tiene más unidades que current_stock (entradas por talla sin reflejar
-     * el total agregado), alinea current_stock con la suma de tallas.
+     * el total agregado), alinea current_stock hacia arriba con la suma de tallas.
+     * Never lowers current_stock (mixed unsized+sized history may legitimately exceed sizes sum).
      */
     public void syncFossCurrentStockFromSizes(KioscoStockEntity stock) {
         if (stock == null || stock.getId() == null) {

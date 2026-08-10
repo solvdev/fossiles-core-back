@@ -1953,7 +1953,8 @@ public class InventoryService {
                         transfer.getProductId(),
                         colorId,
                         transfer.getQuantity(),
-                        transfer.getUpdatedBy()
+                        transfer.getUpdatedBy(),
+                        transfer.getId()
                 );
             } else if (kioskInventoryGuard.isKioskLocation(toLocation)) {
                 kioscoInventoryService.registrarEntradaPorTransferenciaInventario(

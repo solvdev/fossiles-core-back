@@ -18,12 +18,22 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
 
     List<KioscoMovementEntity> findByKioscoStockIdOrderByCreatedAtAscIdAsc(Long kioscoStockId);
 
+    /**
+     * Exact line-token match (not substring LIKE): avoids L1 matching L10.
+     * Token must appear at end of reason or be followed by a non-digit delimiter.
+     */
     @Query("SELECT m FROM KioscoMovementEntity m "
             + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
             + "WHERE s.locationId = :locationId "
             + "AND m.referenceId = :shipmentId "
             + "AND m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
-            + "AND m.reason LIKE CONCAT('%', :lineKey, '%') "
+            + "AND ("
+            + "  m.reason LIKE CONCAT('%', :lineKey) "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, ' %') "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, '·%') "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, '|%') "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, '/%') "
+            + ") "
             + "ORDER BY m.createdAt ASC, m.id ASC")
     List<KioscoMovementEntity> findShipmentEntradaMovements(
             @Param("locationId") Long locationId,
@@ -67,8 +77,18 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             + "AND (m.referenceId = :shipmentId "
             + "OR (:shipmentToken IS NOT NULL AND :shipmentToken <> '' AND ("
             + "     (m.referenceId IS NULL AND LOWER(m.reason) LIKE LOWER(CONCAT('%', :shipmentToken, '%'))) "
-            + "     OR (:lineKey IS NOT NULL AND :lineKey <> '' AND m.reason LIKE CONCAT('%', :lineKey, '%')) "
-            + "     OR (:lineReasonKey IS NOT NULL AND :lineReasonKey <> '' AND m.reason LIKE CONCAT('%', :lineReasonKey, '%'))"
+            + "     OR (:lineKey IS NOT NULL AND :lineKey <> '' AND ("
+            + "          m.reason LIKE CONCAT('%', :lineKey) "
+            + "          OR m.reason LIKE CONCAT('%', :lineKey, ' %') "
+            + "          OR m.reason LIKE CONCAT('%', :lineKey, '·%') "
+            + "          OR m.reason LIKE CONCAT('%', :lineKey, '|%')"
+            + "     )) "
+            + "     OR (:lineReasonKey IS NOT NULL AND :lineReasonKey <> '' AND ("
+            + "          m.reason LIKE CONCAT('%', :lineReasonKey) "
+            + "          OR m.reason LIKE CONCAT('%', :lineReasonKey, ' %') "
+            + "          OR m.reason LIKE CONCAT('%', :lineReasonKey, '·%') "
+            + "          OR m.reason LIKE CONCAT('%', :lineReasonKey, '|%')"
+            + "     ))"
             + "))) "
             + "ORDER BY m.createdAt ASC, m.id ASC")
     List<KioscoMovementEntity> findShipmentEntradaMovementsByProductLoose(
@@ -134,7 +154,12 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             + "AND m.referenceId = :shipmentId "
             + "AND m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.MERMA "
             + "AND (LOWER(m.reason) LIKE '%cuadre recepc%' OR LOWER(m.reason) LIKE '%cuadre recepcion%') "
-            + "AND m.reason LIKE CONCAT('%', :lineKey, '%') "
+            + "AND ("
+            + "  m.reason LIKE CONCAT('%', :lineKey) "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, ' %') "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, '·%') "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, '|%') "
+            + ") "
             + "ORDER BY m.createdAt ASC, m.id ASC")
     List<KioscoMovementEntity> findShipmentReconcileMermaMovements(
             @Param("locationId") Long locationId,
@@ -228,12 +253,21 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             Boolean affectsStock
     );
 
+    /**
+     * Exact line-token match (not substring LIKE): avoids L1 matching L10.
+     */
     @Query("SELECT COUNT(m) > 0 FROM KioscoMovementEntity m "
             + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
             + "WHERE s.locationId = :locationId "
             + "AND m.referenceId = :shipmentId "
             + "AND m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA "
-            + "AND m.reason LIKE CONCAT('%', :lineKey, '%')")
+            + "AND ("
+            + "  m.reason LIKE CONCAT('%', :lineKey) "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, ' %') "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, '·%') "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, '|%') "
+            + "  OR m.reason LIKE CONCAT('%', :lineKey, '/%') "
+            + ")")
     boolean existsShipmentReceiptLine(
             @Param("locationId") Long locationId,
             @Param("shipmentId") Long shipmentId,
@@ -253,6 +287,44 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             @Param("colorId") Long colorId,
             @Param("transferId") Long transferId,
             @Param("movementType") KioscoMovementType movementType
+    );
+
+    /**
+     * POS / factura idempotency: same sale line (location+product+color+size) already wrote VENTA or ANULACION.
+     */
+    @Query("SELECT COUNT(m) > 0 FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
+            + "AND s.productId = :productId "
+            + "AND m.referenceId = :referenceId "
+            + "AND m.movementType = :movementType "
+            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
+            + "AND ((:sizeKey IS NULL AND (m.sizeKey IS NULL OR m.sizeKey = '')) "
+            + "OR m.sizeKey = :sizeKey)")
+    boolean existsPosReferenceMovement(
+            @Param("locationId") Long locationId,
+            @Param("productId") Long productId,
+            @Param("colorId") Long colorId,
+            @Param("referenceId") Long referenceId,
+            @Param("movementType") KioscoMovementType movementType,
+            @Param("sizeKey") String sizeKey
+    );
+
+    @Query("SELECT COUNT(m) > 0 FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE m.physicalSlipNumber = :slip "
+            + "AND m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_SALIDA "
+            + "AND s.productId = :productId "
+            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
+            + "AND ((:sizeKey IS NULL AND (m.sizeKey IS NULL OR m.sizeKey = '')) "
+            + "OR m.sizeKey = :sizeKey) "
+            + "AND m.quantity = :quantity")
+    boolean existsTrasladoBoletaDuplicateLine(
+            @Param("slip") String slip,
+            @Param("productId") Long productId,
+            @Param("colorId") Long colorId,
+            @Param("sizeKey") String sizeKey,
+            @Param("quantity") Integer quantity
     );
 
     boolean existsByPhysicalSlipNumber(String physicalSlipNumber);
