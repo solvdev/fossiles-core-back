@@ -1177,6 +1177,22 @@ public class ProductDistributionService {
     }
 
     /**
+     * Busca envíos de cualquier tipo por número (parcial o exacto).
+     */
+    @Transactional(readOnly = true)
+    public List<ProductShipmentResponse> searchShipmentsByNumber(String query, int limit) {
+        String q = query == null ? "" : query.trim();
+        if (q.isEmpty()) {
+            return List.of();
+        }
+        int max = Math.min(Math.max(limit, 1), 50);
+        return shipmentRepository.searchByShipmentNumberContaining(q).stream()
+                .limit(max)
+                .map(this::toShipmentResponse)
+                .collect(Collectors.toList());
+    }
+
+    /**
      * Crea o actualiza un envío en una distribución
      */
     public ProductShipmentResponse createOrUpdateShipment(Long distributionId, ProductShipmentRequest request) 

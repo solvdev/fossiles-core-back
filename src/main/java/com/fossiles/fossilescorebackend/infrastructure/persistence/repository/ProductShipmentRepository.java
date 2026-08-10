@@ -122,6 +122,14 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
             """)
     List<Long> findCustomerIdsByShipmentNumber(@Param("q") String q);
 
+    /** Busca cualquier envío por número (ENVP, ENVI, OPC-ENV, correlativo de kiosko, etc.). */
+    @Query("""
+            SELECT s FROM ProductShipmentEntity s
+            WHERE LOWER(COALESCE(s.shipmentNumber, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+            ORDER BY s.id DESC
+            """)
+    List<ProductShipmentEntity> searchByShipmentNumberContaining(@Param("q") String q);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s FROM ProductShipmentEntity s WHERE s.id = :id")
     Optional<ProductShipmentEntity> findByIdForUpdate(@Param("id") Long id);

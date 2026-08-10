@@ -93,6 +93,14 @@ public class ProductDistributionController {
         return ResponseEntity.ok(shipments);
     }
 
+    /** Búsqueda global por número de envío (ENVP, ENVI, OPC-ENV, kiosko, etc.). */
+    @GetMapping("/shipments/lookup")
+    public ResponseEntity<List<ProductShipmentResponse>> lookupShipmentsByNumber(
+            @RequestParam String q,
+            @RequestParam(defaultValue = "25") int limit) {
+        return ResponseEntity.ok(distributionService.searchShipmentsByNumber(q, limit));
+    }
+
     @GetMapping("/shipments/{id}")
     public ResponseEntity<ProductShipmentResponse> getShipmentById(@PathVariable Long id) 
             throws ResourceNotFoundException {
