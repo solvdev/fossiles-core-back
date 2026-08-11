@@ -11,6 +11,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryT
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryVentaRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoNotificationRecipientRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountItemUpsertRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountObservationsRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountReviewRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoOpeningInventoryApplyRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoOpeningInventoryItemUpsertRequest;
@@ -331,6 +332,15 @@ public class KioscoInventoryController {
     ) throws BusinessException, ResourceNotFoundException {
         String notes = request != null ? request.getNotes() : null;
         return ResponseEntity.ok(kioscoInventoryCountService.markReviewed(countId, notes));
+    }
+
+    @PutMapping("/conteo-fisico/{countId}/observations")
+    public ResponseEntity<KioscoPhysicalCountReportResponse> updateConteoObservations(
+            @PathVariable Long countId,
+            @RequestBody(required = false) KioscoPhysicalCountObservationsRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        String observations = request != null ? request.getObservations() : null;
+        return ResponseEntity.ok(kioscoInventoryCountService.updateObservations(countId, observations));
     }
 
     @GetMapping("/{locationId}/conteo-fisico/historial")

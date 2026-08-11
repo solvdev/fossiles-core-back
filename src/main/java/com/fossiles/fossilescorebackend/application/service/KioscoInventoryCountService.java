@@ -300,6 +300,22 @@ public class KioscoInventoryCountService {
     }
 
     /**
+     * Guarda observaciones generales de la sesión (hallazgos al contar).
+     * Editable hasta cerrar; no confundir con notes de revisión ni observation por ítem.
+     */
+    public KioscoPhysicalCountReportResponse updateObservations(Long countId, String observations)
+            throws BusinessException, ResourceNotFoundException {
+        KioscoPhysicalCountEntity count = findCountOrThrow(countId);
+        if (count.getStatus() == KioscoPhysicalCountStatus.CERRADO) {
+            throw new BusinessException("El conteo está cerrado y no admite más cambios.");
+        }
+        String trimmed = observations != null ? observations.trim() : "";
+        count.setObservations(trimmed.isEmpty() ? null : trimmed);
+        countRepository.save(count);
+        return buildAndPersistReport(count);
+    }
+
+    /**
      * Cierra un conteo revisado, dejandolo de solo lectura. El ajuste de las diferencias siempre
      * es manual (movimiento AJUSTE con motivo) para mantener trazabilidad; cerrar solo bloquea edicion.
      */
@@ -655,6 +671,7 @@ public class KioscoInventoryCountService {
                 .periodTo(count.getPeriodTo())
                 .status(count.getStatus().name())
                 .notes(count.getNotes())
+                .observations(count.getObservations())
                 .generatedBy(count.getGeneratedBy())
                 .generatedByName(resolveUsername(count.getGeneratedBy()))
                 .generatedAt(count.getGeneratedAt())
@@ -1873,6 +1890,7 @@ public class KioscoInventoryCountService {
                 .periodTo(count.getPeriodTo())
                 .status(count.getStatus().name())
                 .notes(count.getNotes())
+                .observations(count.getObservations())
                 .generatedByName(resolveUsername(count.getGeneratedBy()))
                 .generatedAt(count.getGeneratedAt())
                 .reviewedByName(resolveUsername(count.getReviewedBy()))

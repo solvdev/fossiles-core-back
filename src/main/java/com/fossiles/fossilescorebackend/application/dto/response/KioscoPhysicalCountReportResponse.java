@@ -27,6 +27,8 @@ public class KioscoPhysicalCountReportResponse {
     private LocalDate periodTo;
     private String status;
     private String notes;
+    /** Observaciones generales de la sesión (encabezado / Excel). */
+    private String observations;
     private Long generatedBy;
     private String generatedByName;
     private LocalDateTime generatedAt;

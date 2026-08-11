@@ -51,6 +51,10 @@ public class KioscoPhysicalCountEntity {
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes;
 
+    /** Observaciones generales del conteo (hallazgos al trabajar); distinto de notes de revisión. */
+    @Column(name = "observations", columnDefinition = "TEXT")
+    private String observations;
+
     @Column(name = "generated_by", nullable = false)
     private Long generatedBy;
 
