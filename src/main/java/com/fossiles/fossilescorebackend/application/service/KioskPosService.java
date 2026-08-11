@@ -38,6 +38,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
@@ -373,6 +374,10 @@ public class KioskPosService {
                 requiresSize = requiresSize || invRowOpt
                         .map(row -> hasPositiveSizeBreakdown(row.getSizesData()))
                         .orElse(false);
+            }
+            // Empaques SUM- nunca piden talla (p.ej. BOLSA PARA CINCHOS).
+            if (ProductCinchoType.isPackagingProductCode(product.getCode())) {
+                requiresSize = false;
             }
             if (requiresSize && sizeLabel.isEmpty()) {
                 throw new BusinessException("Debe seleccionar talla para " + product.getName() + ".");
@@ -2056,7 +2061,7 @@ public class KioskPosService {
                         .orElse(BigDecimal.ZERO);
             }
         } else {
-            // Cincho sin desglose actual: igual exige talla para no generar VENTA huérfana en el ledger.
+            // Cincho real (no SUM-) sin desglose: exige talla para no generar VENTA huérfana.
             if (sizeKey.isEmpty() && CinchoProductUtils.isCinchoLineForProduction(product)) {
                 throw new BusinessException("Debe seleccionar talla para " + label + ".");
             }

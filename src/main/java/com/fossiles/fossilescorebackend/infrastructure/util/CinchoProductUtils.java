@@ -52,6 +52,10 @@ public final class CinchoProductUtils {
         if (product == null) {
             return false;
         }
+        // Empaques SUM- (p.ej. "BOLSA PARA CINCHOS") no son cinchos aunque el nombre diga cincho.
+        if (ProductCinchoType.isPackagingProductCode(product.getCode())) {
+            return false;
+        }
         String cinchoType = product.getCinchoType();
         if (cinchoType != null && !cinchoType.isBlank()) {
             return true;

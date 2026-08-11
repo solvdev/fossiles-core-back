@@ -4151,7 +4151,7 @@ public class KioscoInventoryService {
         ProductEntity product = stock != null && stock.getProduct() != null
                 ? stock.getProduct()
                 : productRepository.findById(productId).orElse(null);
-        // Cincho real (tipo/nombre), no todo código FOSS-*: las billeteras FOSS no llevan talla.
+        // Cincho real (tipo/nombre); empaques SUM- quedan fuera en isCinchoLineForProduction.
         boolean cinchoRequiresSize = CinchoProductUtils.isCinchoLineForProduction(product);
         boolean kioscoBreakdown = stock != null
                 && ProductInventorySizesJson.hasNonEmptyBreakdown(stock.getSizesData());
