@@ -21,18 +21,21 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Lo
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,6 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -52,6 +57,8 @@ class KioscoInventoryCountServiceTest {
     private KioscoPhysicalCountRepository countRepository;
     @Mock
     private KioscoPhysicalCountItemRepository itemRepository;
+    @Mock
+    private com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountPresenceRepository presenceRepository;
     @Mock
     private KioscoNotificationRecipientRepository notificationRecipientRepository;
     @Mock
@@ -70,6 +77,8 @@ class KioscoInventoryCountServiceTest {
     private UserRepository userRepository;
     @Mock
     private SecurityUtil securityUtil;
+    @Spy
+    private ObjectMapper objectMapper = new ObjectMapper();
 
     @InjectMocks
     private KioscoInventoryCountService service;
@@ -105,7 +114,7 @@ class KioscoInventoryCountServiceTest {
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of());
         when(exchangeSlipRepository.findByPhysicalCountId(any())).thenReturn(List.of());
         when(exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
-        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 any(), any(), any(), any())).thenReturn(Optional.empty());
         try {
             when(kioscoInventoryService.computeStockBalanceByStockId(any(), any())).thenReturn(Map.of());
@@ -437,12 +446,16 @@ class KioscoInventoryCountServiceTest {
         when(securityUtil.getCurrentUserId()).thenReturn(reviewerId);
         stubPrincipalKardex(List.of(kardexRow(10)));
 
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> inv.getArgument(0));
+
         KioscoPhysicalCountReportResponse report = service.cerrarConteo(countId);
 
         assertThat(report.getStatus()).isEqualTo("CERRADO");
         assertThat(report.getClosedByName()).isEqualTo("gustavo");
         assertThat(count.getClosedAt()).isNotNull();
         assertThat(count.getClosedBy()).isEqualTo(reviewerId);
+        assertThat(count.getClosingBalancesData()).isNotBlank();
+        assertThat(count.getClosingBalancesData()).contains(productId + ":" + colorId);
     }
 
     @Test
@@ -825,11 +838,11 @@ class KioscoInventoryCountServiceTest {
                 .status(KioscoPhysicalCountStatus.CERRADO)
                 .build();
 
-        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(from), eq(countId)))
                 .thenReturn(Optional.of(previousClosed));
         // Al reconstruir el conteo cerrado previo no hay otro CERRADO anterior.
-        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(previousFrom), eq(previousCountId)))
                 .thenReturn(Optional.empty());
 
@@ -903,10 +916,10 @@ class KioscoInventoryCountServiceTest {
             entity.setId(countId);
             return entity;
         });
-        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(currentFrom), eq(countId)))
                 .thenReturn(Optional.of(previousClosed));
-        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(previousFrom), eq(previousCountId)))
                 .thenReturn(Optional.empty());
 
@@ -994,5 +1007,104 @@ class KioscoInventoryCountServiceTest {
                 (productId + 1) + ":" + colorId, closing, 99)).isEqualTo(5);
         assertThat(KioscoInventoryCountService.resolveOpeningInventarioInicial(
                 "999:1", closing, 7)).isZero();
+    }
+
+    @Test
+    void buildReport_periodosContiguosMismoDia_iniHeredaFinCeroDelSnapshot() throws Exception {
+        long stockId = 8068L;
+        long previousCountId = 100L;
+        LocalDate previousFrom = LocalDate.of(2026, 7, 28);
+        LocalDate previousTo = LocalDate.of(2026, 8, 3);
+        LocalDate currentFrom = LocalDate.of(2026, 8, 3);
+        LocalDate currentTo = LocalDate.of(2026, 8, 9);
+        LocalDate effectiveKardexFrom = previousTo.plusDays(1); // 2026-08-04
+
+        String snapshot = service.serializeClosingBalances(
+                new KioscoInventoryCountService.PreviousClosingBalances(
+                        Map.of(productId + ":" + colorId, 0),
+                        Map.of(productId + ":" + colorId, Map.of("34", 0))
+                ));
+
+        KioscoPhysicalCountEntity previousClosed = KioscoPhysicalCountEntity.builder()
+                .id(previousCountId)
+                .locationId(locationId)
+                .periodFrom(previousFrom)
+                .periodTo(previousTo)
+                .status(KioscoPhysicalCountStatus.CERRADO)
+                .closingBalancesData(snapshot)
+                .build();
+
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, currentFrom, currentTo))
+                .thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(currentFrom), eq(countId)))
+                .thenReturn(Optional.of(previousClosed));
+
+        when(kioscoInventoryService.buildKardexRows(
+                eq(locationId), eq(effectiveKardexFrom), eq(currentTo), eq(true), eq(currentTo), eq(countId)))
+                .thenReturn(List.of(
+                        KioscoKardexReportResponse.KioscoKardexRow.builder()
+                                .productId(productId).productCode("FOSS-33").productName("CINCHO DALILA")
+                                .colorId(colorId).colorName("NEGRO/CAFE")
+                                .build()
+                ));
+        when(kioscoInventoryService.buildKardexByStockAndSize(
+                eq(locationId), eq(effectiveKardexFrom), eq(currentTo), eq(countId)))
+                .thenReturn(Map.of());
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .id(stockId)
+                        .locationId(locationId)
+                        .productId(productId)
+                        .colorId(colorId)
+                        .currentStock(1)
+                        .sizesData("{\"34\":1}")
+                        .build()
+        ));
+        when(productRepository.findAllById(any())).thenReturn(List.of(ProductEntity.builder()
+                .id(productId).code("FOSS-33").name("CINCHO DALILA").categoryId(categoryId)
+                .cinchoType("REVERSIBLE").build()));
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, currentFrom, currentTo);
+
+        var row = report.getCategories().get(0).getRows().get(0);
+        assertThat(row.getInventarioInicial()).isZero();
+        assertThat(row.getVentas()).isZero();
+        assertThat(row.getInventarioFinal()).isZero();
+        // Snapshot evita caer al ledger (stock vivo = 1).
+        verify(kioscoInventoryService, never()).computeStockBalanceByStockId(any(), any());
+        // No reconstruye el reporte del conteo cerrado si hay snapshot.
+        verify(kioscoInventoryService, never()).buildKardexRows(
+                eq(locationId), eq(previousFrom), eq(previousTo), eq(true), eq(previousTo), eq(previousCountId));
+    }
+
+    @Test
+    void serializeAndDeserializeClosingBalances_roundTrip() {
+        var original = new KioscoInventoryCountService.PreviousClosingBalances(
+                Map.of(productId + ":" + colorId, 0, (productId + 1) + ":" + colorId, 5),
+                Map.of(productId + ":" + colorId, Map.of("34", 0))
+        );
+        String json = service.serializeClosingBalances(original);
+        var restored = service.deserializeClosingBalances(json);
+
+        assertThat(restored).isNotNull();
+        assertThat(restored.byProductColor).containsEntry(productId + ":" + colorId, 0);
+        assertThat(restored.byProductColor).containsEntry((productId + 1) + ":" + colorId, 5);
+        assertThat(restored.byProductColorAndSize.get(productId + ":" + colorId)).containsEntry("34", 0);
+    }
+
+    @Test
+    void applyUnsizedDeltaToSizeBalances_descuentaFifoDeTallaPositiva() {
+        Map<String, Integer> bySize = new LinkedHashMap<>();
+        bySize.put("34", 1);
+
+        KioscoInventoryService.applyUnsizedDeltaToSizeBalances(bySize, -1);
+
+        assertThat(bySize.get("34")).isZero();
     }
 }

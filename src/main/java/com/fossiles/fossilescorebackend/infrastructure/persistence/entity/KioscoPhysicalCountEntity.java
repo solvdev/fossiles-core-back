@@ -106,6 +106,13 @@ public class KioscoPhysicalCountEntity {
     @Column(name = "main_sheet_sales_to")
     private LocalDate mainSheetSalesTo;
 
+    /**
+     * Snapshot JSON del Fin. al cerrar (producto+color y por talla).
+     * Fuente inmutable del Ini. del siguiente conteo.
+     */
+    @Column(name = "closing_balances_data", columnDefinition = "TEXT")
+    private String closingBalancesData;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

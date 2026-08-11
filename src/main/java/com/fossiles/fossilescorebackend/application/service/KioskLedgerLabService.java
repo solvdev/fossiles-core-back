@@ -24,6 +24,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import jakarta.persistence.EntityManager;
@@ -245,6 +246,9 @@ public class KioskLedgerLabService {
         int before = request.getStockBefore() != null ? request.getStockBefore() : safeInt(stock.getCurrentStock());
         int after = request.getStockAfter() != null ? request.getStockAfter() : before;
 
+        boolean affects = request.getAffectsStock() != null ? request.getAffectsStock() : Boolean.TRUE;
+        validateSizeKeyForStock(stock, blankToNull(request.getSizeKey()), affects);
+
         KioscoMovementEntity entity = KioscoMovementEntity.builder()
                 .kioscoStockId(stock.getId())
                 .movementType(request.getMovementType())
@@ -256,7 +260,7 @@ public class KioskLedgerLabService {
                 .physicalCountId(request.getPhysicalCountId())
                 .physicalSlipNumber(blankToNull(request.getPhysicalSlipNumber()))
                 .reason(blankToNull(request.getReason()))
-                .affectsStock(request.getAffectsStock() != null ? request.getAffectsStock() : Boolean.TRUE)
+                .affectsStock(affects)
                 .userId(userId)
                 .originLocationId(request.getOriginLocationId())
                 .destinationLocationId(request.getDestinationLocationId())
@@ -281,6 +285,7 @@ public class KioskLedgerLabService {
             }
         }
 
+        replayStockQuietly(stock.getId());
         log.warn("LEDGER_LAB_CREATE actor={} movementId={} stockId={} type={} qty={}",
                 actor, entity.getId(), stock.getId(), entity.getMovementType(), qty);
         return toLabMovement(kioscoMovementRepository.findById(entity.getId()).orElse(entity));
@@ -335,6 +340,10 @@ public class KioskLedgerLabService {
                 ? request.getCreatedAt()
                 : existing.getCreatedAt();
 
+        KioscoStockEntity stockForSize = kioscoStockRepository.findById(stockId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioscoStock", stockId));
+        validateSizeKeyForStock(stockForSize, sizeKey, affects);
+
         kioscoInventoryService.enableAdminMovementMutation();
         try {
             var query = entityManager.createNativeQuery("""
@@ -383,6 +392,11 @@ public class KioskLedgerLabService {
             kioscoInventoryService.disableAdminMovementMutation();
         }
 
+        replayStockQuietly(stockId);
+        Long previousStockId = existing.getKioscoStockId();
+        if (previousStockId != null && !Objects.equals(previousStockId, stockId)) {
+            replayStockQuietly(previousStockId);
+        }
         log.warn("LEDGER_LAB_UPDATE actor={} movementId={} stockId={} type={} qty={}",
                 actor, id, stockId, type, qty);
         return getMovement(id);
@@ -398,6 +412,9 @@ public class KioskLedgerLabService {
             kioscoInventoryService.deleteAdminMovement(existing);
         } finally {
             kioscoInventoryService.disableAdminMovementMutation();
+        }
+        if (stockId != null) {
+            replayStockQuietly(stockId);
         }
         log.warn("LEDGER_LAB_DELETE actor={} movementId={} stockId={}", actor, id, stockId);
     }
@@ -699,6 +716,33 @@ public class KioskLedgerLabService {
             validateQuantityForType(request.getMovementType(), request.getQuantity());
         } else if (request.getQuantity() != null && request.getMovementType() == null) {
             // type kept from existing; checked in update path
+        }
+    }
+
+    private void validateSizeKeyForStock(KioscoStockEntity stock, String sizeKey, boolean affectsStock)
+            throws BusinessException {
+        if (!affectsStock || stock == null) {
+            return;
+        }
+        if (!ProductInventorySizesJson.normalizeKey(sizeKey).isEmpty()) {
+            return;
+        }
+        ProductEntity product = resolveProduct(stock);
+        boolean cinchoRequiresSize = CinchoProductUtils.isCinchoLineForProduction(product);
+        boolean hasBreakdown = ProductInventorySizesJson.hasNonEmptyBreakdown(stock.getSizesData());
+        if (cinchoRequiresSize || hasBreakdown) {
+            throw new BusinessException("Indique la talla (sizeKey) para movimientos de cincho / stock con tallas.");
+        }
+    }
+
+    private void replayStockQuietly(Long stockId) {
+        if (stockId == null) {
+            return;
+        }
+        try {
+            kioscoInventoryService.replayMovementStockChain(stockId);
+        } catch (BusinessException | ResourceNotFoundException e) {
+            throw new IllegalStateException("No se pudo rehacer el stock #" + stockId + " tras mutar el ledger", e);
         }
     }
 

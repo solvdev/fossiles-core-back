@@ -73,6 +73,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Us
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
 import com.fossiles.fossilescorebackend.infrastructure.config.KioskPosDepositReportProperties;
 import com.fossiles.fossilescorebackend.infrastructure.config.KioskPosVoucherReportProperties;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -2011,7 +2012,7 @@ public class KioskPosService {
                 if (kioscoRow == null) {
                     throw buildInsufficientStockException(label, parsed.size(), BigDecimal.ZERO, requested);
                 }
-                validateKioscoStock(kioscoRow, parsed, requested, label);
+                validateKioscoStock(kioscoRow, parsed, requested, label, product);
             } else {
                 ProductInventoryLocation row = productInventoryLocationRepository
                         .findWithLockByProductIdAndLocationIdAndColorId(
@@ -2035,12 +2036,13 @@ public class KioskPosService {
             KioscoStockEntity row,
             ParsedInventoryKey parsed,
             BigDecimal requested,
-            String label
+            String label,
+            ProductEntity product
     ) throws BusinessException {
         Map<String, BigDecimal> positiveSizes = positiveSizesMap(row.getSizesData());
         BigDecimal available;
+        String sizeKey = ProductInventorySizesJson.normalizeKey(parsed.size());
         if (positiveSizes != null && !positiveSizes.isEmpty()) {
-            String sizeKey = ProductInventorySizesJson.normalizeKey(parsed.size());
             if (sizeKey.isEmpty()) {
                 throw new BusinessException("Debe seleccionar talla para " + label + ".");
             }
@@ -2054,6 +2056,10 @@ public class KioskPosService {
                         .orElse(BigDecimal.ZERO);
             }
         } else {
+            // Cincho sin desglose actual: igual exige talla para no generar VENTA huérfana en el ledger.
+            if (sizeKey.isEmpty() && CinchoProductUtils.isCinchoLineForProduction(product)) {
+                throw new BusinessException("Debe seleccionar talla para " + label + ".");
+            }
             // sizes_data vacío o solo ceros: no inventar tallas desde legacy; usar current_stock.
             available = BigDecimal.valueOf(row.getCurrentStock() != null ? row.getCurrentStock() : 0);
         }

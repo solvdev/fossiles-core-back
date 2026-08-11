@@ -2222,7 +2222,8 @@ public class KioscoInventoryService {
 
     /**
      * Saldo replay por {@code kiosco_stock_id} y talla ({@code size_key}) antes de {@code cutoffExclusive}.
-     * Clave de talla vacía ({@code ""}) agrupa movimientos históricos sin talla.
+     * Movimientos sin talla se imputan contra tallas con saldo positivo (FIFO) para que Ini. por talla
+     * no quede huérfano cuando una venta histórica no trajo {@code size_key}.
      */
     @Transactional(readOnly = true)
     public Map<Long, Map<String, Integer>> computeSizeBalanceByStockAndSize(
@@ -2243,14 +2244,49 @@ public class KioscoInventoryService {
             String sizeKey = ProductInventorySizesJson.normalizeKey(m.getSizeKey());
             Map<String, Integer> bySize = balanceByStockAndSize.computeIfAbsent(
                     m.getKioscoStockId(), k -> new LinkedHashMap<>());
-            int running = bySize.getOrDefault(sizeKey, 0);
-            running += delta;
-            if (running < 0) {
-                running = 0;
+            if (sizeKey.isEmpty()) {
+                applyUnsizedDeltaToSizeBalances(bySize, delta);
+            } else {
+                int running = bySize.getOrDefault(sizeKey, 0) + delta;
+                bySize.put(sizeKey, Math.max(0, running));
             }
-            bySize.put(sizeKey, running);
         }
         return balanceByStockAndSize;
+    }
+
+    /**
+     * Imputa un delta sin talla: positivos van a la clave vacía; negativos descuentan FIFO de tallas
+     * con saldo &gt; 0 (y el remanente a la clave vacía, floored en 0).
+     */
+    static void applyUnsizedDeltaToSizeBalances(Map<String, Integer> bySize, int delta) {
+        if (bySize == null || delta == 0) {
+            return;
+        }
+        if (delta > 0) {
+            bySize.merge("", delta, Integer::sum);
+            return;
+        }
+        int remaining = -delta;
+        List<String> sizedKeys = bySize.keySet().stream()
+                .filter(k -> k != null && !k.isBlank())
+                .sorted()
+                .collect(Collectors.toList());
+        for (String key : sizedKeys) {
+            if (remaining <= 0) {
+                break;
+            }
+            int available = Math.max(0, bySize.getOrDefault(key, 0));
+            if (available <= 0) {
+                continue;
+            }
+            int take = Math.min(available, remaining);
+            bySize.put(key, available - take);
+            remaining -= take;
+        }
+        if (remaining > 0) {
+            int unsized = Math.max(0, bySize.getOrDefault("", 0) - remaining);
+            bySize.put("", unsized);
+        }
     }
 
     /** Saldo agregado por stock al cierre de un corte (movimientos antes de {@code cutoffExclusive}). */
@@ -4082,14 +4118,22 @@ public class KioscoInventoryService {
             KioscoStockEntity stock,
             String sizeKey
     ) throws BusinessException {
-        boolean kioscoBreakdown = ProductInventorySizesJson.hasNonEmptyBreakdown(stock.getSizesData());
+        if (!ProductInventorySizesJson.normalizeKey(sizeKey).isEmpty()) {
+            return;
+        }
+        ProductEntity product = stock != null && stock.getProduct() != null
+                ? stock.getProduct()
+                : productRepository.findById(productId).orElse(null);
+        // Cincho real (tipo/nombre), no todo código FOSS-*: las billeteras FOSS no llevan talla.
+        boolean cinchoRequiresSize = CinchoProductUtils.isCinchoLineForProduction(product);
+        boolean kioscoBreakdown = stock != null
+                && ProductInventorySizesJson.hasNonEmptyBreakdown(stock.getSizesData());
         boolean legacyBreakdown = productInventoryLocationRepository
                 .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
                 .map(ProductInventoryLocation::getSizesData)
                 .map(ProductInventorySizesJson::hasNonEmptyBreakdown)
                 .orElse(false);
-        if ((kioscoBreakdown || legacyBreakdown)
-                && ProductInventorySizesJson.normalizeKey(sizeKey).isEmpty()) {
+        if (cinchoRequiresSize || kioscoBreakdown || legacyBreakdown) {
             throw new BusinessException("Indique la talla para esta operación de inventario kiosko.");
         }
     }

@@ -26,7 +26,7 @@ public class KioscoKardexReportResponse {
     private KioscoKardexRow totals;
 
     @Data
-    @Builder
+    @Builder(toBuilder = true)
     @NoArgsConstructor
     @AllArgsConstructor
     public static class KioscoKardexRow {

@@ -34,6 +34,8 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Lo
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
@@ -101,6 +103,7 @@ public class KioscoInventoryCountService {
     private final ProductCategoryRepository productCategoryRepository;
     private final UserRepository userRepository;
     private final SecurityUtil securityUtil;
+    private final ObjectMapper objectMapper;
 
     public KioscoPhysicalCountReportResponse startOrGetSession(Long locationId, LocalDate from, LocalDate to)
             throws BusinessException, ResourceNotFoundException {
@@ -308,8 +311,11 @@ public class KioscoInventoryCountService {
         count.setStatus(KioscoPhysicalCountStatus.CERRADO);
         count.setClosedBy(resolveCurrentUserId());
         count.setClosedAt(LocalDateTime.now());
+        KioscoPhysicalCountReportResponse report = buildReport(count);
+        count.setClosingBalancesData(serializeClosingBalances(extractClosingBalances(report)));
+        count.setMaxAbsDiff(report.getMaxAbsDiff());
         countRepository.save(count);
-        return buildAndPersistReport(count);
+        return report;
     }
 
     @Transactional(readOnly = true)
@@ -398,6 +404,21 @@ public class KioscoInventoryCountService {
         // Fin. siempre al cierre del periodo/corte (replay de movimientos), no stock vivo.
         LocalDate finAsOf = isSubcount ? balanceAsOf : count.getPeriodTo();
 
+        // Ini. = Fin. del último conteo CERRADO anterior/contiguo (no replay floored del ledger).
+        Optional<KioscoPhysicalCountEntity> previousClosedCount = resolvePreviousClosedPhysicalCount(count);
+        PreviousClosingBalances previousClosing = previousClosedCount
+                .map(this::loadPreviousClosingBalances)
+                .orElse(null);
+
+        // Si el periodo se solapa con el cerrado anterior (mismo día de corte), el kardex arranca
+        // el día siguiente al cierre para no contar dos veces los movimientos del día compartido.
+        LocalDate effectiveKardexFrom = count.getPeriodFrom();
+        if (previousClosedCount.isPresent()) {
+            LocalDate dayAfterPrev = previousClosedCount.get().getPeriodTo().plusDays(1);
+            if (dayAfterPrev.isAfter(effectiveKardexFrom)) {
+                effectiveKardexFrom = dayAfterPrev;
+            }
+        }
         Map<String, List<KioscoStockEntity>> stocksByProductColor = kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(count.getLocationId()).stream()
                 .collect(Collectors.groupingBy(s -> itemKey(s.getProductId(), s.getColorId())));
@@ -409,23 +430,27 @@ public class KioscoInventoryCountService {
                     .forEach(kioscoInventoryService::syncFossCurrentStockFromSizes);
         }
 
-        List<KioscoKardexReportResponse.KioscoKardexRow> rawKardexRows = kioscoInventoryService.buildKardexRows(
-                count.getLocationId(), count.getPeriodFrom(), kardexTo, true, finAsOf, count.getId());
+        List<KioscoKardexReportResponse.KioscoKardexRow> rawKardexRows;
+        Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize;
+        if (effectiveKardexFrom.isAfter(kardexTo)) {
+            rawKardexRows = kioscoInventoryService.buildKardexRows(
+                    count.getLocationId(), count.getPeriodFrom(), count.getPeriodFrom(), true, finAsOf, count.getId())
+                    .stream()
+                    .map(this::zeroPeriodKardexColumns)
+                    .collect(Collectors.toList());
+            kardexByStockAndSize = Map.of();
+        } else {
+            rawKardexRows = kioscoInventoryService.buildKardexRows(
+                    count.getLocationId(), effectiveKardexFrom, kardexTo, true, finAsOf, count.getId());
+            kardexByStockAndSize = kioscoInventoryService.buildKardexByStockAndSize(
+                    count.getLocationId(), effectiveKardexFrom, kardexTo, count.getId());
+        }
         Map<String, Map<String, Integer>> inventarioFinalByHardwareLookup =
                 buildInventarioFinalByHardwareLookup(rawKardexRows);
         List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows =
                 mergeKardexRowsByProductColor(rawKardexRows);
-        Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize =
-                kioscoInventoryService.buildKardexByStockAndSize(
-                        count.getLocationId(), count.getPeriodFrom(), kardexTo, count.getId());
         applyPendingReturnSalidasForCount(count, kardexRows, kardexByStockAndSize, stockByKey);
 
-        // Ini. = Fin. del último conteo CERRADO anterior (no replay floored del ledger).
-        // Sin conteo cerrado previo = saldo kardex al inicio del periodo.
-        Optional<KioscoPhysicalCountEntity> previousClosedCount = resolvePreviousClosedPhysicalCount(count);
-        PreviousClosingBalances previousClosing = previousClosedCount
-                .map(this::loadPreviousClosingBalances)
-                .orElse(null);
         LocalDateTime periodStart = count.getPeriodFrom().atStartOfDay();
         LocalDateTime openingCutoffExclusive = previousClosedCount
                 .map(c -> c.getPeriodTo().plusDays(1).atStartOfDay())
@@ -970,7 +995,7 @@ public class KioscoInventoryCountService {
             return Optional.empty();
         }
         Long excludeId = count.getId() != null ? count.getId() : -1L;
-        return countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanAndIdNotOrderByPeriodToDescIdDesc(
+        return countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 count.getLocationId(),
                 KioscoPhysicalCountStatus.CERRADO,
                 count.getPeriodFrom(),
@@ -978,6 +1003,10 @@ public class KioscoInventoryCountService {
     }
 
     private PreviousClosingBalances loadPreviousClosingBalances(KioscoPhysicalCountEntity previousCount) {
+        PreviousClosingBalances fromSnapshot = deserializeClosingBalances(previousCount.getClosingBalancesData());
+        if (fromSnapshot != null) {
+            return fromSnapshot;
+        }
         try {
             return extractClosingBalances(buildReport(previousCount));
         } catch (BusinessException | ResourceNotFoundException e) {
@@ -985,6 +1014,88 @@ public class KioscoInventoryCountService {
                     "No se pudo cargar el Fin. del conteo cerrado #" + previousCount.getId()
                             + " para usarlo como Ini. del siguiente periodo",
                     e);
+        }
+    }
+
+    private KioscoKardexReportResponse.KioscoKardexRow zeroPeriodKardexColumns(
+            KioscoKardexReportResponse.KioscoKardexRow row
+    ) {
+        if (row == null) {
+            return null;
+        }
+        return row.toBuilder()
+                .comprasAjustes(0)
+                .anulacionCompras(0)
+                .entradas(0)
+                .ventas(0)
+                .anulacionVenta(0)
+                .salida(0)
+                .salidaDevolucion(0)
+                .build();
+    }
+
+    String serializeClosingBalances(PreviousClosingBalances balances) {
+        if (balances == null) {
+            return null;
+        }
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("byProductColor", balances.byProductColor);
+            payload.put("byProductColorAndSize", balances.byProductColorAndSize);
+            return objectMapper.writeValueAsString(payload);
+        } catch (Exception e) {
+            throw new IllegalStateException("No se pudo serializar el snapshot de Fin. del conteo", e);
+        }
+    }
+
+    PreviousClosingBalances deserializeClosingBalances(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            Map<String, Object> payload = objectMapper.readValue(json, new TypeReference<>() {});
+            Map<String, Integer> byProductColor = new LinkedHashMap<>();
+            Object rawByPc = payload.get("byProductColor");
+            if (rawByPc instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (entry.getKey() == null || entry.getValue() == null) {
+                        continue;
+                    }
+                    byProductColor.put(String.valueOf(entry.getKey()), toNonNegInt(entry.getValue()));
+                }
+            }
+            Map<String, Map<String, Integer>> byProductColorAndSize = new LinkedHashMap<>();
+            Object rawBySize = payload.get("byProductColorAndSize");
+            if (rawBySize instanceof Map<?, ?> outer) {
+                for (Map.Entry<?, ?> entry : outer.entrySet()) {
+                    if (entry.getKey() == null || !(entry.getValue() instanceof Map<?, ?> inner)) {
+                        continue;
+                    }
+                    Map<String, Integer> sizes = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> sizeEntry : inner.entrySet()) {
+                        if (sizeEntry.getKey() == null || sizeEntry.getValue() == null) {
+                            continue;
+                        }
+                        sizes.put(String.valueOf(sizeEntry.getKey()), toNonNegInt(sizeEntry.getValue()));
+                    }
+                    byProductColorAndSize.put(String.valueOf(entry.getKey()), sizes);
+                }
+            }
+            return new PreviousClosingBalances(byProductColor, byProductColorAndSize);
+        } catch (Exception e) {
+            log.warn("closing_balances_data inválido; se recalculará el Fin. del conteo cerrado: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private static int toNonNegInt(Object value) {
+        if (value instanceof Number number) {
+            return Math.max(0, number.intValue());
+        }
+        try {
+            return Math.max(0, Integer.parseInt(String.valueOf(value)));
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 
