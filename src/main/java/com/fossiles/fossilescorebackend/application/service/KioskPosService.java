@@ -1451,11 +1451,10 @@ public class KioskPosService {
         LocalDate[] range = normalizeSaleDateRange(startDate, endDate);
         LocalDate from = range[0] != null ? range[0] : GuatemalaDateTime.today();
         LocalDate to = range[1] != null ? range[1] : from;
-        LocalDateTime startAt = from.atStartOfDay();
-        LocalDateTime endAt = to.plusDays(1).atStartOfDay();
 
+        // Mismo criterio de fechas que ventas/vouchers: saleDate del rango (no fecha de registro de boleta).
         List<KioskSaleEntity> sales = kioskSaleRepository.findForBankDepositReport(
-                startAt, endAt, effectiveKioskId).stream()
+                from, to, effectiveKioskId).stream()
                 .filter(KioskPosService::countsForProductionMetrics)
                 .filter(KioskPosService::qualifiesForBankDepositReport)
                 .toList();

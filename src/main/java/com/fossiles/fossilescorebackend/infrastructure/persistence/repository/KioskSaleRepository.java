@@ -87,24 +87,30 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             """)
     List<KioskSaleEntity> findPendingDepositsByKioskLocationId(@Param("kioskLocationId") Long kioskLocationId);
 
+    /**
+     * Depósitos bancarios por día de venta ({@code saleDate}), igual que el resto de reportes de ventas.
+     * No filtrar por {@code depositRecordedAt}: la boleta puede registrarse otro día.
+     */
     @Query("""
             SELECT s FROM KioskSaleEntity s
             WHERE s.depositSlipNumber IS NOT NULL
               AND TRIM(s.depositSlipNumber) <> ''
               AND UPPER(TRIM(s.status)) = 'COMPLETED'
-              AND (
-                  UPPER(TRIM(s.paymentMethod)) IN ('EFECTIVO', 'CASH')
-                  OR UPPER(TRIM(s.paymentMethod)) LIKE '%EFECTIVO%'
-                  OR UPPER(TRIM(s.paymentMethod)) IN ('MIXTO', 'MIXED')
-              )
-              AND COALESCE(s.depositRecordedAt, s.soldAt) >= :startAt
-              AND COALESCE(s.depositRecordedAt, s.soldAt) < :endAt
+              AND s.saleDate >= :startDate
+              AND s.saleDate <= :endDate
               AND (:kioskLocationId IS NULL OR s.kioskLocationId = :kioskLocationId)
-            ORDER BY COALESCE(s.depositRecordedAt, s.soldAt) ASC, s.id ASC
+              AND (
+                  s.paymentMethod IS NULL
+                  OR TRIM(s.paymentMethod) = ''
+                  OR UPPER(TRIM(s.paymentMethod)) IN ('EFECTIVO', 'CASH', 'MIXTO', 'MIXED')
+                  OR UPPER(TRIM(s.paymentMethod)) LIKE '%EFECTIVO%'
+                  OR COALESCE(s.cashAmount, 0) > 0
+              )
+            ORDER BY s.saleDate ASC, COALESCE(s.depositRecordedAt, s.soldAt) ASC, s.id ASC
             """)
     List<KioskSaleEntity> findForBankDepositReport(
-            @Param("startAt") java.time.LocalDateTime startAt,
-            @Param("endAt") java.time.LocalDateTime endAt,
+            @Param("startDate") java.time.LocalDate startDate,
+            @Param("endDate") java.time.LocalDate endDate,
             @Param("kioskLocationId") Long kioskLocationId
     );
 

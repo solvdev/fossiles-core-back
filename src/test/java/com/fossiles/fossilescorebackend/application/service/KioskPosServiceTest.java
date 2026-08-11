@@ -1,10 +1,12 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotionEstimateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionTierRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDepositReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
@@ -1249,6 +1251,79 @@ class KioskPosServiceTest {
     void resolveCardBrandForReport_usesSecondCardBrandWhenProvided() {
         assertThat(KioskPosService.resolveCardBrandForReport("AMEX", "VISA")).isEqualTo("AMEX");
         assertThat(KioskPosService.resolveCardBrandForReport("MASTER", "VISA")).isEqualTo("MC");
+    }
+
+    @Test
+    void getBankDeposits_filtersBySaleDate_notDepositRecordedAt() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        LocalDate saleDay = LocalDate.of(2026, 8, 5);
+
+        KioskPosSaleResponse created = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("300.00"))
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        KioskSaleEntity sale = saleRepository.findById(created.getId()).orElseThrow();
+        sale.setSaleDate(saleDay);
+        sale.setSoldAt(saleDay.atTime(10, 15));
+        saleRepository.save(sale);
+
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        kioskPosService.registerDepositSlip(
+                created.getId(),
+                kioskA.getId(),
+                KioskPosDepositSlipUpdateRequest.builder()
+                        .depositSlipNumber("BI-9988")
+                        .depositBank("INDUSTRIAL")
+                        .build());
+
+        // Boleta registrada al día siguiente (caso típico que vaciaba el reporte viejo).
+        sale = saleRepository.findById(created.getId()).orElseThrow();
+        sale.setDepositRecordedAt(saleDay.plusDays(1).atTime(9, 0));
+        saleRepository.saveAndFlush(sale);
+
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+        KioskBankDepositReportResponse report = kioskPosService.getBankDeposits(
+                saleDay, saleDay, kioskA.getId());
+
+        assertThat(report.getRows()).hasSize(1);
+        assertThat(report.getRows().get(0).getDocumentNumber()).isEqualTo("BI-9988");
+        assertThat(report.getRows().get(0).getBankName()).containsIgnoringCase("Industrial");
+        assertThat(report.getRows().get(0).getAmount()).isEqualByComparingTo(created.getTotalAmount());
+
+        // El día de registro de boleta no debe ser el criterio del rango de ventas.
+        KioskBankDepositReportResponse onlyRecordDay = kioskPosService.getBankDeposits(
+                saleDay.plusDays(1), saleDay.plusDays(1), kioskA.getId());
+        assertThat(onlyRecordDay.getRows()).isEmpty();
+    }
+
+    @Test
+    void qualifiesForBankDepositReport_acceptsIndustrialAndGtBanks() {
+        KioskSaleEntity industrial = KioskSaleEntity.builder()
+                .status("COMPLETED")
+                .paymentMethod("EFECTIVO")
+                .totalAmount(new BigDecimal("100.00"))
+                .depositSlipNumber("X-1")
+                .depositBank("INDUSTRIAL")
+                .build();
+        KioskSaleEntity gt = KioskSaleEntity.builder()
+                .status("COMPLETED")
+                .paymentMethod("EFECTIVO")
+                .totalAmount(new BigDecimal("100.00"))
+                .depositSlipNumber("X-2")
+                .depositBank("GT_CONTINENTAL")
+                .build();
+        KioskSaleEntity withoutSlip = KioskSaleEntity.builder()
+                .status("COMPLETED")
+                .paymentMethod("EFECTIVO")
+                .totalAmount(new BigDecimal("100.00"))
+                .build();
+
+        assertThat(KioskPosService.qualifiesForBankDepositReport(industrial)).isTrue();
+        assertThat(KioskPosService.qualifiesForBankDepositReport(gt)).isTrue();
+        assertThat(KioskPosService.qualifiesForBankDepositReport(withoutSlip)).isFalse();
     }
 
     private static KioskPosSaleRequest.ItemRequest item(Long productId, Long colorId, BigDecimal qty) {
