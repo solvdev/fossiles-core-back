@@ -17,6 +17,12 @@ import java.util.List;
 @RequiredArgsConstructor
 public class OnlineSaleInvoiceMapper {
 
+    /**
+     * Dirección fiscal fija para FEL/SAT. La dirección de la venta ({@code sale.address})
+     * se conserva para el envío y no se manda a certificar.
+     */
+    static final String ONLINE_SALE_INVOICE_ADDRESS = "Ciudad";
+
     private final OnlineSaleItemRepository itemRepository;
 
     public TaxInvoiceDocument fromSale(OnlineSaleEntity sale) {
@@ -80,7 +86,8 @@ public class OnlineSaleInvoiceMapper {
                 // Nombre fiscal lo resuelve TaxInvoiceService vía consulta SAT del NIT.
                 // No usar sale.customerName (nombre operativo WhatsApp / pedido).
                 .customerName(null)
-                .address(sale.getAddress())
+                // No usar sale.address (dirección de envío); FEL siempre va con "Ciudad".
+                .address(ONLINE_SALE_INVOICE_ADDRESS)
                 .phone(sale.getPhone())
                 .email(sale.getEmail())
                 .subtotal(totalAmount)

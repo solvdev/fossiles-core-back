@@ -92,4 +92,34 @@ class OnlineSaleInvoiceMapperTest {
         assertThat(document.getIssuedAt().toLocalDate()).isEqualTo(GuatemalaDateTime.today());
         assertThat(document.getIssuedAt().toLocalDate()).isNotEqualTo(sale.getSaleDate());
     }
+
+    @Test
+    void invoiceAddressIsCiudad_notShippingAddress() {
+        OnlineSaleEntity sale = OnlineSaleEntity.builder()
+                .id(11L)
+                .saleNumber("11")
+                .totalAmount(new BigDecimal("100.00"))
+                .netAmount(new BigDecimal("100.00"))
+                .invoiceTaxId("CF")
+                .customerName("Cliente WhatsApp")
+                .address("Zona 10, 5a avenida 10-20, Guatemala")
+                .phone("5555-5555")
+                .build();
+
+        when(itemRepository.findByOnlineSaleIdOrderByIdAsc(11L)).thenReturn(List.of(
+                OnlineSaleItemEntity.builder()
+                        .productName("Producto")
+                        .quantity(1)
+                        .unitPrice(new BigDecimal("100.00"))
+                        .subtotal(new BigDecimal("100.00"))
+                        .build()
+        ));
+
+        TaxInvoiceDocument document = mapper.fromSale(sale);
+
+        assertThat(document.getAddress()).isEqualTo(OnlineSaleInvoiceMapper.ONLINE_SALE_INVOICE_ADDRESS);
+        assertThat(document.getAddress()).isEqualTo("Ciudad");
+        assertThat(document.getAddress()).isNotEqualTo(sale.getAddress());
+        assertThat(sale.getAddress()).isEqualTo("Zona 10, 5a avenida 10-20, Guatemala");
+    }
 }
