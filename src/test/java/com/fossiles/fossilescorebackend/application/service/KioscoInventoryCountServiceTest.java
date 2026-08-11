@@ -615,6 +615,67 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
+    void buildReport_fusionaKardexPorTallaDeNuevoYViejo() throws Exception {
+        // NUEVO vacío aparece primero; movimientos reales están en VIEJO (caso FOSS-38 sobrante falso).
+        Long fossProductId = 38L;
+        long stockNuevo = 19079L;
+        long stockViejo = 7819L;
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(fossProductId).code("FOSS-38").name("CINCHO SILVANA")
+                        .categoryId(categoryId).cinchoType("CASUAL").build()
+        ));
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .id(stockNuevo)
+                        .locationId(locationId)
+                        .productId(fossProductId)
+                        .colorId(colorId)
+                        .hardwareCondition("NUEVO")
+                        .currentStock(0)
+                        .sizesData("{}")
+                        .build(),
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .id(stockViejo)
+                        .locationId(locationId)
+                        .productId(fossProductId)
+                        .colorId(colorId)
+                        .hardwareCondition("VIEJO")
+                        .currentStock(6)
+                        .sizesData("{\"34\":1,\"36\":2,\"38\":3}")
+                        .build()
+        ));
+        stubPrincipalKardex(List.of(
+                KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(fossProductId).productCode("FOSS-38").productName("CINCHO SILVANA")
+                        .colorId(colorId).colorName("CAFE").entradas(6).build()
+        ));
+        when(kioscoInventoryService.buildKardexByStockAndSize(eq(locationId), eq(from), eq(to), eq(countId)))
+                .thenReturn(Map.of(
+                        stockViejo,
+                        Map.of(
+                                "34", KioscoInventoryService.SizeKardexBucket.of(0, 0, 1, 0, 0, 0),
+                                "36", KioscoInventoryService.SizeKardexBucket.of(0, 0, 2, 0, 0, 0),
+                                "38", KioscoInventoryService.SizeKardexBucket.of(0, 0, 3, 0, 0, 0)
+                        )
+                ));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+
+        var rows = report.getCategories().get(0).getRows();
+        assertThat(rows).hasSize(3);
+        assertThat(rows.stream().map(r -> r.getSizeLabel())).containsExactly("34", "36", "38");
+        assertThat(rows.stream().map(r -> r.getEntradas())).containsExactly(1, 2, 3);
+        assertThat(rows.stream().map(r -> r.getInventarioFinal())).containsExactly(1, 2, 3);
+        assertThat(report.getTotalGeneral().getInventarioFinal()).isEqualTo(6);
+    }
+
+    @Test
     void buildReport_kardexPorTallaCuadraIniMasMovimientosConFin() throws Exception {
         Long fossProductId = 34L;
         long stockId = 501L;

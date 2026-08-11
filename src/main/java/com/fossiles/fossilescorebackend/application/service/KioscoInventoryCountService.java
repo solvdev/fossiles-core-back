@@ -525,8 +525,9 @@ public class KioscoInventoryCountService {
             Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardexForStock = mergeSizeKardexForStocks(
                     stocksForRow, kardexByStockAndSize);
             // Incluir tallas con movimiento/envío en el periodo aunque el stock actual sea 0.
+            // Unir sizes_data de todos los herrajes (NUEVO+VIEJO); no solo el primer stock.
             Map<String, Integer> systemSizes = enrichSizesWithMovementKeys(
-                    resolveSystemSizesForReport(stock), sizeKardexForStock);
+                    resolveSystemSizesForStocks(stocksForRow), sizeKardexForStock);
             String sizesSummary = formatSizesSummary(systemSizes);
             String physicalSizesSummary = formatSizesSummary(physicalSizes);
             String generalObservation = item != null && item.getObservation() != null
@@ -616,7 +617,7 @@ public class KioscoInventoryCountService {
             List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> displayRows = isSubcount
                     ? List.of(applyRowObservation(row, generalObservation, null))
                     : expandRowsForDisplay(
-                            row, product, stock, kardexByStockAndSize, openingBalanceBySize,
+                            row, product, sizeKardexForStock, openingBalanceBySize,
                             generalObservation, sizeObservations);
             for (KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow displayRow : displayRows) {
                 allRows.add(displayRow);
@@ -828,6 +829,20 @@ public class KioscoInventoryCountService {
             return new LinkedHashMap<>();
         }
         return new LinkedHashMap<>(toSystemSizesMap(stock.getSizesData()));
+    }
+
+    /** Suma sizes_data de todos los stocks del producto/color (p.ej. NUEVO + VIEJO). */
+    private Map<String, Integer> resolveSystemSizesForStocks(List<KioscoStockEntity> stocks) {
+        Map<String, Integer> merged = new LinkedHashMap<>();
+        if (stocks == null) {
+            return merged;
+        }
+        for (KioscoStockEntity stock : stocks) {
+            for (Map.Entry<String, Integer> entry : resolveSystemSizesForReport(stock).entrySet()) {
+                merged.merge(entry.getKey(), Math.max(0, entry.getValue()), Integer::sum);
+            }
+        }
+        return merged;
     }
 
     /**
@@ -1500,18 +1515,21 @@ public class KioscoInventoryCountService {
         return merged;
     }
 
+    /**
+     * Expande por talla usando el kardex ya fusionado de todos los herrajes del producto/color.
+     * No usar un solo {@code kiosco_stock_id}: con NUEVO+VIEJO el primero suele estar en 0 y
+     * ocultaba Ent./Fin. del stock que sí movió (p.ej. VIEJO).
+     */
     private List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> expandRowsForDisplay(
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
             ProductEntity product,
-            KioscoStockEntity stock,
-            Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize,
+            Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardexMerged,
             Map<String, Integer> openingBalanceBySize,
             String generalObservation,
             Map<String, String> sizeObservations
     ) {
-        Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex = stock != null
-                ? kardexByStockAndSize.getOrDefault(stock.getId(), Map.of())
-                : Map.of();
+        Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex =
+                sizeKardexMerged != null ? sizeKardexMerged : Map.of();
         if (!shouldExpandRowBySize(product, base, sizeKardex)) {
             return List.of(applyRowObservation(base, generalObservation, null));
         }
