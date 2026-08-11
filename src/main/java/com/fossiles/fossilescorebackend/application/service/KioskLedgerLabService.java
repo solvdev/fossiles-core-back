@@ -739,11 +739,7 @@ public class KioskLedgerLabService {
         if (stockId == null) {
             return;
         }
-        try {
-            kioscoInventoryService.replayMovementStockChain(stockId);
-        } catch (BusinessException | ResourceNotFoundException e) {
-            throw new IllegalStateException("No se pudo rehacer el stock #" + stockId + " tras mutar el ledger", e);
-        }
+        kioscoInventoryService.replayMovementStockChain(stockId);
     }
 
     private void validateQuantityForType(KioscoMovementType type, int qty) throws BusinessException {
