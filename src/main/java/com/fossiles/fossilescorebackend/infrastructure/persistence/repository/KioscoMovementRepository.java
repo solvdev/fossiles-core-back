@@ -9,6 +9,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 @Repository
@@ -17,6 +18,11 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
     List<KioscoMovementEntity> findByKioscoStockIdOrderByCreatedAtDescIdDesc(Long kioscoStockId);
 
     List<KioscoMovementEntity> findByKioscoStockIdOrderByCreatedAtAscIdAsc(Long kioscoStockId);
+
+    /** IDs de stock que tienen al menos un movimiento (para reportes de existencias). */
+    @Query("SELECT DISTINCT m.kioscoStockId FROM KioscoMovementEntity m "
+            + "WHERE m.kioscoStockId IN :stockIds")
+    List<Long> findDistinctKioscoStockIdsHavingMovements(@Param("stockIds") Collection<Long> stockIds);
 
     /**
      * Exact line-token match (not substring LIKE): avoids L1 matching L10.

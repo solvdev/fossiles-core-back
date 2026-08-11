@@ -1627,7 +1627,22 @@ public class KioscoInventoryService {
         if (validKioskIds.isEmpty()) {
             return List.of();
         }
-        return kioscoStockRepository.findByLocationIdIn(new ArrayList<>(validKioskIds)).stream()
+        List<KioscoStockEntity> stocks = kioscoStockRepository.findByLocationIdIn(new ArrayList<>(validKioskIds));
+        if (stocks.isEmpty()) {
+            return List.of();
+        }
+        List<Long> stockIds = stocks.stream()
+                .map(KioscoStockEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        Set<Long> stockIdsWithMovements = stockIds.isEmpty()
+                ? Set.of()
+                : new LinkedHashSet<>(kioscoMovementRepository.findDistinctKioscoStockIdsHavingMovements(stockIds));
+
+        return stocks.stream()
+                // Incluye stock > 0 y ceros con historial. Excluye fantasmas: stock 0 y nunca movimiento.
+                .filter(stock -> hasPositiveStockForReport(stock)
+                        || (stock.getId() != null && stockIdsWithMovements.contains(stock.getId())))
                 .map(this::toStockResponse)
                 .sorted(Comparator.comparing(KioscoStockResponse::getLocationName,
                                 Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER))
@@ -1638,6 +1653,18 @@ public class KioscoInventoryService {
                         .thenComparing(KioscoStockResponse::getHardwareCondition,
                                 Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
                 .collect(Collectors.toList());
+    }
+
+    /** true si current_stock &gt; 0 o la suma de sizes_data &gt; 0. */
+    private boolean hasPositiveStockForReport(KioscoStockEntity stock) {
+        if (stock == null) {
+            return false;
+        }
+        if (safeInt(stock.getCurrentStock()) > 0) {
+            return true;
+        }
+        return ProductInventorySizesJson.sum(ProductInventorySizesJson.parse(stock.getSizesData()))
+                .compareTo(BigDecimal.ZERO) > 0;
     }
 
     @Transactional(readOnly = true)
