@@ -118,6 +118,9 @@ public class KioskPosSaleResponse {
         private String felError;
         private LocalDateTime felCertifiedAt;
         private Boolean hasCertifiedXml;
+        private Boolean consumidorFinal;
+        private Boolean felDirectVoidAllowed;
+        private java.time.LocalDate felDirectVoidDeadlineDate;
     }
 
     @Data

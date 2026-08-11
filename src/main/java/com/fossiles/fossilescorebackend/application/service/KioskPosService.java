@@ -1055,7 +1055,8 @@ public class KioskPosService {
 
         if ("CERTIFIED".equalsIgnoreCase(safeTrim(sale.getFelStatus())) && sale.getInvoiceId() != null) {
             try {
-                taxInvoiceService.voidInvoice(sale.getInvoiceId(), request.getReason().trim());
+                // Encargadas de kiosko: anulan FEL vía POS (sin permiso Contabilidad).
+                taxInvoiceService.voidInvoiceFromPos(sale.getInvoiceId(), request.getReason().trim());
             } catch (BusinessException ex) {
                 throw ex;
             } catch (ResourceNotFoundException ex) {
@@ -3573,7 +3574,7 @@ public class KioskPosService {
         if (sale.getInvoiceId() == null && (sale.getFelStatus() == null || sale.getFelStatus().isBlank())) {
             return null;
         }
-        return KioskPosSaleResponse.InvoiceInfo.builder()
+        var builder = KioskPosSaleResponse.InvoiceInfo.builder()
                 .id(sale.getInvoiceId())
                 .status(sale.getFelStatus())
                 .internalNumber(taxInvoiceService.getInternalNumber(sale.getInvoiceId()))
@@ -3582,8 +3583,12 @@ public class KioskPosService {
                 .felNumero(sale.getFelNumero())
                 .felError(sale.getFelError())
                 .felCertifiedAt(sale.getFelCertifiedAt())
-                .hasCertifiedXml(taxInvoiceService.hasStoredCertifiedXml(sale.getInvoiceId()))
-                .build();
+                .hasCertifiedXml(taxInvoiceService.hasStoredCertifiedXml(sale.getInvoiceId()));
+        taxInvoiceService.findVoidFlagsById(sale.getInvoiceId()).ifPresent(inv -> builder
+                .consumidorFinal(inv.getConsumidorFinal())
+                .felDirectVoidAllowed(inv.getFelDirectVoidAllowed())
+                .felDirectVoidDeadlineDate(inv.getFelDirectVoidDeadlineDate()));
+        return builder.build();
     }
 
     private KioskPromotionResponse toPromotionResponse(KioskPromotionEntity entity) {

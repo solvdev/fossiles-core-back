@@ -22,6 +22,13 @@ public class FelEmissionProperties {
     /** Si true, la venta POS falla cuando no se puede certificar el DTE. */
     private boolean required = true;
 
+    /**
+     * Emisión FEL de NCRE/NDEB. Apagado por defecto: aún no hay flujo de producto;
+     * las guardias SAT (receptor ≠ CF) quedan listas para cuando se habilite.
+     * Nota: CxC CREDIT_NOTE contable ≠ NCRE FEL.
+     */
+    private boolean creditDebitNotesEnabled = false;
+
     private String signUrl = "https://signer-emisores.feel.com.gt/sign_solicitud_firmas/firma_xml";
     private String certifyUrl = "https://certificador.feel.com.gt/fel/certificacion/v2/dte/";
     /** Endpoint INFILE anulación v2 (alineado a certificación v2). */

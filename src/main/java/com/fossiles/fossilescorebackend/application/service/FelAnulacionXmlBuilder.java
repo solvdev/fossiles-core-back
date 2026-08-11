@@ -28,7 +28,22 @@ public class FelAnulacionXmlBuilder {
             String fechaEmisionDocumentoAnular,
             String reason
     ) {
-        ZonedDateTime now = ZonedDateTime.now(GUATEMALA);
+        return buildUnsignedAnulacionXml(
+                felUuid, nitEmisor, receptorId, fechaEmisionDocumentoAnular, reason, ZonedDateTime.now(GUATEMALA));
+    }
+
+    /**
+     * @param annulmentAt fecha/hora de anulación (zona Guatemala); inyectable en tests.
+     */
+    public String buildUnsignedAnulacionXml(
+            String felUuid,
+            String nitEmisor,
+            String receptorId,
+            String fechaEmisionDocumentoAnular,
+            String reason,
+            ZonedDateTime annulmentAt
+    ) {
+        ZonedDateTime now = annulmentAt != null ? annulmentAt.withZoneSameInstant(GUATEMALA) : ZonedDateTime.now(GUATEMALA);
         String fechaOriginal = fechaEmisionDocumentoAnular != null && !fechaEmisionDocumentoAnular.isBlank()
                 ? fechaEmisionDocumentoAnular.trim()
                 : formatFelDateTime(now);

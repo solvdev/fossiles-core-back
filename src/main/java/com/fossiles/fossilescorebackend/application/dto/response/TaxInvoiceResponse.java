@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -40,6 +41,12 @@ public class TaxInvoiceResponse {
     private String felVoidUuid;
     /** true si hay XML certificado almacenado (descargable vía GET /{id}/certified-xml). */
     private Boolean hasCertifiedXml;
+    /** Receptor Consumidor Final (CF). */
+    private Boolean consumidorFinal;
+    /** Anulación FEL directa permitida ahora (CF: solo emisión o día siguiente). */
+    private Boolean felDirectVoidAllowed;
+    /** Último día permitido para anulación directa CF (emisión+1 GT); null si no aplica. */
+    private LocalDate felDirectVoidDeadlineDate;
     private String notes;
     private LocalDateTime createdAt;
     private Long createdBy;

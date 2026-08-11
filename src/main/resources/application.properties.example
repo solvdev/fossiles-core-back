@@ -93,6 +93,8 @@ fel.receptor.enabled=true
 fel.emission.enabled=true
 fel.emission.test-mode=false
 fel.emission.required=false
+# NCRE/NDEB FEL deshabilitados hasta implementar el flujo; guardias SAT CF listas.
+fel.emission.credit-debit-notes-enabled=false
 fel.emission.sign-url=https://signer-emisores.feel.com.gt/sign_solicitud_firmas/firma_xml
 fel.emission.certify-url=https://certificador.feel.com.gt/fel/certificacion/v2/dte/
 

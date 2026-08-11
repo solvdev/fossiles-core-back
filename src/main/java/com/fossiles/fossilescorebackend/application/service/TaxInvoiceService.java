@@ -38,6 +38,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelEmissionDateResolver;
+import com.fossiles.fossilescorebackend.infrastructure.util.FelSatReceptorRules;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -295,9 +296,28 @@ public class TaxInvoiceService {
                 .build());
     }
 
+    /**
+     * Anulación FEL desde Contabilidad (requiere permiso CONTABILIDAD.FACTURAS.* / admin / logística).
+     */
     @Transactional
-    public TaxInvoiceResponse voidInvoice(Long invoiceId, String reason) throws BusinessException, ResourceNotFoundException {
+    public TaxInvoiceResponse voidInvoice(Long invoiceId, String reason)
+            throws BusinessException, ResourceNotFoundException {
         taxInvoiceAccessGuard.assertCanEditFelMetadata();
+        return voidInvoiceCore(invoiceId, reason);
+    }
+
+    /**
+     * Anulación FEL al anular una venta POS. El acceso lo valida {@code KioskPosService}
+     * (kiosko asignado + caja abierta); las encargadas no necesitan permiso de Contabilidad.
+     */
+    @Transactional
+    public TaxInvoiceResponse voidInvoiceFromPos(Long invoiceId, String reason)
+            throws BusinessException, ResourceNotFoundException {
+        return voidInvoiceCore(invoiceId, reason);
+    }
+
+    private TaxInvoiceResponse voidInvoiceCore(Long invoiceId, String reason)
+            throws BusinessException, ResourceNotFoundException {
         if (reason == null || reason.trim().isEmpty()) {
             throw new BusinessException("Debes indicar el motivo de anulación.");
         }
@@ -324,6 +344,7 @@ public class TaxInvoiceService {
         FelCredentials credentials = properties.resolveCredentials(resolveSandboxMode(invoice));
         validateEmitterConfig(credentials);
         String originalEmission = FelEmissionDateResolver.resolveAnnulmentEmissionDateTime(invoice);
+        FelSatReceptorRules.assertDirectAnnulmentAllowed(invoice, GuatemalaDateTime.today());
 
         String transactionId = "VOID-" + invoice.getId() + "-" + System.currentTimeMillis();
         String unsignedXml = anulacionXmlBuilder.buildUnsignedAnulacionXml(
@@ -758,6 +779,15 @@ public class TaxInvoiceService {
                 .orElse(false);
     }
 
+    /** Flags de anulación CF para embeber en respuesta POS (sin bitácora). */
+    @Transactional(readOnly = true)
+    public Optional<TaxInvoiceResponse> findVoidFlagsById(Long invoiceId) {
+        if (invoiceId == null) {
+            return Optional.empty();
+        }
+        return taxInvoiceRepository.findById(invoiceId).map(this::toResponse);
+    }
+
     @Transactional(readOnly = true)
     public List<TaxInvoiceResponse> list(
             String sourceType,
@@ -858,7 +888,7 @@ public class TaxInvoiceService {
         }
     }
 
-    private TaxInvoiceDocument buildManualDocument(ManualTaxInvoiceRequest request) {
+    private TaxInvoiceDocument buildManualDocument(ManualTaxInvoiceRequest request) throws BusinessException {
         List<TaxInvoiceDocument.Line> lines = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO;
         int lineNo = 0;
@@ -930,17 +960,19 @@ public class TaxInvoiceService {
             TaxInvoiceDocument document,
             Long createdBy,
             Long locationIdForSeries
-    ) {
+    ) throws BusinessException {
         BigDecimal taxAmount = sumTax(document);
         applyDocumentTypeByEstablishment(document);
         String documentType = resolveDocumentType(document.getDocumentType());
         document.setDocumentType(documentType);
+        String taxId = normalizeTaxId(document.getCustomerTaxId());
+        assertDocumentTypeAllowedForEmission(documentType, taxId);
         TaxInvoiceEntity invoice = TaxInvoiceEntity.builder()
                 .sourceType(sourceType)
                 .sourceId(sourceId)
                 .documentType(documentType)
                 .status("DRAFT")
-                .customerTaxId(normalizeTaxId(document.getCustomerTaxId()))
+                .customerTaxId(taxId)
                 .customerName(document.getCustomerName())
                 .address(document.getAddress())
                 .phone(document.getPhone())
@@ -986,7 +1018,7 @@ public class TaxInvoiceService {
             Long sourceId,
             TaxInvoiceDocument document,
             Long createdBy
-    ) {
+    ) throws BusinessException {
         return persistDraft(sourceType, sourceId, document, createdBy, null);
     }
 
@@ -1074,13 +1106,39 @@ public class TaxInvoiceService {
         document.setInternalNumber(internalNumber);
     }
 
-    private String resolveDocumentType(String requested) {
+    private String resolveDocumentType(String requested) throws BusinessException {
         String normalized = trimToNull(requested);
         if (normalized == null) {
             return "FACT";
         }
         normalized = normalized.toUpperCase(Locale.ROOT);
+        if (FelSatReceptorRules.isNotaCreditoDebito(normalized)) {
+            if (!properties.isCreditDebitNotesEnabled()) {
+                throw new BusinessException(
+                        "Notas de crédito/débito FEL (NCRE/NDEB) no están habilitadas. "
+                                + "Active fel.emission.credit-debit-notes-enabled cuando el flujo esté disponible."
+                );
+            }
+            return normalized;
+        }
         return VALID_DOCUMENT_TYPES.contains(normalized) ? normalized : "FACT";
+    }
+
+    /**
+     * Guardias de emisión: NCRE/NDEB deshabilitados por flag; si se habilitan, SAT 2.2.4 prohíbe CF.
+     * CxC CREDIT_NOTE contable ≠ NCRE FEL.
+     */
+    private void assertDocumentTypeAllowedForEmission(String documentType, String taxId)
+            throws BusinessException {
+        if (!FelSatReceptorRules.isNotaCreditoDebito(documentType)) {
+            return;
+        }
+        if (!properties.isCreditDebitNotesEnabled()) {
+            throw new BusinessException(
+                    "Notas de crédito/débito FEL (NCRE/NDEB) no están habilitadas."
+            );
+        }
+        FelSatReceptorRules.assertCreditDebitReceptorAllowed(documentType, taxId);
     }
 
     /**
@@ -1206,6 +1264,11 @@ public class TaxInvoiceService {
                 document.setInternalNumber(invoice.getInternalNumber());
             }
             applyDocumentTypeByEstablishment(document);
+            assertDocumentTypeAllowedForEmission(
+                    document.getDocumentType(),
+                    normalizeTaxId(document.getCustomerTaxId() != null
+                            ? document.getCustomerTaxId()
+                            : invoice.getCustomerTaxId()));
             String unsignedXml = factXmlBuilder.buildUnsignedXml(document, credentials);
             String signedXml = signerService.signXml(unsignedXml, transactionId, credentials);
             FelCertificationResult result = certificationService.certifySignedXml(signedXml, transactionId, credentials);
@@ -1504,6 +1567,13 @@ public class TaxInvoiceService {
                         .build())
                 .collect(Collectors.toList());
 
+        boolean consumidorFinal = FelSatReceptorRules.isConsumidorFinal(invoice.getCustomerTaxId());
+        LocalDate emissionDate = FelSatReceptorRules.resolveEmissionDateGt(invoice);
+        LocalDate deadline = consumidorFinal && FelSatReceptorRules.isFacturaType(invoice.getDocumentType())
+                ? FelSatReceptorRules.directAnnulmentDeadlineDate(emissionDate)
+                : null;
+        boolean directVoidAllowed = FelSatReceptorRules.isDirectFelVoidAllowed(invoice, GuatemalaDateTime.today());
+
         return TaxInvoiceResponse.builder()
                 .id(invoice.getId())
                 .sourceType(invoice.getSourceType())
@@ -1530,6 +1600,9 @@ public class TaxInvoiceService {
                 .voidReason(invoice.getVoidReason())
                 .felVoidUuid(invoice.getFelVoidUuid())
                 .hasCertifiedXml(hasCertifiedXml(invoice))
+                .consumidorFinal(consumidorFinal)
+                .felDirectVoidAllowed(directVoidAllowed)
+                .felDirectVoidDeadlineDate(deadline)
                 .notes(invoice.getNotes())
                 .createdAt(invoice.getCreatedAt())
                 .createdBy(invoice.getCreatedBy())
