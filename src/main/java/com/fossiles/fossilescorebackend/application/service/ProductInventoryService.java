@@ -27,7 +27,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
-@Transactional
+@Transactional(rollbackFor = Exception.class)
 public class ProductInventoryService {
 
     public static final String MOVEMENT_SHIPMENT = "SHIPMENT";

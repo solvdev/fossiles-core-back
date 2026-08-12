@@ -102,7 +102,6 @@ public class PublicOnlineWarehouseController {
      * No despacha: solo marca piezas pendientes como recibidas.
      */
     @PutMapping("/sales/{onlineSaleId}/receive-warehouse")
-    @Transactional
     public ResponseEntity<Map<String, Object>> receiveWarehouseForSale(@PathVariable Long onlineSaleId)
             throws BusinessException, ResourceNotFoundException {
         OnlineSaleEntity sale = onlineSaleRepository.findById(onlineSaleId)

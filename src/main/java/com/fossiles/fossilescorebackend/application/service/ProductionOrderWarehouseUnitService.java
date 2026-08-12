@@ -7,6 +7,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -43,6 +44,8 @@ public class ProductionOrderWarehouseUnitService {
     private final TaskItemRepository taskItemRepository;
     private final DocumentSeriesRepository documentSeriesRepository;
     private final ProductShipmentDetailRepository shipmentDetailRepository;
+    private final OnlineSaleItemRepository onlineSaleItemRepository;
+    private final OnlineSaleRepository onlineSaleRepository;
 
     @Transactional
     public WarehouseWorkspaceResponse getWorkspace(Long productionOrderId) throws ResourceNotFoundException {
@@ -419,6 +422,17 @@ public class ProductionOrderWarehouseUnitService {
         if (item.getProductId() == null) {
             throw new BusinessException("La pieza no tiene producto válido para inventario.");
         }
+        String sizeKey = resolveReceiptSizeKey(item, unit, product);
+        if (CinchoProductUtils.isFossCinchoProduct(product) && (sizeKey == null || sizeKey.isBlank())) {
+            throw new BusinessException(
+                    "La pieza " + unit.getUnitLabel()
+                            + " es cincho FOSS sin talla. Indique la talla en la venta/OP antes de recibir en bodega.");
+        }
+        // Persistir talla resuelta para no volver a fallar en siguientes movimientos.
+        if ((unit.getSizeKey() == null || unit.getSizeKey().isBlank()) && sizeKey != null && !sizeKey.isBlank()) {
+            unit.setSizeKey(sizeKey);
+        }
+
         String receiptRefNumber = po.getCode() + "-WH-UNIT-" + unit.getId();
         boolean alreadyRecorded = productInventoryService.hasProductKardexMovement(
                 "PRODUCTION_ORDER_WH_UNIT",
@@ -443,7 +457,7 @@ public class ProductionOrderWarehouseUnitService {
                     unit.getId(),
                     receiptRefNumber,
                     "Ingreso pieza bodega PT",
-                    unit.getSizeKey().isBlank() ? null : unit.getSizeKey()
+                    sizeKey != null && !sizeKey.isBlank() ? sizeKey : null
             );
             BigDecimal after = productInventoryService
                     .getInventoryByProductAndLocationAndColor(item.getProductId(), bodega.getId(), item.getColorId())
@@ -468,6 +482,68 @@ public class ProductionOrderWarehouseUnitService {
         unit.setReceivedAt(now);
         unit.setReceivedBy(userId);
         unitRepository.save(unit);
+    }
+
+    /**
+     * Talla efectiva para ingreso a inventario: pieza → talla única del ítem OP → talla de la línea de venta online.
+     */
+    private String resolveReceiptSizeKey(
+            ProductionOrderItemEntity item,
+            ProductionOrderWarehouseUnitEntity unit,
+            ProductEntity product
+    ) {
+        String fromUnit = normalizeUnitSizeKey(unit != null ? unit.getSizeKey() : null);
+        if (!fromUnit.isEmpty()) {
+            return fromUnit;
+        }
+
+        Map<String, Integer> breakdown = expectedUnitsBySize(item);
+        List<String> sizes = breakdown.keySet().stream()
+                .filter(k -> k != null && !k.isBlank())
+                .distinct()
+                .collect(Collectors.toList());
+        if (sizes.size() == 1) {
+            return sizes.get(0);
+        }
+
+        if (item.getOnlineSaleId() != null) {
+            List<OnlineSaleItemEntity> saleItems =
+                    onlineSaleItemRepository.findByOnlineSaleIdOrderByIdAsc(item.getOnlineSaleId());
+            List<String> saleSizes = (saleItems == null ? List.<OnlineSaleItemEntity>of() : saleItems).stream()
+                    .filter(si -> Objects.equals(si.getProductId(), item.getProductId()))
+                    .filter(si -> Objects.equals(si.getColorId(), item.getColorId())
+                            || (si.getColorId() == null && item.getColorId() == null))
+                    .map(OnlineSaleItemEntity::getSize)
+                    .map(this::normalizeUnitSizeKey)
+                    .filter(s -> !s.isEmpty())
+                    .distinct()
+                    .collect(Collectors.toList());
+            if (saleSizes.size() == 1) {
+                return saleSizes.get(0);
+            }
+            // Si la venta tiene una sola talla en todas sus líneas del mismo producto.
+            List<String> anySaleSizes = (saleItems == null ? List.<OnlineSaleItemEntity>of() : saleItems).stream()
+                    .filter(si -> Objects.equals(si.getProductId(), item.getProductId()))
+                    .map(OnlineSaleItemEntity::getSize)
+                    .map(this::normalizeUnitSizeKey)
+                    .filter(s -> !s.isEmpty())
+                    .distinct()
+                    .collect(Collectors.toList());
+            if (anySaleSizes.size() == 1) {
+                return anySaleSizes.get(0);
+            }
+            return onlineSaleRepository.findById(item.getOnlineSaleId())
+                    .map(OnlineSaleEntity::getSize)
+                    .map(this::normalizeUnitSizeKey)
+                    .filter(s -> !s.isEmpty())
+                    .orElse("");
+        }
+
+        // No forzar talla inventada en FOSS; el caller valida.
+        if (product != null && CinchoProductUtils.isFossCinchoProduct(product)) {
+            return "";
+        }
+        return "";
     }
 
     private void syncItemReceivedQty(ProductionOrderItemEntity item) {
