@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoStockResp
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoTrasladoBoletaResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
@@ -1648,6 +1649,62 @@ public class KioscoInventoryService {
                 .sorted(Comparator.comparing(KioscoStockResponse::getLocationName,
                                 Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER))
                         .thenComparing(KioscoStockResponse::getProductCode,
+                                Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER))
+                        .thenComparing(KioscoStockResponse::getColorName,
+                                Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER))
+                        .thenComparing(KioscoStockResponse::getHardwareCondition,
+                                Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Existencias de un producto en todos los kioskos. Solo ADMIN / LOGISTICA / SUPERVISORA_KIOSKO.
+     */
+    @Transactional(readOnly = true)
+    public List<KioscoStockResponse> getStockByProductAcrossKiosks(Long productId, Long colorId)
+            throws BusinessException, ResourceNotFoundException {
+        if (productId == null) {
+            throw new BusinessException("Debes indicar el producto.");
+        }
+        UserEntity user = securityUtil.getCurrentUser()
+                .orElseThrow(() -> new BusinessException("No se pudo determinar el usuario autenticado."));
+        if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
+            throw new BusinessException(
+                    "Solo administración y logística pueden consultar existencias en todos los kioskos.");
+        }
+        productRepository.findById(productId)
+                .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
+
+        List<KioscoStockEntity> stocks = colorId != null
+                ? kioscoStockRepository.findByProductIdAndColorId(productId, colorId)
+                : kioscoStockRepository.findByProductId(productId);
+        if (stocks.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> kioskLocationIds = locationRepository.findAllById(
+                        stocks.stream().map(KioscoStockEntity::getLocationId).filter(Objects::nonNull).distinct().toList()
+                ).stream()
+                .filter(kioskInventoryGuard::isKioskLocation)
+                .map(LocationEntity::getId)
+                .collect(Collectors.toSet());
+        List<KioscoStockEntity> kioskStocks = stocks.stream()
+                .filter(stock -> stock.getLocationId() != null && kioskLocationIds.contains(stock.getLocationId()))
+                .collect(Collectors.toList());
+        if (kioskStocks.isEmpty()) {
+            return List.of();
+        }
+        List<Long> stockIds = kioskStocks.stream()
+                .map(KioscoStockEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        Set<Long> stockIdsWithMovements = stockIds.isEmpty()
+                ? Set.of()
+                : new LinkedHashSet<>(kioscoMovementRepository.findDistinctKioscoStockIdsHavingMovements(stockIds));
+        return kioskStocks.stream()
+                .filter(stock -> hasPositiveStockForReport(stock)
+                        || (stock.getId() != null && stockIdsWithMovements.contains(stock.getId())))
+                .map(this::toStockResponse)
+                .sorted(Comparator.comparing(KioscoStockResponse::getLocationName,
                                 Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER))
                         .thenComparing(KioscoStockResponse::getColorName,
                                 Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER))

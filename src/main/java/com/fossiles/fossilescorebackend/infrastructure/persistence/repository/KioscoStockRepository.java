@@ -117,4 +117,8 @@ public interface KioscoStockRepository extends JpaRepository<KioscoStockEntity, 
 
     @Query("SELECT s FROM KioscoStockEntity s WHERE s.locationId IN :locationIds")
     List<KioscoStockEntity> findByLocationIdIn(@Param("locationIds") List<Long> locationIds);
+
+    List<KioscoStockEntity> findByProductId(Long productId);
+
+    List<KioscoStockEntity> findByProductIdAndColorId(Long productId, Long colorId);
 }

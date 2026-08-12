@@ -206,6 +206,14 @@ public class KioscoInventoryController {
         return ResponseEntity.ok(kioscoInventoryService.getStockReportByLocations(locationIds));
     }
 
+    @GetMapping("/reporte/producto-en-kioskos")
+    public ResponseEntity<List<KioscoStockResponse>> getProductAcrossKiosks(
+            @RequestParam Long productId,
+            @RequestParam(required = false) Long colorId
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryService.getStockByProductAcrossKiosks(productId, colorId));
+    }
+
     @GetMapping("/{locationId}/stock")
     public ResponseEntity<List<KioscoStockResponse>> getStock(
             @PathVariable Long locationId
