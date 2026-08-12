@@ -2051,6 +2051,8 @@ public class ProductionOrderController {
         for (ProductionOrderItemEntity item : orderItems) {
             byKey.putIfAbsent(itemPriceMatchKey(item.getProductId(), item.getColorId()), item);
         }
+        ProductionOrderEntity orderForPrice = productionOrderRepository.findById(productionOrderId).orElse(null);
+        boolean preferSellerPrice = isOpvVendorShipmentFlow(orderForPrice);
         for (ProductShipmentDetailEntity detail : details) {
             if (detail == null || detail.getProductId() == null) {
                 continue;
@@ -2066,12 +2068,22 @@ public class ProductionOrderController {
                 continue;
             }
             // Revisión de precios en OP: sincroniza a líneas del envío (precio del documento).
+            // Catálogo: vendedor solo Luis Felipe; OPCK/OPK usan precio de venta.
             BigDecimal unitPrice = ProductionOrderItemPricing.resolveForSize(
                     matched,
                     detail.getSizeLabel(),
                     productId -> productRepository.findById(productId)
-                            .map(ProductEntity::getSellerPrice)
-                            .filter(p -> p != null && p.compareTo(BigDecimal.ZERO) > 0)
+                            .map(p -> {
+                                if (preferSellerPrice
+                                        && p.getSellerPrice() != null
+                                        && p.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
+                                    return p.getSellerPrice();
+                                }
+                                if (p.getSalePrice() != null && p.getSalePrice().compareTo(BigDecimal.ZERO) > 0) {
+                                    return p.getSalePrice();
+                                }
+                                return BigDecimal.ZERO;
+                            })
                             .orElse(BigDecimal.ZERO));
             if (unitPrice.compareTo(BigDecimal.ZERO) > 0) {
                 detail.setUnitPrice(unitPrice);

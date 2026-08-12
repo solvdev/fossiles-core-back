@@ -989,6 +989,8 @@ public class ProductDistributionService {
 
     private List<ProductShipmentRequest.ProductShipmentDetailRequest> buildShipmentProductsFromOrderItems(
             Long productionOrderId) throws ResourceNotFoundException, BusinessException {
+        ProductionOrderEntity order = productionOrderRepository.findById(productionOrderId).orElse(null);
+        boolean preferSellerPrice = isLuisFelipeVendorOrder(order);
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
         List<ProductShipmentRequest.ProductShipmentDetailRequest> lines = new ArrayList<>();
         for (ProductionOrderItemEntity item : items) {
@@ -1005,7 +1007,8 @@ public class ProductDistributionService {
                         if (qty <= 0) {
                             continue;
                         }
-                        BigDecimal unitPrice = resolveShipmentUnitPriceFromOrderItem(item, entry.getKey());
+                        BigDecimal unitPrice = resolveShipmentUnitPriceFromOrderItem(
+                                item, entry.getKey(), preferSellerPrice);
                         lines.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
                                 .productId(item.getProductId())
                                 .colorId(item.getColorId())
@@ -1020,7 +1023,7 @@ public class ProductDistributionService {
                 }
             }
             if (!addedFromSizes && item.getQuantity() != null && item.getQuantity() > 0) {
-                BigDecimal unitPrice = resolveShipmentUnitPriceFromOrderItem(item, null);
+                BigDecimal unitPrice = resolveShipmentUnitPriceFromOrderItem(item, null, preferSellerPrice);
                 lines.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
                         .productId(item.getProductId())
                         .colorId(item.getColorId())
@@ -1033,17 +1036,19 @@ public class ProductDistributionService {
         return normalizeShipmentProducts(lines);
     }
 
-    private BigDecimal resolveShipmentUnitPriceFromOrderItem(ProductionOrderItemEntity item, String sizeLabel) {
+    private BigDecimal resolveShipmentUnitPriceFromOrderItem(
+            ProductionOrderItemEntity item, String sizeLabel, boolean preferSellerPrice) {
         BigDecimal price = ProductionOrderItemPricing.resolveForSize(
                 item,
                 sizeLabel,
-                this::resolveProductCatalogUnitPrice);
+                productId -> resolveProductCatalogUnitPrice(productId, preferSellerPrice));
         return price.compareTo(BigDecimal.ZERO) > 0 ? price : null;
     }
 
     /**
      * Escribe unit_price en líneas del envío que aún no lo tienen.
      * No pisa precios ya guardados (pueden haberse editado al preparar el envío).
+     * Catálogo: precio vendedor solo en flujo Luis Felipe; OPCK/OPK usan precio de venta.
      */
     private void freezeMissingShipmentDetailUnitPrices(
             ProductShipmentEntity shipment,
@@ -1051,6 +1056,10 @@ public class ProductDistributionService {
         if (shipment == null || details == null || details.isEmpty()) {
             return;
         }
+        ProductionOrderEntity order = shipment.getProductionOrderId() != null
+                ? productionOrderRepository.findById(shipment.getProductionOrderId()).orElse(null)
+                : null;
+        boolean preferSellerPrice = isLuisFelipeVendorOrder(order);
         List<ProductionOrderItemEntity> orderItems = shipment.getProductionOrderId() != null
                 ? productionOrderItemRepository.findByProductionOrderId(shipment.getProductionOrderId())
                 : List.of();
@@ -1084,10 +1093,11 @@ public class ProductDistributionService {
                         .orElse(null);
             }
             if (matched != null) {
-                frozen = resolveShipmentUnitPriceFromOrderItem(matched, detail.getSizeLabel());
+                frozen = resolveShipmentUnitPriceFromOrderItem(
+                        matched, detail.getSizeLabel(), preferSellerPrice);
             }
             if (frozen == null && detail.getProductId() != null) {
-                BigDecimal catalog = resolveProductCatalogUnitPrice(detail.getProductId());
+                BigDecimal catalog = resolveProductCatalogUnitPrice(detail.getProductId(), preferSellerPrice);
                 if (catalog.compareTo(BigDecimal.ZERO) > 0) {
                     frozen = catalog;
                 }
@@ -1102,13 +1112,15 @@ public class ProductDistributionService {
         }
     }
 
-    private BigDecimal resolveProductCatalogUnitPrice(Long productId) {
+    private BigDecimal resolveProductCatalogUnitPrice(Long productId, boolean preferSellerPrice) {
         if (productId == null) {
             return BigDecimal.ZERO;
         }
         return productRepository.findById(productId)
                 .map(p -> {
-                    if (p.getSellerPrice() != null && p.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
+                    if (preferSellerPrice
+                            && p.getSellerPrice() != null
+                            && p.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
                         return p.getSellerPrice();
                     }
                     if (p.getSalePrice() != null && p.getSalePrice().compareTo(BigDecimal.ZERO) > 0) {

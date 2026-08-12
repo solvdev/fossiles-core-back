@@ -1513,16 +1513,18 @@ public class CustomerAccountService {
             List<ProductionOrderItemEntity> orderItems,
             ProductionOrderPartialReleaseEntity release,
             ProductShipmentEntity shipment) {
-        Map<String, BigDecimal> unitPriceByKey = buildUnitPriceByProductColor(orderItems);
+        boolean preferSellerPrice = isLfReceivableOrder(order);
+        Map<String, BigDecimal> unitPriceByKey = buildUnitPriceByProductColor(orderItems, preferSellerPrice);
         List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipment.getId());
 
         BigDecimal itemsSubtotal;
         if (details.isEmpty()) {
-            itemsSubtotal = estimateOrderItemsSubtotal(orderItems);
+            itemsSubtotal = estimateOrderItemsSubtotal(orderItems, preferSellerPrice);
         } else {
             itemsSubtotal = BigDecimal.ZERO;
             for (ProductShipmentDetailEntity detail : details) {
-                BigDecimal unitPrice = resolveShipmentLineUnitPrice(detail, unitPriceByKey, orderItems);
+                BigDecimal unitPrice = resolveShipmentLineUnitPrice(
+                        detail, unitPriceByKey, orderItems, preferSellerPrice);
                 int qty = resolveShipmentDetailQuantity(detail);
                 if (qty > 0) {
                     itemsSubtotal = itemsSubtotal.add(unitPrice.multiply(BigDecimal.valueOf(qty)));
@@ -1531,11 +1533,12 @@ public class CustomerAccountService {
             if (itemsSubtotal.compareTo(BigDecimal.ZERO) == 0) {
                 Long releaseId = release != null ? release.getId() : shipment.getPartialReleaseId();
                 if (releaseId != null) {
-                    itemsSubtotal = estimatePartialReleaseLinesSubtotal(releaseId, orderItems);
+                    itemsSubtotal = estimatePartialReleaseLinesSubtotal(
+                            releaseId, orderItems, preferSellerPrice);
                 }
             }
             if (itemsSubtotal.compareTo(BigDecimal.ZERO) == 0) {
-                itemsSubtotal = estimateOrderItemsSubtotal(orderItems);
+                itemsSubtotal = estimateOrderItemsSubtotal(orderItems, preferSellerPrice);
             }
         }
 
@@ -1560,7 +1563,8 @@ public class CustomerAccountService {
 
     private BigDecimal estimatePartialReleaseLinesSubtotal(
             Long releaseId,
-            List<ProductionOrderItemEntity> orderItems) {
+            List<ProductionOrderItemEntity> orderItems,
+            boolean preferSellerPrice) {
         Map<Long, ProductionOrderItemEntity> itemById = orderItems.stream()
                 .collect(Collectors.toMap(ProductionOrderItemEntity::getId, i -> i, (a, b) -> a));
         List<ProductionOrderPartialReleaseLineEntity> releaseLines =
@@ -1581,30 +1585,31 @@ public class CustomerAccountService {
                     if (qty <= 0) {
                         continue;
                     }
-                    BigDecimal unitPrice = resolveUnitPriceForSize(item, entry.getKey());
+                    BigDecimal unitPrice = resolveUnitPriceForSize(item, entry.getKey(), preferSellerPrice);
                     total = total.add(unitPrice.multiply(BigDecimal.valueOf(qty)));
                 }
             } else if (line.getQuantity() != null && line.getQuantity() > 0) {
-                BigDecimal unitPrice = resolveUnitPrice(item);
+                BigDecimal unitPrice = resolveUnitPrice(item, preferSellerPrice);
                 total = total.add(unitPrice.multiply(BigDecimal.valueOf(line.getQuantity())));
             }
         }
         return total.setScale(2, RoundingMode.HALF_UP);
     }
 
-    private BigDecimal estimateOrderItemsSubtotal(List<ProductionOrderItemEntity> items) {
+    private BigDecimal estimateOrderItemsSubtotal(
+            List<ProductionOrderItemEntity> items, boolean preferSellerPrice) {
         BigDecimal itemsTotal = BigDecimal.ZERO;
         for (ProductionOrderItemEntity item : items) {
             itemsTotal = itemsTotal.add(ProductionOrderItemPricing.itemSubtotal(
                     item, productId -> productRepository.findById(productId)
-                            .map(this::resolveProductUnitPrice)
+                            .map(p -> resolveProductUnitPrice(p, preferSellerPrice))
                             .orElse(BigDecimal.ZERO)));
         }
         return itemsTotal.setScale(2, RoundingMode.HALF_UP);
     }
 
     private BigDecimal estimateOrderItemsTotal(ProductionOrderEntity order, List<ProductionOrderItemEntity> items) {
-        BigDecimal itemsTotal = estimateOrderItemsSubtotal(items);
+        BigDecimal itemsTotal = estimateOrderItemsSubtotal(items, isLfReceivableOrder(order));
         OrderMeta meta = parseOrderMeta(order.getObservations());
         BigDecimal packingTotal = meta.packingItems.stream()
                 .map(p -> p.unitPrice.multiply(p.quantity))
@@ -1616,14 +1621,15 @@ public class CustomerAccountService {
         return release == null || release.getSequenceNum() == null || release.getSequenceNum() == 1;
     }
 
-    private Map<String, BigDecimal> buildUnitPriceByProductColor(List<ProductionOrderItemEntity> orderItems) {
+    private Map<String, BigDecimal> buildUnitPriceByProductColor(
+            List<ProductionOrderItemEntity> orderItems, boolean preferSellerPrice) {
         Map<String, BigDecimal> map = new HashMap<>();
         for (ProductionOrderItemEntity item : orderItems) {
             if (item.getProductId() == null) {
                 continue;
             }
             String key = item.getProductId() + ":" + (item.getColorId() != null ? item.getColorId() : "");
-            map.putIfAbsent(key, resolveUnitPrice(item));
+            map.putIfAbsent(key, resolveUnitPrice(item, preferSellerPrice));
         }
         return map;
     }
@@ -1631,7 +1637,8 @@ public class CustomerAccountService {
     private BigDecimal resolveShipmentLineUnitPrice(
             ProductShipmentDetailEntity detail,
             Map<String, BigDecimal> unitPriceByKey,
-            List<ProductionOrderItemEntity> orderItems) {
+            List<ProductionOrderItemEntity> orderItems,
+            boolean preferSellerPrice) {
         // 1) Precio congelado en la línea del envío (lo que se usó al despachar; no catálogo actual).
         if (detail.getUnitPrice() != null && detail.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
             return detail.getUnitPrice();
@@ -1660,14 +1667,14 @@ public class CustomerAccountService {
         }
         // 3) Último recurso: catálogo (solo envíos viejos sin precio congelado).
         if (matched != null) {
-            BigDecimal sized = resolveUnitPriceForSize(matched, detail.getSizeLabel());
+            BigDecimal sized = resolveUnitPriceForSize(matched, detail.getSizeLabel(), preferSellerPrice);
             if (sized.compareTo(BigDecimal.ZERO) > 0) {
                 return sized;
             }
         }
         if (detail.getProductId() != null) {
             return productRepository.findById(detail.getProductId())
-                    .map(this::resolveProductUnitPrice)
+                    .map(p -> resolveProductUnitPrice(p, preferSellerPrice))
                     .orElse(BigDecimal.ZERO);
         }
         return BigDecimal.ZERO;
@@ -1693,11 +1700,14 @@ public class CustomerAccountService {
         return null;
     }
 
-    private BigDecimal resolveProductUnitPrice(ProductEntity product) {
+    /** Catálogo: precio vendedor solo en CxC Luis Felipe; OPCK/OPK usan precio de venta. */
+    private BigDecimal resolveProductUnitPrice(ProductEntity product, boolean preferSellerPrice) {
         if (product == null) {
             return BigDecimal.ZERO;
         }
-        if (product.getSellerPrice() != null && product.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
+        if (preferSellerPrice
+                && product.getSellerPrice() != null
+                && product.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
             return product.getSellerPrice();
         }
         if (product.getSalePrice() != null && product.getSalePrice().compareTo(BigDecimal.ZERO) > 0) {
@@ -1709,16 +1719,17 @@ public class CustomerAccountService {
         return BigDecimal.ZERO;
     }
 
-    private BigDecimal resolveUnitPrice(ProductionOrderItemEntity item) {
-        return resolveUnitPriceForSize(item, null);
+    private BigDecimal resolveUnitPrice(ProductionOrderItemEntity item, boolean preferSellerPrice) {
+        return resolveUnitPriceForSize(item, null, preferSellerPrice);
     }
 
-    private BigDecimal resolveUnitPriceForSize(ProductionOrderItemEntity item, String sizeLabel) {
+    private BigDecimal resolveUnitPriceForSize(
+            ProductionOrderItemEntity item, String sizeLabel, boolean preferSellerPrice) {
         return ProductionOrderItemPricing.resolveForSize(
                 item,
                 sizeLabel,
                 productId -> productRepository.findById(productId)
-                        .map(this::resolveProductUnitPrice)
+                        .map(p -> resolveProductUnitPrice(p, preferSellerPrice))
                         .orElse(BigDecimal.ZERO));
     }
 
