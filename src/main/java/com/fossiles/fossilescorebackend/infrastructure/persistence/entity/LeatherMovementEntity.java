@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.entity;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -90,8 +91,8 @@ public class LeatherMovementEntity {
 
     @PrePersist
     protected void onCreate() {
-        createdAt = LocalDateTime.now();
-        if (movementDate == null) movementDate = LocalDate.now();
+        createdAt = GuatemalaDateTime.now();
+        if (movementDate == null) movementDate = GuatemalaDateTime.today();
         if (totalCost == null && unitCost != null && quantity != null) {
             totalCost = unitCost.multiply(quantity);
         }

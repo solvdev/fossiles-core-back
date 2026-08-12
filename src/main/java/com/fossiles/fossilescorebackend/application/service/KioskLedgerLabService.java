@@ -25,6 +25,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Lo
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import jakarta.persistence.EntityManager;
@@ -446,7 +447,7 @@ public class KioskLedgerLabService {
         if (request.getHardwareCondition() != null && !request.getHardwareCondition().isBlank()) {
             stock.setHardwareCondition(request.getHardwareCondition().trim().toUpperCase(Locale.ROOT));
         }
-        stock.setLastUpdatedAt(LocalDateTime.now());
+        stock.setLastUpdatedAt(GuatemalaDateTime.now());
         stock.setUpdatedBy(securityUtil.getCurrentUserId());
         stock = kioscoStockRepository.save(stock);
         log.warn("LEDGER_LAB_STOCK_UPDATE actor={} stockId={} currentStock={}",
@@ -554,7 +555,7 @@ public class KioskLedgerLabService {
                 .map(KioscoMovementEntity::getCreatedAt)
                 .filter(Objects::nonNull)
                 .min(LocalDateTime::compareTo)
-                .orElse(LocalDateTime.now());
+                .orElse(GuatemalaDateTime.now());
 
         for (KioscoMovementEntity movement : aggregated) {
             kioscoInventoryService.deleteAdminMovement(movement);

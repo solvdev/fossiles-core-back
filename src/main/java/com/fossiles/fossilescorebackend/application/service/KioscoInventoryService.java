@@ -38,6 +38,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import jakarta.persistence.EntityManager;
@@ -1134,7 +1135,7 @@ public class KioscoInventoryService {
             stock.setSizesData(ProductInventorySizesJson.serializeIncludingZeros(targetSizes));
             stock.setCurrentStock(targetTotal);
             stock.setUpdatedBy(resolvedUserId);
-            stock.setLastUpdatedAt(LocalDateTime.now());
+            stock.setLastUpdatedAt(GuatemalaDateTime.now());
             KioscoStockEntity savedStock = kioscoStockRepository.save(stock);
 
             saveMovement(savedStock, KioscoMovementType.AJUSTE, Math.abs(delta), before, targetTotal,
@@ -1156,7 +1157,7 @@ public class KioscoInventoryService {
 
         stock.setCurrentStock(after);
         stock.setUpdatedBy(resolvedUserId);
-        stock.setLastUpdatedAt(LocalDateTime.now());
+        stock.setLastUpdatedAt(GuatemalaDateTime.now());
         KioscoStockEntity savedStock = kioscoStockRepository.save(stock);
 
         saveMovement(savedStock, KioscoMovementType.AJUSTE, Math.abs(delta), before, after,
@@ -1744,7 +1745,7 @@ public class KioscoInventoryService {
                 Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)));
 
         return KioscoConsolidatedReportResponse.builder()
-                .generatedAt(LocalDateTime.now())
+                .generatedAt(GuatemalaDateTime.now())
                 .totalKiosks(kiosks.size())
                 .totalStockRows(totalRows)
                 .totalUnits(totalUnits)
@@ -3102,7 +3103,7 @@ public class KioscoInventoryService {
         if (affectsStock) {
             after = applyStockDelta(stock, quantity, delta, sizeKey);
             stock.setUpdatedBy(userId);
-            stock.setLastUpdatedAt(LocalDateTime.now());
+            stock.setLastUpdatedAt(GuatemalaDateTime.now());
             stock = kioscoStockRepository.save(stock);
         }
 
@@ -4006,7 +4007,7 @@ public class KioscoInventoryService {
                 stock.setCurrentStock(runningTotal);
             }
             if (cleared || anyUnsized) {
-                stock.setLastUpdatedAt(LocalDateTime.now());
+                stock.setLastUpdatedAt(GuatemalaDateTime.now());
                 log.info(
                         "KIOSCO_REBUILD_SIZES_CLEAR stockId={} productId={} colorId={} reason=no_sized_movements ledgerTotal={} currentStock={}",
                         stock.getId(), stock.getProductId(), stock.getColorId(), runningTotal,
@@ -4032,7 +4033,7 @@ public class KioscoInventoryService {
             // Pure sized: current equals positive sizes sum.
             stock.setCurrentStock(sizesSum);
         }
-        stock.setLastUpdatedAt(LocalDateTime.now());
+        stock.setLastUpdatedAt(GuatemalaDateTime.now());
         log.info(
                 "KIOSCO_REBUILD_SIZES stockId={} productId={} colorId={} mixed={} sizesTotal={} ledgerTotal={} currentStock={} sizes={}",
                 stock.getId(), stock.getProductId(), stock.getColorId(), anyUnsized, sizesSum, runningTotal,
@@ -4102,7 +4103,7 @@ public class KioscoInventoryService {
         int current = safeInt(stock.getCurrentStock());
         if (sizesTotal > current) {
             stock.setCurrentStock(sizesTotal);
-            stock.setLastUpdatedAt(LocalDateTime.now());
+            stock.setLastUpdatedAt(GuatemalaDateTime.now());
             kioscoStockRepository.save(stock);
             log.info(
                     "KIOSCO_SYNC_FOSS_SIZES stockId={} productId={} colorId={} {} -> {}",

@@ -22,6 +22,7 @@ public class KioskCashExpenseRequest {
     @NotBlank
     private String description;
 
-    /** Opcional: venta en efectivo/mixto del turno a la que se descuenta el depósito. */
+    /** Venta en efectivo/mixto del turno a la que se asocia el desembolso (obligatorio). */
+    @NotNull(message = "Debes indicar la venta del desembolso")
     private Long kioskSaleId;
 }

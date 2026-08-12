@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.entity;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -89,7 +90,7 @@ public class KioscoStockEntity {
 
     @PrePersist
     protected void onCreate() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = GuatemalaDateTime.now();
         if (hardwareCondition == null || hardwareCondition.isBlank()) {
             hardwareCondition = "NUEVO";
         }
@@ -112,7 +113,7 @@ public class KioscoStockEntity {
 
     @PreUpdate
     protected void onUpdate() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = GuatemalaDateTime.now();
         updatedAt = now;
         lastUpdatedAt = now;
         if (currentStock == null) {

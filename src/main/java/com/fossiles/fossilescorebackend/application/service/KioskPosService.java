@@ -3998,13 +3998,14 @@ public class KioskPosService {
         }
 
         Long kioskSaleId = request.getKioskSaleId();
-        if (kioskSaleId != null) {
-            KioskSaleEntity linkedSale = validateLinkedSaleForExpense(session, kioskSaleId);
-            BigDecimal existing = safeAmount(kioskCashExpenseRepository.sumAmountByKioskSaleId(kioskSaleId));
-            BigDecimal gross = resolveCashAmountForDeposit(linkedSale);
-            if (existing.add(amount).compareTo(gross) > 0) {
-                throw new BusinessException("El desembolso supera el efectivo disponible de la venta.");
-            }
+        if (kioskSaleId == null) {
+            throw new BusinessException("El desembolso debe asociarse a una venta. Regístralo desde el detalle de la venta.");
+        }
+        KioskSaleEntity linkedSale = validateLinkedSaleForExpense(session, kioskSaleId);
+        BigDecimal existing = safeAmount(kioskCashExpenseRepository.sumAmountByKioskSaleId(kioskSaleId));
+        BigDecimal gross = resolveCashAmountForDeposit(linkedSale);
+        if (existing.add(amount).compareTo(gross) > 0) {
+            throw new BusinessException("El desembolso supera el efectivo disponible de la venta.");
         }
 
         KioskCashExpenseEntity saved = kioskCashExpenseRepository.save(

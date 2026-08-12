@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.entity;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -93,6 +94,9 @@ public class KioscoMovementEntity {
         if (affectsStock == null) {
             affectsStock = true;
         }
-        createdAt = LocalDateTime.now();
+        // Solo rellenar si no vino (p. ej. Ledger Lab); siempre en zona Guatemala.
+        if (createdAt == null) {
+            createdAt = GuatemalaDateTime.now();
+        }
     }
 }

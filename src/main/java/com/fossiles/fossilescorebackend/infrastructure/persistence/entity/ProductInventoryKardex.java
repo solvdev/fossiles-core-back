@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.entity;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -90,9 +91,9 @@ public class ProductInventoryKardex {
 
     @PrePersist
     protected void onCreate() {
-        createdAt = LocalDateTime.now();
+        createdAt = GuatemalaDateTime.now();
         if (movementDate == null) {
-            movementDate = LocalDateTime.now();
+            movementDate = GuatemalaDateTime.now();
         }
     }
 }
