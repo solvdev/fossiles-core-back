@@ -168,6 +168,105 @@ public class ProductionOrderWarehouseUnitService {
         return result;
     }
 
+    /**
+     * Recepción en Bodega PT de todas las piezas pendientes vinculadas a una venta online (OPL).
+     * Idempotente: si ya están recibidas, no falla y reporta conteos.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> receivePendingUnitsForOnlineSale(Long onlineSaleId)
+            throws ResourceNotFoundException, BusinessException {
+        if (onlineSaleId == null) {
+            throw new BusinessException("Debes indicar la venta online.");
+        }
+        List<ProductionOrderItemEntity> saleItems = productionOrderItemRepository.findByOnlineSaleId(onlineSaleId);
+        if (saleItems == null || saleItems.isEmpty()) {
+            throw new BusinessException(
+                    "Esta venta no tiene piezas de orden de producción para recepción en bodega.");
+        }
+        Long productionOrderId = saleItems.stream()
+                .map(ProductionOrderItemEntity::getProductionOrderId)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElseThrow(() -> new BusinessException("No se encontró la orden de producción de esta venta."));
+
+        ProductionOrderEntity po = productionOrderRepository.findByIdForUpdate(productionOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
+        if (po.getWarehouseReceiptClosedAt() != null) {
+            throw new BusinessException("La recepción en bodega de esta orden ya fue cerrada.");
+        }
+
+        ensureUnitsForOrder(po);
+        LocationEntity bodega = getFinishedGoodsLocation();
+        Long userId = securityUtil.getCurrentUserId();
+        LocalDateTime now = LocalDateTime.now();
+
+        Set<Long> saleItemIds = saleItems.stream()
+                .map(ProductionOrderItemEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        Map<Long, ProductionOrderItemEntity> itemsById = saleItems.stream()
+                .collect(Collectors.toMap(ProductionOrderItemEntity::getId, i -> i, (a, b) -> a, LinkedHashMap::new));
+
+        List<ProductionOrderWarehouseUnitEntity> units = unitRepository
+                .findByProductionOrderIdAndProductionOrderItemIdIn(productionOrderId, new ArrayList<>(saleItemIds));
+
+        int receivedNow = 0;
+        int alreadyReceived = 0;
+        int rejected = 0;
+        int shipped = 0;
+        int pendingBefore = 0;
+
+        for (ProductionOrderWarehouseUnitEntity unit : units) {
+            String status = normalizeReceiptStatus(unit.getReceiptStatus());
+            if (unit.getShippedAt() != null) {
+                shipped++;
+                continue;
+            }
+            if (STATUS_REJECTED.equals(status)) {
+                rejected++;
+                continue;
+            }
+            if (STATUS_RECEIVED.equals(status)) {
+                alreadyReceived++;
+                continue;
+            }
+            pendingBefore++;
+            ProductionOrderItemEntity item = itemsById.get(unit.getProductionOrderItemId());
+            if (item == null) {
+                throw new BusinessException("Ítem de orden no encontrado para la pieza.");
+            }
+            ProductEntity product = item.getProductId() != null
+                    ? productRepository.findById(item.getProductId()).orElse(null)
+                    : null;
+            receiveSingleUnit(po, item, product, unit, bodega, userId, now);
+            syncItemReceivedQty(item);
+            productionOrderItemRepository.save(item);
+            productionTaskLifecycleService.tryCompleteTasksAfterWarehouseReceipt(
+                    productionOrderId, item.getId(), now);
+            receivedNow++;
+        }
+
+        List<ProductionOrderWarehouseUnitEntity> allSaleUnits = unitRepository
+                .findByProductionOrderIdAndProductionOrderItemIdIn(productionOrderId, new ArrayList<>(saleItemIds));
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("message", receivedNow > 0
+                ? ("Recepción en bodega: " + receivedNow + " pieza(s) de la venta OPL.")
+                : (alreadyReceived > 0
+                        ? "Las piezas de esta venta ya estaban recibidas en bodega."
+                        : "No hay piezas pendientes de recepción para esta venta."));
+        result.put("onlineSaleId", onlineSaleId);
+        result.put("productionOrderId", productionOrderId);
+        result.put("receivedCount", receivedNow);
+        result.put("alreadyReceivedCount", alreadyReceived);
+        result.put("rejectedCount", rejected);
+        result.put("shippedCount", shipped);
+        result.put("pendingBefore", pendingBefore);
+        result.put("summary", buildSummary(po, allSaleUnits));
+        return result;
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> closeWarehouseReceipt(Long productionOrderId) throws ResourceNotFoundException, BusinessException {
         ProductionOrderEntity po = productionOrderRepository.findByIdForUpdate(productionOrderId)

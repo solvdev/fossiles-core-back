@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.CustomerShipmentDispatchService;
 import com.fossiles.fossilescorebackend.application.service.OnlineSaleProductionOrderService;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderWarehouseUnitService;
 import com.fossiles.fossilescorebackend.application.service.WarehouseOrderViewAssembler;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
@@ -42,6 +43,7 @@ public class PublicOnlineWarehouseController {
     private final ColorRepository colorRepository;
     private final OnlineSaleProductionOrderService onlineSaleProductionOrderService;
     private final ProductionOrderItemRepository productionOrderItemRepository;
+    private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
 
     /**
      * Detalle de una venta online para bodega / QR (incluye ENVIADO y ENTREGADO; consulta histórica).
@@ -93,6 +95,22 @@ public class PublicOnlineWarehouseController {
             throws ResourceNotFoundException, BusinessException {
         Map<String, String> payload = body != null ? body : Map.of();
         return ResponseEntity.ok(customerShipmentDispatchService.dispatchDirectOnlineSale(onlineSaleId, payload));
+    }
+
+    /**
+     * Recepción en Bodega PT de las piezas de una venta OPL (QR móvil).
+     * No despacha: solo marca piezas pendientes como recibidas.
+     */
+    @PutMapping("/sales/{onlineSaleId}/receive-warehouse")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> receiveWarehouseForSale(@PathVariable Long onlineSaleId)
+            throws BusinessException, ResourceNotFoundException {
+        OnlineSaleEntity sale = onlineSaleRepository.findById(onlineSaleId)
+                .orElseThrow(() -> new ResourceNotFoundException("Online Sale", onlineSaleId));
+        if ("ENVIADO".equals(sale.getStatus()) || "ENTREGADO".equals(sale.getStatus())) {
+            throw new BusinessException("Esta venta ya fue despachada. Estado actual: " + sale.getStatus());
+        }
+        return ResponseEntity.ok(productionOrderWarehouseUnitService.receivePendingUnitsForOnlineSale(onlineSaleId));
     }
 
     /**
