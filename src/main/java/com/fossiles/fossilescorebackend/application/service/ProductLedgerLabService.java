@@ -298,11 +298,11 @@ public class ProductLedgerLabService {
                 .map(ProductInventoryLocation::getId)
                 .orElse(null);
 
-        Long stockId = request.getStockId();
+        final Long requestedStockId = request.getStockId();
         ProductInventoryLocation stock;
-        if (stockId != null) {
-            stock = stockRepository.findById(stockId)
-                    .orElseThrow(() -> new ResourceNotFoundException("ProductInventoryLocation", stockId));
+        if (requestedStockId != null) {
+            stock = stockRepository.findById(requestedStockId)
+                    .orElseThrow(() -> new ResourceNotFoundException("ProductInventoryLocation", requestedStockId));
             requireAllowedLocation(stock.getLocationId());
         } else {
             stock = findStockForKardex(existing)
@@ -310,8 +310,8 @@ public class ProductLedgerLabService {
                             "No hay product_inventory_location para product="
                                     + existing.getProductId() + " location=" + existing.getLocationId()
                                     + " color=" + existing.getColorId()));
-            stockId = stock.getId();
         }
+        Long stockId = stock.getId();
 
         String type = request.getMovementType() != null
                 ? request.getMovementType().trim().toUpperCase(Locale.ROOT)
