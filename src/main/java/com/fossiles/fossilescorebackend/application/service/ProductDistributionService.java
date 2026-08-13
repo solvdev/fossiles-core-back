@@ -1518,7 +1518,9 @@ public class ProductDistributionService {
     }
 
     /**
-     * Anula un envío antes de salida (DRAFT o CONFIRMED). No revierte inventario PT/kiosko enviado.
+     * Anula un envío para poder regenerarlo (DRAFT, CONFIRMED o SENT).
+     * En SENT revierte primero la salida de Bodega PT/Devoluciones.
+     * No aplica a envíos ya recibidos en kiosko (DELIVERED u otros finales).
      */
     public ProductShipmentResponse cancelShipment(Long shipmentId)
             throws ResourceNotFoundException, BusinessException {
@@ -1528,17 +1530,26 @@ public class ProductDistributionService {
         if ("CANCELLED".equals(currentStatus)) {
             return toShipmentResponse(shipment);
         }
-        if (!"DRAFT".equals(currentStatus) && !"CONFIRMED".equals(currentStatus)) {
+        if (!"DRAFT".equals(currentStatus)
+                && !"CONFIRMED".equals(currentStatus)
+                && !"SENT".equals(currentStatus)) {
             throw new BusinessException(
-                    "Solo se puede anular un envío en borrador o confirmado (antes de enviar). Estado actual: "
+                    "Solo se puede anular un envío en borrador, confirmado o en tránsito (antes de recibir en kiosko). Estado actual: "
                             + currentStatus);
         }
-        boolean wasConfirmed = "CONFIRMED".equals(currentStatus);
+
+        boolean wasConfirmedOrSent = "CONFIRMED".equals(currentStatus) || "SENT".equals(currentStatus);
+        if ("SENT".equals(currentStatus) && shipmentDispatchesFromPtWarehouses(shipment)) {
+            reverseSentShipmentDispatchInventory(shipment);
+        }
+
         shipment.setStatus("CANCELLED");
+        shipment.setSentAt(null);
+        shipment.setSentBy(null);
         shipment.setUpdatedBy(securityUtil.getCurrentUserId());
         ProductShipmentEntity saved = shipmentRepository.save(shipment);
 
-        if (wasConfirmed && saved.getProductionOrderId() != null) {
+        if (wasConfirmedOrSent && saved.getProductionOrderId() != null) {
             productionOrderWarehouseUnitService.clearUnitsShippedForProductShipment(
                     saved.getProductionOrderId(), shipmentId);
         }
@@ -1548,6 +1559,14 @@ public class ProductDistributionService {
                     release.setStatus("CONFIRMED");
                     release.setUpdatedBy(securityUtil.getCurrentUserId());
                     partialReleaseRepository.save(release);
+                }
+            });
+        }
+        if (saved.getDistributionId() != null) {
+            distributionRepository.findById(saved.getDistributionId()).ifPresent(dist -> {
+                if ("DISPATCHED".equalsIgnoreCase(String.valueOf(dist.getStatus()))) {
+                    dist.setStatus("IN_PROGRESS");
+                    distributionRepository.save(dist);
                 }
             });
         }

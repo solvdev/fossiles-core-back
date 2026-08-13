@@ -374,11 +374,12 @@ public class TaxInvoiceService {
     }
 
     /**
-     * Tras anular ante el SAT, deja la factura en borrador para volver a certificar.
-     * Limpia UUID/serie/número FEL en tax_invoice y kiosk_sale; conserva fel_void_uuid y motivo.
+     * Tras anular ante el SAT, deja la factura en VOID (pestaña Anuladas).
+     * Limpia UUID/serie/número del DTE anulado; conserva fel_void_uuid, voided_at y motivo.
+     * Para reemitir: Firmar FEL (retry) pasa VOID → DRAFT y certifica de nuevo.
      */
     private void markInvoiceVoidLocal(TaxInvoiceEntity invoice, String reason, String voidUuid) {
-        invoice.setStatus("DRAFT");
+        invoice.setStatus("VOID");
         clearFelCertificationFields(invoice);
         invoice.setVoidedAt(GuatemalaDateTime.now());
         invoice.setVoidReason(reason);
@@ -1350,6 +1351,11 @@ public class TaxInvoiceService {
         } else if ("DRAFT".equals(invoice.getStatus())) {
             clearKioskSaleFelFields(sale);
         } else if ("VOID".equals(invoice.getStatus())) {
+            sale.setFelStatus("VOID");
+            sale.setFelUuid(null);
+            sale.setFelSerie(null);
+            sale.setFelNumero(null);
+            sale.setFelCertifiedAt(null);
             sale.setFelError(invoice.getVoidReason());
         } else if ("SKIPPED".equals(invoice.getStatus())) {
             sale.setFelError(null);
