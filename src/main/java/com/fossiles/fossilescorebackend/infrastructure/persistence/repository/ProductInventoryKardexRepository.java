@@ -18,6 +18,49 @@ public interface ProductInventoryKardexRepository extends JpaRepository<ProductI
     List<ProductInventoryKardex> findByLocationId(Long locationId);
     
     List<ProductInventoryKardex> findByProductIdAndLocationId(Long productId, Long locationId);
+
+    @Query("""
+        SELECT k FROM ProductInventoryKardex k
+        WHERE k.productId = :productId
+          AND k.locationId = :locationId
+          AND ((:colorId IS NULL AND k.colorId IS NULL) OR k.colorId = :colorId)
+        ORDER BY k.movementDate ASC, k.id ASC
+        """)
+    List<ProductInventoryKardex> findByProductLocationColorAsc(
+            @Param("productId") Long productId,
+            @Param("locationId") Long locationId,
+            @Param("colorId") Long colorId);
+
+    @Query("""
+        SELECT k FROM ProductInventoryKardex k
+        WHERE k.productId = :productId
+          AND k.locationId = :locationId
+          AND ((:colorId IS NULL AND k.colorId IS NULL) OR k.colorId = :colorId)
+        ORDER BY k.movementDate DESC, k.id DESC
+        """)
+    List<ProductInventoryKardex> findByProductLocationColorDesc(
+            @Param("productId") Long productId,
+            @Param("locationId") Long locationId,
+            @Param("colorId") Long colorId);
+
+    @Query("""
+        SELECT COUNT(k) FROM ProductInventoryKardex k
+        WHERE k.productId = :productId
+          AND k.locationId = :locationId
+          AND ((:colorId IS NULL AND k.colorId IS NULL) OR k.colorId = :colorId)
+        """)
+    long countByProductLocationColor(
+            @Param("productId") Long productId,
+            @Param("locationId") Long locationId,
+            @Param("colorId") Long colorId);
+
+    @Query("""
+        SELECT k FROM ProductInventoryKardex k
+        WHERE k.locationId = :locationId
+        ORDER BY k.movementDate DESC, k.id DESC
+        """)
+    List<ProductInventoryKardex> findByLocationIdOrderByMovementDateDescIdDesc(
+            @Param("locationId") Long locationId);
     
     List<ProductInventoryKardex> findByMovementType(String movementType);
     
