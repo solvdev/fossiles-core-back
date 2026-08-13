@@ -7,8 +7,12 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import java.util.Map;
 
 /**
- * Cantidad efectiva por línea de OP para recetas (BOM) y consumo: alinea con
- * {@code ProductionTaskGenerationService.calculateItemTotalQuantity} (quantity + tallas en JSON).
+ * Cantidad efectiva por línea de OP para recetas (BOM) y consumo.
+ * <p>
+ * Misma regla que {@code ProductionOrderController.totalOrderItemQuantity} y
+ * {@code ProductionOrderItemPricing.itemSubtotal}: si hay desglose de tallas con
+ * suma &gt; 0, ese total es la cantidad de piezas; si no, se usa {@code quantity}.
+ * No se suman ambos (eso duplicaba materiales cuando quantity ya reflejaba las tallas).
  */
 public final class ProductionOrderItemQuantityHelper {
 
@@ -20,19 +24,21 @@ public final class ProductionOrderItemQuantityHelper {
         if (item == null) {
             return 1;
         }
-        int total = 0;
-        if (item.getQuantity() != null) {
-            total += item.getQuantity();
-        }
-        if (item.getSizesData() != null && !item.getSizesData().isEmpty()) {
+        if (item.getSizesData() != null && !item.getSizesData().isBlank()) {
             try {
                 Map<String, Integer> sizes = OBJECT_MAPPER.readValue(
                         item.getSizesData(), new TypeReference<Map<String, Integer>>() {});
-                total += sizes.values().stream().mapToInt(Integer::intValue).sum();
+                int fromSizes = sizes.values().stream()
+                        .mapToInt(v -> v != null ? Math.max(v, 0) : 0)
+                        .sum();
+                if (fromSizes > 0) {
+                    return fromSizes;
+                }
             } catch (Exception ignored) {
-                // ignore malformed JSON
+                // quantity como fallback si el JSON está mal
             }
         }
-        return Math.max(total, 1);
+        int qty = item.getQuantity() != null ? Math.max(item.getQuantity(), 0) : 0;
+        return Math.max(qty, 1);
     }
 }

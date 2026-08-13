@@ -443,7 +443,10 @@ public class InternalShipmentRequestService {
                     Map<String, Integer> sizes = objectMapper.readValue(
                             item.getSizesData(),
                             objectMapper.getTypeFactory().constructMapType(LinkedHashMap.class, String.class, Integer.class));
-                    totalQuantity += sizes.values().stream().mapToInt(v -> v != null ? v : 0).sum();
+                    int fromSizes = sizes.values().stream().mapToInt(v -> v != null ? Math.max(v, 0) : 0).sum();
+                    if (fromSizes > 0) {
+                        totalQuantity = fromSizes;
+                    }
                 } catch (Exception ignored) {
                     // usar quantity base
                 }

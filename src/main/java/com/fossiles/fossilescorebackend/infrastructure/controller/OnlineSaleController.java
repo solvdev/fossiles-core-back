@@ -414,7 +414,12 @@ public class OnlineSaleController {
                                 com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
                                 Map<String, Integer> sizes = mapper.readValue(item.getSizesData(),
                                         new com.fasterxml.jackson.core.type.TypeReference<Map<String, Integer>>() {});
-                                totalQuantity += sizes.values().stream().mapToInt(Integer::intValue).sum();
+                                int fromSizes = sizes.values().stream()
+                                        .mapToInt(v -> v != null ? Math.max(v, 0) : 0)
+                                        .sum();
+                                if (fromSizes > 0) {
+                                    totalQuantity = fromSizes;
+                                }
                             } catch (Exception ignored) {
                             }
                         }

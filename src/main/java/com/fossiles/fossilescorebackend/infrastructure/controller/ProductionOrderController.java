@@ -298,12 +298,15 @@ public class ProductionOrderController {
             if (!isInternaOpi && request.getItems() != null && !request.getItems().isEmpty()) {
                 for (ProductionOrderItemRequest item : request.getItems()) {
                     if (item.getProductId() != null) {
-                        // Calcular cantidad total (quantity + sizes si aplica)
-                        int totalQuantity = item.getQuantity() != null ? item.getQuantity() : 0;
+                        // Calcular cantidad total (tallas O quantity; no sumar ambos)
+                        int totalQuantity = 0;
                         if (item.getSizes() != null && !item.getSizes().isEmpty()) {
-                            totalQuantity += item.getSizes().values().stream()
-                                    .mapToInt(Integer::intValue)
+                            totalQuantity = item.getSizes().values().stream()
+                                    .mapToInt(v -> v != null ? Math.max(v, 0) : 0)
                                     .sum();
+                        }
+                        if (totalQuantity <= 0) {
+                            totalQuantity = item.getQuantity() != null ? item.getQuantity() : 0;
                         }
                         
                         if (totalQuantity > 0) {
