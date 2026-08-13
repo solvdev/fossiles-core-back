@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.dto.request.OpcShipmentGenerateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ConfirmReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductDistributionRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentDestinationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
@@ -1293,6 +1294,47 @@ public class ProductDistributionService {
         ProductShipmentEntity shipment = shipmentRepository.findById(shipmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
         shipment.setPackingItems(serializePackingItems(packingItems));
+        return toShipmentResponse(shipmentRepository.save(shipment));
+    }
+
+    /**
+     * Corrige kiosko destino y/o dirección DESTINO: en notas (borrador, confirmado o en tránsito).
+     */
+    public ProductShipmentResponse updateShipmentDestination(
+            Long shipmentId,
+            ProductShipmentDestinationRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
+        assertShipmentProductsEditable(shipment);
+        if (request == null) {
+            throw new BusinessException("Indique el destino a actualizar.");
+        }
+
+        boolean changed = false;
+        if (request.getLocationId() != null) {
+            locationRepository.findById(request.getLocationId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Location", request.getLocationId()));
+            if (!request.getLocationId().equals(shipment.getLocationId())) {
+                shipment.setLocationId(request.getLocationId());
+                changed = true;
+            }
+        }
+
+        if (request.getDestinationAddress() != null) {
+            String nextNotes = buildNotesWithDestination(shipment.getNotes(), request.getDestinationAddress());
+            String currentNotes = shipment.getNotes() == null ? "" : shipment.getNotes();
+            String normalizedNext = nextNotes == null ? "" : nextNotes;
+            if (!normalizedNext.equals(currentNotes)) {
+                shipment.setNotes(normalizedNext.isBlank() ? null : normalizedNext);
+                changed = true;
+            }
+        }
+
+        if (!changed) {
+            return toShipmentResponse(shipment);
+        }
+        shipment.setUpdatedBy(securityUtil.getCurrentUserId());
         return toShipmentResponse(shipmentRepository.save(shipment));
     }
 

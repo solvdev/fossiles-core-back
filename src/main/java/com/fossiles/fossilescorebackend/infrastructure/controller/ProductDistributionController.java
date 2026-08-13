@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ConfirmReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductDistributionRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentDestinationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
@@ -124,6 +125,14 @@ public class ProductDistributionController {
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentResponse shipment = distributionService.updateShipmentProducts(id, products);
         return ResponseEntity.ok(shipment);
+    }
+
+    @PutMapping("/shipments/{id}/destination")
+    public ResponseEntity<ProductShipmentResponse> updateShipmentDestination(
+            @PathVariable Long id,
+            @RequestBody ProductShipmentDestinationRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.updateShipmentDestination(id, request));
     }
 
     @PutMapping("/shipments/{id}/packing-items")
