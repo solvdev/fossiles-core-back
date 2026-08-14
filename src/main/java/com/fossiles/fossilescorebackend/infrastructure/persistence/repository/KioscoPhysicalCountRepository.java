@@ -20,11 +20,14 @@ public interface KioscoPhysicalCountRepository extends JpaRepository<KioscoPhysi
 
     Optional<KioscoPhysicalCountEntity> findFirstByLocationIdOrderByPeriodToDescIdDesc(Long locationId);
 
-    /** Conteo físico anterior al periodo actual (mismo kiosko, corte previo; incluye contiguo mismo día). */
+    /**
+     * Conteo físico anterior al periodo actual (mismo kiosko, corte previo; incluye contiguo mismo día).
+     * Fuente del Ini. del siguiente (Fin. del anterior), independientemente del estado.
+     */
     Optional<KioscoPhysicalCountEntity> findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
             Long locationId, LocalDate periodFrom, Long excludeId);
 
-    /** Último conteo CERRADO anterior/contiguo al periodo actual (fuente oficial del Ini. del siguiente). */
+    /** Último conteo con estado dado anterior/contiguo al periodo actual. */
     Optional<KioscoPhysicalCountEntity> findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
             Long locationId, KioscoPhysicalCountStatus status, LocalDate periodFrom, Long excludeId);
 

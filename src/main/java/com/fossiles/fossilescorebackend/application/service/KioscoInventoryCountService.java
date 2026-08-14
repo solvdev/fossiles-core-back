@@ -145,7 +145,7 @@ public class KioscoInventoryCountService {
         if (count.getStatus() != KioscoPhysicalCountStatus.CERRADO) {
             return;
         }
-        if (resolvePreviousClosedPhysicalCount(count).isPresent()) {
+        if (resolvePreviousPhysicalCount(count).isPresent()) {
             return;
         }
         String serialized = serializeClosingBalances(extractClosingBalances(report));
@@ -454,18 +454,20 @@ public class KioscoInventoryCountService {
         // Fin. siempre al cierre del periodo/corte (replay de movimientos), no stock vivo.
         LocalDate finAsOf = isSubcount ? balanceAsOf : count.getPeriodTo();
 
-        // Ini. = Fin. del último conteo CERRADO anterior/contiguo (no replay floored del ledger).
-        Optional<KioscoPhysicalCountEntity> previousClosedCount = resolvePreviousClosedPhysicalCount(count);
-        PreviousClosingBalances previousClosing = previousClosedCount
+        // Ini. = Fin. del conteo anterior/contiguo más reciente (cualquier estado; no solo CERRADO).
+        // Si solo se usara CERRADO, un periodo CONTADO/REVISADO intermedio se saltaría y las ventas
+        // de ese periodo no bajarían el Ini. del siguiente.
+        Optional<KioscoPhysicalCountEntity> previousCount = resolvePreviousPhysicalCount(count);
+        PreviousClosingBalances previousClosing = previousCount
                 .map(this::loadPreviousClosingBalances)
                 .orElse(null);
 
-        // Si el periodo se solapa con el cerrado anterior (mismo día de corte), el kardex arranca
-        // el día siguiente al cierre para no contar dos veces los movimientos del día compartido.
+        // Si el periodo se solapa con el anterior (mismo día de corte), el kardex arranca
+        // el día siguiente al corte para no contar dos veces los movimientos del día compartido.
         // Primer conteo: ampliar desde el primer movimiento del kiosko (Ini.=0; historial en columnas).
         LocalDate effectiveKardexFrom = count.getPeriodFrom();
-        if (previousClosedCount.isPresent()) {
-            LocalDate dayAfterPrev = previousClosedCount.get().getPeriodTo().plusDays(1);
+        if (previousCount.isPresent()) {
+            LocalDate dayAfterPrev = previousCount.get().getPeriodTo().plusDays(1);
             if (dayAfterPrev.isAfter(effectiveKardexFrom)) {
                 effectiveKardexFrom = dayAfterPrev;
             }
@@ -509,20 +511,20 @@ public class KioscoInventoryCountService {
         applyPendingReturnSalidasForCount(count, kardexRows, kardexByStockAndSize, stockByKey);
 
         LocalDateTime periodStart = count.getPeriodFrom().atStartOfDay();
-        LocalDateTime openingCutoffExclusive = previousClosedCount
+        LocalDateTime openingCutoffExclusive = previousCount
                 .map(c -> c.getPeriodTo().plusDays(1).atStartOfDay())
                 .orElse(periodStart);
-        // Primer conteo: Ini.=0 (sin ledger). Siguientes: Ini.=Fin. del CERRADO (previousClosing).
+        // Primer conteo: Ini.=0 (sin ledger). Siguientes: Ini.=Fin. del conteo anterior (previousClosing).
         Map<Long, Integer> openingBalanceByStockId = Map.of();
         Map<Long, Map<String, Integer>> openingBalanceByStockAndSize = Map.of();
 
         // Solo el hueco entre conteos (si periodFrom > periodTo anterior) va a Ent.; el primer conteo no
         // (su historial pre-periodFrom ya está en el kardex ampliado).
-        Map<Long, Integer> gapEntradasByStockId = previousClosedCount.isPresent()
+        Map<Long, Integer> gapEntradasByStockId = previousCount.isPresent()
                 ? kioscoInventoryService.computePrePeriodEntradasByStockId(
                         count.getLocationId(), openingCutoffExclusive, periodStart)
                 : Map.of();
-        Map<Long, Map<String, Integer>> gapEntradasByStockAndSize = previousClosedCount.isPresent()
+        Map<Long, Map<String, Integer>> gapEntradasByStockAndSize = previousCount.isPresent()
                 ? kioscoInventoryService.computePrePeriodEntradasByStockAndSize(
                         count.getLocationId(), openingCutoffExclusive, periodStart)
                 : Map.of();
@@ -604,7 +606,7 @@ public class KioscoInventoryCountService {
             int gapEntradas = stocksForRow.stream()
                     .mapToInt(s -> gapEntradasByStockId.getOrDefault(s.getId(), 0))
                     .sum();
-            // Primer conteo: Ini.=0. Siguientes: Fin. del CERRADO anterior (0 si SKU nuevo).
+            // Primer conteo: Ini.=0. Siguientes: Fin. del conteo anterior (0 si SKU nuevo).
             int inventarioInicial = resolveOpeningInventarioInicial(productColorKey, previousClosing, 0);
             // Ent. = periodo (+ hueco entre conteos). En el primer conteo el kardex ya incluye historial previo.
             int entradas = kardexRow.getEntradas() + gapEntradas;
@@ -1055,28 +1057,34 @@ public class KioscoInventoryCountService {
         return "Unisex";
     }
 
-    private Optional<KioscoPhysicalCountEntity> resolvePreviousClosedPhysicalCount(KioscoPhysicalCountEntity count) {
+    /**
+     * Conteo anterior/contiguo más reciente del mismo kiosko ({@code periodTo <= periodFrom}).
+     * Incluye DRAFT/CONTADO/REVISADO/CERRADO para no saltar un periodo intermedio no cerrado.
+     */
+    private Optional<KioscoPhysicalCountEntity> resolvePreviousPhysicalCount(KioscoPhysicalCountEntity count) {
         if (count == null || count.getLocationId() == null || count.getPeriodFrom() == null) {
             return Optional.empty();
         }
         Long excludeId = count.getId() != null ? count.getId() : -1L;
-        return countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+        return countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 count.getLocationId(),
-                KioscoPhysicalCountStatus.CERRADO,
                 count.getPeriodFrom(),
                 excludeId);
     }
 
     private PreviousClosingBalances loadPreviousClosingBalances(KioscoPhysicalCountEntity previousCount) {
-        PreviousClosingBalances fromSnapshot = deserializeClosingBalances(previousCount.getClosingBalancesData());
-        if (fromSnapshot != null) {
-            return fromSnapshot;
+        // Snapshot oficial solo existe al cerrar; si el anterior aún no está CERRADO, se recalcula el Fin.
+        if (previousCount.getStatus() == KioscoPhysicalCountStatus.CERRADO) {
+            PreviousClosingBalances fromSnapshot = deserializeClosingBalances(previousCount.getClosingBalancesData());
+            if (fromSnapshot != null) {
+                return fromSnapshot;
+            }
         }
         try {
             return extractClosingBalances(buildReport(previousCount));
         } catch (BusinessException | ResourceNotFoundException e) {
             throw new IllegalStateException(
-                    "No se pudo cargar el Fin. del conteo cerrado #" + previousCount.getId()
+                    "No se pudo cargar el Fin. del conteo #" + previousCount.getId()
                             + " para usarlo como Ini. del siguiente periodo",
                     e);
         }
@@ -1201,14 +1209,14 @@ public class KioscoInventoryCountService {
             PreviousClosingBalances previousClosing,
             int ledgerOpening
     ) {
-        // Primer conteo (sin CERRADO previo): Ini.=0; el stock entra por Ent./movimientos del kardex.
+        // Primer conteo (sin conteo previo): Ini.=0; el stock entra por Ent./movimientos del kardex.
         if (previousClosing == null) {
             return 0;
         }
         if (previousClosing.byProductColor.containsKey(productColorKey)) {
             return Math.max(0, previousClosing.byProductColor.get(productColorKey));
         }
-        // SKU nuevo respecto al conteo cerrado: no hereda ledger pre-cierre; arranca en 0
+        // SKU nuevo respecto al conteo anterior: no hereda ledger pre-corte; arranca en 0
         // (las entradas del hueco van a Ent.).
         return 0;
     }

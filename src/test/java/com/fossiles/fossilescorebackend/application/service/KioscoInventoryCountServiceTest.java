@@ -114,6 +114,8 @@ class KioscoInventoryCountServiceTest {
         when(userRepository.findById(reviewerId)).thenReturn(Optional.of(UserEntity.builder()
                 .id(reviewerId).username("gustavo").build()));
         when(securityUtil.getCurrentUserId()).thenReturn(userId);
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                any(), any(), any())).thenReturn(Optional.empty());
         when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 any(), any(), any(), any())).thenReturn(Optional.empty());
         when(kioscoInventoryService.computeStockBalanceByStockId(any(), any())).thenReturn(Map.of());
@@ -904,12 +906,12 @@ class KioscoInventoryCountServiceTest {
                 .status(KioscoPhysicalCountStatus.CERRADO)
                 .build();
 
-        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(from), eq(countId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(from), eq(countId)))
                 .thenReturn(Optional.of(previousClosed));
-        // Al reconstruir el conteo cerrado previo no hay otro CERRADO anterior.
-        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(previousFrom), eq(previousCountId)))
+        // Al reconstruir el conteo cerrado previo no hay otro conteo anterior.
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(previousFrom), eq(previousCountId)))
                 .thenReturn(Optional.empty());
 
         // Fin. del conteo cerrado = Ini 0 + Ent 1 = 1 (aunque el ledger floored diga otra cosa).
@@ -982,11 +984,11 @@ class KioscoInventoryCountServiceTest {
             entity.setId(countId);
             return entity;
         });
-        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(currentFrom), eq(countId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(currentFrom), eq(countId)))
                 .thenReturn(Optional.of(previousClosed));
-        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(previousFrom), eq(previousCountId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(previousFrom), eq(previousCountId)))
                 .thenReturn(Optional.empty());
 
         // Conteo cerrado: Ini 0 + Ent 1 - Vtas 2 + AV 1 = Fin 0 (caso B-22 CAFE).
@@ -1110,8 +1112,8 @@ class KioscoInventoryCountServiceTest {
             entity.setId(countId);
             return entity;
         });
-        when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(KioscoPhysicalCountStatus.CERRADO), eq(currentFrom), eq(countId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(currentFrom), eq(countId)))
                 .thenReturn(Optional.of(previousClosed));
 
         when(kioscoInventoryService.buildKardexRows(
@@ -1150,6 +1152,99 @@ class KioscoInventoryCountServiceTest {
         // No reconstruye el reporte del conteo cerrado si hay snapshot.
         verify(kioscoInventoryService, never()).buildKardexRows(
                 eq(locationId), eq(previousFrom), eq(previousTo), eq(true), eq(previousTo), eq(previousCountId));
+    }
+
+    @Test
+    void buildReport_heredaFinDeConteoContadoIntermedio_noDelCerradoAnterior() throws Exception {
+        // CERRADO (jun) Fin=5 → CONTADO (jul-ago) Fin=3 (con ventas) → BORRADOR (ago) debe Ini=3, no 5.
+        long stockId = 913L;
+        long closedCountId = 100L;
+        long contadoCountId = 150L;
+        LocalDate closedFrom = LocalDate.of(2026, 6, 19);
+        LocalDate closedTo = LocalDate.of(2026, 7, 6);
+        LocalDate contadoFrom = LocalDate.of(2026, 7, 6);
+        LocalDate contadoTo = LocalDate.of(2026, 8, 5);
+        LocalDate currentFrom = LocalDate.of(2026, 8, 5);
+        LocalDate currentTo = LocalDate.of(2026, 8, 13);
+        LocalDate effectiveKardexFrom = contadoTo.plusDays(1); // 2026-08-06
+
+        String closedSnapshot = service.serializeClosingBalances(
+                new KioscoInventoryCountService.PreviousClosingBalances(
+                        Map.of(productId + ":" + colorId, 5),
+                        Map.of()
+                ));
+
+        KioscoPhysicalCountEntity previousClosed = KioscoPhysicalCountEntity.builder()
+                .id(closedCountId)
+                .locationId(locationId)
+                .periodFrom(closedFrom)
+                .periodTo(closedTo)
+                .status(KioscoPhysicalCountStatus.CERRADO)
+                .closingBalancesData(closedSnapshot)
+                .build();
+
+        KioscoPhysicalCountEntity previousContado = KioscoPhysicalCountEntity.builder()
+                .id(contadoCountId)
+                .locationId(locationId)
+                .periodFrom(contadoFrom)
+                .periodTo(contadoTo)
+                .status(KioscoPhysicalCountStatus.CONTADO)
+                .build();
+
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, currentFrom, currentTo))
+                .thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+        // El anterior más reciente es el CONTADO (no el CERRADO).
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(currentFrom), eq(countId)))
+                .thenReturn(Optional.of(previousContado));
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(contadoFrom), eq(contadoCountId)))
+                .thenReturn(Optional.of(previousClosed));
+
+        // Kardex del CONTADO: Ini 5 - Vtas 2 = Fin 3.
+        when(kioscoInventoryService.buildKardexRows(
+                eq(locationId), eq(closedTo.plusDays(1)), eq(contadoTo), eq(true), eq(contadoTo), eq(contadoCountId)))
+                .thenReturn(List.of(
+                        KioscoKardexReportResponse.KioscoKardexRow.builder()
+                                .productId(productId).productCode("B-43").productName("BILLETERA")
+                                .colorId(colorId).colorName("CAFE")
+                                .ventas(2)
+                                .build()
+                ));
+        when(kioscoInventoryService.buildKardexByStockAndSize(
+                eq(locationId), eq(closedTo.plusDays(1)), eq(contadoTo), eq(contadoCountId)))
+                .thenReturn(Map.of());
+
+        when(kioscoInventoryService.buildKardexRows(
+                eq(locationId), eq(effectiveKardexFrom), eq(currentTo), eq(true), eq(currentTo), eq(countId)))
+                .thenReturn(List.of(
+                        KioscoKardexReportResponse.KioscoKardexRow.builder()
+                                .productId(productId).productCode("B-43").productName("BILLETERA")
+                                .colorId(colorId).colorName("CAFE")
+                                .build()
+                ));
+        when(kioscoInventoryService.buildKardexByStockAndSize(
+                eq(locationId), eq(effectiveKardexFrom), eq(currentTo), eq(countId)))
+                .thenReturn(Map.of());
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .id(stockId)
+                        .locationId(locationId)
+                        .productId(productId)
+                        .colorId(colorId)
+                        .build()
+        ));
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, currentFrom, currentTo);
+
+        var row = report.getCategories().get(0).getRows().get(0);
+        assertThat(row.getInventarioInicial()).isEqualTo(3);
+        assertThat(row.getInventarioFinal()).isEqualTo(3);
     }
 
     @Test
