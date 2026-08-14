@@ -11,6 +11,7 @@ import org.springframework.stereotype.Repository;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEntity, Long> {
@@ -179,6 +180,12 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             + "WHERE s.locationId = :locationId "
             + "ORDER BY m.createdAt DESC, m.id DESC")
     List<KioscoMovementEntity> findByLocationIdOrderByCreatedAtDesc(@Param("locationId") Long locationId);
+
+    /** Fecha/hora del movimiento más antiguo del kiosko (para primer conteo físico: Ini.=0, kardex desde el origen). */
+    @Query("SELECT MIN(m.createdAt) FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId")
+    Optional<LocalDateTime> findEarliestCreatedAtByLocationId(@Param("locationId") Long locationId);
 
     @Query("SELECT m FROM KioscoMovementEntity m "
             + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "

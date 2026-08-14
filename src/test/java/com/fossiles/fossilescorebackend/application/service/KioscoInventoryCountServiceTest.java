@@ -94,36 +94,34 @@ class KioscoInventoryCountServiceTest {
     private final LocalDate to = LocalDate.of(2026, 6, 30);
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         when(locationRepository.findById(locationId)).thenReturn(Optional.of(LocationEntity.builder()
                 .id(locationId)
                 .name("Kiosko A")
                 .code("K-A")
-                .categoria("KIOSKO")
                 .build()));
-        when(securityUtil.getCurrentUserId()).thenReturn(userId);
+        when(kioscoInventoryService.findEarliestMovementDate(any())).thenReturn(Optional.empty());
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any()))
+                .thenReturn(List.of());
+        when(itemRepository.findByCountId(any())).thenReturn(List.of());
+        when(exchangeSlipRepository.findByPhysicalCountId(any())).thenReturn(List.of());
+        when(productRepository.findAllById(any())).thenReturn(List.of(ProductEntity.builder()
+                .id(productId).code("T-1").name("Tarjetero").categoryId(categoryId).build()));
+        when(productCategoryRepository.findAllById(any())).thenReturn(List.of(ProductCategoryEntity.builder()
+                .id(categoryId).name("Tarjeteros").build()));
         when(userRepository.findById(userId)).thenReturn(Optional.of(UserEntity.builder()
                 .id(userId).username("paola").build()));
         when(userRepository.findById(reviewerId)).thenReturn(Optional.of(UserEntity.builder()
                 .id(reviewerId).username("gustavo").build()));
-        when(productRepository.findAllById(any())).thenReturn(List.of(ProductEntity.builder()
-                .id(productId).code("P-1").name("Tarjetero").categoryId(categoryId).build()));
-        when(productCategoryRepository.findAllById(any())).thenReturn(List.of(ProductCategoryEntity.builder()
-                .id(categoryId).code("TARJ").name("Tarjeteros").build()));
-        when(itemRepository.findByCountId(any())).thenReturn(List.of());
-        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of());
-        when(exchangeSlipRepository.findByPhysicalCountId(any())).thenReturn(List.of());
-        when(exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
+        when(securityUtil.getCurrentUserId()).thenReturn(userId);
         when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 any(), any(), any(), any())).thenReturn(Optional.empty());
-        try {
-            when(kioscoInventoryService.computeStockBalanceByStockId(any(), any())).thenReturn(Map.of());
-            when(kioscoInventoryService.computeSizeBalanceByStockAndSize(any(), any())).thenReturn(Map.of());
-            when(kioscoInventoryService.computePrePeriodEntradasByStockId(any(), any(), any())).thenReturn(Map.of());
-            when(kioscoInventoryService.computePrePeriodEntradasByStockAndSize(any(), any(), any())).thenReturn(Map.of());
-        } catch (BusinessException | ResourceNotFoundException e) {
-            throw new RuntimeException(e);
-        }
+        when(kioscoInventoryService.computeStockBalanceByStockId(any(), any())).thenReturn(Map.of());
+        when(kioscoInventoryService.computeSizeBalanceByStockAndSize(any(), any())).thenReturn(Map.of());
+        when(kioscoInventoryService.computePrePeriodEntradasByStockId(any(), any(), any())).thenReturn(Map.of());
+        when(kioscoInventoryService.computePrePeriodEntradasByStockAndSize(any(), any(), any())).thenReturn(Map.of());
+        when(kioscoInventoryService.buildKardexByStockAndSize(any(), any(), any(), any())).thenReturn(Map.of());
+        when(exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
     }
 
     private KioscoKardexReportResponse.KioscoKardexRow kardexRow(int inventarioFinal) {
@@ -847,9 +845,10 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
-    void buildReport_primerConteo_entradaPreviaVaAInicialNoAEntradas() throws Exception {
+    void buildReport_primerConteo_historialPrevioVaAEntradasNoAInicial() throws Exception {
         long stockId = 913L;
-        LocalDateTime periodStart = from.atStartOfDay();
+        LocalDate earliest = from.minusDays(10);
+        when(kioscoInventoryService.findEarliestMovementDate(locationId)).thenReturn(Optional.of(earliest));
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
                 com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
                         .id(stockId)
@@ -858,15 +857,20 @@ class KioscoInventoryCountServiceTest {
                         .colorId(colorId)
                         .build()
         ));
-        stubPrincipalKardex(List.of(
-                KioscoKardexReportResponse.KioscoKardexRow.builder()
-                        .productId(productId).productCode("BD-8").productName("Bolso Perla")
-                        .colorId(colorId).colorName("Salmon Acabado Flores")
-                        .ventas(1)
-                        .build()
-        ));
-        when(kioscoInventoryService.computeStockBalanceByStockId(eq(locationId), eq(periodStart)))
-                .thenReturn(Map.of(stockId, 1));
+        // Kardex ampliado: ENTRADA pre-periodo (1) + ENTRADA del periodo (1) + Venta (1).
+        when(kioscoInventoryService.buildKardexRows(
+                eq(locationId), eq(earliest), eq(to), eq(true), eq(to), eq(countId)))
+                .thenReturn(List.of(
+                        KioscoKardexReportResponse.KioscoKardexRow.builder()
+                                .productId(productId).productCode("BD-8").productName("Bolso Perla")
+                                .colorId(colorId).colorName("Salmon Acabado Flores")
+                                .entradas(2)
+                                .ventas(1)
+                                .build()
+                ));
+        when(kioscoInventoryService.buildKardexByStockAndSize(
+                eq(locationId), eq(earliest), eq(to), eq(countId)))
+                .thenReturn(Map.of());
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
         when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
             KioscoPhysicalCountEntity entity = inv.getArgument(0);
@@ -877,10 +881,11 @@ class KioscoInventoryCountServiceTest {
         KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
 
         var row = report.getCategories().get(0).getRows().get(0);
-        assertThat(row.getInventarioInicial()).isEqualTo(1);
-        assertThat(row.getEntradas()).isZero();
+        assertThat(row.getInventarioInicial()).isZero();
+        assertThat(row.getEntradas()).isEqualTo(2);
         assertThat(row.getVentas()).isEqualTo(1);
-        assertThat(row.getInventarioFinal()).isZero();
+        assertThat(row.getInventarioFinal()).isEqualTo(1);
+        verify(kioscoInventoryService, never()).computeStockBalanceByStockId(any(), any());
     }
 
     @Test
@@ -1068,6 +1073,9 @@ class KioscoInventoryCountServiceTest {
                 (productId + 1) + ":" + colorId, closing, 99)).isEqualTo(5);
         assertThat(KioscoInventoryCountService.resolveOpeningInventarioInicial(
                 "999:1", closing, 7)).isZero();
+        // Primer conteo: sin cierre previo → Ini.=0 aunque el ledger diga otra cosa.
+        assertThat(KioscoInventoryCountService.resolveOpeningInventarioInicial(
+                productId + ":" + colorId, null, 12)).isZero();
     }
 
     @Test
@@ -1142,6 +1150,54 @@ class KioscoInventoryCountServiceTest {
         // No reconstruye el reporte del conteo cerrado si hay snapshot.
         verify(kioscoInventoryService, never()).buildKardexRows(
                 eq(locationId), eq(previousFrom), eq(previousTo), eq(true), eq(previousTo), eq(previousCountId));
+    }
+
+    @Test
+    void getReport_primerConteoCerrado_refrescaClosingBalancesConIniCero() throws Exception {
+        long stockId = 913L;
+        LocalDate earliest = from.minusDays(5);
+        KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
+                .id(countId)
+                .locationId(locationId)
+                .periodFrom(from)
+                .periodTo(to)
+                .status(KioscoPhysicalCountStatus.CERRADO)
+                .closingBalancesData("{\"byProductColor\":{\"" + productId + ":" + colorId + "\":99}}")
+                .maxAbsDiff(99)
+                .generatedBy(userId)
+                .build();
+        when(countRepository.findById(countId)).thenReturn(Optional.of(count));
+        when(kioscoInventoryService.findEarliestMovementDate(locationId)).thenReturn(Optional.of(earliest));
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                        .id(stockId)
+                        .locationId(locationId)
+                        .productId(productId)
+                        .colorId(colorId)
+                        .build()
+        ));
+        when(kioscoInventoryService.buildKardexRows(
+                eq(locationId), eq(earliest), eq(to), eq(true), eq(to), eq(countId)))
+                .thenReturn(List.of(
+                        KioscoKardexReportResponse.KioscoKardexRow.builder()
+                                .productId(productId).productCode("BD-8").productName("Bolso Perla")
+                                .colorId(colorId).colorName("Salmon")
+                                .entradas(3)
+                                .ventas(1)
+                                .build()
+                ));
+        when(kioscoInventoryService.buildKardexByStockAndSize(
+                eq(locationId), eq(earliest), eq(to), eq(countId)))
+                .thenReturn(Map.of());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        KioscoPhysicalCountReportResponse report = service.getReport(countId);
+
+        assertThat(report.getCategories().get(0).getRows().get(0).getInventarioInicial()).isZero();
+        assertThat(report.getCategories().get(0).getRows().get(0).getInventarioFinal()).isEqualTo(2);
+        assertThat(count.getClosingBalancesData()).contains("\"" + productId + ":" + colorId + "\":2");
+        assertThat(count.getClosingBalancesData()).doesNotContain(":99");
+        verify(countRepository).save(count);
     }
 
     @Test

@@ -2385,6 +2385,18 @@ public class KioscoInventoryService {
     }
 
     /**
+     * Fecha del movimiento más antiguo del kiosko. Usado en el primer conteo físico para
+     * ampliar el kardex desde el origen (Ini.=0; historial en Ent./Vtas./etc.).
+     */
+    @Transactional(readOnly = true)
+    public Optional<LocalDate> findEarliestMovementDate(Long locationId)
+            throws BusinessException, ResourceNotFoundException {
+        validateLocationIsKiosk(locationId);
+        return kioscoMovementRepository.findEarliestCreatedAtByLocationId(locationId)
+                .map(LocalDateTime::toLocalDate);
+    }
+
+    /**
      * ENTRADAs en el hueco entre el cierre del conteo físico anterior y el inicio del periodo actual.
      * En conteo físico se suman a Ent. sin restar del Ini. (Ini. = cierre del conteo anterior).
      */
