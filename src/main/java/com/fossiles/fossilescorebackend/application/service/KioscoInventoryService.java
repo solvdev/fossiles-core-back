@@ -2017,7 +2017,12 @@ public class KioscoInventoryService {
         return out;
     }
 
-    /** Movimientos del periodo + movimientos asociados explícitamente al conteo físico. */
+    /**
+     * Movimientos del periodo [{@code fromDt}, {@code toDtExclusive}).
+     * Si hay {@code physicalCountId}, también incluye movimientos ligados a ese conteo,
+     * pero solo si su {@code createdAt} cae en el mismo rango (evita que una Dev. bodega
+     * del día siguiente al corte aparezca en el conteo anterior).
+     */
     private List<KioscoMovementEntity> collectPeriodMovements(
             Long locationId,
             LocalDateTime fromDt,
@@ -2034,9 +2039,10 @@ public class KioscoInventoryService {
         if (physicalCountId != null) {
             for (KioscoMovementEntity movement : kioscoMovementRepository.findByLocationAndPhysicalCountId(
                     locationId, physicalCountId)) {
-                if (movement.getId() != null) {
-                    merged.putIfAbsent(movement.getId(), movement);
+                if (movement.getId() == null || !isMovementCreatedInRange(movement, fromDt, toDtExclusive)) {
+                    continue;
                 }
+                merged.putIfAbsent(movement.getId(), movement);
             }
         }
         return merged.values().stream()
@@ -2044,6 +2050,21 @@ public class KioscoInventoryService {
                         .comparing(KioscoMovementEntity::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()))
                         .thenComparing(KioscoMovementEntity::getId, Comparator.nullsLast(Comparator.naturalOrder())))
                 .toList();
+    }
+
+    private static boolean isMovementCreatedInRange(
+            KioscoMovementEntity movement,
+            LocalDateTime fromDt,
+            LocalDateTime toDtExclusive
+    ) {
+        LocalDateTime createdAt = movement.getCreatedAt();
+        if (createdAt == null || toDtExclusive == null) {
+            return false;
+        }
+        if (fromDt != null && createdAt.isBefore(fromDt)) {
+            return false;
+        }
+        return createdAt.isBefore(toDtExclusive);
     }
 
     /**

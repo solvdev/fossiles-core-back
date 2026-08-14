@@ -1263,11 +1263,15 @@ public class KioscoInventoryCountService {
         if (count == null || count.getId() == null) {
             return;
         }
-        List<KioskExchangeSlipEntity> slips = exchangeSlipRepository.findByPhysicalCountId(count.getId());
+        List<KioskExchangeSlipEntity> slips = exchangeSlipRepository.findByPhysicalCountId(count.getId()).stream()
+                .filter(slip -> isSlipCompletedInPeriod(slip, count))
+                .toList();
         if (slips.isEmpty()) {
             slips = exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(count.getLocationId()).stream()
                     .filter(slip -> SLIP_TYPE_RETURN.equalsIgnoreCase(safeTrim(slip.getSlipType())))
-                    .filter(slip -> slip.getPhysicalCountId() == null && isSlipCompletedInPeriod(slip, count))
+                    .filter(slip -> isSlipCompletedInPeriod(slip, count))
+                    .filter(slip -> slip.getPhysicalCountId() == null
+                            || Objects.equals(slip.getPhysicalCountId(), count.getId()))
                     .toList();
         }
         for (KioskExchangeSlipEntity slip : slips) {
@@ -1306,10 +1310,13 @@ public class KioscoInventoryCountService {
         if (slip == null || count == null) {
             return false;
         }
-        if (Objects.equals(slip.getPhysicalCountId(), count.getId())) {
-            return true;
+        // La Sal. sintética sigue el periodo del conteo, no solo el physicalCountId
+        // (una Dev. bodega del día siguiente al corte no debe entrar en el conteo anterior).
+        if (!isSlipCompletedInPeriod(slip, count)) {
+            return false;
         }
-        return slip.getPhysicalCountId() == null && isSlipCompletedInPeriod(slip, count);
+        return slip.getPhysicalCountId() == null
+                || Objects.equals(slip.getPhysicalCountId(), count.getId());
     }
 
     private boolean isSlipCompletedInPeriod(KioskExchangeSlipEntity slip, KioscoPhysicalCountEntity count) {

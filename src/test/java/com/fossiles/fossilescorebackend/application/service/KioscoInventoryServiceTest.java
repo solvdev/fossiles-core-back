@@ -752,6 +752,51 @@ class KioscoInventoryServiceTest {
         assertThat(rowsAsOf.get(0).getVentas()).isEqualTo(3);
     }
 
+    @Test
+    void buildKardexRows_ignoraMovimientoConPhysicalCountIdFueraDelPeriodo() throws Exception {
+        // Caso B-27: Dev. bodega 07/07 ligada al conteo 19 jun–06 jul no debe entrar en Sal. de ese periodo.
+        KioscoStockEntity stock = stockEntity(1, 0);
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId))
+                .thenReturn(List.of(stock));
+
+        LocalDate from = LocalDate.of(2026, 6, 19);
+        LocalDate to = LocalDate.of(2026, 7, 6);
+        long physicalCountId = 55L;
+
+        KioscoMovementEntity entrada = movementAt(KioscoMovementType.ENTRADA, 0, 2,
+                LocalDateTime.of(2026, 6, 19, 16, 42));
+        KioscoMovementEntity devBodegaFuera = movementAt(KioscoMovementType.DEVOLUCION_DEPOSITO, 2, 1,
+                LocalDateTime.of(2026, 7, 7, 7, 1));
+        devBodegaFuera.setPhysicalCountId(physicalCountId);
+
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(eq(locationId), any(LocalDateTime.class)))
+                .thenAnswer(invocation -> {
+                    LocalDateTime cutoff = invocation.getArgument(1);
+                    return List.of(entrada, devBodegaFuera).stream()
+                            .filter(m -> m.getCreatedAt().isBefore(cutoff))
+                            .toList();
+                });
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBetween(
+                eq(locationId), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenAnswer(invocation -> {
+                    LocalDateTime rangeFrom = invocation.getArgument(1);
+                    LocalDateTime rangeTo = invocation.getArgument(2);
+                    return List.of(entrada, devBodegaFuera).stream()
+                            .filter(m -> !m.getCreatedAt().isBefore(rangeFrom) && m.getCreatedAt().isBefore(rangeTo))
+                            .toList();
+                });
+        when(kioscoMovementRepository.findByLocationAndPhysicalCountId(locationId, physicalCountId))
+                .thenReturn(List.of(devBodegaFuera));
+
+        List<KioscoKardexReportResponse.KioscoKardexRow> rows = service.buildKardexRows(
+                locationId, from, to, true, to, physicalCountId);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getEntradas()).isEqualTo(2);
+        assertThat(rows.get(0).getSalida()).isZero();
+        assertThat(rows.get(0).getSalidaDevolucion()).isZero();
+    }
+
     private KioscoMovementEntity movementAt(
             KioscoMovementType type, int stockBefore, int stockAfter, LocalDateTime createdAt
     ) {
