@@ -170,6 +170,19 @@ public class KioscoInventoryController {
             @PathVariable Long locationId,
             @Valid @RequestBody KioscoInventoryAjusteRequest request
     ) throws BusinessException, ResourceNotFoundException {
+        if (request.getQuantity() != null) {
+            return ResponseEntity.ok(kioscoInventoryService.registrarAjustePorDelta(
+                    locationId,
+                    request.getProductId(),
+                    request.getColorId(),
+                    request.getQuantity(),
+                    request.getDirection(),
+                    request.getReason(),
+                    request.getUserId(),
+                    request.getSizeKey(),
+                    request.getHardwareCondition()
+            ));
+        }
         return ResponseEntity.ok(kioscoInventoryService.registrarAjuste(
                 locationId,
                 request.getProductId(),

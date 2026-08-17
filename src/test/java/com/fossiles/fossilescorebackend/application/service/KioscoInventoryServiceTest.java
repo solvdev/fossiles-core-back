@@ -555,6 +555,30 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
+    void ajustePorDelta_ingresoYEgreso() throws Exception {
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(5, 0)));
+
+        KioscoStockResponse ingreso = service.registrarAjustePorDelta(
+                locationId, productId, colorId, 3, "INGRESO", "faltante", userId, null, null);
+        assertThat(ingreso.getCurrentStock()).isEqualTo(8);
+
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(8, 0)));
+        KioscoStockResponse egreso = service.registrarAjustePorDelta(
+                locationId, productId, colorId, 2, "EGRESO", "sobrante", userId, null, null);
+        assertThat(egreso.getCurrentStock()).isEqualTo(6);
+    }
+
+    @Test
+    void ajustePorDelta_fallaSiDireccionInvalida() {
+        assertThatThrownBy(() -> service.registrarAjustePorDelta(
+                locationId, productId, colorId, 1, "X", "motivo", userId, null, null))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("INGRESO");
+    }
+
+    @Test
     void ajuste_falla_siMotivoVacio() {
         assertThatThrownBy(() -> service.registrarAjuste(locationId, productId, colorId, 3, "", userId))
                 .isInstanceOf(BusinessException.class);

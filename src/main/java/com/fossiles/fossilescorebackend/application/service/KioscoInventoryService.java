@@ -1108,6 +1108,53 @@ public class KioscoInventoryService {
         );
     }
 
+    /**
+     * Ajuste relativo: suma (INGRESO) o resta (EGRESO) {@code quantity} sobre el stock actual.
+     * Genera movimiento {@link KioscoMovementType#AJUSTE} (Comp. / Sal. según el signo).
+     */
+    public KioscoStockResponse registrarAjustePorDelta(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            String direction,
+            String reason,
+            Long userId,
+            String sizeKey,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
+        if (quantity == null || quantity <= 0) {
+            throw new BusinessException("La cantidad del ajuste debe ser un entero mayor a cero.");
+        }
+        if (safeTrim(reason).isEmpty()) {
+            throw new BusinessException("El motivo del ajuste es obligatorio.");
+        }
+        String dir = safeTrim(direction).toUpperCase();
+        if (!"INGRESO".equals(dir) && !"EGRESO".equals(dir)) {
+            throw new BusinessException("Indica si el ajuste es INGRESO o EGRESO.");
+        }
+        int delta = "INGRESO".equals(dir) ? quantity : -quantity;
+        return applyStockMovement(
+                locationId,
+                productId,
+                colorId,
+                quantity,
+                null,
+                null,
+                null,
+                resolveUserIdRequired(userId),
+                KioscoMovementType.AJUSTE,
+                delta,
+                true,
+                reason.trim(),
+                sizeKey,
+                true,
+                null,
+                null,
+                resolveStockHardware(hardwareCondition)
+        );
+    }
+
     public KioscoStockResponse registrarAjuste(
             Long locationId,
             Long productId,
@@ -1142,7 +1189,8 @@ public class KioscoInventoryService {
             String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
         if (realQuantity == null || realQuantity < 0) {
-            throw new BusinessException("La cantidad real no puede ser negativa.");
+            throw new BusinessException(
+                    "Indica quantity+direction (ingreso/egreso) o realQuantity (stock objetivo) para el ajuste.");
         }
         if (safeTrim(reason).isEmpty()) {
             throw new BusinessException("El motivo del ajuste es obligatorio.");
