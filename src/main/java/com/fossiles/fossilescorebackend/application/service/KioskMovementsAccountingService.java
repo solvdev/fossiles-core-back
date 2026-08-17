@@ -2,13 +2,20 @@ package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskMovementsAccountingResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskMovementsAccountingStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaxInvoiceRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
@@ -24,6 +31,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -41,12 +49,57 @@ public class KioskMovementsAccountingService {
     private final KioskSaleRepository kioskSaleRepository;
     private final TaxInvoiceRepository taxInvoiceRepository;
     private final ProductShipmentRepository productShipmentRepository;
+    private final ProductRepository productRepository;
+    private final ColorRepository colorRepository;
+    private final LocationRepository locationRepository;
+
+    @Transactional(readOnly = true)
+    public List<KioskMovementsAccountingStockResponse> listStocks(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            String productTerm
+    ) throws BusinessException {
+        if (locationId == null) {
+            throw new BusinessException("Selecciona un kiosko para consultar el inventario.");
+        }
+
+        List<KioscoStockEntity> stocks = kioscoStockRepository
+                .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId);
+        String term = normalizeTerm(productTerm);
+
+        List<KioskMovementsAccountingStockResponse> out = new ArrayList<>();
+        for (KioscoStockEntity stock : stocks) {
+            if (productId != null && !Objects.equals(stock.getProductId(), productId)) {
+                continue;
+            }
+            if (colorId != null && !Objects.equals(stock.getColorId(), colorId)) {
+                continue;
+            }
+            ProductEntity product = resolveProduct(stock);
+            ColorEntity color = resolveColor(stock);
+            LocationEntity location = resolveLocation(stock);
+            if (term != null) {
+                String haystack = (
+                        (product != null ? nullToEmpty(product.getCode()) : "")
+                        + " "
+                        + (product != null ? nullToEmpty(product.getName()) : "")
+                ).toLowerCase(Locale.ROOT);
+                if (!haystack.contains(term)) {
+                    continue;
+                }
+            }
+            out.add(toStockResponse(stock, product, color, location));
+        }
+        return out;
+    }
 
     @Transactional(readOnly = true)
     public List<KioskMovementsAccountingResponse> listMovements(
             Long locationId,
             Long stockId,
             Long productId,
+            Long colorId,
             String productTerm,
             KioscoMovementType type,
             LocalDate from,
@@ -57,14 +110,14 @@ public class KioskMovementsAccountingService {
             Boolean affectsStockOnly
     ) throws BusinessException {
         if (stockId == null && locationId == null) {
-            throw new BusinessException("Indica locationId o stockId para consultar movimientos.");
+            throw new BusinessException("Indica un kiosko o selecciona un producto/color del listado.");
         }
 
         List<KioscoMovementEntity> raw;
         if (stockId != null) {
             raw = kioscoMovementRepository.findByKioscoStockIdOrderByCreatedAtDescIdDesc(stockId);
-        } else if (locationId != null && productId != null) {
-            raw = kioscoMovementRepository.findByLocationAndFilters(locationId, productId, null);
+        } else if (locationId != null && (productId != null || colorId != null)) {
+            raw = kioscoMovementRepository.findByLocationAndFilters(locationId, productId, colorId);
         } else {
             raw = kioscoMovementRepository.findByLocationIdOrderByCreatedAtDesc(locationId);
         }
@@ -78,14 +131,15 @@ public class KioskMovementsAccountingService {
 
         List<KioskMovementsAccountingResponse> out = new ArrayList<>();
         for (KioscoMovementEntity m : raw) {
-            if (productId != null) {
-                KioscoStockEntity stock = m.getKioscoStock();
-                if (stock == null && m.getKioscoStockId() != null) {
-                    stock = kioscoStockRepository.findById(m.getKioscoStockId()).orElse(null);
-                }
-                if (stock == null || !Objects.equals(stock.getProductId(), productId)) {
-                    continue;
-                }
+            KioscoStockEntity stock = m.getKioscoStock();
+            if (stock == null && m.getKioscoStockId() != null) {
+                stock = kioscoStockRepository.findById(m.getKioscoStockId()).orElse(null);
+            }
+            if (productId != null && (stock == null || !Objects.equals(stock.getProductId(), productId))) {
+                continue;
+            }
+            if (colorId != null && (stock == null || !Objects.equals(stock.getColorId(), colorId))) {
+                continue;
             }
             if (type != null && m.getMovementType() != type) {
                 continue;
@@ -130,6 +184,7 @@ public class KioskMovementsAccountingService {
                         + " " + nullToEmpty(dto.getResumenReferencia())
                         + " " + nullToEmpty(dto.getNumeroInternoFactura())
                         + " " + nullToEmpty(dto.getNumeroVenta())
+                        + " " + nullToEmpty(dto.getBoletaFisica())
                 ).toLowerCase(Locale.ROOT);
                 if (!haystack.contains(refTerm)) {
                     continue;
@@ -138,15 +193,13 @@ public class KioskMovementsAccountingService {
             out.add(dto);
         }
 
-        // stockAntes/stockDespues del ledger son totales del color.
-        // Si el movimiento tiene talla, mostrar el saldo de ESA talla.
         applySizeLevelStock(out, raw);
         return out;
     }
 
     /**
-     * Recalcula stockAntes/stockDespues por size_key rejugando el historial completo
-     * de cada kiosco_stock. Sin talla se dejan los totales del color.
+     * Rellena stockAntesTalla/stockDespuesTalla rejugando el historial por size_key.
+     * stockAntes/stockDespues siguen siendo el saldo del color.
      */
     private void applySizeLevelStock(
             List<KioskMovementsAccountingResponse> out,
@@ -190,8 +243,8 @@ public class KioskMovementsAccountingService {
             }
             int[] bal = sizeBalanceByMovementId.get(dto.getId());
             if (bal != null) {
-                dto.setStockAntes(bal[0]);
-                dto.setStockDespues(bal[1]);
+                dto.setStockAntesTalla(bal[0]);
+                dto.setStockDespuesTalla(bal[1]);
             }
         }
     }
@@ -213,12 +266,40 @@ public class KioskMovementsAccountingService {
         return value != null ? value : 0;
     }
 
+    private KioskMovementsAccountingStockResponse toStockResponse(
+            KioscoStockEntity stock,
+            ProductEntity product,
+            ColorEntity color,
+            LocationEntity location
+    ) {
+        Map<String, Integer> tallas = new LinkedHashMap<>();
+        for (Map.Entry<String, BigDecimal> e : ProductInventorySizesJson.parse(stock.getSizesData()).entrySet()) {
+            tallas.put(e.getKey(), e.getValue() != null ? e.getValue().intValue() : 0);
+        }
+        return KioskMovementsAccountingStockResponse.builder()
+                .id(stock.getId())
+                .locationId(stock.getLocationId())
+                .kiosko(location != null ? location.getName() : null)
+                .codigoKiosko(location != null ? location.getCode() : null)
+                .productId(stock.getProductId())
+                .codigoProducto(product != null ? product.getCode() : null)
+                .producto(product != null ? product.getName() : null)
+                .colorId(stock.getColorId())
+                .color(color != null ? color.getName() : null)
+                .cantidad(safeInt(stock.getCurrentStock()))
+                .minimo(safeInt(stock.getMinimumStock()))
+                .herraje(stock.getHardwareCondition())
+                .tallas(tallas.isEmpty() ? null : tallas)
+                .build();
+    }
+
     private KioskMovementsAccountingResponse toAccountingResponse(KioscoMovementEntity entity) {
         KioscoMovementResponse base = kioscoInventoryService.toMovementResponse(entity);
 
         KioskMovementsAccountingResponse.KioskMovementsAccountingResponseBuilder builder =
                 KioskMovementsAccountingResponse.builder()
                         .id(base.getId())
+                        .kioscoStockId(base.getKioscoStockId())
                         .fecha(base.getCreatedAt())
                         .kiosko(base.getLocationName())
                         .codigoProducto(base.getProductCode())
@@ -231,6 +312,7 @@ public class KioskMovementsAccountingService {
                         .stockDespues(base.getStockAfter())
                         .referencia(base.getReferenceNumber())
                         .tipoReferencia(base.getReferenceType())
+                        .boletaFisica(base.getPhysicalSlipNumber())
                         .motivo(base.getReason())
                         .usuario(base.getUsername());
 
@@ -245,6 +327,10 @@ public class KioskMovementsAccountingService {
     ) {
         if (entity.getReferenceId() == null) {
             String refSummary = base.getReferenceNumber();
+            if (base.getPhysicalSlipNumber() != null && !base.getPhysicalSlipNumber().isBlank()) {
+                refSummary = (refSummary != null ? refSummary + " · " : "")
+                        + "Boleta " + base.getPhysicalSlipNumber();
+            }
             builder.resumenReferencia(refSummary);
             return;
         }
@@ -296,6 +382,33 @@ public class KioskMovementsAccountingService {
         builder.resumenReferencia(base.getReferenceNumber() != null
                 ? base.getReferenceNumber()
                 : "Ref #" + entity.getReferenceId());
+    }
+
+    private ProductEntity resolveProduct(KioscoStockEntity stock) {
+        if (stock.getProduct() != null) {
+            return stock.getProduct();
+        }
+        return stock.getProductId() != null
+                ? productRepository.findById(stock.getProductId()).orElse(null)
+                : null;
+    }
+
+    private ColorEntity resolveColor(KioscoStockEntity stock) {
+        if (stock.getColor() != null) {
+            return stock.getColor();
+        }
+        return stock.getColorId() != null
+                ? colorRepository.findById(stock.getColorId()).orElse(null)
+                : null;
+    }
+
+    private LocationEntity resolveLocation(KioscoStockEntity stock) {
+        if (stock.getLocation() != null) {
+            return stock.getLocation();
+        }
+        return stock.getLocationId() != null
+                ? locationRepository.findById(stock.getLocationId()).orElse(null)
+                : null;
     }
 
     private static String normalizeTerm(String raw) {

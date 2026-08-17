@@ -19,6 +19,7 @@ public class KioskMovementsAccountingResponse {
 
     // — Identificación del movimiento —
     private Long id;
+    private Long kioscoStockId;
     @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
     private LocalDateTime fecha;
 
@@ -35,13 +36,21 @@ public class KioskMovementsAccountingResponse {
     // — Movimiento —
     private KioscoMovementType tipoMovimiento;
     private Integer cantidad;
+    /** Saldo del color (producto+color) antes del movimiento. */
     private Integer stockAntes;
+    /** Saldo del color (producto+color) después del movimiento. */
     private Integer stockDespues;
+    /** Saldo de la talla antes (solo si el movimiento tiene talla). */
+    private Integer stockAntesTalla;
+    /** Saldo de la talla después (solo si el movimiento tiene talla). */
+    private Integer stockDespuesTalla;
 
     // — Referencia —
     private String referencia;
     private String tipoReferencia;
     private String resumenReferencia;
+    /** Número de boleta física de devolución/cambio. */
+    private String boletaFisica;
 
     // — Venta / Factura —
     /** Número interno ESTABLECIMIENTO-CORRELATIVO (ej. "A1-241") */

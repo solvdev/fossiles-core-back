@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.response.KioskMovementsAccountingResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskMovementsAccountingStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.KioskMovementsAccountingService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
@@ -22,11 +23,22 @@ public class KioskMovementsAccountingController {
 
     private final KioskMovementsAccountingService service;
 
+    @GetMapping("/stocks")
+    public ResponseEntity<List<KioskMovementsAccountingStockResponse>> listStocks(
+            @RequestParam Long locationId,
+            @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) Long colorId,
+            @RequestParam(required = false) String productTerm
+    ) throws BusinessException {
+        return ResponseEntity.ok(service.listStocks(locationId, productId, colorId, productTerm));
+    }
+
     @GetMapping("/movements")
     public ResponseEntity<List<KioskMovementsAccountingResponse>> listMovements(
             @RequestParam(required = false) Long locationId,
             @RequestParam(required = false) Long stockId,
             @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) Long colorId,
             @RequestParam(required = false) String productTerm,
             @RequestParam(required = false) KioscoMovementType type,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
@@ -37,7 +49,7 @@ public class KioskMovementsAccountingController {
             @RequestParam(required = false) Boolean affectsStockOnly
     ) throws BusinessException {
         return ResponseEntity.ok(service.listMovements(
-                locationId, stockId, productId, productTerm, type, from, to,
+                locationId, stockId, productId, colorId, productTerm, type, from, to,
                 referenceTerm, reason, sizeKey, affectsStockOnly));
     }
 }
