@@ -11,7 +11,10 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskExchangeSl
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
@@ -20,7 +23,9 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.RoleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
@@ -40,6 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -83,6 +89,12 @@ class KioskExchangeServiceTest {
 
     @Autowired
     private KioskSaleItemRepository saleItemRepository;
+
+    @Autowired
+    private KioscoMovementRepository kioscoMovementRepository;
+
+    @Autowired
+    private KioskExchangeSlipRepository exchangeSlipRepository;
 
     @MockBean
     private SecurityUtil securityUtil;
@@ -189,6 +201,28 @@ class KioskExchangeServiceTest {
         assertThat(result.getSale().getDiscountAmount()).isEqualByComparingTo("180.00");
         assertThat(currentStock(originalProduct.getId())).isEqualTo(5);
         assertThat(currentStock(newProduct.getId())).isEqualTo(stockBefore - 1);
+
+        List<KioscoMovementEntity> slipMoves =
+                kioscoMovementRepository.findByPhysicalSlipNumber("BC-TEST-001");
+        assertThat(slipMoves).extracting(KioscoMovementEntity::getMovementType)
+                .containsExactlyInAnyOrder(KioscoMovementType.CAMBIO, KioscoMovementType.DEVOLUCION_A_CLIENTE);
+        assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE);
+        assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.VENTA);
+
+        KioskExchangeSlipEntity slip = exchangeSlipRepository.findById(result.getSlip().getId()).orElseThrow();
+        assertThat(slip.getReturnMovementId()).isNotNull();
+        assertThat(slip.getGivenMovementId()).isNotNull();
+
+        // La venta POS de diferencia no debe haber creado VENTA de stock del producto entregado.
+        long ventasNewProduct = kioscoMovementRepository
+                .findByLocationIdOrderByCreatedAtDesc(kiosk.getId()).stream()
+                .filter(m -> m.getMovementType() == KioscoMovementType.VENTA)
+                .filter(m -> {
+                    KioscoStockEntity stock = kioscoStockRepository.findById(m.getKioscoStockId()).orElse(null);
+                    return stock != null && Objects.equals(stock.getProductId(), newProduct.getId());
+                })
+                .count();
+        assertThat(ventasNewProduct).isZero();
     }
 
     @Test
@@ -255,6 +289,52 @@ class KioskExchangeServiceTest {
         assertThat(result.getSlip().getDifferenceAmount()).isEqualByComparingTo("0.00");
         assertThat(result.getSale()).isNull();
         assertThat(currentStock(originalProduct.getId())).isEqualTo(4);
+        assertThat(kioscoMovementRepository.findByPhysicalSlipNumber("BC-ZERO-001")).isEmpty();
+    }
+
+    @Test
+    void authorizeExchange_zeroDifference_registersCambioAndDevACliente() throws Exception {
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0);
+
+        KioskExchangeCompleteResponse pending = kioskExchangeService.completeExchange(
+                KioskExchangeCompleteRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(originalSale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(originalProduct.getId())
+                        .givenColorId(negro.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .physicalSlipNumber("BC-ZERO-AUTH-001")
+                        .reason("Cambio sin diferencia")
+                        .build());
+
+        assertThat(pending.getSlip().getStatus()).isEqualTo("PENDING_AUTHORIZATION");
+
+        RoleEntity adminRole = roleRepository.save(RoleEntity.builder().name("ADMIN").build());
+        UserEntity admin = userRepository.save(UserEntity.builder()
+                .username("admin.exchange")
+                .email("admin.exchange@fossiles.test")
+                .password("x")
+                .status("ACTIVE")
+                .roles(new HashSet<>(Set.of(adminRole)))
+                .build());
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        KioskExchangeSlipResponse authorized = kioskExchangeService.authorizeExchange(
+                pending.getSlip().getId(), kiosk.getId());
+
+        assertThat(authorized.getStatus()).isEqualTo("COMPLETED");
+        assertThat(authorized.getReturnMovementId()).isNotNull();
+        assertThat(authorized.getGivenMovementId()).isNotNull();
+        assertThat(currentStock(originalProduct.getId())).isEqualTo(4);
+
+        List<KioscoMovementEntity> slipMoves =
+                kioscoMovementRepository.findByPhysicalSlipNumber("BC-ZERO-AUTH-001");
+        assertThat(slipMoves).extracting(KioscoMovementEntity::getMovementType)
+                .containsExactlyInAnyOrder(KioscoMovementType.CAMBIO, KioscoMovementType.DEVOLUCION_A_CLIENTE);
+        assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.VENTA);
+        assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE);
     }
 
     @Test

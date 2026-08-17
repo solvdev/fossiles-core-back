@@ -930,28 +930,67 @@ public class KioscoInventoryService {
             String returnedSize,
             String givenSize
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarCambio(
+                locationId,
+                returnedProductId,
+                returnedColorId,
+                givenProductId,
+                givenColorId,
+                quantity,
+                quantity,
+                referenceId,
+                reason,
+                userId,
+                physicalSlipNumber,
+                returnedSize,
+                givenSize
+        );
+    }
+
+    /**
+     * Cambio: ingreso del producto devuelto ({@code CAMBIO +}) y egreso del entregado
+     * ({@code DEVOLUCION_A_CLIENTE −} → Sal. en kardex).
+     */
+    public CambioResult registrarCambio(
+            Long locationId,
+            Long returnedProductId,
+            Long returnedColorId,
+            Long givenProductId,
+            Long givenColorId,
+            Integer returnedQuantity,
+            Integer givenQuantity,
+            Long referenceId,
+            String reason,
+            Long userId,
+            String physicalSlipNumber,
+            String returnedSize,
+            String givenSize
+    ) throws BusinessException, ResourceNotFoundException {
         Long resolvedUserId = resolveUserIdRequired(userId);
         validateLocationIsKiosk(locationId);
         validateProduct(returnedProductId);
         validateColor(returnedColorId);
         validateProduct(givenProductId);
         validateColor(givenColorId);
+        validateQuantity(returnedQuantity);
+        validateQuantity(givenQuantity);
 
         String trimmedReason = safeTrim(reason);
+        String reasonOrNull = trimmedReason.isEmpty() ? null : trimmedReason;
 
         KioscoMovementWithStock returnedMovement = applyStockMovementWithMovement(
                 locationId,
                 returnedProductId,
                 returnedColorId,
-                quantity,
+                returnedQuantity,
                 referenceId,
                 null,
                 null,
                 resolvedUserId,
                 KioscoMovementType.CAMBIO,
-                quantity,
+                returnedQuantity,
                 true,
-                trimmedReason.isEmpty() ? null : trimmedReason,
+                reasonOrNull,
                 returnedSize,
                 true,
                 physicalSlipNumber
@@ -961,15 +1000,15 @@ public class KioscoInventoryService {
                 locationId,
                 givenProductId,
                 givenColorId,
-                quantity,
+                givenQuantity,
                 referenceId,
                 null,
                 null,
                 resolvedUserId,
-                KioscoMovementType.CAMBIO,
-                -quantity,
+                KioscoMovementType.DEVOLUCION_A_CLIENTE,
+                -givenQuantity,
                 true,
-                trimmedReason.isEmpty() ? null : trimmedReason,
+                reasonOrNull,
                 givenSize,
                 true,
                 physicalSlipNumber
@@ -2543,7 +2582,7 @@ public class KioscoInventoryService {
                         salidaDevolucion += qty;
                     }
                 }
-                case TRASLADO_SALIDA, MERMA -> {
+                case TRASLADO_SALIDA, MERMA, DEVOLUCION_A_CLIENTE -> {
                     if (delta < 0) {
                         salida += -delta;
                     }
@@ -4138,7 +4177,7 @@ public class KioscoInventoryService {
         int qty = safeInt(movement.getQuantity());
         return switch (movement.getMovementType()) {
             case ENTRADA, TRASLADO_ENTRADA, DEVOLUCION_CLIENTE, ANULACION -> qty;
-            case VENTA, DEVOLUCION_DEPOSITO, TRASLADO_SALIDA, MERMA -> -qty;
+            case VENTA, DEVOLUCION_DEPOSITO, DEVOLUCION_A_CLIENTE, TRASLADO_SALIDA, MERMA -> -qty;
             case AJUSTE, CAMBIO -> safeInt(movement.getStockAfter()) - safeInt(movement.getStockBefore());
         };
     }

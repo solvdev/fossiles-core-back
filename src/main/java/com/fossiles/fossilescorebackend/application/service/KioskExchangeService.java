@@ -136,7 +136,10 @@ public class KioskExchangeService {
             throw new BusinessException("Esta solicitud no está pendiente de autorización.");
         }
 
-        int quantity = slip.getReturnedQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
+        int returnedQty = slip.getReturnedQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
+        int givenQty = slip.getGivenQuantity() != null
+                ? slip.getGivenQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact()
+                : returnedQty;
         String cambioReason = buildExchangeMovementReason(slip);
 
         KioscoInventoryService.CambioResult cambio = kioscoInventoryService.registrarCambio(
@@ -145,7 +148,8 @@ public class KioskExchangeService {
                 slip.getReturnedColorId(),
                 slip.getGivenProductId(),
                 slip.getGivenColorId(),
-                quantity,
+                returnedQty,
+                givenQty,
                 slip.getId(),
                 cambioReason,
                 ctx.user().getId(),
@@ -230,18 +234,6 @@ public class KioskExchangeService {
         UserEntity user = exchange.access().user();
         LocationEntity kiosk = exchange.access().kiosk();
 
-        kioscoInventoryService.registrarDevolucionCliente(
-                kiosk.getId(),
-                preview.getReturned().getProductId(),
-                preview.getReturned().getColorId(),
-                preview.getReturned().getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact(),
-                preview.getOriginalSaleId(),
-                true,
-                user.getId(),
-                preview.getReturned().getSize(),
-                slipNumber
-        );
-
         KioskPosSaleRequest saleRequest = KioskPosSaleRequest.builder()
                 .kioskLocationId(kiosk.getId())
                 .customerTaxId(request.getCustomerTaxId())
@@ -270,7 +262,13 @@ public class KioskExchangeService {
                         .build()))
                 .build();
 
+        // Factura/caja de la diferencia sin VENTA de stock; el egreso va como DEVOLUCION_A_CLIENTE.
         KioskPosSaleResponse sale = kioskPosService.createExchangeSale(saleRequest, slipNumber);
+
+        int returnedQty = preview.getReturned().getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
+        int givenQty = preview.getGiven().getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
+        String cambioReason = "Boleta de cambio " + slipNumber
+                + (safeTrim(request.getReason()).isEmpty() ? "" : " · " + safeTrim(request.getReason()));
 
         KioskExchangeSlipEntity slip = buildExchangeSlipEntity(
                 slipNumber,
@@ -282,7 +280,25 @@ public class KioskExchangeService {
                 STATUS_COMPLETED,
                 GuatemalaDateTime.now()
         );
-        linkExchangeMovementIds(slip, slipNumber);
+        slip = exchangeSlipRepository.save(slip);
+
+        KioscoInventoryService.CambioResult cambio = kioscoInventoryService.registrarCambio(
+                kiosk.getId(),
+                preview.getReturned().getProductId(),
+                preview.getReturned().getColorId(),
+                preview.getGiven().getProductId(),
+                preview.getGiven().getColorId(),
+                returnedQty,
+                givenQty,
+                slip.getId(),
+                cambioReason,
+                user.getId(),
+                slipNumber,
+                preview.getReturned().getSize(),
+                preview.getGiven().getSize()
+        );
+        slip.setReturnMovementId(cambio.getReturnedMovementId());
+        slip.setGivenMovementId(cambio.getGivenMovementId());
         slip = exchangeSlipRepository.save(slip);
 
         return KioskExchangeCompleteResponse.builder()
@@ -361,9 +377,18 @@ public class KioskExchangeService {
     private void linkExchangeMovementIds(KioskExchangeSlipEntity slip, String slipNumber) {
         List<KioscoMovementEntity> movements = kioscoMovementRepository.findByPhysicalSlipNumber(slipNumber);
         for (KioscoMovementEntity movement : movements) {
-            if (movement.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE) {
+            if (movement.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE
+                    || movement.getMovementType() == KioscoMovementType.CAMBIO) {
+                // CAMBIO + (ingreso) o devolución simple; el egreso del cambio es DEVOLUCION_A_CLIENTE.
+                if (movement.getMovementType() == KioscoMovementType.CAMBIO
+                        && movement.getStockAfter() != null
+                        && movement.getStockBefore() != null
+                        && movement.getStockAfter() < movement.getStockBefore()) {
+                    continue;
+                }
                 slip.setReturnMovementId(movement.getId());
-            } else if (movement.getMovementType() == KioscoMovementType.VENTA) {
+            } else if (movement.getMovementType() == KioscoMovementType.DEVOLUCION_A_CLIENTE
+                    || movement.getMovementType() == KioscoMovementType.VENTA) {
                 slip.setGivenMovementId(movement.getId());
             }
         }

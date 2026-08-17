@@ -557,6 +557,10 @@ public class KioskPosService {
             boolean hasLegacyRow = productInventoryLocationRepository
                     .findByProductIdAndLocationIdAndColorId(parsed.productId(), kiosk.getId(), parsed.colorId())
                     .isPresent();
+            // Cambio: el stock lo mueven CAMBIO + / DEVOLUCION_A_CLIENTE; la venta solo factura la diferencia.
+            if (exchangeSale) {
+                continue;
+            }
             if (hasLegacyRow) {
                 productInventoryService.decrementInventory(
                         parsed.productId(),

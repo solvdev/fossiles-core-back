@@ -692,7 +692,7 @@ public class KioskLedgerLabService {
         int qty = safeInt(movement.getQuantity());
         return switch (movement.getMovementType()) {
             case ENTRADA, TRASLADO_ENTRADA, DEVOLUCION_CLIENTE, ANULACION -> qty;
-            case VENTA, DEVOLUCION_DEPOSITO, TRASLADO_SALIDA, MERMA -> -qty;
+            case VENTA, DEVOLUCION_DEPOSITO, DEVOLUCION_A_CLIENTE, TRASLADO_SALIDA, MERMA -> -qty;
             case AJUSTE, CAMBIO -> safeInt(movement.getStockAfter()) - safeInt(movement.getStockBefore());
         };
     }
