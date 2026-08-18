@@ -31,6 +31,20 @@ class KioskAccessHelperTest {
         assertThat(KioskAccessHelper.hasAllKiosksAccess(user)).isFalse();
     }
 
+    @Test
+    void hasAllKiosksAccess_ventaEnLineaRole() {
+        assertThat(KioskAccessHelper.hasAllKiosksAccess(userWithRoles("VENTA_EN_LINEA"))).isTrue();
+        assertThat(KioskAccessHelper.hasAllKiosksAccess(userWithRoles("Venta en línea"))).isTrue();
+        assertThat(KioskAccessHelper.hasAllKiosksAccess(userWithRoles("SALES_ONLINE"))).isTrue();
+        assertThat(KioskAccessHelper.hasKioskReportsAccess(userWithRoles("VENTA_EN_LINEA"))).isTrue();
+    }
+
+    @Test
+    void hasAllKiosksAccess_genericVentasRoleDenied() {
+        assertThat(KioskAccessHelper.hasAllKiosksAccess(userWithRoles("VENTAS"))).isFalse();
+        assertThat(KioskAccessHelper.hasAllKiosksAccess(userWithRoles("VENDEDOR"))).isFalse();
+    }
+
     private static UserEntity userWithRoles(String... roleNames) {
         Set<RoleEntity> roles = java.util.Arrays.stream(roleNames)
                 .map(name -> RoleEntity.builder().name(name).build())

@@ -9,7 +9,8 @@ import java.util.Set;
 
 /**
  * Acceso global a kioskos (todos los locales, promociones, operaciones POS agregadas).
- * Aplica a administradores y logística; no otorga permisos fuera del módulo kiosko.
+ * Aplica a administradores, logística, supervisora de kiosko y venta en línea;
+ * no otorga permisos fuera del módulo kiosko.
  */
 public final class KioskAccessHelper {
 
@@ -55,7 +56,20 @@ public final class KioskAccessHelper {
         if (normalizedRoleName.contains("SUPERVIS") && normalizedRoleName.contains("KIOSKO")) {
             return true;
         }
+        if (isOnlineSalesRole(normalizedRoleName)) {
+            return true;
+        }
         return LOGISTICS_ROLE_TOKENS.stream().anyMatch(normalizedRoleName::contains);
+    }
+
+    /** Roles de venta en línea (VENTA_EN_LINEA, "Venta en línea", SALES_ONLINE). */
+    private static boolean isOnlineSalesRole(String normalizedRoleName) {
+        if (normalizedRoleName == null || normalizedRoleName.isBlank()) {
+            return false;
+        }
+        boolean ventaEnLinea = normalizedRoleName.contains("VENTA") && normalizedRoleName.contains("LINEA");
+        boolean salesOnline = normalizedRoleName.contains("SALES") && normalizedRoleName.contains("ONLINE");
+        return ventaEnLinea || salesOnline;
     }
 
     private static String normalizeRole(String value) {

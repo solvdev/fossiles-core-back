@@ -1745,7 +1745,8 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Existencias de un producto en todos los kioskos. Solo ADMIN / LOGISTICA / SUPERVISORA_KIOSKO.
+     * Existencias de un producto en todos los kioskos.
+     * ADMIN / LOGISTICA / SUPERVISORA_KIOSKO / VENTA EN LÍNEA.
      */
     @Transactional(readOnly = true)
     public List<KioscoStockResponse> getStockByProductAcrossKiosks(Long productId, Long colorId)
@@ -1757,7 +1758,7 @@ public class KioscoInventoryService {
                 .orElseThrow(() -> new BusinessException("No se pudo determinar el usuario autenticado."));
         if (!KioskAccessHelper.hasAllKiosksAccess(user)) {
             throw new BusinessException(
-                    "Solo administración y logística pueden consultar existencias en todos los kioskos.");
+                    "Solo administración, logística y venta en línea pueden consultar existencias en todos los kioskos.");
         }
         productRepository.findById(productId)
                 .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
