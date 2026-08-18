@@ -24,6 +24,8 @@ public class CustomerShipmentResponse {
     private String address;
     private String phone;
     private String phone2;
+    /** Observaciones de la venta online (instrucciones de empaque/entrega). */
+    private String observations;
     private String shipmentNumber;
     private String shippingCarrier;
     private String guideNumber;

@@ -208,6 +208,7 @@ public class PublicOnlineWarehouseController {
                 .address(sale.getAddress())
                 .phone(sale.getPhone())
                 .phone2(sale.getPhone2())
+                .observations(sale.getObservations())
                 .shipmentNumber(sale.getShipmentNumber())
                 .shippingCarrier(sale.getShippingCarrier())
                 .guideNumber(sale.getGuideNumber())

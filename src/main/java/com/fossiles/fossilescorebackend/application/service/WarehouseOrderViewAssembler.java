@@ -113,6 +113,7 @@ public class WarehouseOrderViewAssembler {
                                 .customerName(sale.getCustomerName())
                                 .address(sale.getAddress())
                                 .phone(sale.getPhone())
+                                .observations(sale.getObservations())
                                 .shipmentNumber(sale.getShipmentNumber())
                                 .shippingCarrier(sale.getShippingCarrier())
                                 .guideNumber(sale.getGuideNumber())
@@ -129,6 +130,7 @@ public class WarehouseOrderViewAssembler {
                     .collect(Collectors.toList());
 
             builder.customerShipments(customerShipments);
+            builder.observations(mergeWarehouseObservations(po.getObservations(), customerShipments));
 
         } else if ("DISTRIBUTION".equals(po.getOrderType()) && po.getDistributionId() != null) {
             builder.dispatchType("KIOSK_DISTRIBUTION");
@@ -214,5 +216,28 @@ public class WarehouseOrderViewAssembler {
             }
         });
         return result.isEmpty() ? null : result;
+    }
+
+    /**
+     * Une observaciones de la OP con las de las ventas online (para OPLs ya creadas sin copiar obs.).
+     */
+    private String mergeWarehouseObservations(String poObservations, List<CustomerShipmentResponse> shipments) {
+        String base = poObservations != null ? poObservations.trim() : "";
+        if (shipments == null || shipments.isEmpty()) {
+            return base.isEmpty() ? null : base;
+        }
+        StringBuilder sb = new StringBuilder(base);
+        for (CustomerShipmentResponse shipment : shipments) {
+            if (shipment == null) continue;
+            String obs = shipment.getObservations() != null ? shipment.getObservations().trim() : "";
+            if (obs.isEmpty()) continue;
+            if (!base.isEmpty() && base.contains(obs)) continue;
+            if (sb.length() > 0 && sb.indexOf(obs) >= 0) continue;
+            String saleRef = shipment.getSaleNumber() != null ? shipment.getSaleNumber() : String.valueOf(shipment.getOnlineSaleId());
+            String chunk = (sb.length() > 0 ? " | " : "") + "Obs. venta #" + saleRef + ": " + obs;
+            sb.append(chunk);
+        }
+        String merged = sb.toString().trim();
+        return merged.isEmpty() ? null : merged;
     }
 }

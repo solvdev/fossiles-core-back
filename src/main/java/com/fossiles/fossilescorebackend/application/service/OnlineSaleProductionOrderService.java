@@ -1031,8 +1031,10 @@ public class OnlineSaleProductionOrderService {
                 .customerName(customer)
                 .startDate(LocalDate.now())
                 .deliveryDate(LocalDate.now().plusDays(1))
-                .observations("Orden desde venta online #" + sale.getSaleNumber()
-                        + " (lineas PRODUCE). Cliente: " + customer + ".")
+                .observations(buildOplHeaderObservations(
+                        "Orden desde venta online #" + sale.getSaleNumber()
+                                + " (lineas PRODUCE). Cliente: " + customer + ".",
+                        List.of(sale)))
                 .status("PENDING")
                 .build();
         ProductionOrderEntity savedPO = productionOrderRepository.save(po);
@@ -1047,9 +1049,7 @@ public class OnlineSaleProductionOrderService {
                     .colorId(si.getColorId())
                     .quantity(si.getQuantity() != null ? si.getQuantity() : 1)
                     .warehouseReceivedQty(0)
-                    .observations("Venta #" + sale.getSaleNumber() + " - "
-                            + (sale.getCustomerName() != null ? sale.getCustomerName() : "")
-                            + (si.getSize() != null ? " | Talla: " + si.getSize() : ""))
+                    .observations(buildOplItemObservations(sale, si.getSize()))
                     .build();
             productionOrderItemRepository.save(item);
         }
@@ -1120,8 +1120,10 @@ public class OnlineSaleProductionOrderService {
                     .customerName(customer)
                     .startDate(LocalDate.now())
                     .deliveryDate(LocalDate.now().plusDays(1))
-                    .observations("Orden generada desde ventas online. Cliente: " + customer + ". Ventas: " +
-                            customerSales.stream().map(s -> "#" + s.getSaleNumber()).reduce((a, b) -> a + ", " + b).orElse(""))
+                    .observations(buildOplHeaderObservations(
+                            "Orden generada desde ventas online. Cliente: " + customer + ". Ventas: " +
+                                    customerSales.stream().map(s -> "#" + s.getSaleNumber()).reduce((a, b) -> a + ", " + b).orElse(""),
+                            customerSales))
                     .status("PENDING")
                     .build();
             ProductionOrderEntity savedPO = productionOrderRepository.save(po);
@@ -1154,9 +1156,7 @@ public class OnlineSaleProductionOrderService {
                         .colorId(si.getColorId())
                         .quantity(si.getQuantity() != null ? si.getQuantity() : 1)
                         .warehouseReceivedQty(0)
-                        .observations("Venta #" + sale.getSaleNumber() + " - " +
-                                (sale.getCustomerName() != null ? sale.getCustomerName() : "") +
-                                (si.getSize() != null ? " | Talla: " + si.getSize() : ""))
+                        .observations(buildOplItemObservations(sale, si.getSize()))
                         .build();
                 productionOrderItemRepository.save(item);
             }
@@ -1168,12 +1168,57 @@ public class OnlineSaleProductionOrderService {
                     .colorId(sale.getColorId())
                     .quantity(sale.getQuantity() != null ? sale.getQuantity() : 1)
                     .warehouseReceivedQty(0)
-                    .observations("Venta #" + sale.getSaleNumber() + " - " +
-                            (sale.getCustomerName() != null ? sale.getCustomerName() : "") +
-                            (sale.getSize() != null ? " | Talla: " + sale.getSize() : ""))
+                    .observations(buildOplItemObservations(sale, sale.getSize()))
                     .build();
             productionOrderItemRepository.save(item);
         }
+    }
+
+    /** Stub de OPL + observaciones reales de la(s) venta(s) online (máx. 1000). */
+    private String buildOplHeaderObservations(String stub, List<OnlineSaleEntity> sales) {
+        String base = stub != null ? stub.trim() : "";
+        if (sales == null || sales.isEmpty()) {
+            return truncate(base, 1000);
+        }
+        StringBuilder sb = new StringBuilder(base);
+        for (OnlineSaleEntity sale : sales) {
+            String obs = sale != null ? safeTrim(sale.getObservations()) : "";
+            if (obs.isEmpty()) continue;
+            String saleRef = sale.getSaleNumber() != null ? sale.getSaleNumber() : String.valueOf(sale.getId());
+            String chunk = " | Obs. venta #" + saleRef + ": " + obs;
+            if (sb.length() + chunk.length() > 1000) {
+                int room = 1000 - sb.length();
+                if (room > 20) {
+                    sb.append(chunk, 0, room - 1).append("…");
+                }
+                break;
+            }
+            sb.append(chunk);
+        }
+        return truncate(sb.toString(), 1000);
+    }
+
+    /** Referencia de ítem + observación de la venta (máx. 500). */
+    private String buildOplItemObservations(OnlineSaleEntity sale, String size) {
+        String stub = "Venta #" + (sale.getSaleNumber() != null ? sale.getSaleNumber() : "")
+                + " - " + (sale.getCustomerName() != null ? sale.getCustomerName() : "")
+                + (size != null && !size.isBlank() ? " | Talla: " + size.trim() : "");
+        String obs = safeTrim(sale.getObservations());
+        if (obs.isEmpty()) {
+            return truncate(stub, 500);
+        }
+        return truncate(stub + " | Obs: " + obs, 500);
+    }
+
+    private static String safeTrim(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null) return null;
+        if (value.length() <= max) return value;
+        if (max <= 1) return "…";
+        return value.substring(0, max - 1) + "…";
     }
 
     // ─────────────────────────────────────────────────────────────
