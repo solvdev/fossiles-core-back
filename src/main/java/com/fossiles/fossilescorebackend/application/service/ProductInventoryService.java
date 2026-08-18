@@ -356,10 +356,19 @@ public class ProductInventoryService {
         return restoredTotal;
     }
 
+    public static final String REF_ONLINE_SALE_WH_RETURN = "ONLINE_SALE_WH_RETURN";
+    public static final String MOVEMENT_TRANSFER_OUT = "TRANSFER_OUT";
+    public static final String MOVEMENT_TRANSFER_IN = "TRANSFER_IN";
+    public static final String MOVEMENT_RETURN = "RETURN";
+
     /**
-     * Revierte egresos de una venta online acreditando el stock en una bodega destino
-     * (típicamente Devoluciones), sin devolver a la ubicación de origen.
-     * El neto global de la referencia queda en cero (idempotente).
+     * Revierte egresos de una venta online y deja el stock en una bodega destino (Devoluciones)
+     * con movimientos visibles en ambas bodegas:
+     * <ol>
+     *   <li>Reversión en origen (anula el neto PREPARE/DISPATCH)</li>
+     *   <li>Si el origen no es la bodega destino: TRANSFER_OUT en origen + RETURN/TRANSFER_IN en destino</li>
+     * </ol>
+     * Idempotente mientras el neto de la referencia siga negativo.
      */
     public BigDecimal reverseDispatchOutflowsToLocation(
             String referenceType,
@@ -387,22 +396,24 @@ public class ProductInventoryService {
 
         BigDecimal restoredTotal = BigDecimal.ZERO;
         for (ProductInventoryKardex sample : groups.values()) {
+            Long sourceLocationId = sample.getLocationId();
             BigDecimal net = getNetConsumedForLine(
                     referenceType,
                     referenceId,
                     movementType,
                     sample.getProductId(),
-                    sample.getLocationId(),
+                    sourceLocationId,
                     sample.getColorId(),
                     sample.getReferenceLineId());
             if (net.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
             try {
-                BigDecimal before = readQuantity(sample.getProductId(), targetLocationId, sample.getColorId());
+                // 1) Devolver a origen: deja constancia de anulación y pone el neto del documento en 0
+                BigDecimal beforeSrc = readQuantity(sample.getProductId(), sourceLocationId, sample.getColorId());
                 incrementInventory(
                         sample.getProductId(),
-                        targetLocationId,
+                        sourceLocationId,
                         sample.getColorId(),
                         net,
                         null,
@@ -411,15 +422,15 @@ public class ProductInventoryService {
                         referenceNumber,
                         description,
                         sample.getSizeLabel());
-                BigDecimal after = readQuantity(sample.getProductId(), targetLocationId, sample.getColorId());
+                BigDecimal afterSrc = readQuantity(sample.getProductId(), sourceLocationId, sample.getColorId());
                 recordMovement(
                         sample.getProductId(),
-                        targetLocationId,
+                        sourceLocationId,
                         sample.getColorId(),
                         reversalMovementType(movementType),
                         net,
-                        before,
-                        after,
+                        beforeSrc,
+                        afterSrc,
                         null,
                         referenceType,
                         referenceId,
@@ -427,12 +438,225 @@ public class ProductInventoryService {
                         description,
                         sample.getSizeLabel(),
                         sample.getReferenceLineId());
+
+                if (!Objects.equals(sourceLocationId, targetLocationId)) {
+                    // 2) Traslado origen → devoluciones (movimientos en ambas bodegas)
+                    String xferDesc = description != null ? description : "Traslado a bodega de devoluciones";
+                    decrementInventory(
+                            sample.getProductId(),
+                            sourceLocationId,
+                            sample.getColorId(),
+                            net,
+                            REF_ONLINE_SALE_WH_RETURN,
+                            referenceId,
+                            referenceNumber,
+                            xferDesc,
+                            sample.getSizeLabel(),
+                            MOVEMENT_TRANSFER_OUT,
+                            sample.getReferenceLineId());
+
+                    BigDecimal beforeTgt = readQuantity(sample.getProductId(), targetLocationId, sample.getColorId());
+                    incrementInventory(
+                            sample.getProductId(),
+                            targetLocationId,
+                            sample.getColorId(),
+                            net,
+                            null,
+                            REF_ONLINE_SALE_WH_RETURN,
+                            referenceId,
+                            referenceNumber,
+                            xferDesc,
+                            sample.getSizeLabel());
+                    BigDecimal afterTgt = readQuantity(sample.getProductId(), targetLocationId, sample.getColorId());
+                    recordMovement(
+                            sample.getProductId(),
+                            targetLocationId,
+                            sample.getColorId(),
+                            MOVEMENT_RETURN,
+                            net,
+                            beforeTgt,
+                            afterTgt,
+                            null,
+                            REF_ONLINE_SALE_WH_RETURN,
+                            referenceId,
+                            referenceNumber,
+                            xferDesc,
+                            sample.getSizeLabel(),
+                            sample.getReferenceLineId());
+                }
                 restoredTotal = restoredTotal.add(net);
             } catch (ResourceNotFoundException e) {
                 throw new BusinessException("No se pudo devolver inventario a la bodega destino: " + e.getMessage());
             }
         }
         return restoredTotal;
+    }
+
+    /**
+     * Mueve cantidad desde Bodega PT hacia devoluciones con TRANSFER_OUT + RETURN (idempotente por referencia).
+     * Útil cuando el despacho OPL no generó baja PREPARE/DISPATCH y el stock sigue en PT.
+     */
+    public BigDecimal transferFromBodegaPtToReturns(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            Long returnsLocationId,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            Long referenceLineId) throws BusinessException {
+        if (productId == null || returnsLocationId == null
+                || quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        LocationEntity pt = requireBodegaPtLocation();
+        if (Objects.equals(pt.getId(), returnsLocationId)) {
+            return BigDecimal.ZERO;
+        }
+
+        BigDecimal already = getNetConsumedForLine(
+                REF_ONLINE_SALE_WH_RETURN,
+                referenceId,
+                MOVEMENT_TRANSFER_OUT,
+                productId,
+                pt.getId(),
+                colorId,
+                referenceLineId);
+        BigDecimal remaining = quantity.subtract(already);
+        if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+
+        BigDecimal available = getAvailableQuantity(productId, pt.getId(), colorId, sizeLabel);
+        BigDecimal toMove = available.min(remaining);
+        if (toMove.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+
+        try {
+            String desc = description != null ? description : "Anulación envío → bodega devoluciones";
+            decrementInventory(
+                    productId,
+                    pt.getId(),
+                    colorId,
+                    toMove,
+                    REF_ONLINE_SALE_WH_RETURN,
+                    referenceId,
+                    referenceNumber,
+                    desc,
+                    sizeLabel,
+                    MOVEMENT_TRANSFER_OUT,
+                    referenceLineId);
+
+            BigDecimal beforeTgt = readQuantity(productId, returnsLocationId, colorId);
+            incrementInventory(
+                    productId,
+                    returnsLocationId,
+                    colorId,
+                    toMove,
+                    null,
+                    REF_ONLINE_SALE_WH_RETURN,
+                    referenceId,
+                    referenceNumber,
+                    desc,
+                    sizeLabel);
+            BigDecimal afterTgt = readQuantity(productId, returnsLocationId, colorId);
+            recordMovement(
+                    productId,
+                    returnsLocationId,
+                    colorId,
+                    MOVEMENT_RETURN,
+                    toMove,
+                    beforeTgt,
+                    afterTgt,
+                    null,
+                    REF_ONLINE_SALE_WH_RETURN,
+                    referenceId,
+                    referenceNumber,
+                    desc,
+                    sizeLabel,
+                    referenceLineId);
+            return toMove;
+        } catch (ResourceNotFoundException e) {
+            throw new BusinessException("No se pudo trasladar stock a devoluciones: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Entrada a bodega de devoluciones con movimiento de kardex {@code RETURN} (idempotente por línea).
+     */
+    public void creditReturnsWithReturnMovement(
+            Long productId,
+            Long returnsLocationId,
+            Long colorId,
+            BigDecimal quantity,
+            String sizeLabel,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            Long referenceLineId) throws BusinessException {
+        if (productId == null || returnsLocationId == null
+                || quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        String refType = referenceType != null ? referenceType : REF_ONLINE_SALE_WH_RETURN;
+        BigDecimal alreadyIn = productInventoryKardexRepository.sumSignedQuantityForLine(
+                refType,
+                referenceId,
+                List.of(MOVEMENT_RETURN),
+                productId,
+                returnsLocationId,
+                colorId,
+                referenceLineId);
+        if (alreadyIn != null && alreadyIn.compareTo(quantity) >= 0) {
+            return;
+        }
+        BigDecimal toCredit = quantity.subtract(alreadyIn != null ? alreadyIn : BigDecimal.ZERO);
+        if (toCredit.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        try {
+            BigDecimal before = readQuantity(productId, returnsLocationId, colorId);
+            incrementInventory(
+                    productId,
+                    returnsLocationId,
+                    colorId,
+                    toCredit,
+                    null,
+                    refType,
+                    referenceId,
+                    referenceNumber,
+                    description,
+                    sizeLabel);
+            BigDecimal after = readQuantity(productId, returnsLocationId, colorId);
+            recordMovement(
+                    productId,
+                    returnsLocationId,
+                    colorId,
+                    MOVEMENT_RETURN,
+                    toCredit,
+                    before,
+                    after,
+                    null,
+                    refType,
+                    referenceId,
+                    referenceNumber,
+                    description,
+                    sizeLabel,
+                    referenceLineId);
+        } catch (ResourceNotFoundException e) {
+            throw new BusinessException("No se pudo ingresar stock en devoluciones: " + e.getMessage());
+        }
+    }
+
+    private LocationEntity requireBodegaPtLocation() throws BusinessException {
+        LocationEntity pt = findBodegaPtLocation();
+        if (pt == null) {
+            throw new BusinessException("No existe una ubicacion configurada para BODEGA_PT.");
+        }
+        return pt;
     }
 
     private String reversalGroupKey(ProductInventoryKardex row) {

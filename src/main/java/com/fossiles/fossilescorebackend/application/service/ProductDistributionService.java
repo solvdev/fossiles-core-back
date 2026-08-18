@@ -423,8 +423,8 @@ public class ProductDistributionService {
         }
 
         List<ProductShipmentRequest.PackingItemRequest> packingItems = request.getPackingItems();
-        if (packingItems == null || packingItems.isEmpty()) {
-            packingItems = parsePackingItemsFromOrderObservations(order);
+        if (packingItems == null) {
+            packingItems = List.of();
         }
 
         ProductShipmentRequest createRequest = ProductShipmentRequest.builder()

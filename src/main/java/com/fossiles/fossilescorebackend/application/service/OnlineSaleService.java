@@ -632,21 +632,17 @@ public class OnlineSaleService {
         }
         String saleRef = sale.getSaleNumber() != null ? sale.getSaleNumber() : String.valueOf(sale.getId());
         String desc = "Devolución venta online #" + saleRef;
-        try {
-            productInventoryService.incrementInventory(
-                    productId,
-                    returnsLocation.getId(),
-                    colorId,
-                    BigDecimal.valueOf(q),
-                    null,
-                    "ONLINE_SALE_RETURN",
-                    sale.getId(),
-                    sale.getSaleNumber(),
-                    desc,
-                    size);
-        } catch (ResourceNotFoundException e) {
-            throw new BusinessException("No se pudo ingresar stock en devoluciones: " + e.getMessage());
-        }
+        productInventoryService.creditReturnsWithReturnMovement(
+                productId,
+                returnsLocation.getId(),
+                colorId,
+                BigDecimal.valueOf(q),
+                size,
+                "ONLINE_SALE_RETURN",
+                sale.getId(),
+                sale.getSaleNumber(),
+                desc,
+                null);
     }
 
     /**
@@ -671,7 +667,7 @@ public class OnlineSaleService {
                             + "o DEVOLUCIÓN si el cliente devolvió el pedido.");
         }
 
-        restoreOnlineSaleStockToReturns(sale, "Anulación venta online");
+        restoreOnlineSaleStockToReturns(sale, "Anulación venta online", false);
 
         sale.setStatus("ANULADA");
         sale.setObservations((sale.getObservations() != null ? sale.getObservations() + " | " : "")
@@ -697,7 +693,7 @@ public class OnlineSaleService {
                     "Solo se puede anular el envío de ventas en estado ENVIADO. Estado actual: " + sale.getStatus());
         }
 
-        restoreOnlineSaleStockToReturns(sale, "Anulación de envío venta online");
+        restoreOnlineSaleStockToReturns(sale, "Anulación de envío venta online", true);
 
         String previousStatus = Boolean.TRUE.equals(sale.getInProductionOrder()) ? "EN_PRODUCCION" : "PRODUCIDO";
         sale.setStatus(previousStatus);
@@ -738,17 +734,13 @@ public class OnlineSaleService {
 
     /**
      * Devuelve a bodega de devoluciones lo egresado por PREPARE / DISPATCH de esta venta.
+     * Si no hubo baja de inventario (p. ej. OPL despachado sin descontar) y {@code moveFromPtIfNoOutbound},
+     * traslada las piezas desde Bodega PT a devoluciones con movimientos TRANSFER_OUT / RETURN.
      */
-    private void restoreOnlineSaleStockToReturns(OnlineSaleEntity sale, String actionLabel)
+    private void restoreOnlineSaleStockToReturns(
+            OnlineSaleEntity sale, String actionLabel, boolean moveFromPtIfNoOutbound)
             throws BusinessException {
         if (sale == null || sale.getId() == null) {
-            return;
-        }
-        boolean hasPrepare = productInventoryService.hasNetOutboundForReference(
-                ProductInventoryService.REF_ONLINE_SALE_PREPARE, sale.getId());
-        boolean hasDispatch = productInventoryService.hasNetOutboundForReference(
-                ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH, sale.getId());
-        if (!hasPrepare && !hasDispatch) {
             return;
         }
 
@@ -760,23 +752,71 @@ public class OnlineSaleService {
         String saleRef = sale.getSaleNumber() != null ? sale.getSaleNumber() : String.valueOf(sale.getId());
         String description = actionLabel + " #" + saleRef + " → bodega devoluciones";
 
+        BigDecimal restored = BigDecimal.ZERO;
+        boolean hasPrepare = productInventoryService.hasNetOutboundForReference(
+                ProductInventoryService.REF_ONLINE_SALE_PREPARE, sale.getId());
+        boolean hasDispatch = productInventoryService.hasNetOutboundForReference(
+                ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH, sale.getId());
+
         if (hasPrepare) {
-            productInventoryService.reverseDispatchOutflowsToLocation(
+            restored = restored.add(productInventoryService.reverseDispatchOutflowsToLocation(
                     ProductInventoryService.REF_ONLINE_SALE_PREPARE,
                     sale.getId(),
                     ProductInventoryService.REF_ONLINE_SALE_PREPARE,
                     returnsLocation.getId(),
                     saleRef,
-                    description);
+                    description));
         }
         if (hasDispatch) {
-            productInventoryService.reverseDispatchOutflowsToLocation(
+            restored = restored.add(productInventoryService.reverseDispatchOutflowsToLocation(
                     ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
                     sale.getId(),
                     ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
                     returnsLocation.getId(),
                     saleRef,
-                    description);
+                    description));
+        }
+
+        if (restored.compareTo(BigDecimal.ZERO) > 0 || !moveFromPtIfNoOutbound) {
+            return;
+        }
+
+        // Sin egreso PREPARE/DISPATCH: el stock suele seguir en Bodega PT (OPL sin baja).
+        List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId());
+        if (items != null && !items.isEmpty()) {
+            for (OnlineSaleItemEntity item : items) {
+                if (item.getProductId() == null) {
+                    continue;
+                }
+                int q = item.getQuantity() != null ? item.getQuantity() : 1;
+                if (q <= 0) {
+                    continue;
+                }
+                productInventoryService.transferFromBodegaPtToReturns(
+                        item.getProductId(),
+                        item.getColorId(),
+                        item.getSize(),
+                        BigDecimal.valueOf(q),
+                        returnsLocation.getId(),
+                        sale.getId(),
+                        saleRef,
+                        description,
+                        item.getId());
+            }
+        } else if (sale.getProductId() != null) {
+            int q = sale.getQuantity() != null ? sale.getQuantity() : 1;
+            if (q > 0) {
+                productInventoryService.transferFromBodegaPtToReturns(
+                        sale.getProductId(),
+                        sale.getColorId(),
+                        sale.getSize(),
+                        BigDecimal.valueOf(q),
+                        returnsLocation.getId(),
+                        sale.getId(),
+                        saleRef,
+                        description,
+                        null);
+            }
         }
     }
 

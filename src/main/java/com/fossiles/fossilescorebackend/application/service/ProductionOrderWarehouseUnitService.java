@@ -741,8 +741,9 @@ public class ProductionOrderWarehouseUnitService {
     }
 
     /**
-     * Coincide talla del envío con la pieza. Si las piezas se generaron sin talla pero el ítem
-     * solo tiene una talla en sizes_data, las piezas recibidas sin size_key cuentan para esa talla.
+     * Coincide talla del envío con la pieza.
+     * Sin talla en el envío solo marca piezas sin talla (un parcial no debe llevarse todas las tallas).
+     * Piezas sin size_key sí cuentan si el ítem solo tiene esa talla en sizes_data.
      */
     private boolean unitMatchesShipmentSize(
             ProductionOrderItemEntity item,
@@ -751,7 +752,7 @@ public class ProductionOrderWarehouseUnitService {
         String required = normalizeUnitSizeKey(shipmentSizeKey);
         String unitSize = normalizeUnitSizeKey(unit.getSizeKey());
         if (required.isEmpty()) {
-            return true;
+            return unitSize.isEmpty();
         }
         if (required.equals(unitSize)) {
             return true;
