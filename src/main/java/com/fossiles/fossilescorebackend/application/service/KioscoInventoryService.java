@@ -2600,7 +2600,7 @@ public class KioscoInventoryService {
                     if (delta > 0) {
                         comprasAjustes += delta;
                     } else {
-                        anulacionCompras += -delta;
+                        salida += -delta;
                     }
                 }
                 case DEVOLUCION_CLIENTE -> {

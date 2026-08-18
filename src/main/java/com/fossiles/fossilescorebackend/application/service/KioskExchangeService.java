@@ -33,6 +33,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Lo
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
@@ -537,6 +538,7 @@ public class KioskExchangeService {
             Long returnedProductId = item.getProductId();
             returnedProduct = productRepository.findById(returnedProductId)
                     .orElseThrow(() -> new ResourceNotFoundException("Product", returnedProductId));
+            assertExchangeableProduct(returnedProduct, "devolver");
             returnedQty = normalizeQuantity(request.getReturnedQuantity(), item.getQuantity());
             returnedSize = extractSizeFromProductName(item.getProductName());
         } else {
@@ -545,6 +547,7 @@ public class KioskExchangeService {
             }
             returnedProduct = productRepository.findById(request.getReturnedProductId())
                     .orElseThrow(() -> new ResourceNotFoundException("Product", request.getReturnedProductId()));
+            assertExchangeableProduct(returnedProduct, "ingresar");
             if (request.getReturnedColorId() != null) {
                 returnedColor = colorRepository.findById(request.getReturnedColorId())
                         .orElseThrow(() -> new ResourceNotFoundException("Color", request.getReturnedColorId()));
@@ -563,6 +566,7 @@ public class KioskExchangeService {
 
         ProductEntity givenProduct = productRepository.findById(request.getGivenProductId())
                 .orElseThrow(() -> new ResourceNotFoundException("Product", request.getGivenProductId()));
+        assertExchangeableProduct(givenProduct, "entregar");
         ColorEntity givenColor = null;
         if (request.getGivenColorId() != null) {
             givenColor = colorRepository.findById(request.getGivenColorId())
@@ -597,6 +601,14 @@ public class KioskExchangeService {
                 returnedUnitOverride,
                 givenUnitOverride
         );
+    }
+
+    private static void assertExchangeableProduct(ProductEntity product, String action)
+            throws BusinessException {
+        if (product != null && ProductCinchoType.isPackagingProductCode(product.getCode())) {
+            throw new BusinessException(
+                    "Los empaques SUM no entran en el cambio. Solo puedes " + action + " productos.");
+        }
     }
 
     private static boolean allowsExchangePriceEdit(LocationEntity kiosk) {
