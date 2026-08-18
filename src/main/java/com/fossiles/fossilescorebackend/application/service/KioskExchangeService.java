@@ -44,6 +44,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -254,13 +255,7 @@ public class KioskExchangeService {
                 .comments(request.getComments())
                 .requestInvoice(request.getRequestInvoice())
                 .exchangeCreditAmount(preview.getReturnedAmount())
-                .items(List.of(KioskPosSaleRequest.ItemRequest.builder()
-                        .productId(preview.getGiven().getProductId())
-                        .colorId(preview.getGiven().getColorId())
-                        .size(preview.getGiven().getSize())
-                        .quantity(preview.getGiven().getQuantity())
-                        .unitPrice(preview.getGiven().getUnitPrice())
-                        .build()))
+                .items(buildExchangeSaleItems(preview, exchange))
                 .build();
 
         // Factura/caja de la diferencia sin VENTA de stock; el egreso va como DEVOLUCION_A_CLIENTE.
@@ -586,6 +581,13 @@ public class KioskExchangeService {
         BigDecimal returnedUnitOverride = resolveReturnedUnitPriceOverride(
                 request, returnedProduct, allowPriceOverride);
 
+        List<KioskSaleItemEntity> saleItems = loadSaleItems(sale);
+        boolean preservePaidPrice = givenUnitOverride == null
+                && returnedUnitOverride == null
+                && shouldPreservePaidPriceOnExchange(item, returnedProduct, givenProduct);
+        PackagingAllocation packaging = allocatePackagingPrices(
+                sale, saleItems, item, returnedQty, givenQty, preservePaidPrice);
+
         return new ExchangeContext(
                 access,
                 sale,
@@ -599,8 +601,137 @@ public class KioskExchangeService {
                 givenSize,
                 givenQty,
                 returnedUnitOverride,
-                givenUnitOverride
+                givenUnitOverride,
+                packaging
         );
+    }
+
+    private List<KioskSaleItemEntity> loadSaleItems(KioskSaleEntity sale) {
+        if (sale == null || sale.getId() == null) {
+            return List.of();
+        }
+        return kioskSaleItemRepository.findByKioskSaleIdOrderByIdAsc(sale.getId());
+    }
+
+    /**
+     * Empaques SUM de la venta: cuentan en precio (crédito / factura de diferencia)
+     * pero no se mueven en el cambio de inventario.
+     */
+    private PackagingAllocation allocatePackagingPrices(
+            KioskSaleEntity sale,
+            List<KioskSaleItemEntity> saleItems,
+            KioskSaleItemEntity exchangedItem,
+            BigDecimal returnedQty,
+            BigDecimal givenQty,
+            boolean preservePaidPrice
+    ) {
+        if (sale == null || exchangedItem == null || saleItems == null || saleItems.isEmpty()) {
+            return PackagingAllocation.empty();
+        }
+        List<KioskSaleItemEntity> packagingItems = saleItems.stream()
+                .filter(i -> ProductCinchoType.isPackagingProductCode(i.getProductCode()))
+                .toList();
+        if (packagingItems.isEmpty()) {
+            return PackagingAllocation.empty();
+        }
+
+        BigDecimal productQtyTotal = saleItems.stream()
+                .filter(i -> !ProductCinchoType.isPackagingProductCode(i.getProductCode()))
+                .map(i -> i.getQuantity() != null && i.getQuantity().compareTo(BigDecimal.ZERO) > 0
+                        ? i.getQuantity() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (productQtyTotal.compareTo(BigDecimal.ZERO) <= 0) {
+            return PackagingAllocation.empty();
+        }
+
+        BigDecimal exchangedQty = exchangedItem.getQuantity() != null
+                && exchangedItem.getQuantity().compareTo(BigDecimal.ZERO) > 0
+                ? exchangedItem.getQuantity()
+                : BigDecimal.ONE;
+        BigDecimal returnRatio = returnedQty.divide(exchangedQty, 6, RoundingMode.HALF_UP);
+        BigDecimal lineShare = exchangedQty.divide(productQtyTotal, 6, RoundingMode.HALF_UP);
+
+        BigDecimal packagingPaidTotal = BigDecimal.ZERO;
+        for (KioskSaleItemEntity packItem : packagingItems) {
+            BigDecimal packQty = packItem.getQuantity() != null
+                    && packItem.getQuantity().compareTo(BigDecimal.ZERO) > 0
+                    ? packItem.getQuantity()
+                    : BigDecimal.ONE;
+            packagingPaidTotal = packagingPaidTotal.add(
+                    computeEffectivePaidUnitPrice(sale, packItem).multiply(packQty));
+        }
+        BigDecimal returnedCredit = packagingPaidTotal
+                .multiply(lineShare)
+                .multiply(returnRatio)
+                .setScale(2, RoundingMode.HALF_UP);
+
+        if (preservePaidPrice) {
+            // Misma valuación ambos lados → diferencia 0; el empaque no se factura aparte.
+            return new PackagingAllocation(returnedCredit, returnedCredit, List.of());
+        }
+
+        BigDecimal givenCatalogAmount = BigDecimal.ZERO;
+        List<KioskPosSaleRequest.ItemRequest> invoiceLines = new ArrayList<>();
+        for (KioskSaleItemEntity packItem : packagingItems) {
+            BigDecimal packQty = packItem.getQuantity() != null
+                    && packItem.getQuantity().compareTo(BigDecimal.ZERO) > 0
+                    ? packItem.getQuantity()
+                    : BigDecimal.ONE;
+            BigDecimal packPerProductUnit = packQty.divide(productQtyTotal, 6, RoundingMode.HALF_UP);
+            ProductEntity packProduct = packItem.getProductId() != null
+                    ? productRepository.findById(packItem.getProductId()).orElse(null)
+                    : null;
+            BigDecimal catalogUnit = resolveFullSaleUnitPrice(packProduct);
+            if (catalogUnit.compareTo(BigDecimal.ZERO) <= 0) {
+                catalogUnit = safeAmount(packItem.getUnitPrice());
+            }
+            BigDecimal unitForGiven = catalogUnit.multiply(packPerProductUnit).setScale(2, RoundingMode.HALF_UP);
+            if (unitForGiven.compareTo(BigDecimal.ZERO) <= 0 || givenQty.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            BigDecimal lineTotal = unitForGiven.multiply(givenQty).setScale(2, RoundingMode.HALF_UP);
+            givenCatalogAmount = givenCatalogAmount.add(lineTotal);
+            invoiceLines.add(KioskPosSaleRequest.ItemRequest.builder()
+                    .productId(packItem.getProductId())
+                    .colorId(packItem.getColorId())
+                    .quantity(givenQty)
+                    .unitPrice(unitForGiven)
+                    .build());
+        }
+        return new PackagingAllocation(
+                returnedCredit,
+                givenCatalogAmount.setScale(2, RoundingMode.HALF_UP),
+                List.copyOf(invoiceLines)
+        );
+    }
+
+    private record PackagingAllocation(
+            BigDecimal returnedCredit,
+            BigDecimal givenAmount,
+            List<KioskPosSaleRequest.ItemRequest> invoiceLines
+    ) {
+        static PackagingAllocation empty() {
+            return new PackagingAllocation(BigDecimal.ZERO.setScale(2), BigDecimal.ZERO.setScale(2), List.of());
+        }
+    }
+
+    private List<KioskPosSaleRequest.ItemRequest> buildExchangeSaleItems(
+            KioskExchangePreviewResponse preview,
+            ExchangeContext exchange
+    ) {
+        List<KioskPosSaleRequest.ItemRequest> items = new ArrayList<>();
+        items.add(KioskPosSaleRequest.ItemRequest.builder()
+                .productId(preview.getGiven().getProductId())
+                .colorId(preview.getGiven().getColorId())
+                .size(preview.getGiven().getSize())
+                .quantity(preview.getGiven().getQuantity())
+                .unitPrice(preview.getGiven().getUnitPrice())
+                .build());
+        PackagingAllocation packaging = exchange.packaging();
+        if (packaging != null && packaging.invoiceLines() != null) {
+            items.addAll(packaging.invoiceLines());
+        }
+        return items;
     }
 
     private static void assertExchangeableProduct(ProductEntity product, String action)
@@ -993,7 +1124,8 @@ public class KioskExchangeService {
             String givenSize,
             BigDecimal givenQty,
             BigDecimal returnedUnitPriceOverride,
-            BigDecimal givenUnitPriceOverride
+            BigDecimal givenUnitPriceOverride,
+            PackagingAllocation packaging
     ) {
         KioskExchangePreviewResponse preview() throws BusinessException {
             return buildPreview();
@@ -1008,7 +1140,7 @@ public class KioskExchangeService {
             if (returnedUnitPaid.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new BusinessException("El producto que ingresa no tiene precio de venta configurado.");
             }
-            BigDecimal returnedAmount = returnedUnitPaid.multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal productReturnedAmount = returnedUnitPaid.multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
 
             BigDecimal givenUnitPrice;
             if (givenUnitPriceOverride != null) {
@@ -1023,7 +1155,13 @@ public class KioskExchangeService {
                     throw new BusinessException("El producto nuevo no tiene precio de venta configurado.");
                 }
             }
-            BigDecimal givenAmount = givenUnitPrice.multiply(givenQty).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal productGivenAmount = givenUnitPrice.multiply(givenQty).setScale(2, RoundingMode.HALF_UP);
+
+            PackagingAllocation pack = packaging != null ? packaging : PackagingAllocation.empty();
+            BigDecimal packagingReturned = safeAmount(pack.returnedCredit()).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal packagingGiven = safeAmount(pack.givenAmount()).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal returnedAmount = productReturnedAmount.add(packagingReturned).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal givenAmount = productGivenAmount.add(packagingGiven).setScale(2, RoundingMode.HALF_UP);
             BigDecimal difference = givenAmount.subtract(returnedAmount).setScale(2, RoundingMode.HALF_UP);
 
             KioskExchangePreviewResponse.ProductLine returnedLine = KioskExchangePreviewResponse.ProductLine.builder()
@@ -1035,7 +1173,7 @@ public class KioskExchangeService {
                     .size(returnedSize)
                     .quantity(returnedQty)
                     .unitPrice(returnedUnitPaid)
-                    .lineTotal(returnedAmount)
+                    .lineTotal(productReturnedAmount)
                     .build();
 
             KioskExchangePreviewResponse.ProductLine givenLine = KioskExchangePreviewResponse.ProductLine.builder()
@@ -1047,7 +1185,7 @@ public class KioskExchangeService {
                     .size(givenSize)
                     .quantity(givenQty)
                     .unitPrice(givenUnitPrice)
-                    .lineTotal(givenAmount)
+                    .lineTotal(productGivenAmount)
                     .build();
 
             return KioskExchangePreviewResponse.builder()
@@ -1060,6 +1198,8 @@ public class KioskExchangeService {
                     .returnedAmount(returnedAmount)
                     .givenAmount(givenAmount)
                     .differenceAmount(difference)
+                    .packagingReturnedAmount(packagingReturned)
+                    .packagingGivenAmount(packagingGiven)
                     .build();
         }
     }

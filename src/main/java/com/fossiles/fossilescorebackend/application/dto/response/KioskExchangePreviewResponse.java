@@ -7,7 +7,6 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 
 @Data
 @Builder
@@ -23,6 +22,10 @@ public class KioskExchangePreviewResponse {
     private BigDecimal returnedAmount;
     private BigDecimal givenAmount;
     private BigDecimal differenceAmount;
+    /** Crédito de empaques SUM de la venta original (sin movimiento de stock). */
+    private BigDecimal packagingReturnedAmount;
+    /** Precio de catálogo de empaques SUM incluido en el egreso (sin movimiento de stock). */
+    private BigDecimal packagingGivenAmount;
 
     @Data
     @Builder

@@ -331,7 +331,10 @@ public class KioskPosService {
         }
 
         Map<String, BigDecimal> aggregatedQty = aggregateItemQuantities(request.getItems());
-        Map<String, ProductInventoryLocation> lockedInventory = lockAndValidateStock(kiosk.getId(), aggregatedQty);
+        // Cambio: no valida/descuenta stock aquí (lo mueven CAMBIO + / DEVOLUCION_A_CLIENTE; empaque solo factura).
+        if (!exchangeSale) {
+            lockAndValidateStock(kiosk.getId(), aggregatedQty);
+        }
 
         List<PreparedLine> preparedLines = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO;
