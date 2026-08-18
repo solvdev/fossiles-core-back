@@ -303,6 +303,7 @@ public class KioskPosService {
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
         KioskCashSessionEntity openSession = requireOpenCashSession(kiosk.getId());
+        assertNoPendingFelCertification(kiosk.getId());
         LocalDate saleDate = request.getSaleDate() != null ? request.getSaleDate() : GuatemalaDateTime.today();
         String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod());
         validateCardFields(
@@ -884,7 +885,51 @@ public class KioskPosService {
         return joined.isBlank() ? null : joined;
     }
 
+    /**
+     * Venta COMPLETED más antigua sin FEL certificada, si existe.
+     * Usado por el POS para forzar certificación antes de seguir vendiendo.
+     */
     @Transactional(readOnly = true)
+    public KioskPosSaleResponse getOldestPendingFelSale(Long kioskLocationId)
+            throws BusinessException, ResourceNotFoundException {
+        UserEntity user = getCurrentUserOrThrow();
+        boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
+        List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
+        LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
+        Optional<KioskSaleEntity> pending = findOldestPendingFelSale(kiosk.getId());
+        if (pending.isEmpty()) {
+            return null;
+        }
+        return toSaleResponse(pending.get(), kiosk, user);
+    }
+
+    private void assertNoPendingFelCertification(Long kioskLocationId) throws BusinessException {
+        Optional<KioskSaleEntity> pending = findOldestPendingFelSale(kioskLocationId);
+        if (pending.isEmpty()) {
+            return;
+        }
+        KioskSaleEntity sale = pending.get();
+        String ref = sale.getSaleNumber() != null && !sale.getSaleNumber().isBlank()
+                ? sale.getSaleNumber().trim()
+                : ("#" + sale.getId());
+        throw new BusinessException(
+                "Hay una venta pendiente de certificar FEL (" + ref
+                        + "). Certifícala antes de registrar otra venta para no romper el correlativo."
+        );
+    }
+
+    private Optional<KioskSaleEntity> findOldestPendingFelSale(Long kioskLocationId) {
+        if (kioskLocationId == null) {
+            return Optional.empty();
+        }
+        List<KioskSaleEntity> pending =
+                kioskSaleRepository.findPendingFelCertificationByKioskLocationId(kioskLocationId);
+        if (pending == null || pending.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(pending.get(0));
+    }
+
     public KioskPosSaleResponse getSaleById(Long saleId, Long kioskLocationId)
             throws BusinessException, ResourceNotFoundException {
         UserEntity user = getCurrentUserOrThrow();

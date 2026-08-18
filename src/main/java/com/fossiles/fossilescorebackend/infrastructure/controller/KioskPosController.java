@@ -89,6 +89,14 @@ public class KioskPosController {
         return ResponseEntity.ok(kioskPosService.createSale(request));
     }
 
+    @GetMapping("/sales/pending-fel")
+    public ResponseEntity<KioskPosSaleResponse> getOldestPendingFelSale(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException, ResourceNotFoundException {
+        KioskPosSaleResponse pending = kioskPosService.getOldestPendingFelSale(kioskLocationId);
+        return pending == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(pending);
+    }
+
     @PostMapping("/sales/restore")
     public ResponseEntity<KioskPosSaleResponse> restoreSale(@Valid @RequestBody KioskPosSaleRestoreRequest request)
             throws BusinessException, ResourceNotFoundException {

@@ -88,6 +88,37 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
     List<KioskSaleEntity> findPendingDepositsByKioskLocationId(@Param("kioskLocationId") Long kioskLocationId);
 
     /**
+     * Ventas COMPLETED sin UUID FEL (ni en la venta ni en la factura vinculada).
+     * Orden: más antigua primero, para no romper el correlativo interno.
+     */
+    @Query("""
+            SELECT s FROM KioskSaleEntity s
+            WHERE s.kioskLocationId = :kioskLocationId
+              AND UPPER(TRIM(s.status)) = 'COMPLETED'
+              AND (s.felUuid IS NULL OR TRIM(s.felUuid) = '')
+              AND (
+                  s.invoiceId IS NULL
+                  OR NOT EXISTS (
+                      SELECT 1 FROM TaxInvoiceEntity t
+                      WHERE t.id = s.invoiceId
+                        AND t.felUuid IS NOT NULL
+                        AND TRIM(t.felUuid) <> ''
+                  )
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM TaxInvoiceEntity t2
+                  WHERE UPPER(TRIM(COALESCE(t2.sourceType, ''))) = 'KIOSK_SALE'
+                    AND t2.sourceId = s.id
+                    AND t2.felUuid IS NOT NULL
+                    AND TRIM(t2.felUuid) <> ''
+              )
+            ORDER BY s.soldAt ASC, s.id ASC
+            """)
+    List<KioskSaleEntity> findPendingFelCertificationByKioskLocationId(
+            @Param("kioskLocationId") Long kioskLocationId
+    );
+
+    /**
      * Depósitos bancarios por día de venta ({@code saleDate}), igual que el resto de reportes de ventas.
      * No filtrar por {@code depositRecordedAt}: la boleta puede registrarse otro día.
      */
