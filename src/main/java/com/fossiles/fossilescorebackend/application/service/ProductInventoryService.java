@@ -356,6 +356,85 @@ public class ProductInventoryService {
         return restoredTotal;
     }
 
+    /**
+     * Revierte egresos de una venta online acreditando el stock en una bodega destino
+     * (típicamente Devoluciones), sin devolver a la ubicación de origen.
+     * El neto global de la referencia queda en cero (idempotente).
+     */
+    public BigDecimal reverseDispatchOutflowsToLocation(
+            String referenceType,
+            Long referenceId,
+            String movementType,
+            Long targetLocationId,
+            String referenceNumber,
+            String description) throws BusinessException {
+        if (referenceType == null || referenceId == null || movementType == null || targetLocationId == null) {
+            return BigDecimal.ZERO;
+        }
+        if (!hasNetOutboundForReference(referenceType, referenceId)) {
+            return BigDecimal.ZERO;
+        }
+        List<ProductInventoryKardex> rows = productInventoryKardexRepository
+                .findByReferenceAndMovementTypes(referenceType, referenceId, movementFamily(movementType));
+
+        Map<String, ProductInventoryKardex> groups = new LinkedHashMap<>();
+        for (ProductInventoryKardex row : rows) {
+            if (row.getQuantity() == null || row.getQuantity().compareTo(BigDecimal.ZERO) >= 0) {
+                continue;
+            }
+            groups.putIfAbsent(reversalGroupKey(row), row);
+        }
+
+        BigDecimal restoredTotal = BigDecimal.ZERO;
+        for (ProductInventoryKardex sample : groups.values()) {
+            BigDecimal net = getNetConsumedForLine(
+                    referenceType,
+                    referenceId,
+                    movementType,
+                    sample.getProductId(),
+                    sample.getLocationId(),
+                    sample.getColorId(),
+                    sample.getReferenceLineId());
+            if (net.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            try {
+                BigDecimal before = readQuantity(sample.getProductId(), targetLocationId, sample.getColorId());
+                incrementInventory(
+                        sample.getProductId(),
+                        targetLocationId,
+                        sample.getColorId(),
+                        net,
+                        null,
+                        referenceType,
+                        referenceId,
+                        referenceNumber,
+                        description,
+                        sample.getSizeLabel());
+                BigDecimal after = readQuantity(sample.getProductId(), targetLocationId, sample.getColorId());
+                recordMovement(
+                        sample.getProductId(),
+                        targetLocationId,
+                        sample.getColorId(),
+                        reversalMovementType(movementType),
+                        net,
+                        before,
+                        after,
+                        null,
+                        referenceType,
+                        referenceId,
+                        referenceNumber,
+                        description,
+                        sample.getSizeLabel(),
+                        sample.getReferenceLineId());
+                restoredTotal = restoredTotal.add(net);
+            } catch (ResourceNotFoundException e) {
+                throw new BusinessException("No se pudo devolver inventario a la bodega destino: " + e.getMessage());
+            }
+        }
+        return restoredTotal;
+    }
+
     private String reversalGroupKey(ProductInventoryKardex row) {
         return row.getProductId() + "|" + row.getLocationId() + "|" + row.getColorId()
                 + "|" + ProductInventorySizesJson.normalizeKey(row.getSizeLabel())

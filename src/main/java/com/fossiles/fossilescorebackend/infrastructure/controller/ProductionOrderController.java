@@ -17,6 +17,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.application.service.CustomerShipmentDispatchService;
 import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestService;
+import com.fossiles.fossilescorebackend.application.service.OnlineSaleService;
 import com.fossiles.fossilescorebackend.application.service.OpiVendorShipmentNumberService;
 import com.fossiles.fossilescorebackend.application.service.OpvVendorShipmentNumberService;
 import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
@@ -64,6 +65,7 @@ public class ProductionOrderController {
     private final OpiVendorShipmentNumberService opiVendorShipmentNumberService;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
     private final CustomerShipmentDispatchService customerShipmentDispatchService;
+    private final OnlineSaleService onlineSaleService;
     private final ProductDistributionRepository distributionRepository;
     private final ProductShipmentRepository shipmentRepository;
     private final ProductShipmentDetailRepository shipmentDetailRepository;
@@ -611,6 +613,17 @@ public class ProductionOrderController {
             throws ResourceNotFoundException, BusinessException {
         Map<String, String> payload = body != null ? body : Map.of();
         return ResponseEntity.ok(customerShipmentDispatchService.dispatchCustomerShipment(id, onlineSaleId, payload));
+    }
+
+    @PutMapping("/{id}/cancel-customer-dispatch/{onlineSaleId}")
+    @Transactional
+    public ResponseEntity<?> cancelCustomerDispatch(
+            @PathVariable Long id,
+            @PathVariable Long onlineSaleId,
+            @RequestBody(required = false) Map<String, String> body)
+            throws ResourceNotFoundException, BusinessException {
+        String reason = body != null ? body.get("reason") : null;
+        return ResponseEntity.ok(onlineSaleService.cancelDispatch(onlineSaleId, reason));
     }
 
     // ==================== WAREHOUSE VIEW ====================

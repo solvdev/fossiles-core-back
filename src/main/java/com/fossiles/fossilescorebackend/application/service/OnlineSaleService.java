@@ -15,12 +15,16 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Online
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ReturnInventoryEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleReturnLineRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleReturnRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ReturnInventoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaxInvoiceEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaxInvoiceRepository;
@@ -53,6 +57,9 @@ public class OnlineSaleService {
     private final OnlineSaleReturnsWarehouseLocator returnsWarehouseLocator;
     private final TaxInvoiceRepository taxInvoiceRepository;
     private final ProductInventoryService productInventoryService;
+    private final ProductionOrderItemRepository productionOrderItemRepository;
+    private final ProductionOrderRepository productionOrderRepository;
+    private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
 
     private static final Map<String, String> PAYMENT_METHOD_DISPLAY = new LinkedHashMap<>();
     static {
@@ -644,9 +651,10 @@ public class OnlineSaleService {
 
     /**
      * Marcar una venta como ANULADA.
-     * No permitido si ya está en DEVOLUCION.
-     * Si está ENVIADO/ENTREGADO, debe ser devolución, no anulación.
+     * Si hubo egreso de inventario (prepare/despacho), el stock regresa a bodega de devoluciones.
+     * ENVIADO/ENTREGADO: use {@link #cancelDispatch} o {@link #markAsReturn}.
      */
+    @Transactional
     public OnlineSaleResponse markAsVoid(Long id, String reason) throws ResourceNotFoundException, BusinessException {
         OnlineSaleEntity sale = saleRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Venta no encontrada con id: " + id));
@@ -658,8 +666,12 @@ public class OnlineSaleService {
             throw new BusinessException("La venta ya está anulada");
         }
         if ("ENVIADO".equals(sale.getStatus()) || "ENTREGADO".equals(sale.getStatus())) {
-            throw new BusinessException("La venta ya fue enviada/entregada. Use DEVOLUCIÓN en su lugar.");
+            throw new BusinessException(
+                    "La venta ya fue enviada/entregada. Use «Anular envío» (regresa stock a devoluciones) "
+                            + "o DEVOLUCIÓN si el cliente devolvió el pedido.");
         }
+
+        restoreOnlineSaleStockToReturns(sale, "Anulación venta online");
 
         sale.setStatus("ANULADA");
         sale.setObservations((sale.getObservations() != null ? sale.getObservations() + " | " : "")
@@ -668,6 +680,104 @@ public class OnlineSaleService {
         saleRepository.save(sale);
 
         return toResponse(sale);
+    }
+
+    /**
+     * Anula un despacho ENVIADO (OPL o directo): stock a bodega de devoluciones,
+     * limpia marcas de piezas enviadas y deja la venta lista para volver a despachar.
+     */
+    @Transactional
+    public OnlineSaleResponse cancelDispatch(Long id, String reason)
+            throws ResourceNotFoundException, BusinessException {
+        OnlineSaleEntity sale = saleRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Venta no encontrada con id: " + id));
+
+        if (!"ENVIADO".equals(sale.getStatus())) {
+            throw new BusinessException(
+                    "Solo se puede anular el envío de ventas en estado ENVIADO. Estado actual: " + sale.getStatus());
+        }
+
+        restoreOnlineSaleStockToReturns(sale, "Anulación de envío venta online");
+
+        String previousStatus = Boolean.TRUE.equals(sale.getInProductionOrder()) ? "EN_PRODUCCION" : "PRODUCIDO";
+        sale.setStatus(previousStatus);
+        sale.setGuideNumber(null);
+        sale.setObservations((sale.getObservations() != null ? sale.getObservations() + " | " : "")
+                + "ENVÍO ANULADO: " + (reason != null && !reason.isBlank() ? reason : "Sin razón especificada")
+                + " → " + previousStatus);
+        sale.setUpdatedBy(securityUtil.getCurrentUserId());
+        saleRepository.save(sale);
+
+        clearOnlineSaleShipmentMarksAndReopenOrders(sale.getId());
+
+        return toResponse(sale);
+    }
+
+    private void clearOnlineSaleShipmentMarksAndReopenOrders(Long onlineSaleId) {
+        if (onlineSaleId == null) {
+            return;
+        }
+        List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByOnlineSaleId(onlineSaleId);
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        Set<Long> poIds = items.stream()
+                .map(ProductionOrderItemEntity::getProductionOrderId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        for (Long poId : poIds) {
+            productionOrderWarehouseUnitService.clearUnitsShippedForOnlineSale(poId, onlineSaleId);
+            productionOrderRepository.findById(poId).ifPresent(po -> {
+                if ("COMPLETED".equalsIgnoreCase(String.valueOf(po.getStatus()))) {
+                    po.setStatus("IN_PROGRESS");
+                    productionOrderRepository.save(po);
+                }
+            });
+        }
+    }
+
+    /**
+     * Devuelve a bodega de devoluciones lo egresado por PREPARE / DISPATCH de esta venta.
+     */
+    private void restoreOnlineSaleStockToReturns(OnlineSaleEntity sale, String actionLabel)
+            throws BusinessException {
+        if (sale == null || sale.getId() == null) {
+            return;
+        }
+        boolean hasPrepare = productInventoryService.hasNetOutboundForReference(
+                ProductInventoryService.REF_ONLINE_SALE_PREPARE, sale.getId());
+        boolean hasDispatch = productInventoryService.hasNetOutboundForReference(
+                ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH, sale.getId());
+        if (!hasPrepare && !hasDispatch) {
+            return;
+        }
+
+        LocationEntity returnsLocation = returnsWarehouseLocator.find()
+                .orElseThrow(() -> new BusinessException(
+                        "No está configurada la ubicación de inventario de devoluciones "
+                                + "(active un tipo DEVOLUCION / BODEGA_DEVOLUCIONES)."));
+
+        String saleRef = sale.getSaleNumber() != null ? sale.getSaleNumber() : String.valueOf(sale.getId());
+        String description = actionLabel + " #" + saleRef + " → bodega devoluciones";
+
+        if (hasPrepare) {
+            productInventoryService.reverseDispatchOutflowsToLocation(
+                    ProductInventoryService.REF_ONLINE_SALE_PREPARE,
+                    sale.getId(),
+                    ProductInventoryService.REF_ONLINE_SALE_PREPARE,
+                    returnsLocation.getId(),
+                    saleRef,
+                    description);
+        }
+        if (hasDispatch) {
+            productInventoryService.reverseDispatchOutflowsToLocation(
+                    ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
+                    sale.getId(),
+                    ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
+                    returnsLocation.getId(),
+                    saleRef,
+                    description);
+        }
     }
 
     public OnlineSaleResponse registerShipment(Long id, String guideNumber, String shippingCarrier, String observations)

@@ -147,6 +147,15 @@ public class OnlineSaleController {
         return ResponseEntity.ok(saleService.markAsVoid(id, reason));
     }
 
+    /** Anula despacho ENVIADO: stock a bodega devoluciones; venta vuelve a PRODUCIDO / EN_PRODUCCION. */
+    @PutMapping("/{id}/cancel-dispatch")
+    public ResponseEntity<OnlineSaleResponse> cancelDispatch(
+            @PathVariable Long id,
+            @RequestBody(required = false) Map<String, String> body) throws ResourceNotFoundException, BusinessException {
+        String reason = body != null ? body.get("reason") : null;
+        return ResponseEntity.ok(saleService.cancelDispatch(id, reason));
+    }
+
     @PutMapping("/{id}/shipment")
     public ResponseEntity<OnlineSaleResponse> registerShipment(
             @PathVariable Long id,

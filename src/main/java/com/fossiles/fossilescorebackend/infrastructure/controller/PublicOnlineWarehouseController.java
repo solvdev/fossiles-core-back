@@ -1,11 +1,13 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.response.CustomerShipmentResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.OnlineSaleResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.WarehouseOrderViewResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.CustomerShipmentDispatchService;
 import com.fossiles.fossilescorebackend.application.service.OnlineSaleProductionOrderService;
+import com.fossiles.fossilescorebackend.application.service.OnlineSaleService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderWarehouseUnitService;
 import com.fossiles.fossilescorebackend.application.service.WarehouseOrderViewAssembler;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
@@ -37,6 +39,7 @@ public class PublicOnlineWarehouseController {
     private final ProductionOrderRepository productionOrderRepository;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
     private final CustomerShipmentDispatchService customerShipmentDispatchService;
+    private final OnlineSaleService onlineSaleService;
     private final OnlineSaleRepository onlineSaleRepository;
     private final OnlineSaleItemRepository onlineSaleItemRepository;
     private final ProductRepository productRepository;
@@ -85,6 +88,18 @@ public class PublicOnlineWarehouseController {
         Map<String, String> payload = body != null ? body : Map.of();
         return ResponseEntity.ok(customerShipmentDispatchService.dispatchCustomerShipment(
                 productionOrderId, onlineSaleId, payload));
+    }
+
+    @PutMapping("/orders/{productionOrderId}/cancel-dispatch/{onlineSaleId}")
+    @Transactional
+    public ResponseEntity<OnlineSaleResponse> cancelDispatchFromOrder(
+            @PathVariable Long productionOrderId,
+            @PathVariable Long onlineSaleId,
+            @RequestBody(required = false) Map<String, String> body)
+            throws ResourceNotFoundException, BusinessException {
+        // productionOrderId valida pertenencia vía ítems en cancelDispatch / clear marks
+        String reason = body != null ? body.get("reason") : null;
+        return ResponseEntity.ok(onlineSaleService.cancelDispatch(onlineSaleId, reason));
     }
 
     @PutMapping("/direct-sales/{onlineSaleId}/dispatch")

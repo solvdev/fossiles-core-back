@@ -388,6 +388,29 @@ public class ProductionOrderWarehouseUnitService {
     }
 
     /**
+     * Quita marcas de despacho de piezas PT vinculadas a una venta online (anular envío OPL).
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int clearUnitsShippedForOnlineSale(Long productionOrderId, Long onlineSaleId) {
+        if (productionOrderId == null || onlineSaleId == null) {
+            return 0;
+        }
+        List<ProductionOrderWarehouseUnitEntity> units = unitRepository
+                .findByProductionOrderIdAndShipmentRefTypeAndShipmentRefId(
+                        productionOrderId, REF_ONLINE_SALE, onlineSaleId);
+        int count = 0;
+        for (ProductionOrderWarehouseUnitEntity unit : units) {
+            unit.setShipmentRefType(null);
+            unit.setShipmentRefId(null);
+            unit.setShippedAt(null);
+            unit.setShippedBy(null);
+            unitRepository.save(unit);
+            count++;
+        }
+        return count;
+    }
+
+    /**
      * Revierte marcas de envío en piezas PT al anular un envío confirmado (antes de SENT).
      */
     @Transactional(rollbackFor = Exception.class)
