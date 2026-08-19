@@ -303,7 +303,6 @@ public class KioskPosService {
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
         KioskCashSessionEntity openSession = requireOpenCashSession(kiosk.getId());
-        assertNoPendingFelCertification(kiosk.getId());
         LocalDate saleDate = request.getSaleDate() != null ? request.getSaleDate() : GuatemalaDateTime.today();
         String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod());
         validateCardFields(
@@ -886,8 +885,8 @@ public class KioskPosService {
     }
 
     /**
-     * Venta COMPLETED más antigua sin FEL certificada, si existe.
-     * Usado por el POS para forzar certificación antes de seguir vendiendo.
+     * Venta COMPLETED reciente sin FEL, si existe.
+     * No incluye cambios con diferencia ni ventas fuera del plazo SAT (5 días).
      */
     @Transactional(readOnly = true)
     public KioskPosSaleResponse getOldestPendingFelSale(Long kioskLocationId)
@@ -907,27 +906,13 @@ public class KioskPosService {
         return toSaleResponse(sale, kiosk, user);
     }
 
-    private void assertNoPendingFelCertification(Long kioskLocationId) throws BusinessException {
-        Optional<KioskSaleEntity> pending = findOldestPendingFelSale(kioskLocationId);
-        if (pending.isEmpty()) {
-            return;
-        }
-        KioskSaleEntity sale = pending.get();
-        String ref = sale.getSaleNumber() != null && !sale.getSaleNumber().isBlank()
-                ? sale.getSaleNumber().trim()
-                : ("#" + sale.getId());
-        throw new BusinessException(
-                "Hay una venta pendiente de certificar FEL (" + ref
-                        + "). Certifícala antes de registrar otra venta para no romper el correlativo."
-        );
-    }
-
     private Optional<KioskSaleEntity> findOldestPendingFelSale(Long kioskLocationId) {
         if (kioskLocationId == null) {
             return Optional.empty();
         }
+        LocalDate minSaleDate = GuatemalaDateTime.today().minusDays(5);
         List<KioskSaleEntity> pending =
-                kioskSaleRepository.findPendingFelCertificationByKioskLocationId(kioskLocationId);
+                kioskSaleRepository.findPendingFelCertificationByKioskLocationId(kioskLocationId, minSaleDate);
         if (pending == null || pending.isEmpty()) {
             return Optional.empty();
         }

@@ -88,13 +88,15 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
     List<KioskSaleEntity> findPendingDepositsByKioskLocationId(@Param("kioskLocationId") Long kioskLocationId);
 
     /**
-     * Ventas COMPLETED sin UUID FEL (ni en la venta ni en la factura vinculada).
-     * Orden: más antigua primero, para no romper el correlativo interno.
+     * Ventas COMPLETED sin FEL, de los últimos 5 días, excluyendo cambios con diferencia.
+     * Las más antiguas no se pueden certificar (FEL-GUI-12) y no deben bloquear el POS.
      */
     @Query("""
             SELECT s FROM KioskSaleEntity s
             WHERE s.kioskLocationId = :kioskLocationId
               AND UPPER(TRIM(s.status)) = 'COMPLETED'
+              AND s.saleDate >= :minSaleDate
+              AND (s.promotionName IS NULL OR LOWER(TRIM(s.promotionName)) NOT LIKE 'boleta de cambio%')
               AND (s.felUuid IS NULL OR TRIM(s.felUuid) = '')
               AND (
                   s.invoiceId IS NULL
@@ -115,7 +117,8 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             ORDER BY s.soldAt ASC, s.id ASC
             """)
     List<KioskSaleEntity> findPendingFelCertificationByKioskLocationId(
-            @Param("kioskLocationId") Long kioskLocationId
+            @Param("kioskLocationId") Long kioskLocationId,
+            @Param("minSaleDate") LocalDate minSaleDate
     );
 
     /**
