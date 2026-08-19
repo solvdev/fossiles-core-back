@@ -233,6 +233,7 @@ public class ProductController {
                 .cinchoType(ProductCinchoType.normalizeCinchoType(entity.getCinchoType()))
                 .cinchoForKids(Boolean.TRUE.equals(entity.getCinchoForKids()))
                 .prdTime(entity.getPrdTime())
+                .unitsPerTask(entity.getUnitsPerTask())
                 .salePrice(entity.getSalePrice())
                 .discountedPrice(entity.getDiscountedPrice())
                 .sellerPrice(entity.getSellerPrice())
@@ -263,6 +264,7 @@ public class ProductController {
                         ProductCinchoType.normalizeCinchoType(request.getCinchoType()) != null
                                 && Boolean.TRUE.equals(request.getCinchoForKids()))
                 .prdTime(roundedPrdTime)
+                .unitsPerTask(normalizeUnitsPerTask(request.getUnitsPerTask()))
                 .salePrice(request.getSalePrice())
                 .discountedPrice(request.getDiscountedPrice())
                 .sellerPrice(request.getSellerPrice())
@@ -294,6 +296,9 @@ public class ProductController {
             double roundedTime = Math.round(request.getPrdTime() * 100.0) / 100.0;
             entity.setPrdTime(roundedTime);
         }
+        if (request.getUnitsPerTask() != null) {
+            entity.setUnitsPerTask(normalizeUnitsPerTask(request.getUnitsPerTask()));
+        }
         if (request.getSalePrice() != null) entity.setSalePrice(request.getSalePrice());
         if (request.getDiscountedPrice() != null) entity.setDiscountedPrice(request.getDiscountedPrice());
         if (request.getSellerPrice() != null) entity.setSellerPrice(request.getSellerPrice());
@@ -305,6 +310,13 @@ public class ProductController {
 
     private String normalizeProductAudience(String value) {
         return ProductAudienceCategory.normalizeProductAudience(value);
+    }
+
+    private Integer normalizeUnitsPerTask(Integer value) {
+        if (value == null) {
+            return null;
+        }
+        return Math.max(1, value);
     }
 }
 

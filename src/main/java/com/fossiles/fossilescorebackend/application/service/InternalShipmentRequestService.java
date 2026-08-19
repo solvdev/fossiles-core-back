@@ -58,6 +58,7 @@ public class InternalShipmentRequestService {
     private final ProductionOrderCodeService productionOrderCodeService;
     private final OpiVendorShipmentNumberService opiVendorShipmentNumberService;
     private final SmartMaterialRequestService smartMaterialRequestService;
+    private final ProductionAutoPlannerService productionAutoPlannerService;
     private final ObjectMapper objectMapper;
     private final SecurityUtil securityUtil;
     private final InternalShipmentRequestAccessGuard accessGuard;
@@ -209,6 +210,7 @@ public class InternalShipmentRequestService {
         order.setStatus("PENDING");
         productionOrderRepository.save(order);
         generateMaterialsForProductionOrder(order.getId());
+        productionAutoPlannerService.planQuietly(order.getId());
 
         entity.setOpiAuthorizedBy(securityUtil.getCurrentUserId());
         entity.setOpiAuthorizedAt(LocalDateTime.now());

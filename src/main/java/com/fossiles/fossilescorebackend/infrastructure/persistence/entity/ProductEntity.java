@@ -45,6 +45,10 @@ public class ProductEntity {
     @Column(name = "prd_time", columnDefinition = "NUMERIC(10,2)")
     private Double prdTime;
 
+    /** Unidades de este producto que caben en una tarea. Null = usar 2. */
+    @Column(name = "units_per_task")
+    private Integer unitsPerTask;
+
     @Column(name = "sale_price", precision = 12, scale = 2)
     private BigDecimal salePrice;
 

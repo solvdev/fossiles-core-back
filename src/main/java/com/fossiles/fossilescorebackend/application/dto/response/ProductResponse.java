@@ -21,6 +21,7 @@ public class ProductResponse {
     private String cinchoType;
     private Boolean cinchoForKids;
     private Double prdTime;
+    private Integer unitsPerTask;
     private BigDecimal salePrice;
     private BigDecimal discountedPrice;
     private BigDecimal sellerPrice;

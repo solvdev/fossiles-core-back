@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderR
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.application.dto.response.*;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -24,6 +25,7 @@ import com.fossiles.fossilescorebackend.application.service.ProductDistributionS
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderPartialReleaseService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderCodeService;
 import com.fossiles.fossilescorebackend.application.service.SmartMaterialRequestService;
+import com.fossiles.fossilescorebackend.application.service.ProductionAutoPlannerService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderWarehouseUnitService;
 import com.fossiles.fossilescorebackend.application.service.WarehouseOrderViewAssembler;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -60,6 +62,7 @@ public class ProductionOrderController {
     private final CustomerRepository customerRepository;
     private final DocumentSeriesRepository documentSeriesRepository;
     private final SmartMaterialRequestService smartMaterialRequestService;
+    private final ProductionAutoPlannerService productionAutoPlannerService;
     private final ProductionOrderCodeService productionOrderCodeService;
     private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
     private final OpiVendorShipmentNumberService opiVendorShipmentNumberService;
@@ -333,6 +336,8 @@ public class ProductionOrderController {
             List<ProductionOrderItemEntity> savedItems =
                     productionOrderItemRepository.findByProductionOrderId(saved.getId());
             internalShipmentRequestService.createRequestForManualOpi(saved, savedItems);
+        } else {
+            productionAutoPlannerService.planQuietly(saved.getId());
         }
 
         return ResponseEntity.created(URI.create("/api/production-orders/" + saved.getId()))
@@ -1939,9 +1944,7 @@ public class ProductionOrderController {
     }
 
     private void applyDefaultSchedulingPriority(ProductionOrderEntity entity, String orderType) {
-        if ("CLIENTE_KIOSKO".equals(orderType)) {
-            entity.setSchedulingPriority(1);
-        }
+        ProductionOrderPlanPriority.applyDefault(entity, orderType);
     }
 
     private void validateProductionOrderItemRequest(ProductionOrderItemRequest itemRequest, String orderType)

@@ -53,7 +53,6 @@ public class TaskDeskBackfillService {
         List<TaskEntity> candidates = pool.stream()
                 .filter(t -> "PENDING".equals(t.getStatus()))
                 .filter(t -> t.getDesk() == null)
-                .filter(t -> Boolean.TRUE.equals(t.getDieCutReady()))
                 .filter(t -> {
                     LocalDate sd = t.getScheduledDate();
                     return sd == null || sd.equals(anchorDate);

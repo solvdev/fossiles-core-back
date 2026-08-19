@@ -5,8 +5,11 @@ import com.fossiles.fossilescorebackend.application.dto.request.PlanWindowReques
 import com.fossiles.fossilescorebackend.application.dto.response.DistributionQueueProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialsTaskViewResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OrganizerProductionOrderResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ProductionAutoPlanResult;
+import com.fossiles.fossilescorebackend.application.dto.response.ProductionDaySalesSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaskResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaskTicketResponse;
+import com.fossiles.fossilescorebackend.application.service.ProductionAutoPlannerService;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.MaterialConsumptionService;
@@ -69,6 +72,7 @@ public class TaskController {
     private final ProductionTaskLifecycleService productionTaskLifecycleService;
     private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
     private final ProductionDeskSupervisorRepository productionDeskSupervisorRepository;
+    private final ProductionAutoPlannerService productionAutoPlannerService;
     private final SecurityUtil securityUtil;
 
     // ==================== CRUD ====================
@@ -107,6 +111,27 @@ public class TaskController {
             throws ResourceNotFoundException, BusinessException {
         TaskEntity task = taskOrganizerService.createManualTask(request);
         return ResponseEntity.ok(toResponse(task));
+    }
+
+    @PostMapping("/auto-plan")
+    public ResponseEntity<ProductionAutoPlanResult> autoPlan(
+            @RequestParam(required = false) Long productionOrderId)
+            throws ResourceNotFoundException, BusinessException {
+        if (productionOrderId != null) {
+            return ResponseEntity.ok(productionAutoPlannerService.planOrder(productionOrderId));
+        }
+        return ResponseEntity.ok(productionAutoPlannerService.planPending());
+    }
+
+    @GetMapping("/blocked-leather")
+    public ResponseEntity<List<ProductionAutoPlanResult.BlockedLeatherLine>> blockedLeather() {
+        return ResponseEntity.ok(productionAutoPlannerService.listBlockedLeather());
+    }
+
+    @GetMapping("/day-sales-summary")
+    public ResponseEntity<ProductionDaySalesSummaryResponse> daySalesSummary(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        return ResponseEntity.ok(productionAutoPlannerService.daySalesSummary(date));
     }
 
     /**

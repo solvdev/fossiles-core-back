@@ -36,6 +36,8 @@ public class ProductRequest {
 
     private Double prdTime;
 
+    private Integer unitsPerTask;
+
     private BigDecimal salePrice;
 
     private BigDecimal discountedPrice;

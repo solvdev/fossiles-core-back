@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -70,10 +71,8 @@ public class TaskOrganizerService {
                 .filter(po -> normalizedSearch.isEmpty()
                         || String.valueOf(po.getCode()).toLowerCase(Locale.ROOT).contains(normalizedSearch)
                         || String.valueOf(po.getCustomerName()).toLowerCase(Locale.ROOT).contains(normalizedSearch))
-                .sorted(Comparator
-                        .comparing(ProductionOrderEntity::getDeliveryDate, Comparator.nullsLast(Comparator.naturalOrder()))
-                        .thenComparing(ProductionOrderEntity::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()))
-                        .thenComparing(ProductionOrderEntity::getId))
+                .sorted(ProductionOrderPlanPriority.comparator()
+                        .thenComparing(ProductionOrderEntity::getDeliveryDate, Comparator.nullsLast(Comparator.naturalOrder())))
                 .toList();
 
         if (orders.isEmpty()) {
@@ -181,9 +180,30 @@ public class TaskOrganizerService {
      * ids ordenados) y revalida la cantidad restante dentro de la transacción para
      * evitar sobre-asignación concurrente.
      */
+    public enum CreateMode { MANUAL, AUTO_CENTRO, AUTO_CINCHO }
+
     @Transactional
     public TaskEntity createManualTask(CreateManualTaskRequest request)
             throws ResourceNotFoundException, BusinessException {
+        return createTask(request, CreateMode.MANUAL);
+    }
+
+    @Transactional
+    public TaskEntity createAutoCentroTask(CreateManualTaskRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return createTask(request, CreateMode.AUTO_CENTRO);
+    }
+
+    @Transactional
+    public TaskEntity createAutoCinchoTask(CreateManualTaskRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return createTask(request, CreateMode.AUTO_CINCHO);
+    }
+
+    @Transactional
+    public TaskEntity createTask(CreateManualTaskRequest request, CreateMode mode)
+            throws ResourceNotFoundException, BusinessException {
+        CreateMode createMode = mode == null ? CreateMode.MANUAL : mode;
 
         if (request == null || request.getProductionOrderId() == null) {
             throw new BusinessException("Debe indicar la orden de producción base de la tarea.");
@@ -200,7 +220,11 @@ public class TaskOrganizerService {
 
         ProductionOrderEntity headerOrder = productionOrderRepository.findById(request.getProductionOrderId())
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", request.getProductionOrderId()));
-        assertOrderReadyForTasks(headerOrder);
+        if (createMode == CreateMode.AUTO_CINCHO) {
+            assertNotDraft(headerOrder);
+        } else {
+            assertOrderReadyForTasks(headerOrder);
+        }
 
         List<Long> requestedItemIds = new ArrayList<>();
         for (CreateManualTaskRequest.ManualTaskItemRequest line : lines) {
@@ -259,12 +283,20 @@ public class TaskOrganizerService {
                         + itemOrder.getCode() + ", distinta a la orden base de la tarea. "
                         + "Solo los extras OPL pueden mezclar órdenes.");
             }
-            assertOrderReadyForTasks(itemOrder);
+            if (createMode == CreateMode.AUTO_CINCHO) {
+                assertNotDraft(itemOrder);
+            } else {
+                assertOrderReadyForTasks(itemOrder);
+            }
 
             ProductEntity product = item.getProductId() != null
                     ? productRepository.findById(item.getProductId()).orElse(null)
                     : null;
-            if (CinchoProductUtils.isCinchoLineForProduction(product)) {
+            boolean cinchoLine = CinchoProductUtils.isCinchoLineForProduction(product);
+            if (createMode == CreateMode.AUTO_CINCHO && !cinchoLine) {
+                throw new BusinessException("La tarea de cinchos solo admite líneas cincho.");
+            }
+            if (createMode != CreateMode.AUTO_CINCHO && cinchoLine) {
                 throw new BusinessException("Los productos cincho se gestionan en la vista de Cinchos.");
             }
 
@@ -292,6 +324,7 @@ public class TaskOrganizerService {
                 colorName = colorRepository.findById(item.getColorId()).map(ColorEntity::getName).orElse(null);
             }
             boolean requiresMaterials = product == null || !Boolean.FALSE.equals(product.getRequiresMaterials());
+            boolean cinchoReady = createMode == CreateMode.AUTO_CINCHO;
 
             itemsToSave.add(TaskItemEntity.builder()
                     .productionOrderItemId(item.getId())
@@ -303,8 +336,8 @@ public class TaskOrganizerService {
                     .quantity(qty)
                     .estimatedHours(lineHours)
                     .observations(buildItemObservations(item, qty, total))
-                    .leatherDelivered(false)
-                    .leatherDeliveredAt(null)
+                    .leatherDelivered(cinchoReady)
+                    .leatherDeliveredAt(cinchoReady ? LocalDateTime.now() : null)
                     .materialsDelivered(!requiresMaterials)
                     .materialsDeliveredAt(!requiresMaterials ? LocalDateTime.now() : null)
                     .daySaleExtra(extra)
@@ -315,13 +348,15 @@ public class TaskOrganizerService {
         if (isOnlineSaleOrder(headerOrder)) {
             baseHours = 0.0;
         }
-        if (baseHours > ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP + EPSILON) {
+        if (createMode == CreateMode.MANUAL
+                && baseHours > ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP + EPSILON) {
             throw new BusinessException(String.format(Locale.ROOT,
                     "La carga base de la tarea (%.2f h) excede el máximo de %.1f horas. "
                             + "Divida los productos en otra tarea (las OPL no cuentan contra el cupo).",
                     baseHours, ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP));
         }
 
+        boolean cinchoReady = createMode == CreateMode.AUTO_CINCHO;
         TaskItemEntity primary = itemsToSave.get(0);
         TaskEntity task = taskRepository.save(TaskEntity.builder()
                 .code(taskCodeGenerator.generateTaskCode())
@@ -336,10 +371,13 @@ public class TaskOrganizerService {
                 .quantity(totalQuantity)
                 .estimatedHours(roundHours(totalHours))
                 .deliveryDate(headerOrder.getDeliveryDate())
-                .desk(request.getDesk())
+                .desk(cinchoReady ? null : request.getDesk())
                 .scheduledDate(request.getScheduledDate())
                 .priority(5)
                 .status("PENDING")
+                .dieCutReady(cinchoReady)
+                .leatherDelivered(cinchoReady)
+                .leatherDeliveredAt(cinchoReady ? LocalDateTime.now() : null)
                 .observations(request.getObservations())
                 .build());
 
@@ -438,7 +476,7 @@ public class TaskOrganizerService {
         return "CINCHOS".equals(t) || "CINCHOS_FOSSILES".equals(t) || "CINCHOS_MARCAS".equals(t);
     }
 
-    private static void assertOrderReadyForTasks(ProductionOrderEntity po) throws BusinessException {
+    private static void assertNotDraft(ProductionOrderEntity po) throws BusinessException {
         if (po == null) {
             return;
         }
@@ -448,7 +486,11 @@ public class TaskOrganizerService {
                     "La orden " + code + " está en borrador. Contabilidad debe autorizar la producción "
                             + "antes de crear tareas.");
         }
-        if (isCinchoOrderType(po.getOrderType())) {
+    }
+
+    private static void assertOrderReadyForTasks(ProductionOrderEntity po) throws BusinessException {
+        assertNotDraft(po);
+        if (po != null && isCinchoOrderType(po.getOrderType())) {
             throw new BusinessException(
                     "Las órdenes de tipo cinchos se gestionan en la vista de Cinchos, no en el centro de producción.");
         }
