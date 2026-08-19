@@ -16,7 +16,9 @@ public class WebConfig implements WebMvcConfigurer {
                     "http://localhost:3000", 
                     "http://localhost:3001",
                     "http://core.fossilescorp.com",
-                    "https://core.fossilescorp.com"
+                    "https://core.fossilescorp.com",
+                    "https://coretest.fossilescorp.com",
+                    "http://coretest.fossilescorp.com"
                 )
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
                 .allowedHeaders("*")
