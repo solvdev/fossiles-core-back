@@ -5,11 +5,13 @@ import com.fossiles.fossilescorebackend.application.dto.request.PlanWindowReques
 import com.fossiles.fossilescorebackend.application.dto.response.DistributionQueueProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialsTaskViewResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OrganizerProductionOrderResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.OplDispatchSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductionAutoPlanResult;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductionDaySalesSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaskResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaskTicketResponse;
 import com.fossiles.fossilescorebackend.application.service.ProductionAutoPlannerService;
+import com.fossiles.fossilescorebackend.application.service.OplDispatchSummaryService;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.MaterialConsumptionService;
@@ -73,6 +75,7 @@ public class TaskController {
     private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
     private final ProductionDeskSupervisorRepository productionDeskSupervisorRepository;
     private final ProductionAutoPlannerService productionAutoPlannerService;
+    private final OplDispatchSummaryService oplDispatchSummaryService;
     private final SecurityUtil securityUtil;
 
     // ==================== CRUD ====================
@@ -132,6 +135,16 @@ public class TaskController {
     public ResponseEntity<ProductionDaySalesSummaryResponse> daySalesSummary(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
         return ResponseEntity.ok(productionAutoPlannerService.daySalesSummary(date));
+    }
+
+    /**
+     * Ventas en línea pedidas el día anterior a {@code dispatchDate} (hoy por defecto)
+     * que deben despacharse esa fecha.
+     */
+    @GetMapping("/opl-dispatch-summary")
+    public ResponseEntity<OplDispatchSummaryResponse> oplDispatchSummary(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate dispatchDate) {
+        return ResponseEntity.ok(oplDispatchSummaryService.summaryForDispatchDate(dispatchDate));
     }
 
     /**
