@@ -407,6 +407,94 @@ class KioskExchangeServiceTest {
         assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("0.00");
     }
 
+    @Test
+    void previewExchange_sameProductPrice_ignoresInvoicePackaging() throws Exception {
+        ProductEntity packaging = productRepository.save(ProductEntity.builder()
+                .code("SUM-EX-001")
+                .name("Bolsa cambio")
+                .salePrice(new BigDecimal("15.00"))
+                .build());
+        ProductEntity samePriceProduct = productRepository.save(ProductEntity.builder()
+                .code("SAME-180")
+                .name("Cartera mismo precio")
+                .salePrice(new BigDecimal("180.00"))
+                .build());
+        seedInventory(packaging.getId(), 5);
+        seedInventory(samePriceProduct.getId(), 5);
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kiosk.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("195.00"))
+                .chargeWithoutDiscount(true)
+                .items(List.of(
+                        item(originalProduct.getId(), negro.getId(), BigDecimal.ONE),
+                        item(packaging.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(sale.getId()).stream()
+                .filter(row -> Objects.equals(row.getProductId(), originalProduct.getId()))
+                .findFirst()
+                .orElseThrow();
+
+        KioskExchangePreviewResponse preview = kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(sale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(samePriceProduct.getId())
+                        .givenColorId(negro.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .build());
+
+        assertThat(preview.getPackagingCreditAmount()).isEqualByComparingTo("15.00");
+        assertThat(preview.getPackagingReturnedAmount()).isEqualByComparingTo("0.00");
+        assertThat(preview.getReturnedAmount()).isEqualByComparingTo("180.00");
+        assertThat(preview.getGivenAmount()).isEqualByComparingTo("180.00");
+        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    void previewExchange_differentProductPrice_includesInvoicePackaging() throws Exception {
+        ProductEntity packaging = productRepository.save(ProductEntity.builder()
+                .code("SUM-EX-002")
+                .name("Bolsa cambio diff")
+                .salePrice(new BigDecimal("15.00"))
+                .build());
+        seedInventory(packaging.getId(), 5);
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kiosk.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("195.00"))
+                .chargeWithoutDiscount(true)
+                .items(List.of(
+                        item(originalProduct.getId(), negro.getId(), BigDecimal.ONE),
+                        item(packaging.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(sale.getId()).stream()
+                .filter(row -> Objects.equals(row.getProductId(), originalProduct.getId()))
+                .findFirst()
+                .orElseThrow();
+
+        KioskExchangePreviewResponse preview = kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(sale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(newProduct.getId())
+                        .givenColorId(negro.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .build());
+
+        assertThat(preview.getPackagingCreditAmount()).isEqualByComparingTo("15.00");
+        assertThat(preview.getPackagingReturnedAmount()).isEqualByComparingTo("15.00");
+        assertThat(preview.getReturnedAmount()).isEqualByComparingTo("195.00");
+        assertThat(preview.getGivenAmount()).isEqualByComparingTo("250.00");
+        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("55.00");
+    }
+
     private int currentStock(Long productId) {
         return kioscoStockRepository.findByLocationIdAndProductIdAndColorId(kiosk.getId(), productId, negro.getId())
                 .map(KioscoStockEntity::getCurrentStock)

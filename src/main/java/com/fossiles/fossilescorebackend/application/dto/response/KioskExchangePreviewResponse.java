@@ -22,8 +22,11 @@ public class KioskExchangePreviewResponse {
     private BigDecimal returnedAmount;
     private BigDecimal givenAmount;
     private BigDecimal differenceAmount;
-    /** Crédito de empaques SUM de la venta original (sin movimiento de stock). */
+    /** Crédito de empaques SUM aplicado a la liquidación (0 si no hay diferencia de producto). */
     private BigDecimal packagingReturnedAmount;
+    /** Crédito de empaques SUM de la factura original (potencial; no siempre se aplica). */
+    private BigDecimal packagingCreditAmount;
+    /** Precio de catálogo de empaques SUM incluido en el egreso (sin movimiento de stock). */
     /** Precio de catálogo de empaques SUM incluido en el egreso (sin movimiento de stock). */
     private BigDecimal packagingGivenAmount;
 

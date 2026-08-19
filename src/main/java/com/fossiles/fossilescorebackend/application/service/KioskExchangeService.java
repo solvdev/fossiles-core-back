@@ -588,11 +588,7 @@ public class KioskExchangeService {
                 request, returnedProduct, allowPriceOverride);
 
         List<KioskSaleItemEntity> saleItems = loadSaleItems(sale);
-        boolean preservePaidPrice = givenUnitOverride == null
-                && returnedUnitOverride == null
-                && shouldPreservePaidPriceOnExchange(item, returnedProduct, givenProduct);
-        PackagingAllocation packaging = allocatePackagingCredit(
-                saleItems, item, returnedQty, preservePaidPrice);
+        PackagingAllocation packaging = allocatePackagingCredit(saleItems, item, returnedQty);
 
         return new ExchangeContext(
                 access,
@@ -621,16 +617,16 @@ public class KioskExchangeService {
     }
 
     /**
-     * Empaques SUM de la venta original: solo crédito (precio de factura, sin descuento).
+     * Empaques SUM de la venta original: crédito potencial (precio de factura, sin descuento).
+     * Se aplica a la liquidación solo si hay diferencia de precio entre productos.
      * No van en el egreso ni en movimiento de stock.
      */
     private PackagingAllocation allocatePackagingCredit(
             List<KioskSaleItemEntity> saleItems,
             KioskSaleItemEntity exchangedItem,
-            BigDecimal returnedQty,
-            boolean preservePaidPrice
+            BigDecimal returnedQty
     ) {
-        if (preservePaidPrice || exchangedItem == null || saleItems == null || saleItems.isEmpty()) {
+        if (exchangedItem == null || saleItems == null || saleItems.isEmpty()) {
             return PackagingAllocation.empty();
         }
         List<KioskSaleItemEntity> packagingItems = saleItems.stream()
@@ -1110,7 +1106,9 @@ public class KioskExchangeService {
             BigDecimal productGivenAmount = givenUnitPrice.multiply(givenQty).setScale(2, RoundingMode.HALF_UP);
 
             PackagingAllocation pack = packaging != null ? packaging : PackagingAllocation.empty();
-            BigDecimal packagingReturned = safeAmount(pack.returnedCredit()).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal packagingCredit = safeAmount(pack.returnedCredit()).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal packagingReturned = appliedPackagingCredit(
+                    productGivenAmount, productReturnedAmount, packagingCredit);
             BigDecimal returnedAmount = productReturnedAmount.add(packagingReturned).setScale(2, RoundingMode.HALF_UP);
             BigDecimal givenAmount = productGivenAmount;
             BigDecimal difference = givenAmount.subtract(returnedAmount).setScale(2, RoundingMode.HALF_UP);
@@ -1150,9 +1148,27 @@ public class KioskExchangeService {
                     .givenAmount(givenAmount)
                     .differenceAmount(difference)
                     .packagingReturnedAmount(packagingReturned)
+                    .packagingCreditAmount(packagingCredit)
                     .packagingGivenAmount(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
                     .build();
         }
+    }
+
+    /**
+     * El empaque de la factura original solo entra cuando hay diferencia de precio
+     * entre el producto que ingresa y el que se entrega. Sin diferencia de producto, se ignora.
+     */
+    static BigDecimal appliedPackagingCredit(
+            BigDecimal productGivenAmount,
+            BigDecimal productReturnedAmount,
+            BigDecimal allocatedCredit
+    ) {
+        BigDecimal given = safeAmount(productGivenAmount).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal returned = safeAmount(productReturnedAmount).setScale(2, RoundingMode.HALF_UP);
+        if (given.compareTo(returned) == 0) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        return safeAmount(allocatedCredit).setScale(2, RoundingMode.HALF_UP);
     }
 
     /**
