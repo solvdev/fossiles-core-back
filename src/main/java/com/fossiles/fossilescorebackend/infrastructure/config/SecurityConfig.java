@@ -62,7 +62,9 @@ public class SecurityConfig {
             "http://localhost:3000", 
             "http://localhost:3001",
             "http://core.fossilescorp.com",
-            "https://core.fossilescorp.com"
+            "https://core.fossilescorp.com",
+            "https://coretest.fossilescorp.com",
+            "http://coretest.fossilescorp.com"
         ));
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("*"));
