@@ -900,7 +900,11 @@ public class KioskPosService {
         if (pending.isEmpty()) {
             return null;
         }
-        return toSaleResponse(pending.get(), kiosk, user);
+        KioskSaleEntity sale = pending.get();
+        if (!Objects.equals(sale.getKioskLocationId(), kiosk.getId())) {
+            return null;
+        }
+        return toSaleResponse(sale, kiosk, user);
     }
 
     private void assertNoPendingFelCertification(Long kioskLocationId) throws BusinessException {
@@ -3484,7 +3488,7 @@ public class KioskPosService {
                 .saleNumber(sale.getSaleNumber())
                 .saleDate(sale.getSaleDate())
                 .soldAt(sale.getSoldAt())
-                .kioskId(kiosk.getId())
+                .kioskId(sale.getKioskLocationId() != null ? sale.getKioskLocationId() : kiosk.getId())
                 .kioskCode(kiosk.getCode())
                 .kioskName(kiosk.getName())
                 .soldByUserId(soldByUser.getId())
