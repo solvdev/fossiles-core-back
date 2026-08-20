@@ -25,6 +25,10 @@ public class KioscoPhysicalCountReportResponse {
     private String locationName;
     private LocalDate periodFrom;
     private LocalDate periodTo;
+    /** Inicio inclusive del periodo (wall-clock Guatemala). */
+    private LocalDateTime periodFromAt;
+    /** Fin inclusive del periodo (wall-clock Guatemala). */
+    private LocalDateTime periodToAt;
     private String status;
     private String notes;
     /** Observaciones generales de la sesión (encabezado / Excel). */
@@ -43,6 +47,8 @@ public class KioscoPhysicalCountReportResponse {
     private String reportType;
     /** Fecha de corte del inventario sistema (solo subconteo). */
     private LocalDate asOfDate;
+    /** Corte inclusive del inventario sistema (solo subconteo; wall-clock Guatemala). */
+    private LocalDateTime asOfAt;
     /** ID del conteo padre cuando reportType es SUBCONTEO. */
     private Long parentCountId;
     private List<KioscoPhysicalCountCategoryGroup> categories;

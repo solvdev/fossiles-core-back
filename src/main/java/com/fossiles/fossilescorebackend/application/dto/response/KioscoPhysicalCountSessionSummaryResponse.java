@@ -17,6 +17,8 @@ public class KioscoPhysicalCountSessionSummaryResponse {
     private Long id;
     private LocalDate periodFrom;
     private LocalDate periodTo;
+    private LocalDateTime periodFromAt;
+    private LocalDateTime periodToAt;
     private String status;
     private String notes;
     private String observations;
