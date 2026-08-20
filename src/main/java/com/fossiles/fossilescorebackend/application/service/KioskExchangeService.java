@@ -125,7 +125,7 @@ public class KioskExchangeService {
                 .collect(Collectors.toList());
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public KioskExchangeSlipResponse authorizeExchange(Long slipId, Long kioskLocationId)
             throws BusinessException, ResourceNotFoundException {
         exchangeAuthorizationGuard.assertCanApproveOrReject();
@@ -170,7 +170,7 @@ public class KioskExchangeService {
         return toSlipResponse(slip, ctx);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public KioskExchangeSlipResponse rejectExchange(Long slipId, Long kioskLocationId, KioskExchangeRejectRequest request)
             throws BusinessException, ResourceNotFoundException {
         exchangeAuthorizationGuard.assertCanApproveOrReject();
@@ -221,7 +221,7 @@ public class KioskExchangeService {
         return exchange.preview();
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public KioskExchangeCompleteResponse completeExchange(KioskExchangeCompleteRequest request)
             throws BusinessException, ResourceNotFoundException {
         ExchangeContext exchange = buildExchangeContext(request, true);
@@ -405,7 +405,7 @@ public class KioskExchangeService {
         return "Boleta de cambio " + slipNumber + " · " + reason;
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public KioskExchangeSlipResponse completeSimpleReturn(KioskSimpleReturnRequest request)
             throws BusinessException, ResourceNotFoundException {
         if (request == null) {
@@ -468,7 +468,7 @@ public class KioskExchangeService {
         return toSlipResponse(slip, ctx);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public KioskExchangeSlipResponse reintegrate(Long slipId, Long kioskLocationId)
             throws BusinessException, ResourceNotFoundException {
         AccessContext ctx = resolveAccessContext(kioskLocationId);

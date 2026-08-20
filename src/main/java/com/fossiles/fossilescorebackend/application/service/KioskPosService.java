@@ -105,7 +105,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
-@Transactional
+@Transactional(rollbackFor = Exception.class)
 public class KioskPosService {
 
     private static final DateTimeFormatter SALE_NUMBER_DATE = DateTimeFormatter.ofPattern("yyyyMMdd");
