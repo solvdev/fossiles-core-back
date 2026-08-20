@@ -41,6 +41,7 @@ public class KioskExchangePreviewResponse {
         private Long colorId;
         private String colorName;
         private String size;
+        private String hardwareCondition;
         private BigDecimal quantity;
         private BigDecimal unitPrice;
         private BigDecimal lineTotal;

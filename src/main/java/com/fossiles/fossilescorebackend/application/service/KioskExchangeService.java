@@ -34,6 +34,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
+import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
@@ -157,7 +158,9 @@ public class KioskExchangeService {
                 ctx.user().getId(),
                 slip.getSlipNumber(),
                 slip.getReturnedSize(),
-                slip.getGivenSize()
+                slip.getGivenSize(),
+                null,
+                slip.getGivenHardwareCondition()
         );
 
         slip.setReturnMovementId(cambio.getReturnedMovementId());
@@ -298,7 +301,9 @@ public class KioskExchangeService {
                 user.getId(),
                 slipNumber,
                 preview.getReturned().getSize(),
-                preview.getGiven().getSize()
+                preview.getGiven().getSize(),
+                null,
+                preview.getGiven().getHardwareCondition()
         );
         slip.setReturnMovementId(cambio.getReturnedMovementId());
         slip.setGivenMovementId(cambio.getGivenMovementId());
@@ -365,6 +370,7 @@ public class KioskExchangeService {
                 .givenProductId(preview.getGiven().getProductId())
                 .givenColorId(preview.getGiven().getColorId())
                 .givenSize(preview.getGiven().getSize())
+                .givenHardwareCondition(preview.getGiven().getHardwareCondition())
                 .givenQuantity(preview.getGiven().getQuantity())
                 .givenAmount(preview.getGivenAmount())
                 .differenceAmount(preview.getDifferenceAmount())
@@ -583,6 +589,7 @@ public class KioskExchangeService {
         if (givenSize.isEmpty()) {
             givenSize = null;
         }
+        String givenHardware = ProductHardwareCondition.normalize(request.getGivenHardwareCondition());
 
         boolean allowPriceOverride = allowsExchangePriceEdit(access.kiosk());
         BigDecimal givenUnitOverride = normalizePriceOverride(request.getGivenUnitPrice());
@@ -608,6 +615,7 @@ public class KioskExchangeService {
                 givenProduct,
                 givenColor,
                 givenSize,
+                givenHardware,
                 givenQty,
                 returnedUnitOverride,
                 givenUnitOverride,
@@ -919,6 +927,7 @@ public class KioskExchangeService {
                 .givenColorId(slip.getGivenColorId())
                 .givenColorName(givenColor != null ? givenColor.getName() : null)
                 .givenSize(slip.getGivenSize())
+                .givenHardwareCondition(slip.getGivenHardwareCondition())
                 .givenQuantity(slip.getGivenQuantity())
                 .givenAmount(slip.getGivenAmount())
                 .differenceAmount(slip.getDifferenceAmount())
@@ -1119,6 +1128,7 @@ public class KioskExchangeService {
             ProductEntity givenProduct,
             ColorEntity givenColor,
             String givenSize,
+            String givenHardwareCondition,
             BigDecimal givenQty,
             BigDecimal returnedUnitPriceOverride,
             BigDecimal givenUnitPriceOverride,
@@ -1179,6 +1189,7 @@ public class KioskExchangeService {
                     .colorId(givenColor != null ? givenColor.getId() : null)
                     .colorName(givenColor != null ? givenColor.getName() : null)
                     .size(givenSize)
+                    .hardwareCondition(givenHardwareCondition)
                     .quantity(givenQty)
                     .unitPrice(givenUnitPrice)
                     .lineTotal(productGivenAmount)

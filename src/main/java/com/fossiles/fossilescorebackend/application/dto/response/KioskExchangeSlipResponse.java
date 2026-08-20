@@ -36,6 +36,7 @@ public class KioskExchangeSlipResponse {
     private Long givenColorId;
     private String givenColorName;
     private String givenSize;
+    private String givenHardwareCondition;
     private BigDecimal givenQuantity;
     private BigDecimal givenAmount;
     private BigDecimal differenceAmount;
