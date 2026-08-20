@@ -11,6 +11,8 @@ import java.util.Optional;
 public interface LocationRepository extends JpaRepository<LocationEntity, Long> {
     Optional<LocationEntity> findByCode(String code);
     java.util.List<LocationEntity> findByEncargadoIdOrderByNameAsc(Long encargadoId);
+
+    java.util.List<LocationEntity> findByInternalSeriesCodeIgnoreCase(String internalSeriesCode);
     
     @EntityGraph(attributePaths = {"encargado"})
     Optional<LocationEntity> findById(Long id);

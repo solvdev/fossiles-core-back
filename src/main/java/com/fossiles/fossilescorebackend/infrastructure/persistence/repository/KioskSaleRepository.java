@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -53,6 +54,21 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             Long kioskLocationId,
             LocalDate startDate,
             LocalDate endDate
+    );
+
+    /** Ventas del kiosko en [fromInclusive, toExclusive) por soldAt (wall-clock Guatemala). */
+    @Query("""
+            SELECT s FROM KioskSaleEntity s
+            WHERE s.kioskLocationId = :kioskLocationId
+              AND s.soldAt IS NOT NULL
+              AND s.soldAt >= :fromInclusive
+              AND s.soldAt < :toExclusive
+            ORDER BY s.soldAt DESC
+            """)
+    List<KioskSaleEntity> findByKioskLocationIdAndSoldAtRangeOrderBySoldAtDesc(
+            @Param("kioskLocationId") Long kioskLocationId,
+            @Param("fromInclusive") LocalDateTime fromInclusive,
+            @Param("toExclusive") LocalDateTime toExclusive
     );
 
     @Query("""
