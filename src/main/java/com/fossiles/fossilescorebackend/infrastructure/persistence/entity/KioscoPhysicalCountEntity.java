@@ -17,6 +17,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -42,6 +43,14 @@ public class KioscoPhysicalCountEntity {
 
     @Column(name = "period_to", nullable = false)
     private LocalDate periodTo;
+
+    /** Inicio inclusive del periodo (wall-clock Guatemala). */
+    @Column(name = "period_from_at", nullable = false)
+    private LocalDateTime periodFromAt;
+
+    /** Fin inclusive del periodo (wall-clock Guatemala). */
+    @Column(name = "period_to_at", nullable = false)
+    private LocalDateTime periodToAt;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
@@ -141,12 +150,18 @@ public class KioscoPhysicalCountEntity {
 
     @PrePersist
     protected void onCreate() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = GuatemalaDateTime.now();
         if (status == null) {
             status = KioscoPhysicalCountStatus.DRAFT;
         }
         if (generatedAt == null) {
             generatedAt = now;
+        }
+        if (periodFromAt == null && periodFrom != null) {
+            periodFromAt = periodFrom.atStartOfDay();
+        }
+        if (periodToAt == null && periodTo != null) {
+            periodToAt = periodTo.atTime(23, 59, 59);
         }
         createdAt = now;
         updatedAt = now;
@@ -154,6 +169,6 @@ public class KioscoPhysicalCountEntity {
 
     @PreUpdate
     protected void onUpdate() {
-        updatedAt = LocalDateTime.now();
+        updatedAt = GuatemalaDateTime.now();
     }
 }

@@ -1967,21 +1967,42 @@ public class KioscoInventoryService {
         if (from.isAfter(to)) {
             throw new BusinessException("La fecha inicial no puede ser posterior a la fecha final.");
         }
-        validateLocationIsKiosk(locationId);
-
         LocalDateTime fromDt = from.atStartOfDay();
         LocalDateTime toDtExclusive = to.plusDays(1).atStartOfDay();
-
-        Map<Long, Integer> initialBalanceByStockId = computeBalanceByStockId(locationId, fromDt);
-        // Period-end ledger (or as-of cutoff): do not use live current_stock, which may include
-        // post-period moves or diverge from sizes after mixed sized/unsized history.
         LocalDateTime endCutoffExclusive = balanceAsOf != null
                 ? balanceAsOf.plusDays(1).atStartOfDay()
                 : toDtExclusive;
+        return buildKardexRows(locationId, fromDt, toDtExclusive, includeZeroRows, endCutoffExclusive, physicalCountId);
+    }
+
+    /**
+     * Kardex con límites en {@link LocalDateTime} (wall-clock Guatemala).
+     * Intervalo de movimientos: [{@code fromInclusive}, {@code toExclusive}).
+     * Inventario final: saldo hasta {@code balanceCutoffExclusive} (exclusivo).
+     */
+    @Transactional(readOnly = true)
+    List<KioscoKardexReportResponse.KioscoKardexRow> buildKardexRows(
+            Long locationId,
+            LocalDateTime fromInclusive,
+            LocalDateTime toExclusive,
+            boolean includeZeroRows,
+            LocalDateTime balanceCutoffExclusive,
+            Long physicalCountId
+    ) throws BusinessException, ResourceNotFoundException {
+        if (fromInclusive == null || toExclusive == null) {
+            throw new BusinessException("Debes indicar el rango de fechas (from y to).");
+        }
+        if (fromInclusive.isAfter(toExclusive)) {
+            throw new BusinessException("La fecha/hora inicial no puede ser posterior a la final.");
+        }
+        validateLocationIsKiosk(locationId);
+
+        LocalDateTime endCutoffExclusive = balanceCutoffExclusive != null ? balanceCutoffExclusive : toExclusive;
+        Map<Long, Integer> initialBalanceByStockId = computeBalanceByStockId(locationId, fromInclusive);
         Map<Long, Integer> endBalanceByStockId = computeBalanceByStockId(locationId, endCutoffExclusive);
 
         Map<Long, KardexAccumulator> accByStockId = new LinkedHashMap<>();
-        for (KioscoMovementEntity m : collectPeriodMovements(locationId, fromDt, toDtExclusive, physicalCountId)) {
+        for (KioscoMovementEntity m : collectPeriodMovements(locationId, fromInclusive, toExclusive, physicalCountId)) {
             if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
                 continue;
             }
@@ -2058,16 +2079,34 @@ public class KioscoInventoryService {
         if (from.isAfter(to)) {
             throw new BusinessException("La fecha inicial no puede ser posterior a la fecha final.");
         }
-        validateLocationIsKiosk(locationId);
+        return buildKardexByStockAndSize(
+                locationId,
+                from.atStartOfDay(),
+                to.plusDays(1).atStartOfDay(),
+                physicalCountId
+        );
+    }
 
-        LocalDateTime fromDt = from.atStartOfDay();
-        LocalDateTime toDtExclusive = to.plusDays(1).atStartOfDay();
+    @Transactional(readOnly = true)
+    public Map<Long, Map<String, SizeKardexBucket>> buildKardexByStockAndSize(
+            Long locationId,
+            LocalDateTime fromInclusive,
+            LocalDateTime toExclusive,
+            Long physicalCountId
+    ) throws BusinessException, ResourceNotFoundException {
+        if (fromInclusive == null || toExclusive == null) {
+            throw new BusinessException("Debes indicar el rango de fechas (from y to).");
+        }
+        if (fromInclusive.isAfter(toExclusive)) {
+            throw new BusinessException("La fecha/hora inicial no puede ser posterior a la final.");
+        }
+        validateLocationIsKiosk(locationId);
 
         Map<Long, Map<String, KardexAccumulator>> accByStockAndSize = new LinkedHashMap<>();
         // stockId -> shipmentIds relacionados a ENTRADAs (con o sin talla) para desglosar desde el envío.
         Map<Long, Set<Long>> shipmentIdsByStock = new LinkedHashMap<>();
         Map<String, Long> shipmentIdByNumberCache = new HashMap<>();
-        for (KioscoMovementEntity m : collectPeriodMovements(locationId, fromDt, toDtExclusive, physicalCountId)) {
+        for (KioscoMovementEntity m : collectPeriodMovements(locationId, fromInclusive, toExclusive, physicalCountId)) {
             if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
                 continue;
             }
