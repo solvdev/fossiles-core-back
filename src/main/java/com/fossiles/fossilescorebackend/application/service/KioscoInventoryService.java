@@ -70,7 +70,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
-@Transactional
+@Transactional(rollbackFor = Exception.class)
 @Slf4j
 public class KioscoInventoryService {
 
@@ -3303,7 +3303,16 @@ public class KioscoInventoryService {
         );
 
         if (syncLegacy && affectsStock) {
-            syncLegacyInventory(locationId, productId, colorId, delta, sizeKey);
+            try {
+                syncLegacyInventory(locationId, productId, colorId, delta, sizeKey);
+            } catch (BusinessException ex) {
+                // Kiosco es la fuente de verdad: si el inventario legacy está desfasado
+                // (caso típico en cambios), alinear en lugar de fallar y dejar error falso en UI.
+                log.warn(
+                        "KIOSCO_LEGACY_SYNC_FAIL locationId={} productId={} colorId={} delta={} size={} msg={}. Aligning to kiosco.",
+                        locationId, productId, colorId, delta, sizeKey, ex.getMessage());
+                alignLegacyInventoryToKioscoStock(stock);
+            }
         }
 
         return new KioscoMovementWithStock(toStockResponse(stock), movement);
@@ -4376,6 +4385,30 @@ public class KioscoInventoryService {
                 .colorId(colorId)
                 .quantity(total)
                 .sizes(new LinkedHashMap<>(targetSizes))
+                .build());
+    }
+
+    /** Fuerza inventario legacy al stock actual del módulo kiosco. */
+    private void alignLegacyInventoryToKioscoStock(KioscoStockEntity stock)
+            throws BusinessException, ResourceNotFoundException {
+        if (stock == null) {
+            return;
+        }
+        Map<String, BigDecimal> sizes = ProductInventorySizesJson.parse(stock.getSizesData());
+        if (!sizes.isEmpty()) {
+            syncLegacyInventoryToTargetSizes(
+                    stock.getLocationId(),
+                    stock.getProductId(),
+                    stock.getColorId(),
+                    sizes
+            );
+            return;
+        }
+        productInventoryService.createOrUpdateInventory(ProductInventoryLocationRequest.builder()
+                .productId(stock.getProductId())
+                .locationId(stock.getLocationId())
+                .colorId(stock.getColorId())
+                .quantity(BigDecimal.valueOf(safeInt(stock.getCurrentStock())))
                 .build());
     }
 
