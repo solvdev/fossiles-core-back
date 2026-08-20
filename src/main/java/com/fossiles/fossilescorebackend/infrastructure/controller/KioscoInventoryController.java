@@ -297,8 +297,8 @@ public class KioscoInventoryController {
     @PostMapping("/{locationId}/conteo-fisico")
     public ResponseEntity<KioscoPhysicalCountReportResponse> startConteoFisico(
             @PathVariable Long locationId,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to
+            @RequestParam String from,
+            @RequestParam String to
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioscoInventoryCountService.startOrGetSession(locationId, from, to));
     }
@@ -306,9 +306,9 @@ public class KioscoInventoryController {
     @GetMapping("/conteo-fisico/{countId}")
     public ResponseEntity<KioscoPhysicalCountReportResponse> getConteoFisico(
             @PathVariable Long countId,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate asOf
+            @RequestParam(required = false) String asOf
     ) throws BusinessException, ResourceNotFoundException {
-        if (asOf != null) {
+        if (asOf != null && !asOf.isBlank()) {
             return ResponseEntity.ok(kioscoInventoryCountService.getSubcountReport(countId, asOf));
         }
         return ResponseEntity.ok(kioscoInventoryCountService.getReport(countId));
@@ -318,7 +318,7 @@ public class KioscoInventoryController {
     @GetMapping("/conteo-fisico/{countId}/subconteo")
     public ResponseEntity<KioscoPhysicalCountReportResponse> getSubconteoFisico(
             @PathVariable Long countId,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate asOf
+            @RequestParam String asOf
     ) throws BusinessException, ResourceNotFoundException {
         return getConteoFisico(countId, asOf);
     }

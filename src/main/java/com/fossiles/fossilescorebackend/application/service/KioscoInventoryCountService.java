@@ -37,6 +37,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Us
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -105,8 +106,18 @@ public class KioscoInventoryCountService {
     private final SecurityUtil securityUtil;
     private final ObjectMapper objectMapper;
 
-    public KioscoPhysicalCountReportResponse startOrGetSession(Long locationId, LocalDate from, LocalDate to)
+    public KioscoPhysicalCountReportResponse startOrGetSession(Long locationId, String fromRaw, String toRaw)
             throws BusinessException, ResourceNotFoundException {
+        LocalDateTime fromAt = GuatemalaDateTime.parseFlexible(fromRaw, false);
+        LocalDateTime toAt = GuatemalaDateTime.parseFlexible(toRaw, true);
+        if (fromAt == null || toAt == null) {
+            throw new BusinessException("Debes indicar desde y hasta (fecha y hora Guatemala).");
+        }
+        if (fromAt.isAfter(toAt)) {
+            throw new BusinessException("La fecha/hora inicial no puede ser posterior a la final.");
+        }
+        LocalDate from = fromAt.toLocalDate();
+        LocalDate to = toAt.toLocalDate();
         KioscoPhysicalCountEntity count = countRepository
                 .findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)
                 .orElse(null);
@@ -115,10 +126,22 @@ public class KioscoInventoryCountService {
                     .locationId(locationId)
                     .periodFrom(from)
                     .periodTo(to)
+                    .periodFromAt(fromAt)
+                    .periodToAt(toAt)
                     .status(KioscoPhysicalCountStatus.DRAFT)
                     .generatedBy(resolveCurrentUserId())
-                    .generatedAt(LocalDateTime.now())
+                    .generatedAt(GuatemalaDateTime.now())
                     .build());
+        } else if (count.getPeriodFromAt() == null || count.getPeriodToAt() == null) {
+            count.setPeriodFromAt(fromAt);
+            count.setPeriodToAt(toAt);
+            countRepository.save(count);
+        } else if (count.getStatus() == KioscoPhysicalCountStatus.DRAFT
+                && (!fromAt.equals(count.getPeriodFromAt()) || !toAt.equals(count.getPeriodToAt()))) {
+            // Misma fecha de calendario: actualizar horas del borrador si el usuario las cambió.
+            count.setPeriodFromAt(fromAt);
+            count.setPeriodToAt(toAt);
+            countRepository.save(count);
         }
         return buildAndPersistReport(count);
     }
@@ -169,7 +192,7 @@ public class KioscoInventoryCountService {
             throws BusinessException, ResourceNotFoundException {
         KioscoPhysicalCountEntity count = findCountOrThrow(countId);
         Long userId = resolveCurrentUserId();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = GuatemalaDateTime.now();
         LocalDateTime presenceCutoff = now.minusSeconds(PRESENCE_TTL_SECONDS);
 
         List<KioscoPhysicalCountPresenceResponse> participants = List.of();
@@ -211,17 +234,20 @@ public class KioscoInventoryCountService {
     }
 
     @Transactional(readOnly = true)
-    public KioscoPhysicalCountReportResponse getSubcountReport(Long countId, LocalDate asOf)
+    public KioscoPhysicalCountReportResponse getSubcountReport(Long countId, String asOfRaw)
             throws BusinessException, ResourceNotFoundException {
-        if (asOf == null) {
-            throw new BusinessException("Debes indicar la fecha de corte (asOf).");
+        LocalDateTime asOfAt = GuatemalaDateTime.parseFlexible(asOfRaw, true);
+        if (asOfAt == null) {
+            throw new BusinessException("Debes indicar la fecha/hora de corte (asOf) en hora Guatemala.");
         }
         KioscoPhysicalCountEntity count = findCountOrThrow(countId);
-        if (asOf.isBefore(count.getPeriodFrom()) || asOf.isAfter(count.getPeriodTo())) {
+        LocalDateTime periodFromAt = resolvePeriodFromAt(count);
+        LocalDateTime periodToAt = resolvePeriodToAt(count);
+        if (asOfAt.isBefore(periodFromAt) || asOfAt.isAfter(periodToAt)) {
             throw new BusinessException(
-                    "La fecha de corte debe estar entre " + count.getPeriodFrom() + " y " + count.getPeriodTo() + ".");
+                    "La fecha/hora de corte debe estar entre " + periodFromAt + " y " + periodToAt + " (hora Guatemala).");
         }
-        return buildReport(count, asOf);
+        return buildReport(count, asOfAt);
     }
 
     public KioscoPhysicalCountReportResponse upsertItems(Long countId, List<KioscoPhysicalCountItemUpsertRequest> items)
@@ -324,7 +350,7 @@ public class KioscoInventoryCountService {
         }
         count.setStatus(KioscoPhysicalCountStatus.REVISADO);
         count.setReviewedBy(resolveCurrentUserId());
-        count.setReviewedAt(LocalDateTime.now());
+        count.setReviewedAt(GuatemalaDateTime.now());
         count.setDiffNotifiedAt(null);
         if (notes != null && !notes.isBlank()) {
             count.setNotes(notes.trim());
@@ -360,7 +386,7 @@ public class KioscoInventoryCountService {
         }
         count.setStatus(KioscoPhysicalCountStatus.CERRADO);
         count.setClosedBy(resolveCurrentUserId());
-        count.setClosedAt(LocalDateTime.now());
+        count.setClosedAt(GuatemalaDateTime.now());
         KioscoPhysicalCountReportResponse report = buildReport(count);
         count.setClosingBalancesData(serializeClosingBalances(extractClosingBalances(report)));
         count.setMaxAbsDiff(report.getMaxAbsDiff());
@@ -447,12 +473,16 @@ public class KioscoInventoryCountService {
         return buildReport(count, null);
     }
 
-    private KioscoPhysicalCountReportResponse buildReport(KioscoPhysicalCountEntity count, LocalDate balanceAsOf)
+    private KioscoPhysicalCountReportResponse buildReport(KioscoPhysicalCountEntity count, LocalDateTime balanceAsOfInclusive)
             throws BusinessException, ResourceNotFoundException {
-        boolean isSubcount = balanceAsOf != null;
-        LocalDate kardexTo = isSubcount ? balanceAsOf : count.getPeriodTo();
-        // Fin. siempre al cierre del periodo/corte (replay de movimientos), no stock vivo.
-        LocalDate finAsOf = isSubcount ? balanceAsOf : count.getPeriodTo();
+        boolean isSubcount = balanceAsOfInclusive != null;
+        LocalDateTime periodFromAt = resolvePeriodFromAt(count);
+        LocalDateTime periodToAt = resolvePeriodToAt(count);
+        LocalDateTime periodToExclusive = GuatemalaDateTime.exclusiveAfterInclusive(periodToAt);
+        LocalDateTime finCutoffExclusive = isSubcount
+                ? GuatemalaDateTime.exclusiveAfterInclusive(balanceAsOfInclusive)
+                : periodToExclusive;
+        LocalDateTime kardexToExclusive = finCutoffExclusive;
 
         // Ini. = Fin. del conteo anterior/contiguo más reciente (cualquier estado; no solo CERRADO).
         // Si solo se usara CERRADO, un periodo CONTADO/REVISADO intermedio se saltaría y las ventas
@@ -462,20 +492,23 @@ public class KioscoInventoryCountService {
                 .map(this::loadPreviousClosingBalances)
                 .orElse(null);
 
-        // Si el periodo se solapa con el anterior (mismo día de corte), el kardex arranca
-        // el día siguiente al corte para no contar dos veces los movimientos del día compartido.
+        // Si el periodo se solapa con el anterior, el kardex arranca justo después del fin inclusive anterior.
         // Primer conteo: ampliar desde el primer movimiento del kiosko (Ini.=0; historial en columnas).
-        LocalDate effectiveKardexFrom = count.getPeriodFrom();
+        LocalDateTime effectiveKardexFrom = periodFromAt;
         if (previousCount.isPresent()) {
-            LocalDate dayAfterPrev = previousCount.get().getPeriodTo().plusDays(1);
-            if (dayAfterPrev.isAfter(effectiveKardexFrom)) {
-                effectiveKardexFrom = dayAfterPrev;
+            LocalDateTime afterPrev = GuatemalaDateTime.exclusiveAfterInclusive(
+                    resolvePeriodToAt(previousCount.get()));
+            if (afterPrev.isAfter(effectiveKardexFrom)) {
+                effectiveKardexFrom = afterPrev;
             }
         } else {
             Optional<LocalDate> earliestMovement = kioscoInventoryService
                     .findEarliestMovementDate(count.getLocationId());
-            if (earliestMovement.isPresent() && earliestMovement.get().isBefore(effectiveKardexFrom)) {
-                effectiveKardexFrom = earliestMovement.get();
+            if (earliestMovement.isPresent()) {
+                LocalDateTime earliestAt = earliestMovement.get().atStartOfDay();
+                if (earliestAt.isBefore(effectiveKardexFrom)) {
+                    effectiveKardexFrom = earliestAt;
+                }
             }
         }
         Map<String, List<KioscoStockEntity>> stocksByProductColor = kioscoStockRepository
@@ -491,18 +524,28 @@ public class KioscoInventoryCountService {
 
         List<KioscoKardexReportResponse.KioscoKardexRow> rawKardexRows;
         Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize;
-        if (effectiveKardexFrom.isAfter(kardexTo)) {
+        if (!effectiveKardexFrom.isBefore(kardexToExclusive)) {
             rawKardexRows = kioscoInventoryService.buildKardexRows(
-                    count.getLocationId(), count.getPeriodFrom(), count.getPeriodFrom(), true, finAsOf, count.getId())
+                            count.getLocationId(),
+                            periodFromAt,
+                            GuatemalaDateTime.exclusiveAfterInclusive(periodFromAt),
+                            true,
+                            finCutoffExclusive,
+                            count.getId())
                     .stream()
                     .map(this::zeroPeriodKardexColumns)
                     .collect(Collectors.toList());
             kardexByStockAndSize = Map.of();
         } else {
             rawKardexRows = kioscoInventoryService.buildKardexRows(
-                    count.getLocationId(), effectiveKardexFrom, kardexTo, true, finAsOf, count.getId());
+                    count.getLocationId(),
+                    effectiveKardexFrom,
+                    kardexToExclusive,
+                    true,
+                    finCutoffExclusive,
+                    count.getId());
             kardexByStockAndSize = kioscoInventoryService.buildKardexByStockAndSize(
-                    count.getLocationId(), effectiveKardexFrom, kardexTo, count.getId());
+                    count.getLocationId(), effectiveKardexFrom, kardexToExclusive, count.getId());
         }
         Map<String, Map<String, Integer>> inventarioFinalByHardwareLookup =
                 buildInventarioFinalByHardwareLookup(rawKardexRows);
@@ -510,15 +553,15 @@ public class KioscoInventoryCountService {
                 mergeKardexRowsByProductColor(rawKardexRows);
         applyPendingReturnSalidasForCount(count, kardexRows, kardexByStockAndSize, stockByKey);
 
-        LocalDateTime periodStart = count.getPeriodFrom().atStartOfDay();
+        LocalDateTime periodStart = periodFromAt;
         LocalDateTime openingCutoffExclusive = previousCount
-                .map(c -> c.getPeriodTo().plusDays(1).atStartOfDay())
+                .map(c -> GuatemalaDateTime.exclusiveAfterInclusive(resolvePeriodToAt(c)))
                 .orElse(periodStart);
         // Primer conteo: Ini.=0 (sin ledger). Siguientes: Ini.=Fin. del conteo anterior (previousClosing).
         Map<Long, Integer> openingBalanceByStockId = Map.of();
         Map<Long, Map<String, Integer>> openingBalanceByStockAndSize = Map.of();
 
-        // Solo el hueco entre conteos (si periodFrom > periodTo anterior) va a Ent.; el primer conteo no
+        // Solo el hueco entre conteos (si periodFromAt > periodToAt anterior) va a Ent.; el primer conteo no
         // (su historial pre-periodFrom ya está en el kardex ampliado).
         Map<Long, Integer> gapEntradasByStockId = previousCount.isPresent()
                 ? kioscoInventoryService.computePrePeriodEntradasByStockId(
@@ -704,6 +747,8 @@ public class KioscoInventoryCountService {
                 .locationName(location.getName())
                 .periodFrom(count.getPeriodFrom())
                 .periodTo(count.getPeriodTo())
+                .periodFromAt(periodFromAt)
+                .periodToAt(periodToAt)
                 .status(count.getStatus().name())
                 .notes(count.getNotes())
                 .observations(count.getObservations())
@@ -718,7 +763,8 @@ public class KioscoInventoryCountService {
                 .closedAt(count.getClosedAt())
                 .maxAbsDiff(maxAbsDiff)
                 .reportType(isSubcount ? REPORT_TYPE_SUBCONTEO : REPORT_TYPE_PRINCIPAL)
-                .asOfDate(balanceAsOf)
+                .asOfDate(balanceAsOfInclusive != null ? balanceAsOfInclusive.toLocalDate() : null)
+                .asOfAt(balanceAsOfInclusive)
                 .parentCountId(isSubcount ? count.getId() : null)
                 .categories(categories)
                 .totalGeneral(sumRows(allRows))
@@ -1918,6 +1964,8 @@ public class KioscoInventoryCountService {
                 .id(count.getId())
                 .periodFrom(count.getPeriodFrom())
                 .periodTo(count.getPeriodTo())
+                .periodFromAt(resolvePeriodFromAt(count))
+                .periodToAt(resolvePeriodToAt(count))
                 .status(count.getStatus().name())
                 .notes(count.getNotes())
                 .observations(count.getObservations())
@@ -1929,6 +1977,23 @@ public class KioscoInventoryCountService {
                 .closedAt(count.getClosedAt())
                 .maxAbsDiff(count.getMaxAbsDiff() != null ? count.getMaxAbsDiff() : 0)
                 .build();
+    }
+
+    private LocalDateTime resolvePeriodFromAt(KioscoPhysicalCountEntity count) {
+        if (count.getPeriodFromAt() != null) {
+            return count.getPeriodFromAt();
+        }
+        return count.getPeriodFrom() != null ? count.getPeriodFrom().atStartOfDay() : null;
+    }
+
+    private LocalDateTime resolvePeriodToAt(KioscoPhysicalCountEntity count) {
+        if (count.getPeriodToAt() != null) {
+            return count.getPeriodToAt();
+        }
+        if (count.getPeriodTo() == null) {
+            return null;
+        }
+        return count.getPeriodTo().atTime(23, 59, 59);
     }
 
     private KioscoNotificationRecipientResponse toRecipientResponse(KioscoNotificationRecipientEntity recipient) {
