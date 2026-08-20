@@ -226,7 +226,8 @@ public class KioskExchangeService {
             throws BusinessException, ResourceNotFoundException {
         ExchangeContext exchange = buildExchangeContext(request, true);
         KioskExchangePreviewResponse preview = exchange.preview();
-        String slipNumber = requireAvailablePhysicalSlipNumber(request.getPhysicalSlipNumber());
+        LocationEntity kioskForSlip = exchange.access().kiosk();
+        String slipNumber = requireAvailablePhysicalSlipNumber(request.getPhysicalSlipNumber(), kioskForSlip);
 
         if (preview.getDifferenceAmount() == null
                 || preview.getDifferenceAmount().compareTo(BigDecimal.ZERO) == 0) {
@@ -276,7 +277,7 @@ public class KioskExchangeService {
                 slipNumber,
                 preview,
                 request,
-                kiosk.getId(),
+                kiosk,
                 user.getId(),
                 sale.getId(),
                 STATUS_COMPLETED,
@@ -325,7 +326,7 @@ public class KioskExchangeService {
                 slipNumber,
                 preview,
                 request,
-                kiosk.getId(),
+                kiosk,
                 user.getId(),
                 null,
                 STATUS_PENDING_AUTHORIZATION,
@@ -343,7 +344,7 @@ public class KioskExchangeService {
             String slipNumber,
             KioskExchangePreviewResponse preview,
             KioskExchangeCompleteRequest request,
-            Long kioskLocationId,
+            LocationEntity kiosk,
             Long createdBy,
             Long newSaleId,
             String status,
@@ -351,8 +352,9 @@ public class KioskExchangeService {
     ) {
         return KioskExchangeSlipEntity.builder()
                 .slipNumber(slipNumber)
+                .seriesCode(resolveSeriesCode(kiosk))
                 .slipType(SLIP_TYPE_EXCHANGE)
-                .kioskLocationId(kioskLocationId)
+                .kioskLocationId(kiosk.getId())
                 .originalSaleId(preview.getOriginalSaleId())
                 .originalSaleItemId(preview.getOriginalSaleItemId())
                 .returnedProductId(preview.getReturned().getProductId())
@@ -376,8 +378,10 @@ public class KioskExchangeService {
                 .build();
     }
 
-    private void linkExchangeMovementIds(KioskExchangeSlipEntity slip, String slipNumber) {
-        List<KioscoMovementEntity> movements = kioscoMovementRepository.findByPhysicalSlipNumber(slipNumber);
+    private void linkExchangeMovementIds(KioskExchangeSlipEntity slip, String slipNumber, String seriesCode) {
+        List<Long> locationIds = resolveLocationIdsForSeries(seriesCode, slip.getKioskLocationId());
+        List<KioscoMovementEntity> movements = kioscoMovementRepository
+                .findByPhysicalSlipNumberAndKioscoStock_LocationIdIn(slipNumber, locationIds);
         for (KioscoMovementEntity movement : movements) {
             if (movement.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE
                     || movement.getMovementType() == KioscoMovementType.CAMBIO) {
@@ -425,7 +429,7 @@ public class KioskExchangeService {
         BigDecimal returnedQty = normalizeQuantity(request.getReturnedQuantity(), item.getQuantity());
         BigDecimal returnedAmount = item.getUnitPrice().multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
         String returnedSize = extractSizeFromProductName(item.getProductName());
-        String slipNumber = requireAvailablePhysicalSlipNumber(request.getPhysicalSlipNumber());
+        String slipNumber = requireAvailablePhysicalSlipNumber(request.getPhysicalSlipNumber(), ctx.kiosk());
         Long physicalCountId = resolvePhysicalCountIdForReturns(request.getPhysicalCountId(), ctx.kiosk().getId());
 
         kioscoInventoryService.registrarDevolucionCliente(
@@ -442,8 +446,10 @@ public class KioskExchangeService {
         );
 
         String status = Boolean.TRUE.equals(request.getApto()) ? STATUS_PENDING_REINTEGRO : STATUS_COMPLETED;
+        String seriesCode = resolveSeriesCode(ctx.kiosk());
         KioskExchangeSlipEntity slip = KioskExchangeSlipEntity.builder()
                 .slipNumber(slipNumber)
+                .seriesCode(seriesCode)
                 .slipType(SLIP_TYPE_RETURN)
                 .kioskLocationId(ctx.kiosk().getId())
                 .originalSaleId(sale.getId())
@@ -463,7 +469,7 @@ public class KioskExchangeService {
                 .physicalCountId(physicalCountId)
                 .build();
         slip = exchangeSlipRepository.save(slip);
-        linkExchangeMovementIds(slip, slipNumber);
+        linkExchangeMovementIds(slip, slipNumber, seriesCode);
         slip = exchangeSlipRepository.save(slip);
         return toSlipResponse(slip, ctx);
     }
@@ -800,7 +806,7 @@ public class KioskExchangeService {
         return qty.setScale(3, RoundingMode.HALF_UP);
     }
 
-    private String requireAvailablePhysicalSlipNumber(String raw) throws BusinessException {
+    private String requireAvailablePhysicalSlipNumber(String raw, LocationEntity kiosk) throws BusinessException {
         String normalized = safeTrim(raw);
         if (normalized.isEmpty()) {
             throw new BusinessException("Debes indicar el número de boleta física.");
@@ -808,13 +814,54 @@ public class KioskExchangeService {
         if (normalized.length() > 60) {
             throw new BusinessException("El número de boleta física no puede superar 60 caracteres.");
         }
-        if (exchangeSlipRepository.existsBySlipNumber(normalized)) {
-            throw new BusinessException("El número de boleta física ya fue registrado.");
+        String seriesCode = resolveSeriesCode(kiosk);
+        List<Long> locationIds = resolveLocationIdsForSeries(seriesCode, kiosk.getId());
+        if (exchangeSlipRepository.existsBySeriesCodeAndSlipNumber(seriesCode, normalized)) {
+            throw new BusinessException("El número de boleta física ya fue registrado en esta serie.");
         }
-        if (kioscoMovementRepository.existsByPhysicalSlipNumber(normalized)) {
-            throw new BusinessException("El número de boleta física ya fue registrado en inventario kiosko.");
+        if (kioscoMovementRepository.existsByPhysicalSlipNumberAndKioscoStock_LocationIdIn(normalized, locationIds)) {
+            throw new BusinessException(
+                    "El número de boleta física ya fue registrado en inventario kiosko para esta serie.");
         }
         return normalized;
+    }
+
+    /** Serie del kiosko o {@code K{locationId}} si no tiene {@code internal_series_code}. */
+    private String resolveSeriesCode(LocationEntity kiosk) {
+        String series = safeTrim(kiosk.getInternalSeriesCode());
+        if (!series.isEmpty()) {
+            return series.toUpperCase(Locale.ROOT);
+        }
+        return "K" + kiosk.getId();
+    }
+
+    /**
+     * Ubicaciones que comparten la serie (para acotar chequeo de movimientos).
+     * Claves fallback {@code K{id}} solo incluyen ese kiosko.
+     */
+    private List<Long> resolveLocationIdsForSeries(String seriesCode, Long fallbackLocationId) {
+        String normalized = safeTrim(seriesCode).toUpperCase(Locale.ROOT);
+        if (normalized.isEmpty()) {
+            return List.of(fallbackLocationId);
+        }
+        if (normalized.length() > 1
+                && normalized.charAt(0) == 'K'
+                && normalized.substring(1).chars().allMatch(Character::isDigit)) {
+            try {
+                return List.of(Long.parseLong(normalized.substring(1)));
+            } catch (NumberFormatException ignored) {
+                // continue with lookup by series
+            }
+        }
+        List<LocationEntity> locations = locationRepository.findByInternalSeriesCodeIgnoreCase(normalized);
+        if (locations == null || locations.isEmpty()) {
+            return List.of(fallbackLocationId);
+        }
+        return locations.stream()
+                .map(LocationEntity::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
     }
 
     private KioskExchangeSlipResponse toSlipResponse(KioskExchangeSlipEntity slip, AccessContext ctx) {

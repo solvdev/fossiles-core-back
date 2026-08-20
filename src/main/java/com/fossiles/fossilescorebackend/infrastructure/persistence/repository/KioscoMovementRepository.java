@@ -342,12 +342,22 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
 
     boolean existsByPhysicalSlipNumber(String physicalSlipNumber);
 
+    boolean existsByPhysicalSlipNumberAndKioscoStock_LocationIdIn(
+            String physicalSlipNumber,
+            java.util.Collection<Long> locationIds
+    );
+
     List<KioscoMovementEntity> findByReferenceIdAndMovementType(
             Long referenceId,
             KioscoMovementType movementType
     );
 
     List<KioscoMovementEntity> findByPhysicalSlipNumber(String physicalSlipNumber);
+
+    List<KioscoMovementEntity> findByPhysicalSlipNumberAndKioscoStock_LocationIdIn(
+            String physicalSlipNumber,
+            java.util.Collection<Long> locationIds
+    );
 
     @Modifying
     @Query("UPDATE KioscoMovementEntity m SET m.kioscoStockId = :toStockId "

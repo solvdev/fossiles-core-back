@@ -1692,11 +1692,18 @@ public class KioskPosService {
         if (from == null || to == null) {
             throw new BusinessException("El corte de conteo no tiene un rango de fechas válido.");
         }
-        LocalDateTime startAt = from.atStartOfDay();
-        LocalDateTime endAt = to.plusDays(1).atStartOfDay();
+        // Mismo corte que el inventario del conteo físico (hora Guatemala), no día completo extra.
+        LocalDateTime periodFromAt = count.getPeriodFromAt() != null
+                ? count.getPeriodFromAt()
+                : from.atStartOfDay();
+        LocalDateTime periodToAt = count.getPeriodToAt() != null
+                ? count.getPeriodToAt()
+                : to.atTime(23, 59, 59);
+        LocalDateTime startAt = periodFromAt;
+        LocalDateTime endAtExclusive = GuatemalaDateTime.exclusiveAfterInclusive(periodToAt);
 
         List<KioskSaleEntity> sales = kioskSaleRepository
-                .findByKioskLocationIdAndSaleDateBetweenOrderBySoldAtDesc(kiosk.getId(), from, to)
+                .findByKioskLocationIdAndSoldAtRangeOrderBySoldAtDesc(kiosk.getId(), startAt, endAtExclusive)
                 .stream()
                 .filter(KioskPosService::countsForProductionMetrics)
                 .toList();
@@ -1740,7 +1747,7 @@ public class KioskPosService {
         }
 
         List<KioskCashExpenseEntity> expenses = kioskCashExpenseRepository.findForReport(
-                startAt, endAt, kiosk.getId());
+                startAt, endAtExclusive, kiosk.getId());
         BigDecimal expensesTotal = expenses.stream()
                 .map(expense -> safeAmount(expense.getAmount()))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -1766,6 +1773,8 @@ public class KioskPosService {
                 .physicalCountId(count.getId())
                 .periodFrom(from)
                 .periodTo(to)
+                .periodFromAt(periodFromAt)
+                .periodToAt(periodToAt)
                 .physicalCountStatus(count.getStatus() != null ? count.getStatus().name() : "")
                 .kioskLocationId(kiosk.getId())
                 .kioskCode(safeTrim(kiosk.getCode()))

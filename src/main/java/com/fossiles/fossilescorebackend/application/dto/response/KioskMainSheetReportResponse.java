@@ -19,6 +19,10 @@ public class KioskMainSheetReportResponse {
     private Long physicalCountId;
     private LocalDate periodFrom;
     private LocalDate periodTo;
+    /** Inicio inclusive del corte (wall-clock Guatemala), alineado al conteo físico. */
+    private LocalDateTime periodFromAt;
+    /** Fin inclusive del corte (wall-clock Guatemala), alineado al conteo físico. */
+    private LocalDateTime periodToAt;
     private String physicalCountStatus;
 
     private Long kioskLocationId;
