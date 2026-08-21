@@ -268,7 +268,7 @@ public class KioskExchangeService {
                         .build()))
                 .build();
 
-        // Factura/caja de la diferencia sin VENTA de stock; el egreso va como DEVOLUCION_A_CLIENTE.
+        // Factura/caja de la diferencia sin VENTA de stock; el egreso va como CAMBIO (−).
         KioskPosSaleResponse sale = kioskPosService.createExchangeSale(saleRequest, slipNumber);
 
         int returnedQty = preview.getReturned().getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
@@ -389,18 +389,20 @@ public class KioskExchangeService {
         List<KioscoMovementEntity> movements = kioscoMovementRepository
                 .findByPhysicalSlipNumberAndKioscoStock_LocationIdIn(slipNumber, locationIds);
         for (KioscoMovementEntity movement : movements) {
-            if (movement.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE
-                    || movement.getMovementType() == KioscoMovementType.CAMBIO) {
-                // CAMBIO + (ingreso) o devolución simple; el egreso del cambio es DEVOLUCION_A_CLIENTE.
-                if (movement.getMovementType() == KioscoMovementType.CAMBIO
-                        && movement.getStockAfter() != null
+            if (movement.getMovementType() == KioscoMovementType.CAMBIO) {
+                boolean egress = movement.getStockAfter() != null
                         && movement.getStockBefore() != null
-                        && movement.getStockAfter() < movement.getStockBefore()) {
-                    continue;
+                        && movement.getStockAfter() < movement.getStockBefore();
+                if (egress) {
+                    slip.setGivenMovementId(movement.getId());
+                } else {
+                    slip.setReturnMovementId(movement.getId());
                 }
+            } else if (movement.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE) {
                 slip.setReturnMovementId(movement.getId());
             } else if (movement.getMovementType() == KioscoMovementType.DEVOLUCION_A_CLIENTE
                     || movement.getMovementType() == KioscoMovementType.VENTA) {
+                // Legado: egresos de cambio previos a tipificar ambos como CAMBIO.
                 slip.setGivenMovementId(movement.getId());
             }
         }

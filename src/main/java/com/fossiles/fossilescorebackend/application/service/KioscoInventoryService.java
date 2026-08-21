@@ -991,8 +991,8 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Cambio: ingreso del producto devuelto ({@code CAMBIO +}) y egreso del entregado
-     * ({@code DEVOLUCION_A_CLIENTE −} → Sal. en kardex).
+     * Cambio: ingreso del producto devuelto ({@code CAMBIO +} → Comp.) y egreso del entregado
+     * ({@code CAMBIO −} → Sal. en kardex). Ambos movimientos son tipo CAMBIO; el signo define entrada/salida.
      * Stock fuente de verdad: módulo kiosco (no legacy). Herraje del egreso = el indicado o el que tenga
      * disponibilidad (NUEVO → VIEJO), igual que ventas POS.
      */
@@ -1092,7 +1092,7 @@ public class KioscoInventoryService {
                 null,
                 null,
                 resolvedUserId,
-                KioscoMovementType.DEVOLUCION_A_CLIENTE,
+                KioscoMovementType.CAMBIO,
                 -givenQuantity,
                 true,
                 reasonOrNull,
