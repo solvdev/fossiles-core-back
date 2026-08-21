@@ -427,6 +427,49 @@ public class KioscoInventoryService {
         return toStockResponse(stock);
     }
 
+    /**
+     * Egreso manual: producto entregado al cliente ({@code DEVOLUCION_A_CLIENTE −}).
+     * Mismo tipo de movimiento que el egreso del flujo de cambio.
+     */
+    public KioscoStockResponse registrarDevolucionACliente(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            String reason,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
+        Long resolvedUserId = resolveUserIdRequired(userId);
+        String trimmedReason = safeTrim(reason);
+        String reasonOrNull = trimmedReason.isEmpty() ? null : trimmedReason;
+        String hardware = resolveHardwareForKioskEgress(
+                locationId, productId, colorId, sizeKey, quantity, hardwareCondition);
+        KioscoStockResponse response = applyStockMovement(
+                locationId,
+                productId,
+                colorId,
+                quantity,
+                referenceId,
+                null,
+                null,
+                resolvedUserId,
+                KioscoMovementType.DEVOLUCION_A_CLIENTE,
+                -quantity,
+                true,
+                reasonOrNull,
+                sizeKey,
+                false,
+                null,
+                null,
+                hardware
+        );
+        verificarStockMinimo(locationId, productId, colorId);
+        return response;
+    }
+
     public TrasladoResult registrarTraslado(
             Long locationOriginId,
             Long locationDestinationId,
