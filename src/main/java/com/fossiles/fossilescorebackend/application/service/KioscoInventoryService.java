@@ -427,6 +427,49 @@ public class KioscoInventoryService {
         return toStockResponse(stock);
     }
 
+    /**
+     * Egreso manual: producto entregado al cliente ({@code DEVOLUCION_A_CLIENTE −}).
+     * Mismo tipo de movimiento que el egreso del flujo de cambio.
+     */
+    public KioscoStockResponse registrarDevolucionACliente(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            String reason,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
+        Long resolvedUserId = resolveUserIdRequired(userId);
+        String trimmedReason = safeTrim(reason);
+        String reasonOrNull = trimmedReason.isEmpty() ? null : trimmedReason;
+        String hardware = resolveHardwareForKioskEgress(
+                locationId, productId, colorId, sizeKey, quantity, hardwareCondition);
+        KioscoStockResponse response = applyStockMovement(
+                locationId,
+                productId,
+                colorId,
+                quantity,
+                referenceId,
+                null,
+                null,
+                resolvedUserId,
+                KioscoMovementType.DEVOLUCION_A_CLIENTE,
+                -quantity,
+                true,
+                reasonOrNull,
+                sizeKey,
+                false,
+                null,
+                null,
+                hardware
+        );
+        verificarStockMinimo(locationId, productId, colorId);
+        return response;
+    }
+
     public TrasladoResult registrarTraslado(
             Long locationOriginId,
             Long locationDestinationId,
@@ -950,6 +993,8 @@ public class KioscoInventoryService {
     /**
      * Cambio: ingreso del producto devuelto ({@code CAMBIO +}) y egreso del entregado
      * ({@code DEVOLUCION_A_CLIENTE −} → Sal. en kardex).
+     * Stock fuente de verdad: módulo kiosco (no legacy). Herraje del egreso = el indicado o el que tenga
+     * disponibilidad (NUEVO → VIEJO), igual que ventas POS.
      */
     public CambioResult registrarCambio(
             Long locationId,
@@ -966,6 +1011,42 @@ public class KioscoInventoryService {
             String returnedSize,
             String givenSize
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarCambio(
+                locationId,
+                returnedProductId,
+                returnedColorId,
+                givenProductId,
+                givenColorId,
+                returnedQuantity,
+                givenQuantity,
+                referenceId,
+                reason,
+                userId,
+                physicalSlipNumber,
+                returnedSize,
+                givenSize,
+                null,
+                null
+        );
+    }
+
+    public CambioResult registrarCambio(
+            Long locationId,
+            Long returnedProductId,
+            Long returnedColorId,
+            Long givenProductId,
+            Long givenColorId,
+            Integer returnedQuantity,
+            Integer givenQuantity,
+            Long referenceId,
+            String reason,
+            Long userId,
+            String physicalSlipNumber,
+            String returnedSize,
+            String givenSize,
+            String returnedHardwareCondition,
+            String givenHardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
         Long resolvedUserId = resolveUserIdRequired(userId);
         validateLocationIsKiosk(locationId);
         validateProduct(returnedProductId);
@@ -977,7 +1058,11 @@ public class KioscoInventoryService {
 
         String trimmedReason = safeTrim(reason);
         String reasonOrNull = trimmedReason.isEmpty() ? null : trimmedReason;
+        String returnedHardware = resolveStockHardware(returnedHardwareCondition);
+        String givenHardware = resolveHardwareForKioskEgress(
+                locationId, givenProductId, givenColorId, givenSize, givenQuantity, givenHardwareCondition);
 
+        // syncLegacy=false: el cambio no debe fallar por inventario legacy desfasado.
         KioscoMovementWithStock returnedMovement = applyStockMovementWithMovement(
                 locationId,
                 returnedProductId,
@@ -992,8 +1077,10 @@ public class KioscoInventoryService {
                 true,
                 reasonOrNull,
                 returnedSize,
-                true,
-                physicalSlipNumber
+                false,
+                physicalSlipNumber,
+                null,
+                returnedHardware
         );
 
         KioscoMovementWithStock givenMovement = applyStockMovementWithMovement(
@@ -1010,8 +1097,10 @@ public class KioscoInventoryService {
                 true,
                 reasonOrNull,
                 givenSize,
-                true,
-                physicalSlipNumber
+                false,
+                physicalSlipNumber,
+                null,
+                givenHardware
         );
 
         verificarStockMinimo(locationId, givenProductId, givenColorId);
@@ -1022,6 +1111,59 @@ public class KioscoInventoryService {
                 .returnedMovementId(returnedMovement.movement().getId())
                 .givenMovementId(givenMovement.movement().getId())
                 .build();
+    }
+
+    /**
+     * Elige herraje del egreso en stock kiosco: preferido si alcanza; si no, NUEVO luego VIEJO.
+     */
+    private String resolveHardwareForKioskEgress(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            String sizeKey,
+            int quantity,
+            String preferredHardware
+    ) {
+        String preferred = ProductHardwareCondition.normalize(preferredHardware);
+        if (preferred != null && kioskStockCovers(locationId, productId, colorId, preferred, sizeKey, quantity)) {
+            return preferred;
+        }
+        for (String hardware : List.of(ProductHardwareCondition.NUEVO, ProductHardwareCondition.VIEJO)) {
+            if (preferred != null && preferred.equals(hardware)) {
+                continue;
+            }
+            if (kioskStockCovers(locationId, productId, colorId, hardware, sizeKey, quantity)) {
+                return hardware;
+            }
+        }
+        return preferred != null ? preferred : ProductHardwareCondition.NUEVO;
+    }
+
+    private boolean kioskStockCovers(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            String hardware,
+            String sizeKey,
+            int quantity
+    ) {
+        return kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        locationId, productId, colorId, resolveStockHardware(hardware))
+                .map(stock -> {
+                    syncFossCurrentStockFromSizes(stock);
+                    Map<String, BigDecimal> sizes = ProductInventorySizesJson.parse(stock.getSizesData());
+                    if (!sizes.isEmpty()) {
+                        String normalized = ProductInventorySizesJson.normalizeKey(sizeKey);
+                        if (normalized.isEmpty()) {
+                            return false;
+                        }
+                        return sizes.getOrDefault(normalized, BigDecimal.ZERO)
+                                .compareTo(BigDecimal.valueOf(quantity)) >= 0;
+                    }
+                    return safeInt(stock.getCurrentStock()) >= quantity;
+                })
+                .orElse(false);
     }
 
     public CambioResult registrarCambio(
@@ -3313,6 +3455,10 @@ public class KioscoInventoryService {
 
         KioscoStockEntity stock = getOrCreateLockedStock(
                 locationId, productId, colorId, userId, resolveStockHardware(hardwareCondition));
+        syncFossCurrentStockFromSizes(stock);
+        stock = kioscoStockRepository
+                .findForUpdateByHardware(locationId, productId, colorId, resolveStockHardware(hardwareCondition))
+                .orElse(stock);
         validateSizeKeyRequired(locationId, productId, colorId, stock, sizeKey);
         int before = safeInt(stock.getCurrentStock());
         int after = before;
@@ -3344,13 +3490,18 @@ public class KioscoInventoryService {
         if (syncLegacy && affectsStock) {
             try {
                 syncLegacyInventory(locationId, productId, colorId, delta, sizeKey);
-            } catch (BusinessException ex) {
-                // Kiosco es la fuente de verdad: si el inventario legacy está desfasado
-                // (caso típico en cambios), alinear en lugar de fallar y dejar error falso en UI.
+            } catch (Exception ex) {
+                // Kiosco es la fuente de verdad: legacy desfasado no debe tumbar el movimiento.
                 log.warn(
                         "KIOSCO_LEGACY_SYNC_FAIL locationId={} productId={} colorId={} delta={} size={} msg={}. Aligning to kiosco.",
                         locationId, productId, colorId, delta, sizeKey, ex.getMessage());
-                alignLegacyInventoryToKioscoStock(stock);
+                try {
+                    alignLegacyInventoryToKioscoStock(stock);
+                } catch (Exception alignEx) {
+                    log.warn(
+                            "KIOSCO_LEGACY_ALIGN_FAIL locationId={} productId={} colorId={} msg={}",
+                            locationId, productId, colorId, alignEx.getMessage());
+                }
             }
         }
 

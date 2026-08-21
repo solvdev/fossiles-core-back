@@ -23,6 +23,8 @@ public class KioskExchangePreviewRequest {
 
     private Long givenColorId;
     private String givenSize;
+    /** Herraje del producto a entregar (NUEVO/VIEJO) según inventario kiosco. */
+    private String givenHardwareCondition;
 
     private Long returnedProductId;
     private Long returnedColorId;

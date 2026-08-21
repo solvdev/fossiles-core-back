@@ -75,6 +75,10 @@ public class KioskExchangeSlipEntity {
     @Column(name = "given_size", length = 20)
     private String givenSize;
 
+    /** Herraje del producto entregado (NUEVO/VIEJO); stock kiosco. */
+    @Column(name = "given_hardware_condition", length = 20)
+    private String givenHardwareCondition;
+
     @Column(name = "given_quantity", precision = 12, scale = 3)
     private BigDecimal givenQuantity;
 
