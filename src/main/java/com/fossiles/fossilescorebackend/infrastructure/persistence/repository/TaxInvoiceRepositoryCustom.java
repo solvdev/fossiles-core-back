@@ -16,4 +16,12 @@ public interface TaxInvoiceRepositoryCustom {
             LocalDateTime from,
             LocalDateTime to
     );
+
+    List<Object[]> countGroupByStatus(
+            String sourceType,
+            String customerTaxIdPattern,
+            String internalNumberPattern,
+            LocalDateTime from,
+            LocalDateTime to
+    );
 }
