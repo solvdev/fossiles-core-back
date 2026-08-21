@@ -205,7 +205,8 @@ class KioskExchangeServiceTest {
         List<KioscoMovementEntity> slipMoves =
                 kioscoMovementRepository.findByPhysicalSlipNumber("BC-TEST-001");
         assertThat(slipMoves).extracting(KioscoMovementEntity::getMovementType)
-                .containsExactlyInAnyOrder(KioscoMovementType.CAMBIO, KioscoMovementType.DEVOLUCION_A_CLIENTE);
+                .containsOnly(KioscoMovementType.CAMBIO);
+        assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_A_CLIENTE);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.VENTA);
 
@@ -332,7 +333,8 @@ class KioskExchangeServiceTest {
         List<KioscoMovementEntity> slipMoves =
                 kioscoMovementRepository.findByPhysicalSlipNumber("BC-ZERO-AUTH-001");
         assertThat(slipMoves).extracting(KioscoMovementEntity::getMovementType)
-                .containsExactlyInAnyOrder(KioscoMovementType.CAMBIO, KioscoMovementType.DEVOLUCION_A_CLIENTE);
+                .containsOnly(KioscoMovementType.CAMBIO);
+        assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_A_CLIENTE);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.VENTA);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE);
     }

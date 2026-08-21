@@ -331,7 +331,7 @@ public class KioskPosService {
         }
 
         Map<String, BigDecimal> aggregatedQty = aggregateItemQuantities(request.getItems());
-        // Cambio: no valida/descuenta stock aquí (lo mueven CAMBIO + / DEVOLUCION_A_CLIENTE; empaque solo factura).
+        // Cambio: no valida/descuenta stock aquí (lo mueven CAMBIO + / CAMBIO −; empaque solo factura).
         if (!exchangeSale) {
             lockAndValidateStock(kiosk.getId(), aggregatedQty);
         }
@@ -560,7 +560,7 @@ public class KioskPosService {
             boolean hasLegacyRow = productInventoryLocationRepository
                     .findByProductIdAndLocationIdAndColorId(parsed.productId(), kiosk.getId(), parsed.colorId())
                     .isPresent();
-            // Cambio: el stock lo mueven CAMBIO + / DEVOLUCION_A_CLIENTE; la venta solo factura la diferencia.
+            // Cambio: el stock lo mueven CAMBIO + / CAMBIO −; la venta solo factura la diferencia.
             if (exchangeSale) {
                 continue;
             }
