@@ -25,13 +25,34 @@ public class KioscoInventoryCambioRequest {
 
     private Long givenColorId;
 
-    @NotNull(message = "La cantidad es obligatoria.")
+    /**
+     * Cantidad única (cambio sin diferencia de unidades).
+     * Si se envían {@link #returnedQuantity} y {@link #givenQuantity}, se usan esas.
+     */
     @Min(value = 1, message = "La cantidad debe ser mayor a cero.")
     private Integer quantity;
+
+    /** Unidades que entran (producto devuelto). Cambio con diferencia. */
+    @Min(value = 1, message = "La cantidad devuelta debe ser mayor a cero.")
+    private Integer returnedQuantity;
+
+    /** Unidades que salen (producto entregado). Cambio con diferencia. */
+    @Min(value = 1, message = "La cantidad entregada debe ser mayor a cero.")
+    private Integer givenQuantity;
 
     private Long referenceId;
 
     private String reason;
 
     private Long userId;
+
+    private String physicalSlipNumber;
+
+    private String returnedSizeKey;
+
+    private String givenSizeKey;
+
+    private String returnedHardwareCondition;
+
+    private String givenHardwareCondition;
 }

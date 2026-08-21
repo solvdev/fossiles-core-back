@@ -51,8 +51,15 @@ public class TaxInvoiceController {
     }
 
     @GetMapping("/summary")
-    public ResponseEntity<TaxInvoiceSummaryResponse> summary() {
-        return ResponseEntity.ok(taxInvoiceService.getSummary());
+    public ResponseEntity<TaxInvoiceSummaryResponse> summary(
+            @RequestParam(required = false) String sourceType,
+            @RequestParam(required = false) String customerTaxId,
+            @RequestParam(required = false) String internalNumber,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate
+    ) {
+        return ResponseEntity.ok(taxInvoiceService.getSummary(
+                sourceType, customerTaxId, internalNumber, fromDate, toDate));
     }
 
     @PostMapping("/manual")
