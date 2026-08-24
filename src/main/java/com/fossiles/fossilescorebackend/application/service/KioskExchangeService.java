@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeRejectRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeCompleteRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeGivenItemRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangePreviewRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSimpleReturnRequest;
@@ -16,6 +17,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorE
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountStatus;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipGivenItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
@@ -24,6 +26,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Locati
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipGivenItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoPhysicalCountRepository;
@@ -68,6 +71,7 @@ public class KioskExchangeService {
     private static final String EXCHANGE_PRICE_EDIT_KIOSK_CODE = "A15";
 
     private final KioskExchangeSlipRepository exchangeSlipRepository;
+    private final KioskExchangeSlipGivenItemRepository exchangeSlipGivenItemRepository;
     private final KioscoMovementRepository kioscoMovementRepository;
     private final KioscoPhysicalCountRepository physicalCountRepository;
     private final KioskSaleRepository kioskSaleRepository;
@@ -140,27 +144,22 @@ public class KioskExchangeService {
         }
 
         int returnedQty = slip.getReturnedQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
-        int givenQty = slip.getGivenQuantity() != null
-                ? slip.getGivenQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact()
-                : returnedQty;
         String cambioReason = buildExchangeMovementReason(slip);
 
-        KioscoInventoryService.CambioResult cambio = kioscoInventoryService.registrarCambio(
+        List<KioscoInventoryService.CambioGivenLine> givenLines = resolveGivenLinesForStock(slip);
+        KioscoInventoryService.CambioResult cambio = kioscoInventoryService.registrarCambioMulti(
                 slip.getKioskLocationId(),
                 slip.getReturnedProductId(),
                 slip.getReturnedColorId(),
-                slip.getGivenProductId(),
-                slip.getGivenColorId(),
                 returnedQty,
-                givenQty,
+                slip.getReturnedSize(),
+                null,
+                givenLines,
                 slip.getId(),
                 cambioReason,
                 ctx.user().getId(),
                 slip.getSlipNumber(),
-                slip.getReturnedSize(),
-                slip.getGivenSize(),
-                null,
-                slip.getGivenHardwareCondition()
+                false
         );
 
         slip.setReturnMovementId(cambio.getReturnedMovementId());
@@ -170,6 +169,7 @@ public class KioskExchangeService {
         slip.setAuthorizedAt(GuatemalaDateTime.now());
         slip.setCompletedAt(slip.getAuthorizedAt());
         slip = exchangeSlipRepository.save(slip);
+        linkGivenItemMovements(slip.getId(), cambio.getGivenMovementIds());
         return toSlipResponse(slip, ctx);
     }
 
@@ -236,9 +236,24 @@ public class KioskExchangeService {
                 || preview.getDifferenceAmount().compareTo(BigDecimal.ZERO) == 0) {
             return submitZeroDifferenceExchange(request, exchange, preview, slipNumber);
         }
+        if (preview.getDifferenceAmount().compareTo(BigDecimal.ZERO) < 0) {
+            throw new BusinessException(
+                    "La diferencia no puede ser negativa. Elige productos de igual o mayor valor, o cobra la diferencia cuando sea positiva.");
+        }
 
         UserEntity user = exchange.access().user();
         LocationEntity kiosk = exchange.access().kiosk();
+
+        List<KioskPosSaleRequest.ItemRequest> saleItems = previewGivenLines(preview).stream()
+                .map(line -> KioskPosSaleRequest.ItemRequest.builder()
+                        .productId(line.getProductId())
+                        .colorId(line.getColorId())
+                        .size(line.getSize())
+                        .hardwareCondition(line.getHardwareCondition())
+                        .quantity(line.getQuantity())
+                        .unitPrice(line.getUnitPrice())
+                        .build())
+                .collect(Collectors.toList());
 
         KioskPosSaleRequest saleRequest = KioskPosSaleRequest.builder()
                 .kioskLocationId(kiosk.getId())
@@ -259,20 +274,13 @@ public class KioskExchangeService {
                 .comments(request.getComments())
                 .requestInvoice(request.getRequestInvoice())
                 .exchangeCreditAmount(preview.getReturnedAmount())
-                .items(List.of(KioskPosSaleRequest.ItemRequest.builder()
-                        .productId(preview.getGiven().getProductId())
-                        .colorId(preview.getGiven().getColorId())
-                        .size(preview.getGiven().getSize())
-                        .quantity(preview.getGiven().getQuantity())
-                        .unitPrice(preview.getGiven().getUnitPrice())
-                        .build()))
+                .items(saleItems)
                 .build();
 
         // Factura/caja de la diferencia sin VENTA de stock; el egreso va como CAMBIO (−).
         KioskPosSaleResponse sale = kioskPosService.createExchangeSale(saleRequest, slipNumber);
 
         int returnedQty = preview.getReturned().getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
-        int givenQty = preview.getGiven().getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
         String cambioReason = "Boleta de cambio " + slipNumber
                 + (safeTrim(request.getReason()).isEmpty() ? "" : " · " + safeTrim(request.getReason()));
 
@@ -287,27 +295,36 @@ public class KioskExchangeService {
                 GuatemalaDateTime.now()
         );
         slip = exchangeSlipRepository.save(slip);
+        saveGivenItemRows(slip.getId(), preview, null);
 
-        KioscoInventoryService.CambioResult cambio = kioscoInventoryService.registrarCambio(
+        List<KioscoInventoryService.CambioGivenLine> givenLines = previewGivenLines(preview).stream()
+                .map(line -> KioscoInventoryService.CambioGivenLine.builder()
+                        .productId(line.getProductId())
+                        .colorId(line.getColorId())
+                        .quantity(line.getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact())
+                        .sizeKey(line.getSize())
+                        .hardwareCondition(line.getHardwareCondition())
+                        .build())
+                .collect(Collectors.toList());
+
+        KioscoInventoryService.CambioResult cambio = kioscoInventoryService.registrarCambioMulti(
                 kiosk.getId(),
                 preview.getReturned().getProductId(),
                 preview.getReturned().getColorId(),
-                preview.getGiven().getProductId(),
-                preview.getGiven().getColorId(),
                 returnedQty,
-                givenQty,
+                preview.getReturned().getSize(),
+                null,
+                givenLines,
                 slip.getId(),
                 cambioReason,
                 user.getId(),
                 slipNumber,
-                preview.getReturned().getSize(),
-                preview.getGiven().getSize(),
-                null,
-                preview.getGiven().getHardwareCondition()
+                false
         );
         slip.setReturnMovementId(cambio.getReturnedMovementId());
         slip.setGivenMovementId(cambio.getGivenMovementId());
         slip = exchangeSlipRepository.save(slip);
+        linkGivenItemMovements(slip.getId(), cambio.getGivenMovementIds());
 
         return KioskExchangeCompleteResponse.builder()
                 .slip(toSlipResponse(slip, exchange.access()))
@@ -338,6 +355,7 @@ public class KioskExchangeService {
                 null
         );
         slip = exchangeSlipRepository.save(slip);
+        saveGivenItemRows(slip.getId(), preview, null);
 
         return KioskExchangeCompleteResponse.builder()
                 .slip(toSlipResponse(slip, exchange.access()))
@@ -355,6 +373,11 @@ public class KioskExchangeService {
             String status,
             LocalDateTime completedAt
     ) {
+        KioskExchangePreviewResponse.ProductLine primaryGiven = previewGivenLines(preview).get(0);
+        BigDecimal totalGivenQty = previewGivenLines(preview).stream()
+                .map(KioskExchangePreviewResponse.ProductLine::getQuantity)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
         return KioskExchangeSlipEntity.builder()
                 .slipNumber(slipNumber)
                 .seriesCode(resolveSeriesCode(kiosk))
@@ -367,11 +390,11 @@ public class KioskExchangeService {
                 .returnedSize(preview.getReturned().getSize())
                 .returnedQuantity(preview.getReturned().getQuantity())
                 .returnedAmount(preview.getReturnedAmount())
-                .givenProductId(preview.getGiven().getProductId())
-                .givenColorId(preview.getGiven().getColorId())
-                .givenSize(preview.getGiven().getSize())
-                .givenHardwareCondition(preview.getGiven().getHardwareCondition())
-                .givenQuantity(preview.getGiven().getQuantity())
+                .givenProductId(primaryGiven.getProductId())
+                .givenColorId(primaryGiven.getColorId())
+                .givenSize(primaryGiven.getSize())
+                .givenHardwareCondition(primaryGiven.getHardwareCondition())
+                .givenQuantity(totalGivenQty)
                 .givenAmount(preview.getGivenAmount())
                 .differenceAmount(preview.getDifferenceAmount())
                 .newSaleId(newSaleId)
@@ -575,7 +598,74 @@ public class KioskExchangeService {
         BigDecimal givenQty = requireGiven
                 ? normalizeQuantity(request.getGivenQuantity(), returnedQty)
                 : normalizeQuantity(request.getGivenQuantity(), BigDecimal.ONE);
+
+        boolean allowPriceOverride = allowsExchangePriceEdit(access.kiosk());
+        BigDecimal returnedUnitOverride = resolveReturnedUnitPriceOverride(
+                request, returnedProduct, allowPriceOverride);
+
+        List<ResolvedGivenLine> givenLines = resolveGivenLines(request, returnedQty, requireGiven, allowPriceOverride);
+
+        List<KioskSaleItemEntity> saleItems = loadSaleItems(sale);
+        PackagingAllocation packaging = allocatePackagingCredit(saleItems, item, returnedQty);
+
+        return new ExchangeContext(
+                access,
+                sale,
+                item,
+                saleItems,
+                returnedProduct,
+                returnedColor,
+                returnedSize,
+                returnedQty,
+                givenLines,
+                returnedUnitOverride,
+                packaging
+        );
+    }
+
+    private List<ResolvedGivenLine> resolveGivenLines(
+            KioskExchangePreviewRequest request,
+            BigDecimal returnedQty,
+            boolean requireGiven,
+            boolean allowPriceOverride
+    ) throws BusinessException, ResourceNotFoundException {
+        List<KioskExchangeGivenItemRequest> rawItems = request.getGivenItems();
+        List<ResolvedGivenLine> resolved = new ArrayList<>();
+
+        if (rawItems != null && !rawItems.isEmpty()) {
+            for (KioskExchangeGivenItemRequest raw : rawItems) {
+                if (raw == null || raw.getProductId() == null) {
+                    throw new BusinessException("Cada producto entregado debe indicar productId.");
+                }
+                ProductEntity givenProduct = productRepository.findById(raw.getProductId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Product", raw.getProductId()));
+                assertExchangeableProduct(givenProduct, "entregar");
+                ColorEntity givenColor = null;
+                if (raw.getColorId() != null) {
+                    givenColor = colorRepository.findById(raw.getColorId())
+                            .orElseThrow(() -> new ResourceNotFoundException("Color", raw.getColorId()));
+                }
+                String givenSize = ProductInventorySizesJson.normalizeKey(raw.getSize());
+                if (givenSize.isEmpty()) {
+                    givenSize = null;
+                }
+                String givenHardware = ProductHardwareCondition.normalize(raw.getHardwareCondition());
+                BigDecimal qty = normalizeQuantity(raw.getQuantity(), returnedQty);
+                BigDecimal unitOverride = normalizePriceOverride(raw.getUnitPrice());
+                if (unitOverride != null && !allowPriceOverride) {
+                    throw new BusinessException(
+                            "Solo el kiosko Miraflores (A15) puede editar precios del cambio.");
+                }
+                resolved.add(new ResolvedGivenLine(
+                        givenProduct, givenColor, givenSize, givenHardware, qty, unitOverride));
+            }
+            return resolved;
+        }
+
         if (request.getGivenProductId() == null) {
+            if (requireGiven) {
+                throw new BusinessException("Debes seleccionar el producto nuevo.");
+            }
             throw new BusinessException("Debes seleccionar el producto nuevo.");
         }
 
@@ -592,37 +682,17 @@ public class KioskExchangeService {
             givenSize = null;
         }
         String givenHardware = ProductHardwareCondition.normalize(request.getGivenHardwareCondition());
-
-        boolean allowPriceOverride = allowsExchangePriceEdit(access.kiosk());
+        BigDecimal givenQty = requireGiven
+                ? normalizeQuantity(request.getGivenQuantity(), returnedQty)
+                : normalizeQuantity(request.getGivenQuantity(), BigDecimal.ONE);
         BigDecimal givenUnitOverride = normalizePriceOverride(request.getGivenUnitPrice());
         if (givenUnitOverride != null && !allowPriceOverride) {
             throw new BusinessException(
                     "Solo el kiosko Miraflores (A15) puede editar precios del cambio.");
         }
-        BigDecimal returnedUnitOverride = resolveReturnedUnitPriceOverride(
-                request, returnedProduct, allowPriceOverride);
-
-        List<KioskSaleItemEntity> saleItems = loadSaleItems(sale);
-        PackagingAllocation packaging = allocatePackagingCredit(saleItems, item, returnedQty);
-
-        return new ExchangeContext(
-                access,
-                sale,
-                item,
-                saleItems,
-                returnedProduct,
-                returnedColor,
-                returnedSize,
-                returnedQty,
-                givenProduct,
-                givenColor,
-                givenSize,
-                givenHardware,
-                givenQty,
-                returnedUnitOverride,
-                givenUnitOverride,
-                packaging
-        );
+        resolved.add(new ResolvedGivenLine(
+                givenProduct, givenColor, givenSize, givenHardware, givenQty, givenUnitOverride));
+        return resolved;
     }
 
     private List<KioskSaleItemEntity> loadSaleItems(KioskSaleEntity sale) {
@@ -932,6 +1002,7 @@ public class KioskExchangeService {
                 .givenHardwareCondition(slip.getGivenHardwareCondition())
                 .givenQuantity(slip.getGivenQuantity())
                 .givenAmount(slip.getGivenAmount())
+                .givenItems(mapSlipGivenItems(slip))
                 .differenceAmount(slip.getDifferenceAmount())
                 .newSaleId(slip.getNewSaleId())
                 .newSaleNumber(newSale != null ? newSale.getSaleNumber() : null)
@@ -953,6 +1024,53 @@ public class KioskExchangeService {
                 .returnMovementId(slip.getReturnMovementId())
                 .givenMovementId(slip.getGivenMovementId())
                 .build();
+    }
+
+    private List<KioskExchangePreviewResponse.ProductLine> mapSlipGivenItems(KioskExchangeSlipEntity slip) {
+        List<KioskExchangeSlipGivenItemEntity> stored =
+                exchangeSlipGivenItemRepository.findByExchangeSlipIdOrderByLineNoAsc(slip.getId());
+        if (!stored.isEmpty()) {
+            return stored.stream().map(item -> {
+                ProductEntity product = productRepository.findById(item.getProductId()).orElse(null);
+                ColorEntity color = item.getColorId() != null
+                        ? colorRepository.findById(item.getColorId()).orElse(null)
+                        : null;
+                return KioskExchangePreviewResponse.ProductLine.builder()
+                        .productId(item.getProductId())
+                        .productCode(product != null ? product.getCode() : null)
+                        .productName(product != null ? product.getName() : null)
+                        .colorId(item.getColorId())
+                        .colorName(color != null ? color.getName() : null)
+                        .size(item.getSize())
+                        .hardwareCondition(item.getHardwareCondition())
+                        .quantity(item.getQuantity())
+                        .unitPrice(item.getUnitPrice())
+                        .lineTotal(item.getLineTotal())
+                        .build();
+            }).collect(Collectors.toList());
+        }
+        if (slip.getGivenProductId() == null) {
+            return List.of();
+        }
+        ProductEntity givenProduct = productRepository.findById(slip.getGivenProductId()).orElse(null);
+        ColorEntity givenColor = slip.getGivenColorId() != null
+                ? colorRepository.findById(slip.getGivenColorId()).orElse(null)
+                : null;
+        return List.of(KioskExchangePreviewResponse.ProductLine.builder()
+                .productId(slip.getGivenProductId())
+                .productCode(givenProduct != null ? givenProduct.getCode() : null)
+                .productName(givenProduct != null ? givenProduct.getName() : null)
+                .colorId(slip.getGivenColorId())
+                .colorName(givenColor != null ? givenColor.getName() : null)
+                .size(slip.getGivenSize())
+                .hardwareCondition(slip.getGivenHardwareCondition())
+                .quantity(slip.getGivenQuantity())
+                .unitPrice(slip.getGivenAmount() != null && slip.getGivenQuantity() != null
+                        && slip.getGivenQuantity().compareTo(BigDecimal.ZERO) > 0
+                        ? slip.getGivenAmount().divide(slip.getGivenQuantity(), 2, RoundingMode.HALF_UP)
+                        : null)
+                .lineTotal(slip.getGivenAmount())
+                .build());
     }
 
     private KioskExchangeSlipEntity findAccessibleSlip(Long id, AccessContext ctx)
@@ -1118,6 +1236,16 @@ public class KioskExchangeService {
     private record AccessContext(UserEntity user, List<LocationEntity> availableKiosks, LocationEntity kiosk) {
     }
 
+    private record ResolvedGivenLine(
+            ProductEntity product,
+            ColorEntity color,
+            String size,
+            String hardwareCondition,
+            BigDecimal quantity,
+            BigDecimal unitPriceOverride
+    ) {
+    }
+
     private record ExchangeContext(
             AccessContext access,
             KioskSaleEntity sale,
@@ -1127,13 +1255,8 @@ public class KioskExchangeService {
             ColorEntity returnedColor,
             String returnedSize,
             BigDecimal returnedQty,
-            ProductEntity givenProduct,
-            ColorEntity givenColor,
-            String givenSize,
-            String givenHardwareCondition,
-            BigDecimal givenQty,
+            List<ResolvedGivenLine> givenLines,
             BigDecimal returnedUnitPriceOverride,
-            BigDecimal givenUnitPriceOverride,
             PackagingAllocation packaging
     ) {
         KioskExchangePreviewResponse preview() throws BusinessException {
@@ -1151,18 +1274,42 @@ public class KioskExchangeService {
             }
             BigDecimal productReturnedAmount = returnedUnitPaid.multiply(returnedQty).setScale(2, RoundingMode.HALF_UP);
 
-            BigDecimal givenUnitPrice;
-            if (givenUnitPriceOverride != null) {
-                givenUnitPrice = givenUnitPriceOverride;
-            } else if (shouldPreservePaidPriceOnExchange(item, returnedProduct, givenProduct)) {
-                givenUnitPrice = returnedUnitPaid;
-            } else {
-                givenUnitPrice = resolveFullSaleUnitPrice(givenProduct);
-                if (givenUnitPrice.compareTo(BigDecimal.ZERO) <= 0) {
-                    throw new BusinessException("El producto nuevo no tiene precio de venta configurado.");
-                }
+            if (givenLines == null || givenLines.isEmpty()) {
+                throw new BusinessException("Debes seleccionar al menos un producto a entregar.");
             }
-            BigDecimal productGivenAmount = givenUnitPrice.multiply(givenQty).setScale(2, RoundingMode.HALF_UP);
+
+            List<KioskExchangePreviewResponse.ProductLine> givenProductLines = new ArrayList<>();
+            BigDecimal productGivenAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+
+            for (ResolvedGivenLine given : givenLines) {
+                BigDecimal givenUnitPrice;
+                if (given.unitPriceOverride() != null) {
+                    givenUnitPrice = given.unitPriceOverride();
+                } else if (shouldPreservePaidPriceOnExchange(item, returnedProduct, given.product())) {
+                    givenUnitPrice = returnedUnitPaid;
+                } else {
+                    givenUnitPrice = resolveFullSaleUnitPrice(given.product());
+                    if (givenUnitPrice.compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new BusinessException(
+                                "El producto " + safeTrim(given.product().getCode())
+                                        + " no tiene precio de venta configurado.");
+                    }
+                }
+                BigDecimal lineTotal = givenUnitPrice.multiply(given.quantity()).setScale(2, RoundingMode.HALF_UP);
+                productGivenAmount = productGivenAmount.add(lineTotal);
+                givenProductLines.add(KioskExchangePreviewResponse.ProductLine.builder()
+                        .productId(given.product().getId())
+                        .productCode(given.product().getCode())
+                        .productName(given.product().getName())
+                        .colorId(given.color() != null ? given.color().getId() : null)
+                        .colorName(given.color() != null ? given.color().getName() : null)
+                        .size(given.size())
+                        .hardwareCondition(given.hardwareCondition())
+                        .quantity(given.quantity())
+                        .unitPrice(givenUnitPrice)
+                        .lineTotal(lineTotal)
+                        .build());
+            }
 
             PackagingAllocation pack = packaging != null ? packaging : PackagingAllocation.empty();
             BigDecimal packagingCredit = safeAmount(pack.returnedCredit()).setScale(2, RoundingMode.HALF_UP);
@@ -1171,6 +1318,12 @@ public class KioskExchangeService {
             BigDecimal returnedAmount = productReturnedAmount.add(packagingReturned).setScale(2, RoundingMode.HALF_UP);
             BigDecimal givenAmount = productGivenAmount;
             BigDecimal difference = givenAmount.subtract(returnedAmount).setScale(2, RoundingMode.HALF_UP);
+
+            if (difference.compareTo(BigDecimal.ZERO) < 0) {
+                throw new BusinessException(
+                        "La diferencia no puede ser negativa (Q" + difference.abs()
+                                + "). Entrega productos de igual o mayor valor, o cobra cuando la diferencia sea positiva.");
+            }
 
             KioskExchangePreviewResponse.ProductLine returnedLine = KioskExchangePreviewResponse.ProductLine.builder()
                     .productId(returnedProduct.getId())
@@ -1184,18 +1337,7 @@ public class KioskExchangeService {
                     .lineTotal(productReturnedAmount)
                     .build();
 
-            KioskExchangePreviewResponse.ProductLine givenLine = KioskExchangePreviewResponse.ProductLine.builder()
-                    .productId(givenProduct.getId())
-                    .productCode(givenProduct.getCode())
-                    .productName(givenProduct.getName())
-                    .colorId(givenColor != null ? givenColor.getId() : null)
-                    .colorName(givenColor != null ? givenColor.getName() : null)
-                    .size(givenSize)
-                    .hardwareCondition(givenHardwareCondition)
-                    .quantity(givenQty)
-                    .unitPrice(givenUnitPrice)
-                    .lineTotal(productGivenAmount)
-                    .build();
+            KioskExchangePreviewResponse.ProductLine primaryGiven = givenProductLines.get(0);
 
             return KioskExchangePreviewResponse.builder()
                     .originalSaleId(sale != null ? sale.getId() : null)
@@ -1203,7 +1345,8 @@ public class KioskExchangeService {
                     .originalSaleDate(sale != null ? sale.getSaleDate() : null)
                     .originalSaleItemId(item != null ? item.getId() : null)
                     .returned(returnedLine)
-                    .given(givenLine)
+                    .given(primaryGiven)
+                    .givenItems(givenProductLines)
                     .returnedAmount(returnedAmount)
                     .givenAmount(givenAmount)
                     .differenceAmount(difference)
@@ -1212,6 +1355,91 @@ public class KioskExchangeService {
                     .packagingGivenAmount(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
                     .build();
         }
+    }
+
+    private static List<KioskExchangePreviewResponse.ProductLine> previewGivenLines(
+            KioskExchangePreviewResponse preview
+    ) {
+        if (preview == null) {
+            return List.of();
+        }
+        if (preview.getGivenItems() != null && !preview.getGivenItems().isEmpty()) {
+            return preview.getGivenItems();
+        }
+        if (preview.getGiven() != null) {
+            return List.of(preview.getGiven());
+        }
+        return List.of();
+    }
+
+    private void saveGivenItemRows(
+            Long slipId,
+            KioskExchangePreviewResponse preview,
+            List<Long> givenMovementIds
+    ) {
+        if (slipId == null || preview == null) {
+            return;
+        }
+        exchangeSlipGivenItemRepository.deleteByExchangeSlipId(slipId);
+        List<KioskExchangePreviewResponse.ProductLine> lines = previewGivenLines(preview);
+        List<KioskExchangeSlipGivenItemEntity> entities = new ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            KioskExchangePreviewResponse.ProductLine line = lines.get(i);
+            Long movementId = givenMovementIds != null && i < givenMovementIds.size()
+                    ? givenMovementIds.get(i)
+                    : null;
+            entities.add(KioskExchangeSlipGivenItemEntity.builder()
+                    .exchangeSlipId(slipId)
+                    .lineNo(i + 1)
+                    .productId(line.getProductId())
+                    .colorId(line.getColorId())
+                    .size(line.getSize())
+                    .hardwareCondition(line.getHardwareCondition())
+                    .quantity(line.getQuantity())
+                    .unitPrice(line.getUnitPrice())
+                    .lineTotal(line.getLineTotal())
+                    .givenMovementId(movementId)
+                    .build());
+        }
+        exchangeSlipGivenItemRepository.saveAll(entities);
+    }
+
+    private void linkGivenItemMovements(Long slipId, List<Long> givenMovementIds) {
+        if (slipId == null || givenMovementIds == null || givenMovementIds.isEmpty()) {
+            return;
+        }
+        List<KioskExchangeSlipGivenItemEntity> items =
+                exchangeSlipGivenItemRepository.findByExchangeSlipIdOrderByLineNoAsc(slipId);
+        for (int i = 0; i < items.size() && i < givenMovementIds.size(); i++) {
+            items.get(i).setGivenMovementId(givenMovementIds.get(i));
+        }
+        exchangeSlipGivenItemRepository.saveAll(items);
+    }
+
+    private List<KioscoInventoryService.CambioGivenLine> resolveGivenLinesForStock(KioskExchangeSlipEntity slip) {
+        List<KioskExchangeSlipGivenItemEntity> stored =
+                exchangeSlipGivenItemRepository.findByExchangeSlipIdOrderByLineNoAsc(slip.getId());
+        if (!stored.isEmpty()) {
+            return stored.stream()
+                    .map(item -> KioscoInventoryService.CambioGivenLine.builder()
+                            .productId(item.getProductId())
+                            .colorId(item.getColorId())
+                            .quantity(item.getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact())
+                            .sizeKey(item.getSize())
+                            .hardwareCondition(item.getHardwareCondition())
+                            .build())
+                    .collect(Collectors.toList());
+        }
+        int givenQty = slip.getGivenQuantity() != null
+                ? slip.getGivenQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact()
+                : slip.getReturnedQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
+        return List.of(KioscoInventoryService.CambioGivenLine.builder()
+                .productId(slip.getGivenProductId())
+                .colorId(slip.getGivenColorId())
+                .quantity(givenQty)
+                .sizeKey(slip.getGivenSize())
+                .hardwareCondition(slip.getGivenHardwareCondition())
+                .build());
     }
 
     /**

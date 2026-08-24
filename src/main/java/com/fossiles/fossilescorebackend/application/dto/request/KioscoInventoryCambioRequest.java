@@ -1,11 +1,14 @@
 package com.fossiles.fossilescorebackend.application.dto.request;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
+import java.util.List;
 
 @Data
 @Builder
@@ -19,8 +22,14 @@ public class KioscoInventoryCambioRequest {
 
     private Long returnedColorId;
 
-    /** Producto que el kiosko entrega al cliente (sale del stock). */
-    @NotNull(message = "El producto entregado es obligatorio.")
+    /**
+     * Productos que el kiosko entrega (1→N). Si viene con ítems, tiene prioridad sobre
+     * {@link #givenProductId} / cantidades escalares.
+     */
+    @Valid
+    private List<GivenLine> givenItems;
+
+    /** Compat 1→1: producto entregado único. */
     private Long givenProductId;
 
     private Long givenColorId;
@@ -55,4 +64,28 @@ public class KioscoInventoryCambioRequest {
     private String returnedHardwareCondition;
 
     private String givenHardwareCondition;
+
+    /**
+     * Si true (default), valida que Σ(salePrice×qty) entregado ≥ salePrice×qty del devuelto.
+     * La boleta POS puede desactivar esto porque ya valida/cobra la diferencia.
+     */
+    private Boolean validateNonNegativePriceDifference;
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class GivenLine {
+        @NotNull(message = "El producto entregado es obligatorio.")
+        private Long productId;
+
+        private Long colorId;
+
+        @Min(value = 1, message = "La cantidad entregada debe ser mayor a cero.")
+        private Integer quantity;
+
+        private String sizeKey;
+
+        private String hardwareCondition;
+    }
 }

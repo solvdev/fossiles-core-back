@@ -300,33 +300,7 @@ public class KioscoInventoryController {
             @PathVariable Long locationId,
             @Valid @RequestBody KioscoInventoryCambioRequest request
     ) throws BusinessException, ResourceNotFoundException {
-        Integer returnedQty = request.getReturnedQuantity() != null
-                ? request.getReturnedQuantity()
-                : request.getQuantity();
-        Integer givenQty = request.getGivenQuantity() != null
-                ? request.getGivenQuantity()
-                : request.getQuantity();
-        if (returnedQty == null || givenQty == null) {
-            throw new BusinessException(
-                    "Indica la cantidad (sin diferencia) o las cantidades devuelta y entregada (con diferencia).");
-        }
-        return ResponseEntity.ok(kioscoInventoryService.registrarCambio(
-                locationId,
-                request.getReturnedProductId(),
-                request.getReturnedColorId(),
-                request.getGivenProductId(),
-                request.getGivenColorId(),
-                returnedQty,
-                givenQty,
-                request.getReferenceId(),
-                request.getReason(),
-                request.getUserId(),
-                request.getPhysicalSlipNumber(),
-                request.getReturnedSizeKey(),
-                request.getGivenSizeKey(),
-                request.getReturnedHardwareCondition(),
-                request.getGivenHardwareCondition()
-        ));
+        return ResponseEntity.ok(kioscoInventoryService.registrarCambioFromRequest(locationId, request));
     }
 
     @PostMapping("/{locationId}/conteo-fisico")
