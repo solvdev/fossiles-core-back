@@ -158,8 +158,7 @@ public class KioskExchangeService {
                 slip.getId(),
                 cambioReason,
                 ctx.user().getId(),
-                slip.getSlipNumber(),
-                false
+                slip.getSlipNumber()
         );
 
         slip.setReturnMovementId(cambio.getReturnedMovementId());
@@ -233,12 +232,8 @@ public class KioskExchangeService {
         String slipNumber = requireAvailablePhysicalSlipNumber(request.getPhysicalSlipNumber(), kioskForSlip);
 
         if (preview.getDifferenceAmount() == null
-                || preview.getDifferenceAmount().compareTo(BigDecimal.ZERO) == 0) {
+                || preview.getDifferenceAmount().compareTo(BigDecimal.ZERO) <= 0) {
             return submitZeroDifferenceExchange(request, exchange, preview, slipNumber);
-        }
-        if (preview.getDifferenceAmount().compareTo(BigDecimal.ZERO) < 0) {
-            throw new BusinessException(
-                    "La diferencia no puede ser negativa. Elige productos de igual o mayor valor, o cobra la diferencia cuando sea positiva.");
         }
 
         UserEntity user = exchange.access().user();
@@ -280,58 +275,21 @@ public class KioskExchangeService {
         // Factura/caja de la diferencia sin VENTA de stock; el egreso va como CAMBIO (−).
         KioskPosSaleResponse sale = kioskPosService.createExchangeSale(saleRequest, slipNumber);
 
-        int returnedQty = preview.getReturned().getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
-        String cambioReason = "Boleta de cambio " + slipNumber
-                + (safeTrim(request.getReason()).isEmpty() ? "" : " · " + safeTrim(request.getReason()));
-
-        KioskExchangeSlipEntity slip = buildExchangeSlipEntity(
-                slipNumber,
-                preview,
+        return finalizeExchangeWithStock(
                 request,
-                kiosk,
-                user.getId(),
+                exchange,
+                preview,
+                slipNumber,
                 sale.getId(),
                 STATUS_COMPLETED,
                 GuatemalaDateTime.now()
         );
-        slip = exchangeSlipRepository.save(slip);
-        saveGivenItemRows(slip.getId(), preview, null);
-
-        List<KioscoInventoryService.CambioGivenLine> givenLines = previewGivenLines(preview).stream()
-                .map(line -> KioscoInventoryService.CambioGivenLine.builder()
-                        .productId(line.getProductId())
-                        .colorId(line.getColorId())
-                        .quantity(line.getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact())
-                        .sizeKey(line.getSize())
-                        .hardwareCondition(line.getHardwareCondition())
-                        .build())
-                .collect(Collectors.toList());
-
-        KioscoInventoryService.CambioResult cambio = kioscoInventoryService.registrarCambioMulti(
-                kiosk.getId(),
-                preview.getReturned().getProductId(),
-                preview.getReturned().getColorId(),
-                returnedQty,
-                preview.getReturned().getSize(),
-                null,
-                givenLines,
-                slip.getId(),
-                cambioReason,
-                user.getId(),
-                slipNumber,
-                false
-        );
-        slip.setReturnMovementId(cambio.getReturnedMovementId());
-        slip.setGivenMovementId(cambio.getGivenMovementId());
-        slip = exchangeSlipRepository.save(slip);
-        linkGivenItemMovements(slip.getId(), cambio.getGivenMovementIds());
-
-        return KioskExchangeCompleteResponse.builder()
-                .slip(toSlipResponse(slip, exchange.access()))
-                .sale(sale)
-                .build();
     }
 
+    /**
+     * Sin cobro: diferencia cero o saldo a favor del cliente (sin reembolso).
+     * Queda pendiente de autorización; el inventario se mueve al aprobar.
+     */
     private KioskExchangeCompleteResponse submitZeroDifferenceExchange(
             KioskExchangeCompleteRequest request,
             ExchangeContext exchange,
@@ -360,6 +318,69 @@ public class KioskExchangeService {
         return KioskExchangeCompleteResponse.builder()
                 .slip(toSlipResponse(slip, exchange.access()))
                 .sale(null)
+                .build();
+    }
+
+    private KioskExchangeCompleteResponse finalizeExchangeWithStock(
+            KioskExchangeCompleteRequest request,
+            ExchangeContext exchange,
+            KioskExchangePreviewResponse preview,
+            String slipNumber,
+            Long newSaleId,
+            String status,
+            LocalDateTime completedAt
+    ) throws BusinessException, ResourceNotFoundException {
+        UserEntity user = exchange.access().user();
+        LocationEntity kiosk = exchange.access().kiosk();
+
+        int returnedQty = preview.getReturned().getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact();
+        String cambioReason = "Boleta de cambio " + slipNumber
+                + (safeTrim(request.getReason()).isEmpty() ? "" : " · " + safeTrim(request.getReason()));
+
+        KioskExchangeSlipEntity slip = buildExchangeSlipEntity(
+                slipNumber,
+                preview,
+                request,
+                kiosk,
+                user.getId(),
+                newSaleId,
+                status,
+                completedAt
+        );
+        slip = exchangeSlipRepository.save(slip);
+        saveGivenItemRows(slip.getId(), preview, null);
+
+        List<KioscoInventoryService.CambioGivenLine> givenLines = previewGivenLines(preview).stream()
+                .map(line -> KioscoInventoryService.CambioGivenLine.builder()
+                        .productId(line.getProductId())
+                        .colorId(line.getColorId())
+                        .quantity(line.getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact())
+                        .sizeKey(line.getSize())
+                        .hardwareCondition(line.getHardwareCondition())
+                        .build())
+                .collect(Collectors.toList());
+
+        KioscoInventoryService.CambioResult cambio = kioscoInventoryService.registrarCambioMulti(
+                kiosk.getId(),
+                preview.getReturned().getProductId(),
+                preview.getReturned().getColorId(),
+                returnedQty,
+                preview.getReturned().getSize(),
+                null,
+                givenLines,
+                slip.getId(),
+                cambioReason,
+                user.getId(),
+                slipNumber
+        );
+        slip.setReturnMovementId(cambio.getReturnedMovementId());
+        slip.setGivenMovementId(cambio.getGivenMovementId());
+        slip = exchangeSlipRepository.save(slip);
+        linkGivenItemMovements(slip.getId(), cambio.getGivenMovementIds());
+
+        return KioskExchangeCompleteResponse.builder()
+                .slip(toSlipResponse(slip, exchange.access()))
+                .sale(newSaleId != null ? kioskPosService.getSaleById(newSaleId, kiosk.getId()) : null)
                 .build();
     }
 
@@ -1318,12 +1339,6 @@ public class KioskExchangeService {
             BigDecimal returnedAmount = productReturnedAmount.add(packagingReturned).setScale(2, RoundingMode.HALF_UP);
             BigDecimal givenAmount = productGivenAmount;
             BigDecimal difference = givenAmount.subtract(returnedAmount).setScale(2, RoundingMode.HALF_UP);
-
-            if (difference.compareTo(BigDecimal.ZERO) < 0) {
-                throw new BusinessException(
-                        "La diferencia no puede ser negativa (Q" + difference.abs()
-                                + "). Entrega productos de igual o mayor valor, o cobra cuando la diferencia sea positiva.");
-            }
 
             KioskExchangePreviewResponse.ProductLine returnedLine = KioskExchangePreviewResponse.ProductLine.builder()
                     .productId(returnedProduct.getId())
