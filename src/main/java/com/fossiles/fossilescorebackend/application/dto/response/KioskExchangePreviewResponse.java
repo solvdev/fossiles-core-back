@@ -18,7 +18,10 @@ public class KioskExchangePreviewResponse {
     private LocalDate originalSaleDate;
     private Long originalSaleItemId;
     private ProductLine returned;
+    /** Primera línea entregada (compat 1→1). */
     private ProductLine given;
+    /** Todas las líneas entregadas (1→N). */
+    private java.util.List<ProductLine> givenItems;
     private BigDecimal returnedAmount;
     private BigDecimal givenAmount;
     private BigDecimal differenceAmount;
