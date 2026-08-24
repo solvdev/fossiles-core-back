@@ -1065,14 +1065,12 @@ public class KioscoInventoryService {
                 referenceId,
                 reason,
                 userId,
-                physicalSlipNumber,
-                true
+                physicalSlipNumber
         );
     }
 
     /**
      * Entrada desde API: soporta 1→1 (campos escalares) o 1→N ({@code givenItems}).
-     * Valida diferencia de precio de catálogo ≥ 0 salvo que se desactive explícitamente.
      */
     public CambioResult registrarCambioFromRequest(Long locationId, KioscoInventoryCambioRequest request)
             throws BusinessException, ResourceNotFoundException {
@@ -1126,10 +1124,7 @@ public class KioscoInventoryService {
                     .build());
         }
 
-        boolean validatePrice = request.getValidateNonNegativePriceDifference() == null
-                || Boolean.TRUE.equals(request.getValidateNonNegativePriceDifference());
-
-        return registrarCambioMulti(
+            return registrarCambioMulti(
                 locationId,
                 request.getReturnedProductId(),
                 request.getReturnedColorId(),
@@ -1140,15 +1135,12 @@ public class KioscoInventoryService {
                 request.getReferenceId(),
                 request.getReason(),
                 request.getUserId(),
-                request.getPhysicalSlipNumber(),
-                validatePrice
+                request.getPhysicalSlipNumber()
         );
     }
 
     /**
      * Un ingreso del producto devuelto + N egresos de productos entregados.
-     *
-     * @param validateNonNegativePriceDifference si true, Σ(salePrice×qty) given ≥ returned
      */
     public CambioResult registrarCambioMulti(
             Long locationId,
@@ -1161,8 +1153,7 @@ public class KioscoInventoryService {
             Long referenceId,
             String reason,
             Long userId,
-            String physicalSlipNumber,
-            boolean validateNonNegativePriceDifference
+            String physicalSlipNumber
     ) throws BusinessException, ResourceNotFoundException {
         Long resolvedUserId = resolveUserIdRequired(userId);
         validateLocationIsKiosk(locationId);
@@ -1180,11 +1171,6 @@ public class KioscoInventoryService {
             validateProduct(line.getProductId());
             validateColor(line.getColorId());
             validateQuantity(line.getQuantity());
-        }
-
-        if (validateNonNegativePriceDifference) {
-            assertNonNegativeCatalogPriceDifference(
-                    returnedProductId, returnedQuantity, givenLines);
         }
 
         String trimmedReason = safeTrim(reason);
@@ -1259,34 +1245,6 @@ public class KioscoInventoryService {
                 .givenMovementId(firstGivenMovementId)
                 .givenMovementIds(givenMovementIds)
                 .build();
-    }
-
-    private void assertNonNegativeCatalogPriceDifference(
-            Long returnedProductId,
-            Integer returnedQuantity,
-            List<CambioGivenLine> givenLines
-    ) throws BusinessException, ResourceNotFoundException {
-        ProductEntity returned = productRepository.findById(returnedProductId)
-                .orElseThrow(() -> new ResourceNotFoundException("Product", returnedProductId));
-        BigDecimal returnedUnit = returned.getSalePrice() != null ? returned.getSalePrice() : BigDecimal.ZERO;
-        BigDecimal returnedAmount = returnedUnit
-                .multiply(BigDecimal.valueOf(returnedQuantity))
-                .setScale(2, RoundingMode.HALF_UP);
-
-        BigDecimal givenAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
-        for (CambioGivenLine line : givenLines) {
-            ProductEntity given = productRepository.findById(line.getProductId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Product", line.getProductId()));
-            BigDecimal unit = given.getSalePrice() != null ? given.getSalePrice() : BigDecimal.ZERO;
-            givenAmount = givenAmount.add(
-                    unit.multiply(BigDecimal.valueOf(line.getQuantity())).setScale(2, RoundingMode.HALF_UP));
-        }
-
-        if (givenAmount.compareTo(returnedAmount) < 0) {
-            throw new BusinessException(
-                    "La diferencia no puede ser negativa. El valor de lo entregado (Q"
-                            + givenAmount + ") es menor que lo devuelto (Q" + returnedAmount + ").");
-        }
     }
 
     /**
