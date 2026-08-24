@@ -42,9 +42,6 @@ public class CustomerController {
     @PostMapping
     public ResponseEntity<CustomerResponse> create(@Valid @RequestBody CustomerRequest request) 
             throws BusinessException {
-        if (request.getNit() != null && customerRepository.existsByNit(request.getNit())) {
-            throw new BusinessException("Customer NIT already exists: " + request.getNit());
-        }
         validateLegacyCode(null, request.getLegacyCode());
         validateRouteLocationCode(request.getRouteLocationCode());
         CustomerEntity entity = toEntity(request);
@@ -61,10 +58,6 @@ public class CustomerController {
         CustomerEntity entity = customerRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Customer", id));
         
-        if (request.getNit() != null && !entity.getNit().equals(request.getNit()) 
-                && customerRepository.existsByNit(request.getNit())) {
-            throw new BusinessException("Customer NIT already exists: " + request.getNit());
-        }
         validateLegacyCode(entity.getId(), request.getLegacyCode());
         validateRouteLocationCode(request.getRouteLocationCode());
         

@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.OpcShipmentGener
 import com.fossiles.fossilescorebackend.application.dto.request.ConfirmReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductDistributionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentDestinationRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentObservationsRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
@@ -1336,6 +1337,72 @@ public class ProductDistributionService {
         }
         shipment.setUpdatedBy(securityUtil.getCurrentUserId());
         return toShipmentResponse(shipmentRepository.save(shipment));
+    }
+
+    /**
+     * Actualiza el texto libre de observaciones del envío (impresión), conservando metadatos
+     * (DESTINO, DOCUMENT_DATE, packing, ENVI interno, etc.).
+     */
+    public ProductShipmentResponse updateShipmentObservations(
+            Long shipmentId,
+            ProductShipmentObservationsRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
+        if (request == null || request.getObservations() == null) {
+            throw new BusinessException("Indique las observaciones a guardar.");
+        }
+        String nextNotes = mergeUserObservationIntoNotes(shipment.getNotes(), request.getObservations());
+        String current = shipment.getNotes() == null ? "" : shipment.getNotes();
+        String normalizedNext = nextNotes == null ? "" : nextNotes;
+        if (normalizedNext.equals(current)) {
+            return toShipmentResponse(shipment);
+        }
+        shipment.setNotes(normalizedNext.isBlank() ? null : normalizedNext);
+        shipment.setUpdatedBy(securityUtil.getCurrentUserId());
+        return toShipmentResponse(shipmentRepository.save(shipment));
+    }
+
+    /** Conserva líneas de metadatos y reemplaza el texto libre de observación. */
+    private String mergeUserObservationIntoNotes(String existingNotes, String observation) {
+        List<String> metaLines = new ArrayList<>();
+        if (existingNotes != null && !existingNotes.isBlank()) {
+            for (String line : existingNotes.split("\n")) {
+                String trimmed = line == null ? "" : line.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                if (isShipmentNotesMetaLine(trimmed)) {
+                    metaLines.add(trimmed);
+                }
+            }
+        }
+        String obs = observation == null ? "" : observation.trim();
+        StringBuilder sb = new StringBuilder();
+        for (String meta : metaLines) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append(meta);
+        }
+        if (!obs.isBlank()) {
+            if (sb.length() > 0) {
+                sb.append("\n");
+            }
+            sb.append(obs);
+        }
+        return sb.length() == 0 ? null : sb.toString();
+    }
+
+    private static boolean isShipmentNotesMetaLine(String line) {
+        String upper = line.toUpperCase(Locale.ROOT);
+        if (upper.startsWith(DESTINO_PREFIX) || upper.startsWith(DOCUMENT_DATE_TAG)) {
+            return true;
+        }
+        if (upper.startsWith("__")) {
+            return true;
+        }
+        return upper.startsWith("INTERNAL_ENVI");
     }
 
     /**

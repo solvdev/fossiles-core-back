@@ -205,7 +205,8 @@ class KioskExchangeServiceTest {
         List<KioscoMovementEntity> slipMoves =
                 kioscoMovementRepository.findByPhysicalSlipNumber("BC-TEST-001");
         assertThat(slipMoves).extracting(KioscoMovementEntity::getMovementType)
-                .containsExactlyInAnyOrder(KioscoMovementType.CAMBIO, KioscoMovementType.DEVOLUCION_A_CLIENTE);
+                .containsOnly(KioscoMovementType.CAMBIO);
+        assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_A_CLIENTE);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.VENTA);
 
@@ -332,7 +333,8 @@ class KioskExchangeServiceTest {
         List<KioscoMovementEntity> slipMoves =
                 kioscoMovementRepository.findByPhysicalSlipNumber("BC-ZERO-AUTH-001");
         assertThat(slipMoves).extracting(KioscoMovementEntity::getMovementType)
-                .containsExactlyInAnyOrder(KioscoMovementType.CAMBIO, KioscoMovementType.DEVOLUCION_A_CLIENTE);
+                .containsOnly(KioscoMovementType.CAMBIO);
+        assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_A_CLIENTE);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.VENTA);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE);
     }
@@ -493,6 +495,81 @@ class KioskExchangeServiceTest {
         assertThat(preview.getReturnedAmount()).isEqualByComparingTo("195.00");
         assertThat(preview.getGivenAmount()).isEqualByComparingTo("250.00");
         assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("55.00");
+    }
+
+    @Test
+    void previewExchange_rejectsNegativeDifference() {
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0);
+        ProductEntity cheaper = productRepository.save(ProductEntity.builder()
+                .code("CHEAP-001")
+                .name("Cartera barata")
+                .salePrice(new BigDecimal("50.00"))
+                .build());
+        seedInventory(cheaper.getId(), 5);
+
+        assertThatThrownBy(() -> kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(originalSale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(cheaper.getId())
+                        .givenColorId(negro.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("no puede ser negativa");
+    }
+
+    @Test
+    void completeExchange_multipleGivenItems_chargesSumDifference() throws Exception {
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0);
+        ProductEntity extra = productRepository.save(ProductEntity.builder()
+                .code("EXTRA-001")
+                .name("Producto extra")
+                .salePrice(new BigDecimal("40.00"))
+                .build());
+        seedInventory(extra.getId(), 5);
+        int stockNewBefore = currentStock(newProduct.getId());
+        int stockExtraBefore = currentStock(extra.getId());
+
+        KioskExchangeCompleteResponse result = kioskExchangeService.completeExchange(
+                KioskExchangeCompleteRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(originalSale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenItems(List.of(
+                                com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeGivenItemRequest.builder()
+                                        .productId(newProduct.getId())
+                                        .colorId(negro.getId())
+                                        .quantity(BigDecimal.ONE)
+                                        .build(),
+                                com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeGivenItemRequest.builder()
+                                        .productId(extra.getId())
+                                        .colorId(negro.getId())
+                                        .quantity(BigDecimal.ONE)
+                                        .build()))
+                        .physicalSlipNumber("BC-MULTI-001")
+                        .paymentMethod("EFECTIVO")
+                        .amountReceived(new BigDecimal("200.00"))
+                        .reason("Cambio por dos productos")
+                        .build());
+
+        // given 250+40=290, returned 180, diff 110
+        assertThat(result.getSlip().getStatus()).isEqualTo("COMPLETED");
+        assertThat(result.getSlip().getGivenItems()).hasSize(2);
+        assertThat(result.getSlip().getGivenAmount()).isEqualByComparingTo("290.00");
+        assertThat(result.getSlip().getDifferenceAmount()).isEqualByComparingTo("110.00");
+        assertThat(result.getSale().getTotalAmount()).isEqualByComparingTo("110.00");
+        assertThat(currentStock(newProduct.getId())).isEqualTo(stockNewBefore - 1);
+        assertThat(currentStock(extra.getId())).isEqualTo(stockExtraBefore - 1);
+
+        List<KioscoMovementEntity> slipMoves =
+                kioscoMovementRepository.findByPhysicalSlipNumber("BC-MULTI-001");
+        assertThat(slipMoves).hasSize(3); // 1 ingreso + 2 egresos
+        assertThat(slipMoves).extracting(KioscoMovementEntity::getMovementType)
+                .containsOnly(KioscoMovementType.CAMBIO);
     }
 
     private int currentStock(Long productId) {

@@ -803,7 +803,7 @@ public class TaxInvoiceService {
         LocalDateTime to = toDate != null ? toDate.atTime(LocalTime.MAX) : null;
         String normalizedSourceType = trimToNull(sourceType);
         String normalizedStatus = trimToNull(status);
-        String normalizedCertificationFilter = trimToNull(certificationFilter);
+        String normalizedCertificationFilter = normalizeCertificationFilter(certificationFilter);
         String customerTaxIdPattern = buildCustomerTaxIdPattern(customerTaxId);
         String internalNumberPattern = buildInternalNumberPattern(internalNumber);
         return taxInvoiceRepository.search(
@@ -821,13 +821,32 @@ public class TaxInvoiceService {
 
     @Transactional(readOnly = true)
     public TaxInvoiceSummaryResponse getSummary() {
+        return getSummary(null, null, null, null, null);
+    }
+
+    @Transactional(readOnly = true)
+    public TaxInvoiceSummaryResponse getSummary(
+            String sourceType,
+            String customerTaxId,
+            String internalNumber,
+            LocalDate fromDate,
+            LocalDate toDate
+    ) {
+        LocalDateTime from = fromDate != null ? fromDate.atStartOfDay() : null;
+        LocalDateTime to = toDate != null ? toDate.atTime(LocalTime.MAX) : null;
         long certified = 0;
         long failed = 0;
         long draft = 0;
         long skipped = 0;
         long voided = 0;
-        for (Object[] row : taxInvoiceRepository.countGroupByStatus()) {
-            String invoiceStatus = row[0] == null ? "" : row[0].toString();
+        for (Object[] row : taxInvoiceRepository.countGroupByStatus(
+                trimToNull(sourceType),
+                buildCustomerTaxIdPattern(customerTaxId),
+                buildInternalNumberPattern(internalNumber),
+                from,
+                to
+        )) {
+            String invoiceStatus = row[0] == null ? "" : row[0].toString().trim().toUpperCase(Locale.ROOT);
             long count = row[1] == null ? 0L : ((Number) row[1]).longValue();
             switch (invoiceStatus) {
                 case "CERTIFIED" -> certified = count;
@@ -848,6 +867,11 @@ public class TaxInvoiceService {
                 .skipped(skipped)
                 .voided(voided)
                 .build();
+    }
+
+    private static String normalizeCertificationFilter(String certificationFilter) {
+        String normalized = trimToNull(certificationFilter);
+        return normalized == null ? null : normalized.toUpperCase(Locale.ROOT);
     }
 
     private String buildCustomerTaxIdPattern(String customerTaxId) {

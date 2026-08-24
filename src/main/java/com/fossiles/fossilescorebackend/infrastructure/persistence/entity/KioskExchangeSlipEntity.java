@@ -28,8 +28,15 @@ public class KioskExchangeSlipEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "slip_number", length = 60, nullable = false, unique = true)
+    @Column(name = "slip_number", length = 60, nullable = false)
     private String slipNumber;
+
+    /**
+     * Serie del kiosko ({@code locations.internal_series_code}) o {@code K{locationId}} si no hay serie.
+     * Unicidad de boleta: (series_code, slip_number).
+     */
+    @Column(name = "series_code", length = 20, nullable = false)
+    private String seriesCode;
 
     @Column(name = "slip_type", length = 20, nullable = false)
     @Builder.Default
@@ -67,6 +74,10 @@ public class KioskExchangeSlipEntity {
 
     @Column(name = "given_size", length = 20)
     private String givenSize;
+
+    /** Herraje del producto entregado (NUEVO/VIEJO); stock kiosco. */
+    @Column(name = "given_hardware_condition", length = 20)
+    private String givenHardwareCondition;
 
     @Column(name = "given_quantity", precision = 12, scale = 3)
     private BigDecimal givenQuantity;

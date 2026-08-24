@@ -36,8 +36,11 @@ public class KioskExchangeSlipResponse {
     private Long givenColorId;
     private String givenColorName;
     private String givenSize;
+    private String givenHardwareCondition;
     private BigDecimal givenQuantity;
     private BigDecimal givenAmount;
+    /** Líneas entregadas (1→N). Vacío en boletas antiguas sin filas hijas. */
+    private java.util.List<KioskExchangePreviewResponse.ProductLine> givenItems;
     private BigDecimal differenceAmount;
     private Long newSaleId;
     private String newSaleNumber;

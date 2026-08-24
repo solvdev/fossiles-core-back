@@ -24,7 +24,11 @@ public interface KioskExchangeSlipRepository extends JpaRepository<KioskExchange
 
     boolean existsBySlipNumber(String slipNumber);
 
+    boolean existsBySeriesCodeAndSlipNumber(String seriesCode, String slipNumber);
+
     Optional<KioskExchangeSlipEntity> findBySlipNumber(String slipNumber);
+
+    Optional<KioskExchangeSlipEntity> findBySeriesCodeAndSlipNumber(String seriesCode, String slipNumber);
 
     List<KioskExchangeSlipEntity> findByPhysicalCountId(Long physicalCountId);
 

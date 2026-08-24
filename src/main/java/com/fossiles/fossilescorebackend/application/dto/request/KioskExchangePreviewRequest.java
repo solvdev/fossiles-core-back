@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.dto.request;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -7,6 +8,7 @@ import lombok.NoArgsConstructor;
 import lombok.experimental.SuperBuilder;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 @Data
 @SuperBuilder
@@ -19,10 +21,20 @@ public class KioskExchangePreviewRequest {
 
     private Long originalSaleItemId;
 
+    /**
+     * Productos a entregar (1→N). Si viene con ítems, tiene prioridad sobre los campos escalares
+     * {@code givenProductId}/{@code givenQuantity}/…
+     */
+    @Valid
+    private List<KioskExchangeGivenItemRequest> givenItems;
+
+    /** Compat 1→1: producto entregado único (usado si {@link #givenItems} está vacío). */
     private Long givenProductId;
 
     private Long givenColorId;
     private String givenSize;
+    /** Herraje del producto a entregar (NUEVO/VIEJO) según inventario kiosco. */
+    private String givenHardwareCondition;
 
     private Long returnedProductId;
     private Long returnedColorId;
@@ -37,7 +49,7 @@ public class KioskExchangePreviewRequest {
     /** Solo kiosko A15 (Miraflores): precio unitario cobrado/acreditado del producto que ingresa. */
     private BigDecimal returnedUnitPrice;
 
-    /** Solo kiosko A15 (Miraflores): precio unitario del producto que egresa. */
+    /** Solo kiosko A15 (Miraflores): precio unitario del producto que egresa (modo 1→1). */
     private BigDecimal givenUnitPrice;
 
     /**

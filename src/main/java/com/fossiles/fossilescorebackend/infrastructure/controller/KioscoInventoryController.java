@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryAjusteRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryCambioRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryAnularFacturaRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryDevolucionAClienteRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryDevolucionClienteRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryDevolucionDepositoRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryEntradaRequest;
@@ -131,6 +132,24 @@ public class KioscoInventoryController {
                 request.getOriginalInvoiceId(),
                 request.getApto(),
                 request.getUserId()
+        ));
+    }
+
+    @PostMapping("/{locationId}/devolucion-a-cliente")
+    public ResponseEntity<KioscoStockResponse> registrarDevolucionACliente(
+            @PathVariable Long locationId,
+            @Valid @RequestBody KioscoInventoryDevolucionAClienteRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioscoInventoryService.registrarDevolucionACliente(
+                locationId,
+                request.getProductId(),
+                request.getColorId(),
+                request.getQuantity(),
+                request.getReason(),
+                request.getReferenceId(),
+                request.getUserId(),
+                request.getSizeKey(),
+                request.getHardwareCondition()
         ));
     }
 
@@ -281,17 +300,7 @@ public class KioscoInventoryController {
             @PathVariable Long locationId,
             @Valid @RequestBody KioscoInventoryCambioRequest request
     ) throws BusinessException, ResourceNotFoundException {
-        return ResponseEntity.ok(kioscoInventoryService.registrarCambio(
-                locationId,
-                request.getReturnedProductId(),
-                request.getReturnedColorId(),
-                request.getGivenProductId(),
-                request.getGivenColorId(),
-                request.getQuantity(),
-                request.getReferenceId(),
-                request.getReason(),
-                request.getUserId()
-        ));
+        return ResponseEntity.ok(kioscoInventoryService.registrarCambioFromRequest(locationId, request));
     }
 
     @PostMapping("/{locationId}/conteo-fisico")

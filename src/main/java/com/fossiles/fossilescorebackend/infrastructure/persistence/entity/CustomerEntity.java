@@ -22,7 +22,7 @@ public class CustomerEntity {
     @Column(length = 150)
     private String name;
 
-    @Column(unique = true, length = 30)
+    @Column(length = 30)
     private String nit;
 
     /** Clave legacy para búsqueda en CxC (ej. CB490). */
