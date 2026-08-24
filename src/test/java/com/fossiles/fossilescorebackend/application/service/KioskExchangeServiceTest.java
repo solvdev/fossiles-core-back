@@ -498,7 +498,7 @@ class KioskExchangeServiceTest {
     }
 
     @Test
-    void previewExchange_rejectsNegativeDifference() {
+    void previewExchange_allowsNegativeDifferenceAsCustomerCredit() throws Exception {
         KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0);
         ProductEntity cheaper = productRepository.save(ProductEntity.builder()
                 .code("CHEAP-001")
@@ -507,7 +507,7 @@ class KioskExchangeServiceTest {
                 .build());
         seedInventory(cheaper.getId(), 5);
 
-        assertThatThrownBy(() -> kioskExchangeService.previewExchange(
+        KioskExchangePreviewResponse preview = kioskExchangeService.previewExchange(
                 KioskExchangePreviewRequest.builder()
                         .kioskLocationId(kiosk.getId())
                         .originalSaleId(originalSale.getId())
@@ -516,9 +516,41 @@ class KioskExchangeServiceTest {
                         .givenColorId(negro.getId())
                         .returnedQuantity(BigDecimal.ONE)
                         .givenQuantity(BigDecimal.ONE)
-                        .build()))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("no puede ser negativa");
+                        .build());
+
+        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("-130.00");
+    }
+
+    @Test
+    void completeExchange_negativeDifference_pendingAuthorizationWithoutSale() throws Exception {
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0);
+        ProductEntity cheaper = productRepository.save(ProductEntity.builder()
+                .code("CHEAP-002")
+                .name("Cartera barata 2")
+                .salePrice(new BigDecimal("50.00"))
+                .build());
+        seedInventory(cheaper.getId(), 5);
+        int stockOriginalBefore = currentStock(originalProduct.getId());
+        int stockCheaperBefore = currentStock(cheaper.getId());
+
+        KioskExchangeCompleteResponse result = kioskExchangeService.completeExchange(
+                KioskExchangeCompleteRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(originalSale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(cheaper.getId())
+                        .givenColorId(negro.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .physicalSlipNumber("BC-CREDIT-001")
+                        .reason("Cambio con saldo a favor")
+                        .build());
+
+        assertThat(result.getSlip().getStatus()).isEqualTo("PENDING_AUTHORIZATION");
+        assertThat(result.getSlip().getDifferenceAmount()).isEqualByComparingTo("-130.00");
+        assertThat(result.getSale()).isNull();
+        assertThat(currentStock(originalProduct.getId())).isEqualTo(stockOriginalBefore);
+        assertThat(currentStock(cheaper.getId())).isEqualTo(stockCheaperBefore);
     }
 
     @Test
