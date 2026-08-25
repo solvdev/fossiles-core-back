@@ -38,8 +38,9 @@ Dentro de **Ventas del Kiosko** hay una pestaña **Inventario** (solo consulta).
 
 1. **Sin caja abierta no se puede vender.** Abre caja al iniciar el turno.
 2. **Cada venta rebaja el inventario** del kiosko automáticamente.
-3. **CF** = Consumidor Final (cliente sin NIT). Es lo más común en ventas al mostrador.
-4. **Boleta física obligatoria** en traslados, devoluciones y cambios (número pre-impreso; el sistema no lo genera solo).
+3. **Toda venta genera factura electrónica (FEL).** Por defecto es **CF**; con NIT se factura a nombre del cliente.
+4. **CF** = Consumidor Final (cliente sin NIT). Es lo más común en ventas al mostrador.
+5. **Boleta física obligatoria** en traslados, devoluciones y cambios (número pre-impreso; el sistema no lo genera solo).
 
 ---
 
@@ -47,13 +48,14 @@ Dentro de **Ventas del Kiosko** hay una pestaña **Inventario** (solo consulta).
 
 Ruta: **Kioscos → Ventas del Kiosko**
 
-Al entrar verás:
+Al entrar se abre la pestaña **POS**. Verás:
 - Nombre del **kiosko** (o selector si eres admin/supervisora).
 - Tu **nombre**.
 - Estado de **caja** (abierta / cerrada).
 - Aviso de **depósitos pendientes** si aplica.
+- Banner de **modo piloto** si el kiosko está en prueba.
 
-**Pestañas:** Resumen · POS · Caja · **Cierres** · Inventario · Recibir distribución · Reportes · Promociones (solo admin)
+**Pestañas:** Resumen · POS · Caja · **Cierres** · Inventario · Recibir distribución *(si tienes permiso)* · **Reportes de ventas** · Promociones (solo admin)
 
 ---
 
@@ -70,7 +72,7 @@ Tabla **Ventas por día** (mes actual):
 |---------|-------------|
 | Ventas / Unidades / Total | Resumen de ventas del día |
 | **Efectivo** | Cobrado en efectivo (POS) |
-| **Gastos / Desembolsos** | Salidas de caja registradas ese día |
+| **Gastos** | Salidas de caja (desembolsos) registradas ese día |
 | **Dif. caja** | Diferencia al cerrar caja (si ya cerró ese día) |
 | Tarjeta | Cobrado con tarjeta |
 | Depósitos pendientes | Ventas en efectivo sin boleta de banco |
@@ -95,26 +97,33 @@ Caja **abierta**. Si no: pestaña **Caja → Abrir caja** (el fondo inicial lo d
 
 ### Agregar al carrito
 
-- Toca el **color** en la tarjeta del producto.
+- Toca el **color** en la tarjeta del producto (verás la cantidad disponible).
+- Algunos productos tienen **herraje Nuevo** y **Viejo**: chips separados (`Negro · Nuevo` / `Negro · Viejo`).
 - **Talla** (cinchos): elige talla en la ventana.
-- Color **gris** = sin stock.
+- Color **gris** / Sin stock = no se puede agregar.
 - Empaques **SUM-**: solo si hay stock; **sin descuento**.
+- **Miraflores (A15):** puedes editar precio unitario (**Con desc.** / **Final**); se factura ese total sin descuento adicional encima.
 
 ### Carrito y cobro
 
 - Subtotal, descuento (automático o manual), total.
-- **Cobrar** → ventana de cobro (NIT, promoción, forma de pago).
-- Promociones automáticas aplican solas; botones 10/15/20% para casos excepcionales.
+- **Cobrar Q…** → ventana **Cobrar venta**.
+- Botón final: **Confirmar y facturar Q…** — guarda la venta **y** certifica la factura electrónica (FEL).
+- Por defecto aplica **10%**; promociones vigentes se aplican solas; botones **10% OFF / 15% OFF / 20% OFF** para excepciones.
 - Checkbox **Cobrar sin descuento (precio normal)** cuando el cliente paga precio de catálogo sin descuento ni promoción.
+- Datos de factura: NIT/CF, consultar NIT, nombre; **correo** y **teléfono** opcionales. **Siempre se factura** (no hay opción de no emitir).
+- Si FEL falla: la venta queda; usa **Certificar factura** en el aviso o en el detalle de Reportes.
 
 ### Formas de pago
 
 | Método | Qué registrar |
 |--------|----------------|
-| **Efectivo** | Monto recibido → calcula cambio |
-| **Tarjeta** | Marca, autorización + últimos 4 dígitos |
-| **Tarjeta (2 tarjetas)** | Checkbox **Dividir pago en dos tarjetas** → montos y datos de cada tarjeta |
-| **Mixto** | Parte efectivo + parte tarjeta (una sola tarjeta) |
+| **Efectivo** | Monto recibido → calcula cambio (atajos **EXACTO**, +50/+100/+200/+500) |
+| **Tarjeta** | Marca, **Número de voucher**, últimos 4 dígitos, **Monto del voucher** |
+| **Tarjeta (2 tarjetas)** | Checkbox **Dividir pago en dos tarjetas** → montos y datos de voucher de cada tarjeta |
+| **Mixto** | Parte efectivo + parte tarjeta (una sola tarjeta) + voucher de la tarjeta |
+
+Si el monto del voucher no coincide con la factura, el sistema avisa la diferencia: **la factura no se modifica**.
 
 #### Pago con dos tarjetas
 
@@ -123,13 +132,13 @@ Cuando el cliente divide el total entre **dos tarjetas** (no es efectivo + tarje
 1. Forma de pago **Tarjeta**.
 2. Activa **Dividir pago en dos tarjetas**.
 3. **Monto tarjeta 1** y **monto tarjeta 2** (suma = total).
-4. Marca, **número de autorización** y **últimos 4 dígitos** de **cada** tarjeta.
-5. Confirmar.
+4. Marca, **número de voucher**, **últimos 4** y **monto del voucher** de **cada** tarjeta.
+5. **Confirmar y facturar**.
 
 Resultado:
 - **Una venta** y **una factura**.
-- En **Reportes → Ventas**, la forma de pago muestra Tarjeta 1 y Tarjeta 2.
-- En **Reportes → Voucher (tarjeta)**, **dos filas** (un voucher por tarjeta) para conciliar con el banco.
+- En **Reportes de ventas → Ventas**, la forma de pago muestra Tarjeta 1 y Tarjeta 2.
+- En **Reportes de ventas → Voucher (tarjeta)**, **dos filas** (un voucher por tarjeta) para conciliar con el banco.
 
 ---
 
@@ -161,32 +170,21 @@ En pantalla ves:
 
 ### Registrar desembolsos (gastos de efectivo)
 
-Cuando **sales efectivo del turno** para una compra (insumos, taxi, etc.), regístralo como **desembolso**:
+Cuando **sales efectivo del turno** para una compra (insumos, taxi, etc.), regístralo como **desembolso** desde el **detalle de la venta** (no desde la pestaña Caja; ahí solo ves el cuadre):
 
-1. Pestaña **Caja**.
-2. Sección **Registrar desembolso (gasto de efectivo)**.
-3. **Monto** + **Descripción** (obligatoria).
-4. **Venta (opcional):**
-   - **General de caja** — gasto del fondo o del efectivo del turno que **no** viene de una venta concreta (ej. taxi con el fondo Q300).
-   - **Elegir una venta** — si el gasto salió del efectivo **de esa venta** (ej. compraste algo con el billete que pagó el cliente). El desembolso se **descuenta del depósito bancario** de esa venta.
-5. **Agregar desembolso**.
+1. **Reportes de ventas** → toca la venta (efectivo o mixto del turno).
+2. Bloque **Desembolsos de esta venta** → **Monto** + **Descripción**.
+3. **Agregar desembolso**.
 
 **Ejemplo:** venta en efectivo Q500 → desembolso Q50 ligado a esa venta → **a depositar en banco Q450** (no Q500).
 
-Los desembolsos aparecen en una tabla (hora, venta ligada, descripción, monto) y **restan** del efectivo esperado de caja.
-
-También puedes agregar desembolsos ligados a una venta desde **Reportes → detalle de la venta** (sección *Desembolsos de esta venta*), mientras la caja siga abierta.
-
-| Tipo de desembolso | Afecta caja | Afecta depósito de venta |
-|--------------------|-------------|---------------------------|
-| **General de caja** | Sí | No |
-| **Ligado a venta** | Sí | Sí — reduce el monto a depositar |
+Los desembolsos **restan** del efectivo esperado de caja y del **depósito neto** de esa venta.
 
 **Importante:** solo puedes ligar desembolsos a ventas **del mismo turno** (caja abierta), en **efectivo o mixto**, y el total ligado no puede superar el efectivo de esa venta.
 
 ### Cerrar caja
 
-1. Registra **boletas de depósito** pendientes (Reportes) si aplica.
+1. Registra **boletas de depósito** pendientes (Reportes de ventas) si aplica.
 2. **Cerrar caja**.
 3. Cuenta el **efectivo físico** real.
 4. El sistema muestra **diferencia** (contado − esperado): sobra o falta.
@@ -250,7 +248,7 @@ Arriba elige el **tipo de reporte**:
 | Tipo | Para qué sirve |
 |------|----------------|
 | **Ventas** | Listado de ventas del periodo (uso diario) |
-| **Desembolsos** | Todos los gastos de caja; columna **Venta** (número interno o “General”) |
+| **Desembolsos** | Todos los gastos de caja; columna **Venta** (número de la venta ligada) |
 | **Depósitos bancarios** | Boletas registradas con **efectivo bruto**, **desembolsos** y **depósito neto** |
 | **Voucher (tarjeta)** | Ventas con tarjeta para conciliar vouchers; **dos filas** si la venta usó 2 tarjetas |
 | **Hoja principal** | Resumen por **corte de conteo físico** (supervisora / cierre de periodo) |
@@ -290,15 +288,14 @@ Al registrar la boleta, el monto a depositar es el **neto**, no el bruto.
 
 **Casos especiales:**
 - Si desembolsaste **todo** el efectivo de la venta → **no requiere boleta** (mensaje en detalle).
-- Desembolsos **generales de caja** no cambian el neto de una venta concreta, pero sí el cuadre del turno.
 
-Pasos: Reportes → venta con badge **Pendiente** → detalle → **Registrar boleta** → número del comprobante bancario.
+Pasos: Reportes de ventas → venta con badge **Pendiente** → detalle → **Registrar boleta** → número del comprobante bancario.
 
 ### Desembolsos desde el detalle de venta
 
 En ventas en efectivo/mixto, con **caja abierta** del mismo turno:
 
-1. Abre el detalle (Reportes → clic en la fila).
+1. Abre el detalle (Reportes de ventas → clic en la fila).
 2. Bloque **Desembolsos de esta venta** → monto + descripción → **Agregar desembolso**.
 3. El resumen **A depositar** se actualiza al instante.
 
@@ -332,9 +329,9 @@ Campos: nombre, kiosko (vacío = todos), fechas vigencia, línea/tiers.
 
 ```
 1. Abrir caja           → Caja
-2. Vender               → POS
-3. Desembolsos          → Caja (general) o detalle de venta (si salió del efectivo de esa venta)
-4. Depósitos banco      → Reportes → boletas (monto NETO a depositar)
+2. Vender / facturar    → POS
+3. Desembolsos          → Reportes de ventas → detalle de la venta
+4. Depósitos banco      → Reportes de ventas → boletas (monto NETO a depositar)
 5. Mi conteo (opcional) → Inventario → Mi conteo
 6. Devoluciones/cambios → Devoluciones / Reintegros (si aplica)
 7. Cerrar caja          → Caja → contar efectivo y confirmar
@@ -558,9 +555,9 @@ En las listas de boletas de cambio y devoluciones: botón **Imprimir** para reim
 | Vender | Ventas → **POS** |
 | Abrir/cerrar caja, desembolsos, cuadre | Ventas → **Caja** |
 | Historial de cierres (PDF/Excel) | Ventas → **Cierres** |
-| Ver ventas / desembolsos / depósitos | Ventas → **Reportes** |
+| Ver ventas / desembolsos / depósitos | Ventas → **Reportes de ventas** |
 | Mi conteo interno (vitrinas) | Ventas → **Inventario** → **Mi conteo** |
-| Ver ventas del día / KPIs | Ventas → **Reportes** o **Resumen** |
+| Ver ventas del día / KPIs | Ventas → **Reportes de ventas** o **Resumen** |
 | Consulta rápida de stock | Ventas → **Inventario** |
 | Recibir cajas del almacén | Ventas → **Recibir distribución** |
 | Cambio de producto con boleta | **Devoluciones / Reintegros** → Boleta de cambio |
@@ -582,14 +579,13 @@ Caja cerrada. Abre caja en la pestaña Caja.
 Sin stock en ese color o talla.
 
 **¿Qué pongo en NIT?**  
-`CF` para la mayoría de ventas al público.
+`CF` para la mayoría de ventas al público. Toda venta se factura (FEL).
 
 **¿Qué es depósito pendiente?**  
 Vendiste en efectivo (o mixto con efectivo) y falta registrar la boleta del banco. El monto a depositar es el **neto** (efectivo de la venta menos desembolsos ligados a esa venta).
 
-**¿Desembolso general vs ligado a venta?**  
-- **General de caja:** gasto del turno que no sale del efectivo de una venta concreta (ej. taxi con el fondo). Afecta el cuadre de caja, no el neto de una venta.  
-- **Ligado a venta:** gasto hecho con el efectivo de esa venta. Reduce lo que debes depositar en banco por esa venta.
+**¿Dónde registro un desembolso?**  
+En **Reportes de ventas → detalle de la venta** (la pestaña Caja solo muestra el cuadre; ya no captura desembolsos “generales”).
 
 **¿Deposité el efectivo bruto pero había un desembolso de la venta?**  
 El reporte **Depósitos bancarios** muestra bruto, desembolsos y neto. Lo correcto es depositar el **neto**. Si ya depositaste de más, coordina con contabilidad.
@@ -601,10 +597,10 @@ Ventas solo tarjeta, ventas anuladas, o ventas cuyo efectivo fue **totalmente de
 No desde POS si ya cerraste caja. Solo ventas del turno actual con caja abierta.
 
 **¿Debo registrar desembolsos?**  
-Sí, si sacaste efectivo del fondo o de ventas del turno. Si no los registras, al cerrar caja parecerá que **falta dinero**.
+Sí, si sacaste efectivo de una venta del turno. Si no los registras, al cerrar caja parecerá que **falta dinero** y el depósito neto quedará mal.
 
 **¿Cómo cuadra el efectivo?**  
-Esperado = fondo inicial + ventas en efectivo − **todos** los desembolsos del turno (generales y ligados a venta). Al cerrar, comparas con el conteo físico del cajón.
+Esperado = fondo inicial + ventas en efectivo − **desembolsos del turno**. Al cerrar, comparas con el conteo físico del cajón.
 
 **Cambio de cincho por talla con descuento — cobro diferencia?**  
 No. Mismo precio pagado → diferencia Q 0.00 → solicitud y autorización logística.
@@ -635,7 +631,9 @@ Usuario con permiso de logística (pestaña Autorizaciones pendientes).
 | **Merma** | Pérdida de producto (daño, extravío) |
 | **Boleta de depósito** | Comprobante del banco al depositar efectivo (sobre el monto **neto** de la venta) |
 | **Depósito neto** | Efectivo de la venta − desembolsos ligados a esa venta |
-| **Desembolso** | Gasto de efectivo del turno (general de caja o ligado a una venta) |
+| **Desembolso** | Gasto de efectivo del turno ligado a una venta |
+| **Voucher** | Número/monto del comprobante de la terminal de tarjeta |
+| **Herraje Nuevo / Viejo** | Variante de stock del mismo color en POS |
 | **Boleta física** | Número del comprobante impreso (traslado, devolución, cambio) |
 | **Turno / sesión de caja** | Desde abrir caja hasta cerrarla |
 | **Reintegro** | Enviar producto devuelto (apto) de vuelta a bodega PT |
