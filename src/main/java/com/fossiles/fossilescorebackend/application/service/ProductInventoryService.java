@@ -13,6 +13,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -1140,6 +1141,59 @@ public class ProductInventoryService {
                         "Product: " + productId +
                         ", Location: " + locationId +
                         (colorId != null ? ", Color: " + colorId : ", Color: NULL"))));
+    }
+
+    /**
+     * Misma lógica que {@link #decrementInventory} pero en transacción nueva.
+     * Si falla (p.ej. legado desfasado), no marca rollback-only la TX del caller
+     * (evita UnexpectedRollbackException en ventas POS / sync kiosco).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public ProductInventoryLocationResponse decrementInventoryIsolated(
+            Long productId,
+            Long locationId,
+            Long colorId,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String sizeKey)
+            throws ResourceNotFoundException, BusinessException {
+        return decrementInventory(
+                productId, locationId, colorId, quantity, referenceType, referenceId,
+                referenceNumber, description, sizeKey);
+    }
+
+    /**
+     * Misma lógica que {@link #incrementInventory} en transacción nueva (best-effort sync).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public ProductInventoryLocationResponse incrementInventoryIsolated(
+            Long productId,
+            Long locationId,
+            Long colorId,
+            BigDecimal quantity,
+            BigDecimal unitCost,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String sizeKey)
+            throws ResourceNotFoundException, BusinessException {
+        return incrementInventory(
+                productId, locationId, colorId, quantity, unitCost, referenceType, referenceId,
+                referenceNumber, description, sizeKey);
+    }
+
+    /**
+     * Misma lógica que {@link #createOrUpdateInventory} en transacción nueva (alineación legado).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public ProductInventoryLocationResponse createOrUpdateInventoryIsolated(
+            ProductInventoryLocationRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return createOrUpdateInventory(request);
     }
 
     /**

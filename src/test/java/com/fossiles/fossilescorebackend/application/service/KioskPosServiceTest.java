@@ -202,10 +202,16 @@ class KioskPosServiceTest {
         assertThat(sale.getSaleNumber()).startsWith("POS-");
         assertThat(sale.getTotalAmount()).isEqualByComparingTo("450.00");
 
-        ProductInventoryLocation row = inventoryRepository
+        KioscoStockEntity kiosco = kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorId(kioskA.getId(), wallet.getId(), negro.getId())
+                .orElseThrow();
+        assertThat(kiosco.getCurrentStock()).isEqualTo(3);
+
+        // POS no debe tocar inventario legacy
+        ProductInventoryLocation legacy = inventoryRepository
                 .findByProductIdAndLocationIdAndColorId(wallet.getId(), kioskA.getId(), negro.getId())
                 .orElseThrow();
-        assertThat(row.getQuantity()).isEqualByComparingTo("3");
+        assertThat(legacy.getQuantity()).isEqualByComparingTo("5");
     }
 
     @Test

@@ -135,7 +135,6 @@ public class KioskPosService {
     private final ProductCategoryRepository productCategoryRepository;
     private final KioscoStockRepository kioscoStockRepository;
     private final ProductInventoryLocationRepository productInventoryLocationRepository;
-    private final ProductInventoryService productInventoryService;
     private final KioskSaleRepository kioskSaleRepository;
     private final KioskCashSessionRepository kioskCashSessionRepository;
     private final KioskCashExpenseRepository kioskCashExpenseRepository;
@@ -563,7 +562,7 @@ public class KioskPosService {
             if (exchangeSale) {
                 continue;
             }
-            // Kiosco es fuente de verdad: descontar primero; legado no debe tumbar la venta.
+            // Solo kiosco_stock: no tocar inventario legacy (desfasado y causa rollbacks).
             kioscoInventoryService.registrarVentaDesdeIntegracion(
                     kiosk.getId(),
                     parsed.productId(),
@@ -571,17 +570,6 @@ public class KioskPosService {
                     qty,
                     saved.getId(),
                     user.getId(),
-                    parsed.size(),
-                    parsed.hardwareCondition()
-            );
-            softSyncLegacyAfterPosSale(
-                    parsed.productId(),
-                    kiosk.getId(),
-                    parsed.colorId(),
-                    qty,
-                    saved.getId(),
-                    saved.getSaleNumber(),
-                    kiosk.getName(),
                     parsed.size(),
                     parsed.hardwareCondition()
             );
@@ -1115,7 +1103,7 @@ public class KioskPosService {
                     continue;
                 }
                 String sizeKey = extractSizeFromSaleItemName(item.getProductName());
-                // Kiosco primero; legado suave para no tumbar la anulación.
+                // Solo kiosco_stock: la anulación no toca inventario legacy.
                 kioscoInventoryService.anularFacturaDesdeIntegracion(
                         sale.getId(),
                         kiosk.getId(),
@@ -1124,15 +1112,6 @@ public class KioskPosService {
                         item.getQuantity(),
                         request.getReason(),
                         user.getId(),
-                        sizeKey
-                );
-                softSyncLegacyAfterPosVoid(
-                        item.getProductId(),
-                        kiosk.getId(),
-                        item.getColorId(),
-                        item.getQuantity(),
-                        sale.getId(),
-                        sale.getSaleNumber(),
                         sizeKey
                 );
         }
@@ -2038,91 +2017,13 @@ public class KioskPosService {
     }
 
     /**
-     * Intenta descontar legado tras venta POS. Si está desfasado, alinea a kiosco
-     * (fuente de verdad) sin abortar la venta.
+     * Valida y bloquea stock para la venta.
+     * Si el kiosko tiene módulo kiosco ({@code kiosco_stock}), solo usa ese inventario.
+     * Legacy ({@code product_inventory_location}) solo como fallback si el kiosko aún no migró.
      */
-    private void softSyncLegacyAfterPosSale(
-            Long productId,
-            Long locationId,
-            Long colorId,
-            BigDecimal qty,
-            Long saleId,
-            String saleNumber,
-            String kioskName,
-            String sizeKey,
-            String hardwareCondition
-    ) {
-        boolean hasLegacyRow = productInventoryLocationRepository
-                .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
-                .isPresent();
-        if (!hasLegacyRow) {
-            return;
-        }
-        try {
-            productInventoryService.decrementInventory(
-                    productId,
-                    locationId,
-                    colorId,
-                    qty,
-                    "KIOSK_SALE",
-                    saleId,
-                    saleNumber,
-                    "Venta POS en kiosko " + kioskName,
-                    sizeKey
-            );
-        } catch (Exception ex) {
-            log.warn(
-                    "POS_LEGACY_DECREMENT_FAIL locationId={} productId={} colorId={} qty={} msg={}. Aligning to kiosco.",
-                    locationId, productId, colorId, qty, ex.getMessage());
-            kioscoInventoryService.alignLegacyToKioscoStock(
-                    locationId, productId, colorId, hardwareCondition);
-        }
-    }
-
-    /**
-     * Intenta devolver legado tras anulación POS. Si falla, alinea a kiosco.
-     */
-    private void softSyncLegacyAfterPosVoid(
-            Long productId,
-            Long locationId,
-            Long colorId,
-            BigDecimal qty,
-            Long saleId,
-            String saleNumber,
-            String sizeKey
-    ) {
-        boolean hasLegacyRow = productInventoryLocationRepository
-                .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
-                .isPresent();
-        if (!hasLegacyRow) {
-            return;
-        }
-        try {
-            productInventoryService.incrementInventory(
-                    productId,
-                    locationId,
-                    colorId,
-                    qty,
-                    null,
-                    "KIOSK_SALE_VOID",
-                    saleId,
-                    saleNumber,
-                    "Anulacion venta POS",
-                    sizeKey
-            );
-        } catch (Exception ex) {
-            log.warn(
-                    "POS_LEGACY_INCREMENT_FAIL locationId={} productId={} colorId={} qty={} msg={}. Aligning to kiosco.",
-                    locationId, productId, colorId, qty, ex.getMessage());
-            kioscoInventoryService.alignLegacyToKioscoStock(
-                    locationId, productId, colorId, ProductHardwareCondition.NUEVO);
-        }
-    }
-
-    Map<String, ProductInventoryLocation> lockAndValidateStock(Long kioskId, Map<String, BigDecimal> aggregatedQty)
+    void lockAndValidateStock(Long kioskId, Map<String, BigDecimal> aggregatedQty)
             throws BusinessException {
         List<String> sortedKeys = aggregatedQty.keySet().stream().sorted().toList();
-        Map<String, ProductInventoryLocation> locked = new LinkedHashMap<>();
         boolean kioscoModuleActive = !kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(kioskId).isEmpty();
 
@@ -2141,23 +2042,16 @@ public class KioskPosService {
                     throw buildInsufficientStockException(label, parsed.size(), BigDecimal.ZERO, requested);
                 }
                 validateKioscoStock(kioscoRow, parsed, requested, label, product);
-            } else {
-                ProductInventoryLocation row = productInventoryLocationRepository
-                        .findWithLockByProductIdAndLocationIdAndColorId(
-                                parsed.productId(), kioskId, parsed.colorId())
-                        .orElseThrow(() -> new BusinessException(
-                                "Stock insuficiente: no hay inventario para el producto solicitado en este kiosko."));
-                validateLegacyStock(row, parsed, requested, label);
-                locked.put(key, row);
                 continue;
             }
 
-            productInventoryLocationRepository
+            ProductInventoryLocation row = productInventoryLocationRepository
                     .findWithLockByProductIdAndLocationIdAndColorId(
                             parsed.productId(), kioskId, parsed.colorId())
-                    .ifPresent(row -> locked.put(key, row));
+                    .orElseThrow(() -> new BusinessException(
+                            "Stock insuficiente: no hay inventario para el producto solicitado en este kiosko."));
+            validateLegacyStock(row, parsed, requested, label);
         }
-        return locked;
     }
 
     private void validateKioscoStock(

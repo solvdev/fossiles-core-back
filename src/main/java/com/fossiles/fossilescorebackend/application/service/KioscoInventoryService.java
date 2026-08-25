@@ -1979,7 +1979,7 @@ public class KioscoInventoryService {
             String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
-        // syncLegacy=false: el POS es dueño del legado (igual que registrarVentaDesdeIntegracion).
+        // syncLegacy=false: el POS no toca inventario legacy; solo kiosco_stock.
         return anularFactura(invoiceId, locationId, productId, colorId, qty, reason, false, userId, sizeKey, false);
     }
 
@@ -3843,7 +3843,7 @@ public class KioscoInventoryService {
         String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
         String sizeForLegacy = normalizedSize.isEmpty() ? null : normalizedSize;
         if (delta > 0) {
-            productInventoryService.incrementInventory(
+            productInventoryService.incrementInventoryIsolated(
                     productId,
                     locationId,
                     colorId,
@@ -3857,7 +3857,7 @@ public class KioscoInventoryService {
             );
             return;
         }
-        productInventoryService.decrementInventory(
+        productInventoryService.decrementInventoryIsolated(
                 productId,
                 locationId,
                 colorId,
@@ -4720,7 +4720,7 @@ public class KioscoInventoryService {
             Map<String, BigDecimal> targetSizes
     ) throws BusinessException, ResourceNotFoundException {
         BigDecimal total = ProductInventorySizesJson.sum(targetSizes);
-        productInventoryService.createOrUpdateInventory(ProductInventoryLocationRequest.builder()
+        productInventoryService.createOrUpdateInventoryIsolated(ProductInventoryLocationRequest.builder()
                 .productId(productId)
                 .locationId(locationId)
                 .colorId(colorId)
@@ -4772,7 +4772,7 @@ public class KioscoInventoryService {
             );
             return;
         }
-        productInventoryService.createOrUpdateInventory(ProductInventoryLocationRequest.builder()
+        productInventoryService.createOrUpdateInventoryIsolated(ProductInventoryLocationRequest.builder()
                 .productId(stock.getProductId())
                 .locationId(stock.getLocationId())
                 .colorId(stock.getColorId())
