@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.dto.response.OpvShipmentCatalogLineResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OpvShipmentCatalogRowResponse;
+import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
@@ -463,6 +464,7 @@ public class OpvShipmentCatalogService {
             return productRepository.findById(detail.getProductId())
                     .map(ProductEntity::getSellerPrice)
                     .filter(p -> p != null && p.compareTo(BigDecimal.ZERO) > 0)
+                    .map(p -> CinchoSizePricing.applySurcharge(p, detail.getSizeLabel()))
                     .orElse(BigDecimal.ZERO);
         }
         return BigDecimal.ZERO;
