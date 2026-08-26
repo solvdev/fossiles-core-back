@@ -160,7 +160,11 @@ public class OnlineSaleService {
             if (req.getProductId() != null) {
                 enrichWithProductAndColor(entity, req.getProductId(), req.getColorId(), req.getUnitPrice());
             }
-            if (entity.getUnitPrice() != null && entity.getQuantity() != null) {
+            // Con ítems multi-línea: recalcular desde online_sale_item (no desde legacy del 1er producto).
+            List<OnlineSaleItemEntity> existingItems = itemRepository.findByOnlineSaleIdOrderByIdAsc(id);
+            if (existingItems != null && !existingItems.isEmpty()) {
+                recalculateAmountsFromItems(entity);
+            } else if (entity.getUnitPrice() != null && entity.getQuantity() != null) {
                 entity.setNetAmount(entity.getUnitPrice().multiply(BigDecimal.valueOf(entity.getQuantity())));
             }
         }
@@ -169,6 +173,11 @@ public class OnlineSaleService {
         if (req.getShippingCost() != null && entity.getNetAmount() != null) {
             entity.setShippingCost(req.getShippingCost());
             entity.setTotalAmount(entity.getNetAmount().add(req.getShippingCost()));
+            entity.setSkipAmountCalculation(true);
+        } else if (!hasItems && req.getPaymentMethod() != null && entity.getNetAmount() != null) {
+            // Forma de pago inline: aplicar Q15/Q30 sin pisar el neto recalculado de ítems
+            entity.setSkipAmountCalculation(false);
+            entity.calculateShippingAndNet();
             entity.setSkipAmountCalculation(true);
         }
 
