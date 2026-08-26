@@ -1680,6 +1680,22 @@ public class KioscoInventoryService {
             Long userId,
             String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
+        return anularFactura(
+                invoiceId, locationId, productId, colorId, quantity, reason, productLeftKiosk, userId, sizeKey, true);
+    }
+
+    public KioscoStockResponse anularFactura(
+            Long invoiceId,
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            String reason,
+            Boolean productLeftKiosk,
+            Long userId,
+            String sizeKey,
+            boolean syncLegacy
+    ) throws BusinessException, ResourceNotFoundException {
         if (invoiceId == null) {
             throw new BusinessException("La factura es obligatoria.");
         }
@@ -1711,7 +1727,7 @@ public class KioscoInventoryService {
                 !Boolean.TRUE.equals(productLeftKiosk),
                 reason.trim(),
                 sizeKey,
-                true
+                syncLegacy
         );
     }
 
@@ -1963,7 +1979,8 @@ public class KioscoInventoryService {
             String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
-        return anularFactura(invoiceId, locationId, productId, colorId, qty, reason, false, userId, sizeKey);
+        // syncLegacy=false: el POS no toca inventario legacy; solo kiosco_stock.
+        return anularFactura(invoiceId, locationId, productId, colorId, qty, reason, false, userId, sizeKey, false);
     }
 
     @Transactional(readOnly = true)
@@ -3826,7 +3843,7 @@ public class KioscoInventoryService {
         String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
         String sizeForLegacy = normalizedSize.isEmpty() ? null : normalizedSize;
         if (delta > 0) {
-            productInventoryService.incrementInventory(
+            productInventoryService.incrementInventoryIsolated(
                     productId,
                     locationId,
                     colorId,
@@ -3840,7 +3857,7 @@ public class KioscoInventoryService {
             );
             return;
         }
-        productInventoryService.decrementInventory(
+        productInventoryService.decrementInventoryIsolated(
                 productId,
                 locationId,
                 colorId,
@@ -4703,13 +4720,40 @@ public class KioscoInventoryService {
             Map<String, BigDecimal> targetSizes
     ) throws BusinessException, ResourceNotFoundException {
         BigDecimal total = ProductInventorySizesJson.sum(targetSizes);
-        productInventoryService.createOrUpdateInventory(ProductInventoryLocationRequest.builder()
+        productInventoryService.createOrUpdateInventoryIsolated(ProductInventoryLocationRequest.builder()
                 .productId(productId)
                 .locationId(locationId)
                 .colorId(colorId)
                 .quantity(total)
                 .sizes(new LinkedHashMap<>(targetSizes))
                 .build());
+    }
+
+    /**
+     * Alinea inventario legado al stock kiosco actual (fuente de verdad).
+     * Usado por POS cuando el legado está desfasado y no debe tumbar la venta/anulación.
+     */
+    public void alignLegacyToKioscoStock(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            String hardwareCondition
+    ) {
+        String hardware = resolveStockHardware(hardwareCondition);
+        KioscoStockEntity stock = kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        locationId, productId, colorId, hardware)
+                .orElse(null);
+        if (stock == null) {
+            return;
+        }
+        try {
+            alignLegacyInventoryToKioscoStock(stock);
+        } catch (Exception ex) {
+            log.warn(
+                    "KIOSCO_LEGACY_ALIGN_FAIL locationId={} productId={} colorId={} msg={}",
+                    locationId, productId, colorId, ex.getMessage());
+        }
     }
 
     /** Fuerza inventario legacy al stock actual del módulo kiosco. */
@@ -4728,7 +4772,7 @@ public class KioscoInventoryService {
             );
             return;
         }
-        productInventoryService.createOrUpdateInventory(ProductInventoryLocationRequest.builder()
+        productInventoryService.createOrUpdateInventoryIsolated(ProductInventoryLocationRequest.builder()
                 .productId(stock.getProductId())
                 .locationId(stock.getLocationId())
                 .colorId(stock.getColorId())

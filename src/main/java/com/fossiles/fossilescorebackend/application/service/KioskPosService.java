@@ -78,6 +78,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -105,6 +106,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 @Transactional(rollbackFor = Exception.class)
 public class KioskPosService {
 
@@ -133,7 +135,6 @@ public class KioskPosService {
     private final ProductCategoryRepository productCategoryRepository;
     private final KioscoStockRepository kioscoStockRepository;
     private final ProductInventoryLocationRepository productInventoryLocationRepository;
-    private final ProductInventoryService productInventoryService;
     private final KioskSaleRepository kioskSaleRepository;
     private final KioskCashSessionRepository kioskCashSessionRepository;
     private final KioskCashExpenseRepository kioskCashExpenseRepository;
@@ -557,26 +558,11 @@ public class KioskPosService {
         for (Map.Entry<String, BigDecimal> entry : aggregatedQty.entrySet()) {
             ParsedInventoryKey parsed = parseInventoryKey(entry.getKey());
             BigDecimal qty = entry.getValue();
-            boolean hasLegacyRow = productInventoryLocationRepository
-                    .findByProductIdAndLocationIdAndColorId(parsed.productId(), kiosk.getId(), parsed.colorId())
-                    .isPresent();
             // Cambio: el stock lo mueven CAMBIO + / CAMBIO −; la venta solo factura la diferencia.
             if (exchangeSale) {
                 continue;
             }
-            if (hasLegacyRow) {
-                productInventoryService.decrementInventory(
-                        parsed.productId(),
-                        kiosk.getId(),
-                        parsed.colorId(),
-                        qty,
-                        "KIOSK_SALE",
-                        saved.getId(),
-                        saved.getSaleNumber(),
-                        "Venta POS en kiosko " + kiosk.getName(),
-                        parsed.size()
-                );
-            }
+            // Solo kiosco_stock: no tocar inventario legacy (desfasado y causa rollbacks).
             kioscoInventoryService.registrarVentaDesdeIntegracion(
                     kiosk.getId(),
                     parsed.productId(),
@@ -1117,23 +1103,7 @@ public class KioskPosService {
                     continue;
                 }
                 String sizeKey = extractSizeFromSaleItemName(item.getProductName());
-                boolean hasLegacyRow = productInventoryLocationRepository
-                        .findByProductIdAndLocationIdAndColorId(item.getProductId(), kiosk.getId(), item.getColorId())
-                        .isPresent();
-                if (hasLegacyRow) {
-                    productInventoryService.incrementInventory(
-                            item.getProductId(),
-                            kiosk.getId(),
-                            item.getColorId(),
-                            item.getQuantity(),
-                            null,
-                            "KIOSK_SALE_VOID",
-                            sale.getId(),
-                            sale.getSaleNumber(),
-                            "Anulacion venta POS",
-                            sizeKey
-                    );
-                }
+                // Solo kiosco_stock: la anulación no toca inventario legacy.
                 kioscoInventoryService.anularFacturaDesdeIntegracion(
                         sale.getId(),
                         kiosk.getId(),
@@ -2046,10 +2016,14 @@ public class KioskPosService {
         return aggregated;
     }
 
-    Map<String, ProductInventoryLocation> lockAndValidateStock(Long kioskId, Map<String, BigDecimal> aggregatedQty)
+    /**
+     * Valida y bloquea stock para la venta.
+     * Si el kiosko tiene módulo kiosco ({@code kiosco_stock}), solo usa ese inventario.
+     * Legacy ({@code product_inventory_location}) solo como fallback si el kiosko aún no migró.
+     */
+    void lockAndValidateStock(Long kioskId, Map<String, BigDecimal> aggregatedQty)
             throws BusinessException {
         List<String> sortedKeys = aggregatedQty.keySet().stream().sorted().toList();
-        Map<String, ProductInventoryLocation> locked = new LinkedHashMap<>();
         boolean kioscoModuleActive = !kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(kioskId).isEmpty();
 
@@ -2068,23 +2042,16 @@ public class KioskPosService {
                     throw buildInsufficientStockException(label, parsed.size(), BigDecimal.ZERO, requested);
                 }
                 validateKioscoStock(kioscoRow, parsed, requested, label, product);
-            } else {
-                ProductInventoryLocation row = productInventoryLocationRepository
-                        .findWithLockByProductIdAndLocationIdAndColorId(
-                                parsed.productId(), kioskId, parsed.colorId())
-                        .orElseThrow(() -> new BusinessException(
-                                "Stock insuficiente: no hay inventario para el producto solicitado en este kiosko."));
-                validateLegacyStock(row, parsed, requested, label);
-                locked.put(key, row);
                 continue;
             }
 
-            productInventoryLocationRepository
+            ProductInventoryLocation row = productInventoryLocationRepository
                     .findWithLockByProductIdAndLocationIdAndColorId(
                             parsed.productId(), kioskId, parsed.colorId())
-                    .ifPresent(row -> locked.put(key, row));
+                    .orElseThrow(() -> new BusinessException(
+                            "Stock insuficiente: no hay inventario para el producto solicitado en este kiosko."));
+            validateLegacyStock(row, parsed, requested, label);
         }
-        return locked;
     }
 
     private void validateKioscoStock(
