@@ -1369,6 +1369,73 @@ class KioskPosServiceTest {
         assertThat(KioskPosService.qualifiesForBankDepositReport(withoutSlip)).isFalse();
     }
 
+    @Test
+    void createSale_appliesCinchoSizeSurcharge() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        ProductEntity cincho = productRepository.save(ProductEntity.builder()
+                .code("FOSS-3")
+                .name("CINCHO JOAQUIN")
+                .salePrice(new BigDecimal("250.00"))
+                .cinchoType("CASUAL")
+                .categoryId(billeterasCategory.getId())
+                .build());
+
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kioskA.getId())
+                .productId(cincho.getId())
+                .colorId(negro.getId())
+                .currentStock(3)
+                .sizesData("{\"42\":1,\"48\":1,\"50\":1}")
+                .build());
+
+        KioskPosSaleResponse sale48 = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .chargeWithoutDiscount(true)
+                .items(List.of(KioskPosSaleRequest.ItemRequest.builder()
+                        .productId(cincho.getId())
+                        .colorId(negro.getId())
+                        .size("48")
+                        .quantity(BigDecimal.ONE)
+                        .build()))
+                .build());
+        assertThat(sale48.getItems()).hasSize(1);
+        assertThat(sale48.getItems().get(0).getUnitPrice()).isEqualByComparingTo("300.00");
+        assertThat(sale48.getTotalAmount()).isEqualByComparingTo("300.00");
+
+        KioskPosSaleResponse sale50 = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .chargeWithoutDiscount(true)
+                .items(List.of(KioskPosSaleRequest.ItemRequest.builder()
+                        .productId(cincho.getId())
+                        .colorId(negro.getId())
+                        .size("50")
+                        .quantity(BigDecimal.ONE)
+                        .build()))
+                .build());
+        assertThat(sale50.getItems()).hasSize(1);
+        assertThat(sale50.getItems().get(0).getUnitPrice()).isEqualByComparingTo("350.00");
+        assertThat(sale50.getTotalAmount()).isEqualByComparingTo("350.00");
+
+        KioskPosSaleResponse sale42 = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .chargeWithoutDiscount(true)
+                .items(List.of(KioskPosSaleRequest.ItemRequest.builder()
+                        .productId(cincho.getId())
+                        .colorId(negro.getId())
+                        .size("42")
+                        .quantity(BigDecimal.ONE)
+                        .build()))
+                .build());
+        assertThat(sale42.getItems().get(0).getUnitPrice()).isEqualByComparingTo("250.00");
+    }
+
     private static KioskPosSaleRequest.ItemRequest item(Long productId, Long colorId, BigDecimal qty) {
         return KioskPosSaleRequest.ItemRequest.builder()
                 .productId(productId)
