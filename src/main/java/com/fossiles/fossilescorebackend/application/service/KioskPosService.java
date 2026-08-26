@@ -36,6 +36,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskProductAva
 import com.fossiles.fossilescorebackend.application.dto.response.TaxpayerLookupResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
@@ -387,7 +388,7 @@ public class KioskPosService {
                 throw new BusinessException("Debe seleccionar talla para " + product.getName() + ".");
             }
 
-            BigDecimal unitPrice = resolvePosUnitPrice(product);
+            BigDecimal unitPrice = resolvePosUnitPrice(product, sizeLabel);
             // Línea con precio editado (Miraflores): monto final, sin descuento sobre esa línea.
             boolean finalUnitPrice = false;
             if (itemRequest.getUnitPrice() != null
@@ -646,7 +647,7 @@ public class KioskPosService {
             String sizeLabel = ProductInventorySizesJson.normalizeKey(itemRequest.getSize());
             BigDecimal unitPrice = itemRequest.getUnitPrice() != null
                     ? itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP)
-                    : resolvePosUnitPrice(product);
+                    : resolvePosUnitPrice(product, sizeLabel);
             BigDecimal lineTotal = itemRequest.getLineTotal() != null
                     ? itemRequest.getLineTotal().setScale(2, RoundingMode.HALF_UP)
                     : unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
@@ -2508,7 +2509,7 @@ public class KioskPosService {
                         .orElseThrow(() -> new ResourceNotFoundException("Color", itemRequest.getColorId()));
             }
             String sizeLabel = ProductInventorySizesJson.normalizeKey(itemRequest.getSize());
-            BigDecimal unitPrice = resolvePosUnitPrice(product);
+            BigDecimal unitPrice = resolvePosUnitPrice(product, sizeLabel);
             BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
             preparedLines.add(new PreparedLine(
                     product,
@@ -2937,28 +2938,34 @@ public class KioskPosService {
     }
 
     private BigDecimal resolvePosUnitPrice(ProductEntity product) {
+        return resolvePosUnitPrice(product, null);
+    }
+
+    private BigDecimal resolvePosUnitPrice(ProductEntity product, String size) {
         if (product == null) {
             return BigDecimal.ZERO;
         }
+        BigDecimal base;
         if (isPackagingProduct(product)) {
             if (product.getSalePrice() != null && product.getSalePrice().compareTo(BigDecimal.ZERO) > 0) {
-                return product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
+                base = product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
+            } else if (product.getSellerPrice() != null && product.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
+                base = product.getSellerPrice().setScale(2, RoundingMode.HALF_UP);
+            } else {
+                return BigDecimal.ZERO;
             }
-            if (product.getSellerPrice() != null && product.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
-                return product.getSellerPrice().setScale(2, RoundingMode.HALF_UP);
-            }
-            return BigDecimal.ZERO;
+            return base;
         }
         if (product.getSalePrice() != null && product.getSalePrice().compareTo(BigDecimal.ZERO) > 0) {
-            return product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
+            base = product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
+        } else if (product.getDiscountedPrice() != null && product.getDiscountedPrice().compareTo(BigDecimal.ZERO) > 0) {
+            base = product.getDiscountedPrice().setScale(2, RoundingMode.HALF_UP);
+        } else if (product.getSellerPrice() != null && product.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
+            base = product.getSellerPrice().setScale(2, RoundingMode.HALF_UP);
+        } else {
+            return BigDecimal.ZERO;
         }
-        if (product.getDiscountedPrice() != null && product.getDiscountedPrice().compareTo(BigDecimal.ZERO) > 0) {
-            return product.getDiscountedPrice().setScale(2, RoundingMode.HALF_UP);
-        }
-        if (product.getSellerPrice() != null && product.getSellerPrice().compareTo(BigDecimal.ZERO) > 0) {
-            return product.getSellerPrice().setScale(2, RoundingMode.HALF_UP);
-        }
-        return BigDecimal.ZERO;
+        return CinchoSizePricing.applySurcharge(base, size);
     }
 
     private boolean isPackagingProduct(ProductEntity product) {
