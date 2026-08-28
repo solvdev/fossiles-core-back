@@ -33,6 +33,9 @@ public class SystemAnnouncementService {
     private static final Long SSE_TIMEOUT_MS = 30 * 60 * 1000L; // 30 minutos
     private final List<SseEmitter> emitters = new CopyOnWriteArrayList<>();
 
+    // Cache en memoria para atender consultas de clientes sin tocar la base de datos
+    private volatile SystemAnnouncementResponse cachedActiveAnnouncement = null;
+
     /**
      * Suscribe un cliente para recibir anuncios en tiempo real vía SSE
      */
@@ -113,6 +116,9 @@ public class SystemAnnouncementService {
         SystemAnnouncementEntity saved = announcementRepository.save(entity);
         SystemAnnouncementResponse response = toResponse(saved, now);
 
+        // Guardar en cache en memoria
+        this.cachedActiveAnnouncement = response;
+
         // Enviar SSE a todos los conectados
         sendToAllEmitters("ANNOUNCEMENT", response);
 
@@ -134,18 +140,42 @@ public class SystemAnnouncementService {
             log.info("Alerta de sistema cancelada por '{}'", username);
         }
 
+        // Limpiar cache en memoria
+        this.cachedActiveAnnouncement = null;
+
         // Notificar a todos los clientes para que cierren el banner/modal
         sendToAllEmitters("DISMISS", Map.of("isActive", false, "dismissedAt", now.toString()));
     }
 
     /**
-     * Obtiene el anuncio activo actual (si aún no expira)
+     * Obtiene el anuncio activo actual en memoria (o BD si el servidor acaba de iniciar)
      */
-    @Transactional(readOnly = true)
     public Optional<SystemAnnouncementResponse> getActiveAnnouncement() {
         LocalDateTime now = LocalDateTime.now(ZONE_GUATEMALA);
-        return announcementRepository.findFirstByIsActiveTrueAndExpiresAtAfterOrderByCreatedAtDesc(now)
-                .map(entity -> toResponse(entity, now));
+
+        SystemAnnouncementResponse cached = this.cachedActiveAnnouncement;
+        if (cached != null) {
+            if (cached.getExpiresAt() != null && cached.getExpiresAt().isAfter(now) && Boolean.TRUE.equals(cached.getIsActive())) {
+                long remaining = Duration.between(now, cached.getExpiresAt()).getSeconds();
+                cached.setRemainingSeconds(Math.max(0L, remaining));
+                return Optional.of(cached);
+            } else {
+                this.cachedActiveAnnouncement = null;
+                return Optional.empty();
+            }
+        }
+
+        // Si no está en cache, buscar en BD una sola vez
+        try {
+            Optional<SystemAnnouncementResponse> fromDb = announcementRepository
+                    .findFirstByIsActiveTrueAndExpiresAtAfterOrderByCreatedAtDesc(now)
+                    .map(entity -> toResponse(entity, now));
+            fromDb.ifPresent(r -> this.cachedActiveAnnouncement = r);
+            return fromDb;
+        } catch (Exception e) {
+            log.warn("Error consultando anuncio activo en BD: {}", e.getMessage());
+            return Optional.empty();
+        }
     }
 
     /**
