@@ -46,6 +46,10 @@ public class InternalShipmentRequestEntity {
     @Column(name = "document_date", length = 10)
     private String documentDate;
 
+    /** Correlativo de boleta física de solicitud (talonario BLS-nnnnn). */
+    @Column(name = "slip_number", length = 50)
+    private String slipNumber;
+
     /** DEFECTOS: porcentaje del precio catálogo (ej. 50). PLANILLA: null (50 fijo al aprobar). */
     @Column(name = "discount_percent", precision = 5, scale = 2)
     private java.math.BigDecimal discountPercent;

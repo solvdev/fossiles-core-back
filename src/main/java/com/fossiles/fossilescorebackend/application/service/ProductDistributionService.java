@@ -893,6 +893,10 @@ public class ProductDistributionService {
 
     private void assertOrderAllowsDirectShipments(ProductionOrderEntity order) throws BusinessException {
         String ot = order.getOrderType() == null ? "" : order.getOrderType().trim().toUpperCase();
+        if ("INTERNA".equals(ot) && "DRAFT".equalsIgnoreCase(order.getStatus())) {
+            throw new BusinessException(
+                    "La orden INTERNA (OPI) está en borrador. Contabilidad debe autorizar la producción desde Autorizar envíos internos antes de generar envíos.");
+        }
         if (!"INTERNA".equals(ot) && !"CLIENTE_KIOSKO".equals(ot) && !"NORMAL".equals(ot) && !isCinchoOrderType(ot)
                 && !isLuisFelipeVendorOrder(order)) {
             throw new BusinessException(

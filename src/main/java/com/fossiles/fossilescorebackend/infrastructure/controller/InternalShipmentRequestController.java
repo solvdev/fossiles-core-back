@@ -2,12 +2,16 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentRequestCreateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentRequestRejectRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentRequestSlipPrintRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentEligibilityResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentRequestResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentRequestSlipPrintResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentRequestSlipSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductShipmentResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestService;
+import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestSlipService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -27,6 +31,7 @@ import java.util.List;
 public class InternalShipmentRequestController {
 
     private final InternalShipmentRequestService internalShipmentRequestService;
+    private final InternalShipmentRequestSlipService internalShipmentRequestSlipService;
 
     @GetMapping
     public ResponseEntity<List<InternalShipmentRequestResponse>> list(
@@ -79,5 +84,19 @@ public class InternalShipmentRequestController {
             @RequestParam(required = false) String month)
             throws ResourceNotFoundException {
         return ResponseEntity.ok(internalShipmentRequestService.getEmployeePlanillaEligibility(employeeId, month));
+    }
+
+    @PostMapping("/slips/print")
+    public ResponseEntity<InternalShipmentRequestSlipPrintResponse> printSlips(
+            @Valid @RequestBody(required = false) InternalShipmentRequestSlipPrintRequest request)
+            throws BusinessException {
+        int qty = (request != null && request.getQuantity() != null) ? request.getQuantity() : 50;
+        return ResponseEntity.ok(internalShipmentRequestSlipService.printBatch(qty));
+    }
+
+    @GetMapping("/slips/summary")
+    public ResponseEntity<InternalShipmentRequestSlipSummaryResponse> getSlipSummary()
+            throws BusinessException {
+        return ResponseEntity.ok(internalShipmentRequestSlipService.getSummary());
     }
 }

@@ -29,4 +29,9 @@ public interface InternalShipmentRequestRepository
             @Param("fromInclusive") java.time.LocalDateTime fromInclusive,
             @Param("toExclusive") java.time.LocalDateTime toExclusive
     );
+
+    boolean existsBySlipNumber(String slipNumber);
+
+    @Query("SELECT r.slipNumber FROM InternalShipmentRequestEntity r WHERE r.slipNumber IS NOT NULL")
+    java.util.List<String> findAllSlipNumbers();
 }

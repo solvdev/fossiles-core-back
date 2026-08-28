@@ -62,7 +62,6 @@ public class ProductionOrderController {
     private final SmartMaterialRequestService smartMaterialRequestService;
     private final ProductionOrderCodeService productionOrderCodeService;
     private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
-    private final OpiVendorShipmentNumberService opiVendorShipmentNumberService;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
     private final CustomerShipmentDispatchService customerShipmentDispatchService;
     private final OnlineSaleService onlineSaleService;
@@ -90,7 +89,6 @@ public class ProductionOrderController {
     public ResponseEntity<List<ProductionOrderResponse>> getAll() {
         List<ProductionOrderResponse> orders = productionOrderRepository.findAll().stream()
                 .map(this::ensureOpvVendorShipmentNumber)
-                .map(this::ensureOpiVendorShipmentNumber)
                 .map(this::toResponse)
                 .collect(Collectors.toList());
         return ResponseEntity.ok(orders);
@@ -138,7 +136,6 @@ public class ProductionOrderController {
         ProductionOrderEntity entity = productionOrderRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
         ProductionOrderEntity resolved = ensureOpvVendorShipmentNumber(entity);
-        resolved = ensureOpiVendorShipmentNumber(resolved);
         return ResponseEntity.ok(toResponse(resolved));
     }
 
@@ -328,8 +325,6 @@ public class ProductionOrderController {
         }
 
         if (isInternaOpi) {
-            opiVendorShipmentNumberService.assignIfMissing(saved);
-            saved = productionOrderRepository.save(saved);
             List<ProductionOrderItemEntity> savedItems =
                     productionOrderItemRepository.findByProductionOrderId(saved.getId());
             internalShipmentRequestService.createRequestForManualOpi(saved, savedItems);
@@ -1989,27 +1984,6 @@ public class ProductionOrderController {
             return productionOrderRepository.save(entity);
         }
         return entity;
-    }
-
-    /** OPI (INTERNA): correlativo ENVI-nnnnn en vendor_shipment_number para documento de envío interno. */
-    private ProductionOrderEntity ensureOpiVendorShipmentNumber(ProductionOrderEntity entity) {
-        if (!isOpiInternaOrder(entity)) {
-            return entity;
-        }
-        String before = entity.getVendorShipmentNumber();
-        opiVendorShipmentNumberService.assignIfMissing(entity);
-        if (!java.util.Objects.equals(before, entity.getVendorShipmentNumber())) {
-            return productionOrderRepository.save(entity);
-        }
-        return entity;
-    }
-
-    private boolean isOpiInternaOrder(ProductionOrderEntity order) {
-        if (order == null) {
-            return false;
-        }
-        String type = String.valueOf(order.getOrderType() == null ? "" : order.getOrderType()).trim().toUpperCase();
-        return "INTERNA".equals(type);
     }
 
     /** OPV vendedor: Luis Felipe (incluye cinchos OPC; correlativo ENVP de envío). */
