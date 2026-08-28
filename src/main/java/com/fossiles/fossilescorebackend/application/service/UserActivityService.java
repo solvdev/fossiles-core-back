@@ -26,7 +26,11 @@ public class UserActivityService {
     private final UserRepository userRepository;
     private final UserActivityLogRepository userActivityLogRepository;
 
+    public static final java.time.ZoneId ZONE_GUATEMALA = java.time.ZoneId.of("America/Guatemala");
     private static final int DEFAULT_ONLINE_WINDOW_MINUTES = 5;
+
+    // Cache en memoria para evitar saturación de base de datos en peticiones concurrentes
+    private final Map<String, Long> lastRecordedTimestampMap = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * Registra de forma asíncrona la actividad del usuario y actualiza su last_activity_at
@@ -38,16 +42,28 @@ public class UserActivityService {
             return;
         }
 
+        long nowEpoch = System.currentTimeMillis();
+        Long lastEpoch = lastRecordedTimestampMap.get(username);
+        boolean isGet = "GET".equalsIgnoreCase(httpMethod);
+
+        // Si es una consulta GET y ya registramos actividad de este usuario en los últimos 15 segundos, omitir
+        if (isGet && lastEpoch != null && (nowEpoch - lastEpoch < 15000L)) {
+            return;
+        }
+
+        lastRecordedTimestampMap.put(username, nowEpoch);
+
         try {
-            Optional<UserEntity> userOpt = userRepository.findByUsername(username);
-            if (userOpt.isEmpty()) {
+            Optional<Long> userIdOpt = userRepository.findIdByUsername(username);
+            if (userIdOpt.isEmpty()) {
                 return;
             }
 
-            UserEntity user = userOpt.get();
-            LocalDateTime now = LocalDateTime.now();
-            user.setLastActivityAt(now);
-            userRepository.save(user);
+            Long userId = userIdOpt.get();
+            LocalDateTime now = LocalDateTime.now(ZONE_GUATEMALA);
+
+            // Actualización directa atómica sin cargar joins pesados
+            userRepository.updateLastActivityAt(username, now);
 
             // Obtener tipo y descripción amigable
             ActionInfo actionInfo = resolveActionInfo(httpMethod, requestPath);
@@ -58,7 +74,7 @@ public class UserActivityService {
             String safePath = requestPath != null && requestPath.length() > 255 ? requestPath.substring(0, 255) : requestPath;
 
             UserActivityLogEntity logEntity = UserActivityLogEntity.builder()
-                    .user(user)
+                    .user(userRepository.getReferenceById(userId))
                     .actionType(actionInfo.actionType)
                     .description(actionInfo.description)
                     .httpMethod(httpMethod)
@@ -70,7 +86,7 @@ public class UserActivityService {
 
             userActivityLogRepository.save(logEntity);
         } catch (Exception e) {
-            log.warn("Error al registrar actividad de usuario {}: {}", username, e.getMessage());
+            log.trace("Error al registrar actividad de usuario {}: {}", username, e.getMessage());
         }
     }
 
@@ -80,15 +96,20 @@ public class UserActivityService {
     @Transactional(readOnly = true)
     public List<ConnectedUserResponse> getConnectedUsers(Integer windowMinutes) {
         int window = (windowMinutes != null && windowMinutes > 0) ? windowMinutes : DEFAULT_ONLINE_WINDOW_MINUTES;
-        LocalDateTime threshold = LocalDateTime.now().minusMinutes(window);
+        LocalDateTime now = LocalDateTime.now(ZONE_GUATEMALA);
+        LocalDateTime threshold = now.minusMinutes(window);
 
         List<UserEntity> allUsers = userRepository.findAll();
 
         return allUsers.stream()
                 .map(user -> {
                     LocalDateTime lastAct = user.getLastActivityAt();
-                    boolean isOnline = lastAct != null && lastAct.isAfter(threshold);
-                    Long minutesSince = lastAct != null ? Duration.between(lastAct, LocalDateTime.now()).toMinutes() : null;
+                    boolean isOnline = lastAct != null && (lastAct.isAfter(threshold) || lastAct.isEqual(threshold));
+                    Long minutesSince = null;
+                    if (lastAct != null) {
+                        long diff = Duration.between(lastAct, now).toMinutes();
+                        minutesSince = Math.max(0L, diff);
+                    }
 
                     // Obtener la última acción registrada
                     UserActivityLogResponse lastAction = userActivityLogRepository.findLatestByUserId(user.getId())

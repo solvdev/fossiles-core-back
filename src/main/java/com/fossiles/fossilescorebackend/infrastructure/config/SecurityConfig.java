@@ -38,6 +38,7 @@ public class SecurityConfig {
                 // Permitir endpoints públicos
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/public/**").permitAll()
+                .requestMatchers("/api/system-announcements/stream", "/api/system-announcements/active").permitAll()
                 // Flujo móvil Bodega PT sin login (dispositivo dedicado)
                 .requestMatchers("/api/product-distributions/**").permitAll()
                 .requestMatchers("/api/public/online-warehouse/**").permitAll()
