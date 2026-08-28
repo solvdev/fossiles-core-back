@@ -28,6 +28,7 @@ public class UserResponse {
     private CostCenterResponse costCenter;
     private OperationalUnitResponse operationalUnit;
     private Set<RoleResponse> roles;
+    private LocalDateTime lastActivityAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

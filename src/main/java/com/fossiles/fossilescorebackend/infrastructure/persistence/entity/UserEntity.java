@@ -66,5 +66,8 @@ public class UserEntity {
     )
     @Builder.Default
     private Set<RoleEntity> roles = new HashSet<>();
+
+    @Column(name = "last_activity_at")
+    private LocalDateTime lastActivityAt;
 }
 

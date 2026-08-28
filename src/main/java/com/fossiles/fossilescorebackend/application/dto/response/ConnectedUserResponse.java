@@ -1,4 +1,4 @@
-package com.fossiles.fossilescorebackend.domain.model;
+package com.fossiles.fossilescorebackend.application.dto.response;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -12,21 +12,18 @@ import java.util.Set;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class User {
+public class ConnectedUserResponse {
     private Long id;
     private String username;
-    private String email;
-    private String password;
-    private String status;
     private String firstName;
     private String lastName;
+    private String email;
     private String profileImageUrl;
-    private Department department;
-    private CostCenter costCenter;
-    private OperationalUnit operationalUnit;
-    private Set<Role> roles;
+    private String status;
+    private Set<String> roles;
+    private String departmentName;
     private LocalDateTime lastActivityAt;
-    private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
+    private boolean isOnline;
+    private Long minutesSinceLastActivity;
+    private UserActivityLogResponse lastAction;
 }
-

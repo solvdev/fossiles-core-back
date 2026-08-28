@@ -3,9 +3,12 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 import com.fossiles.fossilescorebackend.application.dto.request.UserRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.UserStatusRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.UserUpdateRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.ConnectedUserResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.UserActivityLogResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.UserResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.UserActivityService;
 import com.fossiles.fossilescorebackend.application.service.UserService;
 import com.fossiles.fossilescorebackend.infrastructure.service.S3StorageService;
 import com.fossiles.fossilescorebackend.infrastructure.util.JwtUtil;
@@ -29,6 +32,7 @@ import java.util.List;
 public class UserController {
 
     private final UserService userService;
+    private final UserActivityService userActivityService;
     private final JwtUtil jwtUtil;
     private final S3StorageService s3StorageService;
 
@@ -36,6 +40,19 @@ public class UserController {
     public ResponseEntity<List<UserResponse>> getAllUsers() {
         authorizeUserManagement();
         return ResponseEntity.ok(userService.getAllUsers());
+    }
+
+    @GetMapping("/connected")
+    public ResponseEntity<List<ConnectedUserResponse>> getConnectedUsers(
+            @RequestParam(name = "windowMinutes", required = false, defaultValue = "5") Integer windowMinutes) {
+        authorizeUserManagement();
+        return ResponseEntity.ok(userActivityService.getConnectedUsers(windowMinutes));
+    }
+
+    @GetMapping("/{id}/recent-actions")
+    public ResponseEntity<List<UserActivityLogResponse>> getUserRecentActions(@PathVariable Long id) {
+        authorizeUserManagement();
+        return ResponseEntity.ok(userActivityService.getRecentActions(id));
     }
 
     @GetMapping("/me")

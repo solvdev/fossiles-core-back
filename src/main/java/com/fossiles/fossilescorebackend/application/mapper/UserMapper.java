@@ -52,6 +52,7 @@ public class UserMapper {
             .costCenter(toCostCenterDomain(entity.getCostCenter()))
             .operationalUnit(toOperationalUnitDomain(entity.getOperationalUnit()))
             .roles(roles)
+            .lastActivityAt(entity.getLastActivityAt())
             .build();
     }
 
@@ -78,6 +79,7 @@ public class UserMapper {
             .costCenter(toCostCenterEntity(domain.getCostCenter()))
             .operationalUnit(toOperationalUnitEntity(domain.getOperationalUnit()))
             .roles(roles)
+            .lastActivityAt(domain.getLastActivityAt())
             .build();
     }
 
@@ -121,6 +123,7 @@ public class UserMapper {
             .costCenter(toCostCenterResponse(domain.getCostCenter()))
             .operationalUnit(toOperationalUnitResponse(domain.getOperationalUnit()))
             .roles(roles)
+            .lastActivityAt(domain.getLastActivityAt())
             .createdAt(domain.getCreatedAt())
             .updatedAt(domain.getUpdatedAt())
             .build();
