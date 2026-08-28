@@ -26,6 +26,7 @@ public class UserActivityService {
     private final UserRepository userRepository;
     private final UserActivityLogRepository userActivityLogRepository;
 
+    public static final java.time.ZoneId ZONE_GUATEMALA = java.time.ZoneId.of("America/Guatemala");
     private static final int DEFAULT_ONLINE_WINDOW_MINUTES = 5;
 
     /**
@@ -45,7 +46,7 @@ public class UserActivityService {
             }
 
             UserEntity user = userOpt.get();
-            LocalDateTime now = LocalDateTime.now();
+            LocalDateTime now = LocalDateTime.now(ZONE_GUATEMALA);
             user.setLastActivityAt(now);
             userRepository.save(user);
 
@@ -80,15 +81,20 @@ public class UserActivityService {
     @Transactional(readOnly = true)
     public List<ConnectedUserResponse> getConnectedUsers(Integer windowMinutes) {
         int window = (windowMinutes != null && windowMinutes > 0) ? windowMinutes : DEFAULT_ONLINE_WINDOW_MINUTES;
-        LocalDateTime threshold = LocalDateTime.now().minusMinutes(window);
+        LocalDateTime now = LocalDateTime.now(ZONE_GUATEMALA);
+        LocalDateTime threshold = now.minusMinutes(window);
 
         List<UserEntity> allUsers = userRepository.findAll();
 
         return allUsers.stream()
                 .map(user -> {
                     LocalDateTime lastAct = user.getLastActivityAt();
-                    boolean isOnline = lastAct != null && lastAct.isAfter(threshold);
-                    Long minutesSince = lastAct != null ? Duration.between(lastAct, LocalDateTime.now()).toMinutes() : null;
+                    boolean isOnline = lastAct != null && (lastAct.isAfter(threshold) || lastAct.isEqual(threshold));
+                    Long minutesSince = null;
+                    if (lastAct != null) {
+                        long diff = Duration.between(lastAct, now).toMinutes();
+                        minutesSince = Math.max(0L, diff);
+                    }
 
                     // Obtener la última acción registrada
                     UserActivityLogResponse lastAction = userActivityLogRepository.findLatestByUserId(user.getId())

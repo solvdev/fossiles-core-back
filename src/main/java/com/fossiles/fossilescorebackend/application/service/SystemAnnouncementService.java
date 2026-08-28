@@ -29,6 +29,7 @@ public class SystemAnnouncementService {
     private final SystemAnnouncementRepository announcementRepository;
     private final UserRepository userRepository;
 
+    public static final java.time.ZoneId ZONE_GUATEMALA = java.time.ZoneId.of("America/Guatemala");
     private static final Long SSE_TIMEOUT_MS = 30 * 60 * 1000L; // 30 minutos
     private final List<SseEmitter> emitters = new CopyOnWriteArrayList<>();
 
@@ -58,7 +59,7 @@ public class SystemAnnouncementService {
             // Enviar saludo inicial
             emitter.send(SseEmitter.event()
                     .name("INIT")
-                    .data(Map.of("status", "CONNECTED", "timestamp", LocalDateTime.now().toString())));
+                    .data(Map.of("status", "CONNECTED", "timestamp", LocalDateTime.now(ZONE_GUATEMALA).toString())));
 
             // Si hay un anuncio activo actualmente, enviarlo de inmediato al cliente recién conectado
             getActiveAnnouncement().ifPresent(active -> {
@@ -82,7 +83,7 @@ public class SystemAnnouncementService {
      */
     @Transactional
     public SystemAnnouncementResponse broadcastAnnouncement(SystemAnnouncementRequest request, String username) {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(ZONE_GUATEMALA);
         UserEntity creator = (username != null) ? userRepository.findByUsername(username).orElse(null) : null;
 
         // Desactivar anuncios anteriores
@@ -124,7 +125,7 @@ public class SystemAnnouncementService {
      */
     @Transactional
     public void dismissActiveAnnouncement(String username) {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(ZONE_GUATEMALA);
         UserEntity user = (username != null) ? userRepository.findByUsername(username).orElse(null) : null;
         Long userId = user != null ? user.getId() : null;
 
@@ -142,7 +143,7 @@ public class SystemAnnouncementService {
      */
     @Transactional(readOnly = true)
     public Optional<SystemAnnouncementResponse> getActiveAnnouncement() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(ZONE_GUATEMALA);
         return announcementRepository.findFirstByIsActiveTrueAndExpiresAtAfterOrderByCreatedAtDesc(now)
                 .map(entity -> toResponse(entity, now));
     }

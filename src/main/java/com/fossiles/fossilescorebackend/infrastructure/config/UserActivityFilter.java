@@ -25,17 +25,25 @@ public class UserActivityFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
 
-        filterChain.doFilter(request, response);
-
+        // Capturar autenticación ANTES de continuar la cadena para evitar que stateless security la limpie
+        String authenticatedUsername = null;
         try {
             Authentication auth = SecurityContextHolder.getContext().getAuthentication();
             if (auth != null && auth.isAuthenticated() && !"anonymousUser".equalsIgnoreCase(auth.getName())) {
+                authenticatedUsername = auth.getName();
+            }
+        } catch (Exception ignored) {}
+
+        filterChain.doFilter(request, response);
+
+        try {
+            if (authenticatedUsername != null) {
                 String path = request.getRequestURI();
                 if (!isIgnoredPath(path)) {
                     String method = request.getMethod();
                     String ip = extractClientIp(request);
                     String userAgent = request.getHeader("User-Agent");
-                    userActivityService.recordActivity(auth.getName(), method, path, ip, userAgent);
+                    userActivityService.recordActivity(authenticatedUsername, method, path, ip, userAgent);
                 }
             }
         } catch (Exception e) {
@@ -61,3 +69,4 @@ public class UserActivityFilter extends OncePerRequestFilter {
         return xfHeader.split(",")[0].trim();
     }
 }
+

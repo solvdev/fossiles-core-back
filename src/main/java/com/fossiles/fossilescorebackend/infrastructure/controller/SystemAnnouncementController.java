@@ -31,7 +31,11 @@ public class SystemAnnouncementController {
      * Canal SSE para suscripción de notificaciones y alertas en tiempo real
      */
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter streamAnnouncements() {
+    public SseEmitter streamAnnouncements(jakarta.servlet.http.HttpServletResponse response) {
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("Connection", "keep-alive");
+
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         String username = (auth != null && auth.isAuthenticated()) ? auth.getName() : "anonymous";
         return announcementService.subscribe(username);
