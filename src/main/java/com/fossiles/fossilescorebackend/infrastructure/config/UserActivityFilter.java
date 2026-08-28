@@ -47,6 +47,7 @@ public class UserActivityFilter extends OncePerRequestFilter {
         if (path == null) return true;
         return path.contains("/api/users/connected") ||
                 path.contains("/recent-actions") ||
+                path.contains("/api/system-announcements") ||
                 path.contains("/actuator") ||
                 path.contains("/favicon.ico") ||
                 path.contains("/error");
