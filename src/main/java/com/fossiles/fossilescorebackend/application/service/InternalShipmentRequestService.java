@@ -57,6 +57,7 @@ public class InternalShipmentRequestService {
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final ProductionOrderCodeService productionOrderCodeService;
     private final OpiVendorShipmentNumberService opiVendorShipmentNumberService;
+    private final InternalShipmentRequestSlipService slipService;
     private final SmartMaterialRequestService smartMaterialRequestService;
     private final ObjectMapper objectMapper;
     private final SecurityUtil securityUtil;
@@ -207,6 +208,7 @@ public class InternalShipmentRequestService {
         }
 
         order.setStatus("PENDING");
+        opiVendorShipmentNumberService.assignIfMissing(order);
         productionOrderRepository.save(order);
         generateMaterialsForProductionOrder(order.getId());
 
@@ -318,6 +320,13 @@ public class InternalShipmentRequestService {
         if ("OPI".equals(requestType)) {
             throw new BusinessException("Las solicitudes OPI se crean automáticamente al registrar una orden INTERNA.");
         }
+
+        String rawSlip = request.getSlipNumber();
+        if (rawSlip == null || rawSlip.isBlank()) {
+            throw new BusinessException("El número de boleta física de solicitud (BLS) es obligatorio.");
+        }
+        String normalizedSlip = InternalShipmentRequestSlipService.normalizeSlipNumber(rawSlip);
+
         ProductDistributionService.validateDefectosDiscount(
                 requestType, request.getDiscountPercent(), request.getDiscountAmount());
 
@@ -340,6 +349,7 @@ public class InternalShipmentRequestService {
                 .recipientName(recipient)
                 .recipientPhone(recipientPhone)
                 .recipientTaxId(recipientTaxId)
+                .slipNumber(normalizedSlip)
                 .notes(trimToNull(request.getNotes()))
                 .documentDate(trimToNull(request.getDocumentDate()))
                 .discountPercent(discountPercent)
@@ -369,6 +379,7 @@ public class InternalShipmentRequestService {
             throw new BusinessException("Debe incluir al menos un producto con cantidad.");
         }
         InternalShipmentRequestEntity saved = requestRepository.save(entity);
+        slipService.validateAndUseSlip(normalizedSlip, saved.getId());
 
         List<DispatchStockShortageResponse> shortages =
                 productDistributionService.computeDispatchStockShortages(request.getProducts());
@@ -404,7 +415,6 @@ public class InternalShipmentRequestService {
                 .status("DRAFT")
                 .createdBy(securityUtil.getCurrentUserId())
                 .build();
-        opiVendorShipmentNumberService.assignIfMissing(order);
         ProductionOrderEntity savedOrder = productionOrderRepository.save(order);
 
         for (DispatchStockShortageResponse shortage : shortages) {
@@ -599,6 +609,7 @@ public class InternalShipmentRequestService {
                 .recipientName(entity.getRecipientName())
                 .recipientPhone(entity.getRecipientPhone())
                 .recipientTaxId(entity.getRecipientTaxId())
+                .slipNumber(entity.getSlipNumber())
                 .notes(entity.getNotes())
                 .documentDate(entity.getDocumentDate())
                 .discountPercent(entity.getDiscountPercent())

@@ -23,6 +23,7 @@ public class InternalShipmentRequestResponse {
     private String recipientTaxId;
     private String notes;
     private String documentDate;
+    private String slipNumber;
     private java.math.BigDecimal discountPercent;
     private java.math.BigDecimal discountAmount;
     private Long requestedBy;

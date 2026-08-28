@@ -82,7 +82,7 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
             FROM production_order po
             WHERE UPPER(COALESCE(po.status, '')) <> 'CANCELLED'
               AND (
-                (:kind = 'OPI' AND UPPER(TRIM(COALESCE(po.order_type, ''))) = 'INTERNA')
+                (:kind = 'OPI' AND UPPER(TRIM(COALESCE(po.order_type, ''))) = 'INTERNA' AND UPPER(COALESCE(po.status, '')) <> 'DRAFT')
                 OR (
                   :kind = 'OPCK'
                   AND (
