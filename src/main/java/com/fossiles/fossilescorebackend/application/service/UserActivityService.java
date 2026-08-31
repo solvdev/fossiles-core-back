@@ -96,19 +96,42 @@ public class UserActivityService {
     @Transactional(readOnly = true)
     public List<ConnectedUserResponse> getConnectedUsers(Integer windowMinutes) {
         int window = (windowMinutes != null && windowMinutes > 0) ? windowMinutes : DEFAULT_ONLINE_WINDOW_MINUTES;
-        LocalDateTime now = LocalDateTime.now(ZONE_GUATEMALA);
-        LocalDateTime threshold = now.minusMinutes(window);
-
         List<UserEntity> allUsers = userRepository.findAll();
+
+        // Encontrar la fecha de actividad más reciente global para calibrar posibles desfases de zona horaria
+        LocalDateTime maxActivity = allUsers.stream()
+                .map(UserEntity::getLastActivityAt)
+                .filter(Objects::nonNull)
+                .max(LocalDateTime::compareTo)
+                .orElse(null);
+
+        // Si hay actividad reciente en la base de datos, usamos la hora actual del servidor o la más reciente
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime nowGt = LocalDateTime.now(ZONE_GUATEMALA);
+
+        // Umbral tolerante: considera los últimos 'window' minutos
+        LocalDateTime threshold = (maxActivity != null && maxActivity.isAfter(now))
+                ? maxActivity.minusMinutes(window)
+                : nowGt.minusMinutes(window);
+
+        // Fallback secundario con hora local estándar del servidor
+        LocalDateTime thresholdServer = now.minusMinutes(window);
 
         return allUsers.stream()
                 .map(user -> {
                     LocalDateTime lastAct = user.getLastActivityAt();
-                    boolean isOnline = lastAct != null && (lastAct.isAfter(threshold) || lastAct.isEqual(threshold));
+                    boolean isOnline = false;
                     Long minutesSince = null;
+
                     if (lastAct != null) {
-                        long diff = Duration.between(lastAct, now).toMinutes();
-                        minutesSince = Math.max(0L, diff);
+                        // Comprobar contra zona GT o contra hora de servidor
+                        boolean onlineGt = lastAct.isAfter(threshold) || lastAct.isEqual(threshold);
+                        boolean onlineServer = lastAct.isAfter(thresholdServer) || lastAct.isEqual(thresholdServer);
+                        isOnline = onlineGt || onlineServer;
+
+                        long diffGt = Math.abs(Duration.between(lastAct, nowGt).toMinutes());
+                        long diffServer = Math.abs(Duration.between(lastAct, now).toMinutes());
+                        minutesSince = Math.min(diffGt, diffServer);
                     }
 
                     // Obtener la última acción registrada

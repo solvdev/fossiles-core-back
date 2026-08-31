@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.config;
 
 import com.fossiles.fossilescorebackend.application.service.UserActivityService;
+import com.fossiles.fossilescorebackend.infrastructure.util.JwtUtil;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -20,30 +21,47 @@ import java.io.IOException;
 public class UserActivityFilter extends OncePerRequestFilter {
 
     private final UserActivityService userActivityService;
+    private final JwtUtil jwtUtil;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
 
-        // Capturar autenticación ANTES de continuar la cadena para evitar que stateless security la limpie
-        String authenticatedUsername = null;
+        // 1. Extraer username del contexto de seguridad o directamente del token JWT
+        String username = null;
         try {
             Authentication auth = SecurityContextHolder.getContext().getAuthentication();
             if (auth != null && auth.isAuthenticated() && !"anonymousUser".equalsIgnoreCase(auth.getName())) {
-                authenticatedUsername = auth.getName();
+                username = auth.getName();
             }
         } catch (Exception ignored) {}
 
+        if (username == null) {
+            try {
+                String authHeader = request.getHeader("Authorization");
+                if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                    String token = authHeader.substring(7);
+                    username = jwtUtil.extractUsername(token);
+                } else {
+                    String tokenParam = request.getParameter("token");
+                    if (tokenParam != null && !tokenParam.isBlank()) {
+                        username = jwtUtil.extractUsername(tokenParam.trim());
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
         filterChain.doFilter(request, response);
 
+        // 2. Registrar actividad si la petición fue procesada con éxito (status < 400 o relevante)
         try {
-            if (authenticatedUsername != null) {
+            if (username != null && !"anonymousUser".equalsIgnoreCase(username)) {
                 String path = request.getRequestURI();
                 if (!isIgnoredPath(path)) {
                     String method = request.getMethod();
                     String ip = extractClientIp(request);
                     String userAgent = request.getHeader("User-Agent");
-                    userActivityService.recordActivity(authenticatedUsername, method, path, ip, userAgent);
+                    userActivityService.recordActivity(username, method, path, ip, userAgent);
                 }
             }
         } catch (Exception e) {
@@ -69,4 +87,5 @@ public class UserActivityFilter extends OncePerRequestFilter {
         return xfHeader.split(",")[0].trim();
     }
 }
+
 
