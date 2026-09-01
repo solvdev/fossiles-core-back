@@ -125,17 +125,36 @@ public class InternalShipmentRequestService {
             throw new BusinessException(
                     "Las solicitudes de producción OPI se autorizan con «Autorizar producción», no con envío.");
         }
-        assertLinkedOpiProductionAuthorized(entity);
         List<ProductShipmentRequest.ProductShipmentDetailRequest> products = toProductLines(entity);
+
+        if (entity.getProductionOrderId() == null) {
+            // Primera autorización: solo aquí se evalúa el stock y, si falta, se genera la OPI.
+            // Antes de autorizar no debe existir ninguna orden de producción para esta solicitud.
+            List<DispatchStockShortageResponse> shortages =
+                    productDistributionService.computeDispatchStockShortages(products);
+            if (!shortages.isEmpty()) {
+                Long productionOrderId = createOpiForShortages(entity, shortages);
+                entity.setProductionOrderId(productionOrderId);
+                requestRepository.save(entity);
+                String opiRef = productionOrderRepository.findById(productionOrderId)
+                        .map(ProductionOrderEntity::getCode)
+                        .orElse("OPI #" + productionOrderId);
+                throw new BusinessException(
+                        "No hay stock suficiente en Devoluciones / Bodega PT. Se generó la orden " + opiRef
+                                + " por el faltante. Autorice su producción y reciba el producto terminado en "
+                                + "Bodega PT antes de autorizar este envío.");
+            }
+        } else {
+            assertLinkedOpiProductionAuthorized(entity);
+        }
+
         try {
             productDistributionService.validateDispatchStock(products);
         } catch (BusinessException ex) {
             if (entity.getProductionOrderId() != null) {
-                ProductionOrderEntity linkedOpi = productionOrderRepository.findById(entity.getProductionOrderId())
-                        .orElse(null);
-                String opiRef = linkedOpi != null && linkedOpi.getCode() != null
-                        ? linkedOpi.getCode()
-                        : "OPI #" + entity.getProductionOrderId();
+                String opiRef = productionOrderRepository.findById(entity.getProductionOrderId())
+                        .map(ProductionOrderEntity::getCode)
+                        .orElse("OPI #" + entity.getProductionOrderId());
                 throw new BusinessException(
                         "Aún no hay stock suficiente en Devoluciones / Bodega PT. "
                                 + "Complete la orden " + opiRef
@@ -381,14 +400,8 @@ public class InternalShipmentRequestService {
         InternalShipmentRequestEntity saved = requestRepository.save(entity);
         slipService.validateAndUseSlip(normalizedSlip, saved.getId());
 
-        List<DispatchStockShortageResponse> shortages =
-                productDistributionService.computeDispatchStockShortages(request.getProducts());
-        if (!shortages.isEmpty()) {
-            Long productionOrderId = createOpiForShortages(saved, shortages);
-            saved.setProductionOrderId(productionOrderId);
-            saved = requestRepository.save(saved);
-        }
-
+        // La OPI por faltante de stock (si aplica) se genera hasta que Contabilidad
+        // autorice el envío (ver approve()); mientras esté PENDIENTE no debe existir OP.
         return toResponse(saved);
     }
 
