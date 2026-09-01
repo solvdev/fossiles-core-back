@@ -80,12 +80,34 @@ public class TaskController {
 
     // ==================== CRUD ====================
 
-    @GetMapping
-    public ResponseEntity<List<TaskResponse>> getAll() {
-        List<TaskResponse> tasks = taskRepository.findAll().stream()
-                .map(this::toResponse)
+    /**
+     * Convierte una lista de tareas trayendo todos sus items en una sola consulta,
+     * en vez de una por tarea. Pensado para los endpoints que devuelven listados.
+     */
+    private List<TaskResponse> toResponses(List<TaskEntity> entities) {
+        if (entities == null || entities.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, List<TaskItemEntity>> itemsByTask = taskItemRepository
+                .findByTaskIdIn(entities.stream().map(TaskEntity::getId).filter(Objects::nonNull).toList())
+                .stream()
+                .filter(i -> i.getTaskId() != null)
+                .collect(Collectors.groupingBy(TaskItemEntity::getTaskId));
+
+        return entities.stream()
+                .map(t -> toResponse(t, itemsByTask.getOrDefault(t.getId(), List.of())))
                 .collect(Collectors.toList());
-        return ResponseEntity.ok(tasks);
+    }
+
+    /**
+     * Listado completo. La transaccion de solo lectura mantiene una sola sesion de Hibernate
+     * para toda la respuesta, de modo que los productos repetidos se resuelven en la cache de
+     * primer nivel en vez de una consulta por item.
+     */
+    @GetMapping
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<TaskResponse>> getAll() {
+        return ResponseEntity.ok(toResponses(taskRepository.findAll()));
     }
 
     // ==================== ORGANIZADOR DE TAREAS ====================
@@ -230,12 +252,16 @@ public class TaskController {
         return ResponseEntity.ok(tasks);
     }
 
+    /**
+     * Tareas vivas del centro: todo lo que no esta COMPLETED ni CANCELLED (incluye
+     * AWAITING_WAREHOUSE). Mismo criterio que el tablero aplica en el navegador, pero
+     * resuelto en SQL. Misma transaccion de solo lectura y misma carga de items en lote
+     * que el listado completo.
+     */
     @GetMapping("/queue")
+    @Transactional(readOnly = true)
     public ResponseEntity<List<TaskResponse>> getQueue() {
-        List<TaskResponse> tasks = taskRepository.findPendingAndInProgressOrdered().stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
-        return ResponseEntity.ok(tasks);
+        return ResponseEntity.ok(toResponses(taskRepository.findPendingAndInProgressOrdered()));
     }
 
     @GetMapping("/schedule-dates")
@@ -731,45 +757,6 @@ public class TaskController {
             taskDeskBackfillService.backfillFreedDeskAfterCompletion(deskToFreeAfterComplete, backfillAnchorDate, getNumDesks());
         }
         productionTaskLifecycleService.syncProductionOrderStatusFromTasks(updated.getProductionOrderId());
-        return ResponseEntity.ok(toResponse(updated));
-    }
-
-    @PutMapping("/{id:\\d+}/started-at")
-    public ResponseEntity<TaskResponse> updateStartedAt(@PathVariable Long id, @RequestBody Map<String, Object> body)
-            throws ResourceNotFoundException, BusinessException {
-        TaskEntity entity = taskRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Task", id));
-
-        Object raw = body.get("startedAt");
-        if (raw == null || String.valueOf(raw).isBlank()) {
-            throw new BusinessException("startedAt es requerido (ISO LocalDateTime)");
-        }
-
-        String status = String.valueOf(entity.getStatus() != null ? entity.getStatus() : "");
-        if (!"IN_PROGRESS".equals(status) && !"COMPLETED".equals(status)) {
-            throw new BusinessException("Solo se puede editar startedAt en tareas IN_PROGRESS o COMPLETED.");
-        }
-
-        LocalDateTime newStartedAt;
-        try {
-            newStartedAt = LocalDateTime.parse(String.valueOf(raw));
-        } catch (Exception e) {
-            throw new BusinessException("Formato inválido para startedAt. Use yyyy-MM-ddTHH:mm:ss");
-        }
-
-        if (entity.getCompletedAt() != null && newStartedAt.isAfter(entity.getCompletedAt())) {
-            throw new BusinessException("startedAt no puede ser posterior a completedAt.");
-        }
-
-        entity.setStartedAt(newStartedAt);
-        entity.setStartTime(newStartedAt.toLocalTime().format(HOUR_MINUTE_FORMATTER));
-
-        if (entity.getCompletedAt() != null) {
-            long minutes = java.time.Duration.between(entity.getStartedAt(), entity.getCompletedAt()).toMinutes();
-            entity.setActualDurationMinutes((int) minutes);
-        }
-
-        TaskEntity updated = taskRepository.save(entity);
         return ResponseEntity.ok(toResponse(updated));
     }
 
@@ -1944,13 +1931,19 @@ public class TaskController {
     }
 
     private boolean canDeliverMaterials(TaskEntity entity) {
+        if (entity == null) return false;
+        return canDeliverMaterials(entity, taskItemRepository.findByTaskId(entity.getId()));
+    }
+
+    /** Variante con los items ya cargados, para no repetir la consulta dentro de una misma respuesta. */
+    private boolean canDeliverMaterials(TaskEntity entity, List<TaskItemEntity> items) {
         if (entity == null || "CANCELLED".equals(entity.getStatus())) {
             return false;
         }
         if ("COMPLETED".equals(entity.getStatus())) {
             return false;
         }
-        if (!taskRequiresMaterials(entity)) {
+        if (!taskRequiresMaterials(entity, items)) {
             return true;
         }
         return !Boolean.TRUE.equals(entity.getMaterialsDelivered());
@@ -2031,11 +2024,18 @@ public class TaskController {
     }
 
     private String getWorkflowStatus(TaskEntity entity) {
+        return getWorkflowStatus(entity, taskItemRepository.findByTaskId(entity.getId()));
+    }
+
+    /** Variante con los items ya cargados, para no repetir la consulta dentro de una misma respuesta. */
+    private String getWorkflowStatus(TaskEntity entity, List<TaskItemEntity> items) {
         if ("CANCELLED".equals(entity.getStatus())) return "CANCELLED";
         if (!Boolean.TRUE.equals(entity.getLeatherDelivered())) return "PENDING_LEATHER";
         if (!Boolean.TRUE.equals(entity.getDieCutReady())) return "PENDING_DIE_CUT";
         if (!hasEnteredTable(entity)) return "PENDING_TABLE_ENTRY";
-        if (taskRequiresMaterials(entity) && !areRequiredTaskItemsDelivered(entity)) return "PENDING_MATERIAL_DELIVERY";
+        if (taskRequiresMaterials(entity, items) && !areRequiredTaskItemsDelivered(entity, items)) {
+            return "PENDING_MATERIAL_DELIVERY";
+        }
         if (ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE.equals(entity.getStatus())) {
             return "PENDING_WAREHOUSE_RECEIPT";
         }
@@ -2053,8 +2053,13 @@ public class TaskController {
 
     private boolean taskRequiresMaterials(TaskEntity entity) {
         if (entity == null) return true;
-        List<TaskItemEntity> items = taskItemRepository.findByTaskId(entity.getId());
-        if (!items.isEmpty()) {
+        return taskRequiresMaterials(entity, taskItemRepository.findByTaskId(entity.getId()));
+    }
+
+    /** Variante con los items ya cargados, para no repetir la consulta dentro de una misma respuesta. */
+    private boolean taskRequiresMaterials(TaskEntity entity, List<TaskItemEntity> items) {
+        if (entity == null) return true;
+        if (items != null && !items.isEmpty()) {
             return items.stream().anyMatch(this::isTaskItemRequiresMaterials);
         }
         if (entity.getProductId() == null) return true;
@@ -2072,9 +2077,13 @@ public class TaskController {
     }
 
     private boolean areRequiredTaskItemsDelivered(TaskEntity entity) {
-        List<TaskItemEntity> items = taskItemRepository.findByTaskId(entity.getId());
-        if (items.isEmpty()) {
-            return !taskRequiresMaterials(entity) || Boolean.TRUE.equals(entity.getMaterialsDelivered());
+        return areRequiredTaskItemsDelivered(entity, taskItemRepository.findByTaskId(entity.getId()));
+    }
+
+    /** Variante con los items ya cargados, para no repetir la consulta dentro de una misma respuesta. */
+    private boolean areRequiredTaskItemsDelivered(TaskEntity entity, List<TaskItemEntity> items) {
+        if (items == null || items.isEmpty()) {
+            return !taskRequiresMaterials(entity, items) || Boolean.TRUE.equals(entity.getMaterialsDelivered());
         }
         for (TaskItemEntity item : items) {
             if (isTaskItemRequiresMaterials(item)) {
@@ -2255,22 +2264,50 @@ public class TaskController {
                 .deskSupervisorName(deskSupervisorName)
                 .scheduledDate(task.getScheduledDate())
                 .startTime(task.getStartTime())
+                .startedAt(task.getStartedAt())
                 .estimatedHours(task.getEstimatedHours())
                 .status(task.getStatus())
                 .completedAt(task.getCompletedAt())
                 .dieCutReady(task.getDieCutReady())
                 .productionOrderCode(task.getProductionOrderCode())
                 .deliveryDate(task.getDeliveryDate())
-                .orderObservations(po != null ? po.getObservations() : null)
+                .orderObservations(stripInternalOrderTags(po != null ? po.getObservations() : null))
                 .items(ticketItems)
                 .build();
+    }
+
+    /**
+     * Marcadores internos que el módulo de OPV guarda dentro de las observaciones de la orden:
+     * {@code __OPV_PACKING__} (JSON de empaque) y {@code __OPV_SHIPPING__} (costo de envío).
+     * No son notas para la mesa, así que se retiran antes de llevarlas a la boleta — el mismo
+     * criterio que aplica {@code ProductionOrderController.parseOrderMeta} en la pantalla de la OP.
+     */
+    private static String stripInternalOrderTags(String observations) {
+        if (observations == null || observations.isBlank()) {
+            return observations;
+        }
+        String cleaned = observations.lines()
+                .filter(line -> {
+                    String trimmed = line.trim();
+                    return !trimmed.startsWith("__OPV_PACKING__:")
+                            && !trimmed.startsWith("__OPV_SHIPPING__:");
+                })
+                .collect(Collectors.joining("\n"))
+                .trim();
+        return cleaned.isEmpty() ? null : cleaned;
     }
 
     // ==================== MAPPING ====================
 
     private TaskResponse toResponse(TaskEntity entity) {
-        // Load items
-        List<TaskItemEntity> itemEntities = taskItemRepository.findByTaskId(entity.getId());
+        return toResponse(entity, taskItemRepository.findByTaskId(entity.getId()));
+    }
+
+    /**
+     * Variante con los items ya cargados, para que el listado completo pueda traerlos
+     * todos en una sola consulta en vez de una por tarea.
+     */
+    private TaskResponse toResponse(TaskEntity entity, List<TaskItemEntity> itemEntities) {
         List<TaskResponse.TaskItemDTO> itemDTOs = itemEntities.stream()
                 .map(item -> TaskResponse.TaskItemDTO.builder()
                         .id(item.getId())
@@ -2321,11 +2358,11 @@ public class TaskController {
                 .leatherDeliveredAt(entity.getLeatherDeliveredAt())
                 .dieCutReady(entity.getDieCutReady())
                 .dieCutDate(entity.getDieCutDate())
-                .materialsDelivered(areRequiredTaskItemsDelivered(entity))
+                .materialsDelivered(areRequiredTaskItemsDelivered(entity, itemEntities))
                 .materialsDeliveredAt(entity.getMaterialsDeliveredAt())
-                .requiresMaterials(taskRequiresMaterials(entity))
-                .workflowStatus(getWorkflowStatus(entity))
-                .canDeliverMaterials(canDeliverMaterials(entity))
+                .requiresMaterials(taskRequiresMaterials(entity, itemEntities))
+                .workflowStatus(getWorkflowStatus(entity, itemEntities))
+                .canDeliverMaterials(canDeliverMaterials(entity, itemEntities))
                 .status(entity.getStatus())
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
