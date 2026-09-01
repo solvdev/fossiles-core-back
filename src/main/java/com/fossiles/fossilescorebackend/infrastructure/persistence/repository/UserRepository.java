@@ -23,5 +23,12 @@ public interface UserRepository extends JpaRepository<UserEntity, Long> {
     List<UserEntity> findAll();
     boolean existsByUsername(String username);
     boolean existsByEmail(String email);
+
+    @org.springframework.data.jpa.repository.Query("SELECT u.id FROM UserEntity u WHERE u.username = :username")
+    Optional<Long> findIdByUsername(@org.springframework.data.repository.query.Param("username") String username);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("UPDATE UserEntity u SET u.lastActivityAt = :now WHERE u.username = :username")
+    int updateLastActivityAt(@org.springframework.data.repository.query.Param("username") String username, @org.springframework.data.repository.query.Param("now") java.time.LocalDateTime now);
 }
 

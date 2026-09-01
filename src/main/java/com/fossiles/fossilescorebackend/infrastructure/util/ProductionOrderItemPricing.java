@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.util;
 
+import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 
 import java.math.BigDecimal;
@@ -10,6 +11,7 @@ import java.util.function.Function;
 
 /**
  * Precio unitario de ítems de OP: {@code unit_price} global + override por talla en {@code unit_prices_json}.
+ * Sin override por talla, aplica recargo de cincho (44–48 = +Q50, 50+ = +Q100).
  */
 public final class ProductionOrderItemPricing {
 
@@ -37,7 +39,7 @@ public final class ProductionOrderItemPricing {
 
     /**
      * Precio para una talla concreta. Si no hay override en el mapa, usa {@code unitPrice} del ítem
-     * y, en su defecto, el precio de catálogo vía {@code productFallback}.
+     * y, en su defecto, el precio de catálogo vía {@code productFallback}, más recargo por talla.
      */
     public static BigDecimal resolveForSize(
             ProductionOrderItemEntity item,
@@ -55,17 +57,20 @@ public final class ProductionOrderItemPricing {
                 return sized;
             }
         }
+        BigDecimal base = null;
         // unit_price = 0 suele venir de formularios que mandan 0 por defecto; no bloquear catálogo.
         if (item.getUnitPrice() != null && item.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
-            return item.getUnitPrice();
-        }
-        if (productFallback != null && item.getProductId() != null) {
+            base = item.getUnitPrice();
+        } else if (productFallback != null && item.getProductId() != null) {
             BigDecimal fallback = productFallback.apply(item.getProductId());
             if (fallback != null && fallback.compareTo(BigDecimal.ZERO) > 0) {
-                return fallback;
+                base = fallback;
             }
         }
-        return BigDecimal.ZERO;
+        if (base == null) {
+            return BigDecimal.ZERO;
+        }
+        return CinchoSizePricing.applySurcharge(base, sizeLabel);
     }
 
     /** Subtotal del ítem respetando precios distintos por talla. */

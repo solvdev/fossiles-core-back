@@ -22,6 +22,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentR
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoShipmentReconcilePreviewResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
@@ -892,6 +893,10 @@ public class ProductDistributionService {
 
     private void assertOrderAllowsDirectShipments(ProductionOrderEntity order) throws BusinessException {
         String ot = order.getOrderType() == null ? "" : order.getOrderType().trim().toUpperCase();
+        if ("INTERNA".equals(ot) && "DRAFT".equalsIgnoreCase(order.getStatus())) {
+            throw new BusinessException(
+                    "La orden INTERNA (OPI) está en borrador. Contabilidad debe autorizar la producción desde Autorizar envíos internos antes de generar envíos.");
+        }
         if (!"INTERNA".equals(ot) && !"CLIENTE_KIOSKO".equals(ot) && !"NORMAL".equals(ot) && !isCinchoOrderType(ot)
                 && !isLuisFelipeVendorOrder(order)) {
             throw new BusinessException(
@@ -1101,7 +1106,7 @@ public class ProductDistributionService {
             if (frozen == null && detail.getProductId() != null) {
                 BigDecimal catalog = resolveProductCatalogUnitPrice(detail.getProductId(), preferSellerPrice);
                 if (catalog.compareTo(BigDecimal.ZERO) > 0) {
-                    frozen = catalog;
+                    frozen = CinchoSizePricing.applySurcharge(catalog, detail.getSizeLabel());
                 }
             }
             if (frozen != null) {

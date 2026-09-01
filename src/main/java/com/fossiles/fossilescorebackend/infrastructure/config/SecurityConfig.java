@@ -22,6 +22,7 @@ import java.util.Arrays;
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final UserActivityFilter userActivityFilter;
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -37,6 +38,7 @@ public class SecurityConfig {
                 // Permitir endpoints públicos
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/public/**").permitAll()
+                .requestMatchers("/api/system-announcements/stream", "/api/system-announcements/active").permitAll()
                 // Flujo móvil Bodega PT sin login (dispositivo dedicado)
                 .requestMatchers("/api/product-distributions/**").permitAll()
                 .requestMatchers("/api/public/online-warehouse/**").permitAll()
@@ -48,7 +50,8 @@ public class SecurityConfig {
                 .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
             )
             // Agregar el filtro JWT antes del filtro de autenticación por defecto
-            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+            .addFilterAfter(userActivityFilter, JwtAuthenticationFilter.class);
         
         return http.build();
     }

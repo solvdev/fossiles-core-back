@@ -12,6 +12,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskExchangeSl
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
@@ -622,7 +623,7 @@ public class KioskExchangeService {
 
         boolean allowPriceOverride = allowsExchangePriceEdit(access.kiosk());
         BigDecimal returnedUnitOverride = resolveReturnedUnitPriceOverride(
-                request, returnedProduct, allowPriceOverride);
+                request, returnedProduct, returnedSize, allowPriceOverride);
 
         List<ResolvedGivenLine> givenLines = resolveGivenLines(request, returnedQty, requireGiven, allowPriceOverride);
 
@@ -824,6 +825,7 @@ public class KioskExchangeService {
     private static BigDecimal resolveReturnedUnitPriceOverride(
             KioskExchangePreviewRequest request,
             ProductEntity returnedProduct,
+            String returnedSize,
             boolean allowPriceOverride
     ) throws BusinessException {
         BigDecimal manual = normalizePriceOverride(request.getReturnedUnitPrice());
@@ -835,7 +837,7 @@ public class KioskExchangeService {
             return manual;
         }
         if (request.getReturnedSoldWithDiscount() != null || request.getReturnedDiscountPercent() != null) {
-            BigDecimal catalog = resolveFullSaleUnitPrice(returnedProduct);
+            BigDecimal catalog = resolveFullSaleUnitPrice(returnedProduct, returnedSize);
             if (catalog.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new BusinessException("El producto que ingresa no tiene precio de venta configurado.");
             }
@@ -1191,15 +1193,20 @@ public class KioskExchangeService {
                 .replace("Ú", "U");
     }
 
-    /** Precio de venta de catálogo (sin descuento ni promo). Usado en egreso y crédito por %. */
+    /** Precio de venta de catálogo (sin descuento ni promo) + recargo por talla. Usado en egreso y crédito por %. */
     private static BigDecimal resolveFullSaleUnitPrice(ProductEntity product) {
+        return resolveFullSaleUnitPrice(product, null);
+    }
+
+    private static BigDecimal resolveFullSaleUnitPrice(ProductEntity product, String size) {
         if (product == null || product.getSalePrice() == null) {
             return BigDecimal.ZERO;
         }
         if (product.getSalePrice().compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;
         }
-        return product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
+        BigDecimal base = product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
+        return CinchoSizePricing.applySurcharge(base, size);
     }
 
     private static String extractSizeFromProductName(String productName) {
@@ -1289,7 +1296,7 @@ public class KioskExchangeService {
                     ? returnedUnitPriceOverride
                     : (item != null
                             ? computeEffectivePaidUnitPrice(sale, item, saleItems)
-                            : resolveFullSaleUnitPrice(returnedProduct));
+                            : resolveFullSaleUnitPrice(returnedProduct, returnedSize));
             if (returnedUnitPaid.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new BusinessException("El producto que ingresa no tiene precio de venta configurado.");
             }
@@ -1309,7 +1316,7 @@ public class KioskExchangeService {
                 } else if (shouldPreservePaidPriceOnExchange(item, returnedProduct, given.product())) {
                     givenUnitPrice = returnedUnitPaid;
                 } else {
-                    givenUnitPrice = resolveFullSaleUnitPrice(given.product());
+                    givenUnitPrice = resolveFullSaleUnitPrice(given.product(), given.size());
                     if (givenUnitPrice.compareTo(BigDecimal.ZERO) <= 0) {
                         throw new BusinessException(
                                 "El producto " + safeTrim(given.product().getCode())

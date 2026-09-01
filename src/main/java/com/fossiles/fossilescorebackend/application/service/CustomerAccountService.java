@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountE
 import com.fossiles.fossilescorebackend.application.dto.response.*;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.DeliveryRouteCatalog;
@@ -1674,7 +1675,9 @@ public class CustomerAccountService {
         }
         if (detail.getProductId() != null) {
             return productRepository.findById(detail.getProductId())
-                    .map(p -> resolveProductUnitPrice(p, preferSellerPrice))
+                    .map(p -> CinchoSizePricing.applySurcharge(
+                            resolveProductUnitPrice(p, preferSellerPrice),
+                            detail.getSizeLabel()))
                     .orElse(BigDecimal.ZERO);
         }
         return BigDecimal.ZERO;

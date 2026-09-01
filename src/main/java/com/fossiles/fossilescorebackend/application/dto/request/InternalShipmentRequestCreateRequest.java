@@ -33,6 +33,9 @@ public class InternalShipmentRequestCreateRequest {
 
     private String documentDate;
 
+    /** Correlativo de boleta física de solicitud (talonario BLS-nnnnn). Obligatorio para PLANILLA y DEFECTOS. */
+    private String slipNumber;
+
     /** DEFECTOS: porcentaje del precio catálogo. PLANILLA: omitir (50% fijo). */
     private java.math.BigDecimal discountPercent;
 
