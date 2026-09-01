@@ -22,6 +22,8 @@ public class TaskTicketResponse {
     private String deskSupervisorName;
     private LocalDate scheduledDate;
     private String startTime;             // "HH:mm"
+    /** Momento real en que se pulsó Iniciar; base de la entrega estimada de la boleta. */
+    private LocalDateTime startedAt;
     private Double estimatedHours;        // Total hours for the task
     private String status;
     private LocalDateTime completedAt;
