@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMo
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabMovementResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllKiosksResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabSplitSizesResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabStockResponse;
@@ -497,6 +498,41 @@ public class KioskLedgerLabService {
         return KioskLedgerLabReplayAllResponse.builder()
                 .locationId(locationId)
                 .stockCount(stockCount)
+                .build();
+    }
+
+    /** Recalcula stock_before/after y current_stock de todos los kiosco_stock de TODOS los kioskos. */
+    @Transactional
+    public KioskLedgerLabReplayAllKiosksResponse replayAllKiosks()
+            throws BusinessException {
+        String actor = guard.requireEramirezUsername();
+        List<LocationEntity> kiosks = locationRepository.findByCategoriaIgnoreCaseOrderByNameAsc("KIOSKO");
+        List<KioskLedgerLabReplayAllKiosksResponse.LocationResult> results = new ArrayList<>();
+        int totalStockCount = 0;
+        try {
+            for (LocationEntity kiosk : kiosks) {
+                List<KioscoStockEntity> stocks = kioscoStockRepository
+                        .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(kiosk.getId());
+                int stockCount = 0;
+                for (KioscoStockEntity stock : stocks) {
+                    stockCount += kioscoInventoryService.replayMovementStockChain(stock.getId());
+                }
+                totalStockCount += stockCount;
+                results.add(KioskLedgerLabReplayAllKiosksResponse.LocationResult.builder()
+                        .locationId(kiosk.getId())
+                        .locationName(kiosk.getName())
+                        .stockCount(stockCount)
+                        .build());
+            }
+        } finally {
+            kioscoInventoryService.disableAdminMovementMutation();
+        }
+        log.warn("LEDGER_LAB_REPLAY_ALL_KIOSKS actor={} locationCount={} stockCount={}",
+                actor, kiosks.size(), totalStockCount);
+        return KioskLedgerLabReplayAllKiosksResponse.builder()
+                .locationCount(kiosks.size())
+                .stockCount(totalStockCount)
+                .locations(results)
                 .build();
     }
 
