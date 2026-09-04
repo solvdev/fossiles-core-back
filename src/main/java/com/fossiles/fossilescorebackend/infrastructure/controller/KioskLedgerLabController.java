@@ -3,7 +3,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMovementUpsertRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabMovementResponse;
-import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllKiosksResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllKiosksJobResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabSplitSizesResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabStockResponse;
@@ -127,12 +127,22 @@ public class KioskLedgerLabController {
         return ResponseEntity.ok(ledgerLabService.replayAllStocks(locationId));
     }
 
-    /** Replay de stock_before/after y current_stock de TODOS los kioscos (uno por uno). */
+    /**
+     * Arranca el replay de todos los kioscos en background y responde de inmediato (202)
+     * para no cortar el proxy. El progreso se consulta con GET /replay-all-kiosks.
+     */
     @PostMapping("/replay-all-kiosks")
-    public ResponseEntity<KioskLedgerLabReplayAllKiosksResponse> replayAllKiosks()
+    public ResponseEntity<KioskLedgerLabReplayAllKiosksJobResponse> startReplayAllKiosks()
             throws BusinessException {
         guard.requireEramirez();
-        return ResponseEntity.ok(ledgerLabService.replayAllKiosks());
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(ledgerLabService.startReplayAllKiosks());
+    }
+
+    @GetMapping("/replay-all-kiosks")
+    public ResponseEntity<KioskLedgerLabReplayAllKiosksJobResponse> getReplayAllKiosks()
+            throws BusinessException {
+        guard.requireEramirez();
+        return ResponseEntity.ok(ledgerLabService.getReplayAllKiosksStatus());
     }
 
     @PostMapping("/stocks/{stockId}/split-opening-by-sizes")

@@ -4,7 +4,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMo
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabMovementResponse;
-import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllKiosksResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllKiosksJobResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabSplitSizesResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabStockResponse;
@@ -65,6 +65,45 @@ public class KioskLedgerLabService {
     private final KioskSaleRepository kioskSaleRepository;
     private final ProductShipmentRepository productShipmentRepository;
     private final EntityManager entityManager;
+
+    private final java.util.concurrent.ExecutorService replayAllKiosksExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread thread = new Thread(r, "kiosk-ledger-replay-all");
+                thread.setDaemon(true);
+                return thread;
+            });
+
+    private final java.util.concurrent.atomic.AtomicReference<ReplayAllKiosksJob> replayAllKiosksJob =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    /** Estado mutable (en memoria) del job de replay de todos los kioscos. Un solo job a la vez. */
+    private static final class ReplayAllKiosksJob {
+        private volatile String status = "RUNNING";
+        private volatile int locationsTotal;
+        private volatile int locationsDone;
+        private volatile int stockCount;
+        private volatile String currentLocationName;
+        private volatile String errorMessage;
+        private final LocalDateTime startedAt = LocalDateTime.now();
+        private volatile LocalDateTime finishedAt;
+
+        boolean isRunning() {
+            return "RUNNING".equals(status);
+        }
+
+        KioskLedgerLabReplayAllKiosksJobResponse toResponse() {
+            return KioskLedgerLabReplayAllKiosksJobResponse.builder()
+                    .status(status)
+                    .locationsTotal(locationsTotal)
+                    .locationsDone(locationsDone)
+                    .stockCount(stockCount)
+                    .currentLocationName(currentLocationName)
+                    .errorMessage(errorMessage)
+                    .startedAt(startedAt)
+                    .finishedAt(finishedAt)
+                    .build();
+        }
+    }
 
     @Transactional(readOnly = true)
     public List<KioskLedgerLabStockResponse> listStocks(
@@ -501,39 +540,65 @@ public class KioskLedgerLabService {
                 .build();
     }
 
-    /** Recalcula stock_before/after y current_stock de todos los kiosco_stock de TODOS los kioskos. */
-    @Transactional
-    public KioskLedgerLabReplayAllKiosksResponse replayAllKiosks()
-            throws BusinessException {
+    /**
+     * Inicia (en background) el recálculo de stock_before/after y current_stock de todos los
+     * kiosco_stock de TODOS los kioskos. Devuelve de inmediato para que el proxy/gateway no
+     * corte la conexión (504) mientras el recorrido completo toma varios minutos; el progreso
+     * se consulta con {@link #getReplayAllKiosksStatus()}.
+     */
+    public KioskLedgerLabReplayAllKiosksJobResponse startReplayAllKiosks() throws BusinessException {
         String actor = guard.requireEramirezUsername();
+        ReplayAllKiosksJob job = new ReplayAllKiosksJob();
+        while (true) {
+            ReplayAllKiosksJob existing = replayAllKiosksJob.get();
+            if (existing != null && existing.isRunning()) {
+                throw new BusinessException("Ya hay un replay de todos los kioscos en curso.");
+            }
+            if (replayAllKiosksJob.compareAndSet(existing, job)) {
+                break;
+            }
+        }
+        log.warn("LEDGER_LAB_REPLAY_ALL_KIOSKS_START actor={}", actor);
+        replayAllKiosksExecutor.execute(() -> runReplayAllKiosksJob(job));
+        return job.toResponse();
+    }
+
+    public KioskLedgerLabReplayAllKiosksJobResponse getReplayAllKiosksStatus() throws BusinessException {
+        guard.requireEramirez();
+        ReplayAllKiosksJob job = replayAllKiosksJob.get();
+        if (job == null) {
+            return KioskLedgerLabReplayAllKiosksJobResponse.builder().status("IDLE").build();
+        }
+        return job.toResponse();
+    }
+
+    private void runReplayAllKiosksJob(ReplayAllKiosksJob job) {
         List<LocationEntity> kiosks = locationRepository.findByCategoriaIgnoreCaseOrderByNameAsc("KIOSKO");
-        List<KioskLedgerLabReplayAllKiosksResponse.LocationResult> results = new ArrayList<>();
-        int totalStockCount = 0;
+        job.locationsTotal = kiosks.size();
         try {
             for (LocationEntity kiosk : kiosks) {
+                job.currentLocationName = kiosk.getName();
                 List<KioscoStockEntity> stocks = kioscoStockRepository
                         .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(kiosk.getId());
-                int stockCount = 0;
                 for (KioscoStockEntity stock : stocks) {
-                    stockCount += kioscoInventoryService.replayMovementStockChain(stock.getId());
+                    job.stockCount += kioscoInventoryService.replayMovementStockChain(stock.getId());
                 }
-                totalStockCount += stockCount;
-                results.add(KioskLedgerLabReplayAllKiosksResponse.LocationResult.builder()
-                        .locationId(kiosk.getId())
-                        .locationName(kiosk.getName())
-                        .stockCount(stockCount)
-                        .build());
+                job.locationsDone += 1;
             }
+            job.status = "DONE";
+            log.warn("LEDGER_LAB_REPLAY_ALL_KIOSKS_DONE locationCount={} stockCount={}",
+                    job.locationsTotal, job.stockCount);
+        } catch (Exception ex) {
+            job.status = "ERROR";
+            job.errorMessage = ex.getMessage();
+            log.error("LEDGER_LAB_REPLAY_ALL_KIOSKS_FAIL locationsDone={} stockCount={}",
+                    job.locationsDone, job.stockCount, ex);
         } finally {
-            kioscoInventoryService.disableAdminMovementMutation();
+            // replayMovementStockChain ya limpia el flag admin dentro de su propia transacción
+            // por cada stock; aquí no hay transacción ambiente para volver a hacerlo.
+            job.currentLocationName = null;
+            job.finishedAt = LocalDateTime.now();
         }
-        log.warn("LEDGER_LAB_REPLAY_ALL_KIOSKS actor={} locationCount={} stockCount={}",
-                actor, kiosks.size(), totalStockCount);
-        return KioskLedgerLabReplayAllKiosksResponse.builder()
-                .locationCount(kiosks.size())
-                .stockCount(totalStockCount)
-                .locations(results)
-                .build();
     }
 
     /**

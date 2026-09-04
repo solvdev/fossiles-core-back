@@ -4378,7 +4378,11 @@ public class KioscoInventoryService {
     /**
      * Recalcula stock_before/stock_after y current_stock (requiere flag admin en la transaccion).
      * Clamps negativos a 0 for safety, but logs and annotates each clamp on the movement reason.
+     * Transacción propia: es seguro llamarlo tanto desde un método ya @Transactional (una sola
+     * transacción compartida) como desde un job en background sin transacción ambiente (ej.
+     * replay de todos los kioscos, uno por uno, para no sostener una transacción de minutos).
      */
+    @Transactional(rollbackFor = Exception.class)
     public int replayMovementStockChain(Long kioscoStockId) {
         if (kioscoStockId == null) {
             return 0;
@@ -4387,45 +4391,50 @@ public class KioscoInventoryService {
         if (stock == null) {
             return 0;
         }
-        enableAdminMovementMutation();
-        List<KioscoMovementEntity> movements = kioscoMovementRepository
-                .findByKioscoStockIdOrderByCreatedAtAscIdAsc(kioscoStockId);
-        int running = 0;
-        for (KioscoMovementEntity movement : movements) {
-            if (!Boolean.TRUE.equals(movement.getAffectsStock())) {
-                continue;
-            }
-            int delta = movementSignedDelta(movement);
-            movement.setStockBefore(running);
-            int rawAfter = running + delta;
-            running = applyReplayClamp(stock.getId(), movement, rawAfter);
-            movement.setStockAfter(running);
+        try {
             enableAdminMovementMutation();
-            boolean reasonTouched = movement.getReason() != null
-                    && movement.getReason().contains(REPLAY_CLAMP_REASON_MARKER);
-            if (reasonTouched) {
-                entityManager.createNativeQuery(
-                                "UPDATE kiosco_movement SET stock_before = :before, stock_after = :after, reason = :reason WHERE id = :id")
-                        .setParameter("before", movement.getStockBefore())
-                        .setParameter("after", movement.getStockAfter())
-                        .setParameter("reason", movement.getReason())
-                        .setParameter("id", movement.getId())
-                        .executeUpdate();
-            } else {
-                entityManager.createNativeQuery(
-                                "UPDATE kiosco_movement SET stock_before = :before, stock_after = :after WHERE id = :id")
-                        .setParameter("before", movement.getStockBefore())
-                        .setParameter("after", movement.getStockAfter())
-                        .setParameter("id", movement.getId())
-                        .executeUpdate();
+            List<KioscoMovementEntity> movements = kioscoMovementRepository
+                    .findByKioscoStockIdOrderByCreatedAtAscIdAsc(kioscoStockId);
+            int running = 0;
+            for (KioscoMovementEntity movement : movements) {
+                if (!Boolean.TRUE.equals(movement.getAffectsStock())) {
+                    continue;
+                }
+                int delta = movementSignedDelta(movement);
+                movement.setStockBefore(running);
+                int rawAfter = running + delta;
+                running = applyReplayClamp(stock.getId(), movement, rawAfter);
+                movement.setStockAfter(running);
+                enableAdminMovementMutation();
+                boolean reasonTouched = movement.getReason() != null
+                        && movement.getReason().contains(REPLAY_CLAMP_REASON_MARKER);
+                if (reasonTouched) {
+                    entityManager.createNativeQuery(
+                                    "UPDATE kiosco_movement SET stock_before = :before, stock_after = :after, reason = :reason WHERE id = :id")
+                            .setParameter("before", movement.getStockBefore())
+                            .setParameter("after", movement.getStockAfter())
+                            .setParameter("reason", movement.getReason())
+                            .setParameter("id", movement.getId())
+                            .executeUpdate();
+                } else {
+                    entityManager.createNativeQuery(
+                                    "UPDATE kiosco_movement SET stock_before = :before, stock_after = :after WHERE id = :id")
+                            .setParameter("before", movement.getStockBefore())
+                            .setParameter("after", movement.getStockAfter())
+                            .setParameter("id", movement.getId())
+                            .executeUpdate();
+                }
             }
+            entityManager.flush();
+            // Full ledger total (sized + unsized). rebuildSizes may refine when history is sized-only.
+            stock.setCurrentStock(running);
+            rebuildSizesDataFromMovements(stock, movements);
+            kioscoStockRepository.save(stock);
+            return 1;
+        } finally {
+            // Deja la conexión limpia (append-only) por si vuelve al pool al cerrar esta transacción.
+            disableAdminMovementMutation();
         }
-        entityManager.flush();
-        // Full ledger total (sized + unsized). rebuildSizes may refine when history is sized-only.
-        stock.setCurrentStock(running);
-        rebuildSizesDataFromMovements(stock, movements);
-        kioscoStockRepository.save(stock);
-        return 1;
     }
 
     /**
