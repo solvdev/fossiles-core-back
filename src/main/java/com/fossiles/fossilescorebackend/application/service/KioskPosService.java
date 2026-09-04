@@ -921,6 +921,18 @@ public class KioskPosService {
         return toSaleResponse(sale, kiosk, user);
     }
 
+    /** Respuesta de venta usando el kiosko emisor, sin exigir acceso a esa ubicación. */
+    public KioskPosSaleResponse toSaleResponseForAnyKiosk(KioskSaleEntity sale)
+            throws BusinessException, ResourceNotFoundException {
+        if (sale == null || sale.getKioskLocationId() == null) {
+            throw new ResourceNotFoundException("KioskSale no encontrada.");
+        }
+        UserEntity user = getCurrentUserOrThrow();
+        LocationEntity saleKiosk = locationRepository.findById(sale.getKioskLocationId())
+                .orElseThrow(() -> new ResourceNotFoundException("Location", sale.getKioskLocationId()));
+        return toSaleResponse(sale, saleKiosk, user);
+    }
+
     public KioskPosSaleResponse updateSalePayment(
             Long saleId,
             Long kioskLocationId,
