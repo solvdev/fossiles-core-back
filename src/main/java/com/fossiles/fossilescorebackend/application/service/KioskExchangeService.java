@@ -206,15 +206,15 @@ public class KioskExchangeService {
     }
 
     @Transactional(readOnly = true)
-    public KioskPosSaleResponse lookupSale(Long kioskLocationId, String query)
+    public KioskPosSaleResponse lookupSale(Long kioskLocationId, String query, boolean allKiosks)
             throws BusinessException, ResourceNotFoundException {
         if (query == null || query.isBlank()) {
             throw new BusinessException("Indica el número de venta a buscar.");
         }
         AccessContext ctx = resolveAccessContext(kioskLocationId);
-        KioskSaleEntity sale = findSaleByQuery(ctx.kiosk().getId(), query.trim());
+        KioskSaleEntity sale = findSaleByQuery(ctx.kiosk().getId(), query.trim(), allKiosks);
         validateOriginalSale(sale);
-        return kioskPosService.getSaleById(sale.getId(), ctx.kiosk().getId());
+        return kioskPosService.toSaleResponseForAnyKiosk(sale);
     }
 
     @Transactional(readOnly = true)
@@ -588,9 +588,6 @@ public class KioskExchangeService {
         if (hasOriginalSale) {
             sale = kioskSaleRepository.findById(request.getOriginalSaleId())
                     .orElseThrow(() -> new ResourceNotFoundException("KioskSale", request.getOriginalSaleId()));
-            if (!Objects.equals(sale.getKioskLocationId(), access.kiosk().getId())) {
-                throw new BusinessException("La venta no pertenece al kiosko seleccionado.");
-            }
             validateOriginalSale(sale);
             item = kioskSaleItemRepository.findByIdAndKioskSale_Id(
                             request.getOriginalSaleItemId(), sale.getId())
@@ -858,23 +855,60 @@ public class KioskExchangeService {
         return null;
     }
 
-    private KioskSaleEntity findSaleByQuery(Long kioskLocationId, String query) throws ResourceNotFoundException {
+    private KioskSaleEntity findSaleByQuery(Long kioskLocationId, String query, boolean allKiosks)
+            throws ResourceNotFoundException {
         String normalized = normalizeInternalNumberQuery(query);
         if (normalized.matches("\\d+")) {
             Long saleId = Long.parseLong(normalized);
-            return kioskSaleRepository.findById(saleId)
+            Optional<KioskSaleEntity> byId = kioskSaleRepository.findById(saleId);
+            if (allKiosks) {
+                return byId.orElseThrow(() -> new ResourceNotFoundException("KioskSale", saleId));
+            }
+            return byId
                     .filter(sale -> Objects.equals(sale.getKioskLocationId(), kioskLocationId))
                     .orElseThrow(() -> new ResourceNotFoundException("KioskSale", saleId));
         }
-        // Preferir serie-correlativo de establecimiento (A45-241).
+        if (allKiosks) {
+            List<KioskSaleEntity> byInternal = kioskSaleRepository.findByInvoiceInternalNumber(normalized);
+            if (!byInternal.isEmpty()) {
+                return pickPreferredSale(byInternal, kioskLocationId, query);
+            }
+            List<KioskSaleEntity> byNumber = kioskSaleRepository.findBySaleNumberIgnoreCase(query.trim());
+            if (byNumber.isEmpty() && !query.trim().equalsIgnoreCase(normalized)) {
+                byNumber = kioskSaleRepository.findBySaleNumberIgnoreCase(normalized);
+            }
+            return pickPreferredSale(byNumber, kioskLocationId, query);
+        }
         Optional<KioskSaleEntity> byInternal = kioskSaleRepository
                 .findByKioskLocationIdAndInvoiceInternalNumber(kioskLocationId, normalized);
         if (byInternal.isPresent()) {
             return byInternal.get();
         }
-        // Compatibilidad interna con saleNumber POS-… (no se muestra en UI).
         return kioskSaleRepository.findByKioskLocationIdAndSaleNumberIgnoreCase(kioskLocationId, query.trim())
                 .or(() -> kioskSaleRepository.findByKioskLocationIdAndSaleNumberIgnoreCase(kioskLocationId, normalized))
+                .orElseThrow(() -> new ResourceNotFoundException("KioskSale", query));
+    }
+
+    private KioskSaleEntity pickPreferredSale(
+            List<KioskSaleEntity> matches,
+            Long preferredKioskLocationId,
+            String query
+    ) throws ResourceNotFoundException {
+        if (matches == null || matches.isEmpty()) {
+            throw new ResourceNotFoundException("KioskSale", query);
+        }
+        if (preferredKioskLocationId != null) {
+            Optional<KioskSaleEntity> local = matches.stream()
+                    .filter(sale -> Objects.equals(sale.getKioskLocationId(), preferredKioskLocationId))
+                    .findFirst();
+            if (local.isPresent()) {
+                return local.get();
+            }
+        }
+        return matches.stream()
+                .max(Comparator
+                        .comparing(KioskSaleEntity::getSoldAt, Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(KioskSaleEntity::getId, Comparator.nullsLast(Comparator.naturalOrder())))
                 .orElseThrow(() -> new ResourceNotFoundException("KioskSale", query));
     }
 

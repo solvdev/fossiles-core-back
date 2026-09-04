@@ -453,9 +453,10 @@ public class KioskPosController {
     @GetMapping("/sales/lookup")
     public ResponseEntity<KioskPosSaleResponse> lookupSale(
             @RequestParam String query,
-            @RequestParam(required = false) Long kioskLocationId
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false, defaultValue = "false") boolean allKiosks
     ) throws BusinessException, ResourceNotFoundException {
-        return ResponseEntity.ok(kioskExchangeService.lookupSale(kioskLocationId, query));
+        return ResponseEntity.ok(kioskExchangeService.lookupSale(kioskLocationId, query, allKiosks));
     }
 
     @PostMapping("/{kioskLocationId}/conteo-interno")
