@@ -8,11 +8,11 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderWarehouseUnitRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionShift;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
@@ -154,7 +154,9 @@ public class ProductionTaskLifecycleService {
             task.setCompletedAt(completedAt);
         }
         if (task.getStartedAt() != null && task.getCompletedAt() != null) {
-            long minutes = Duration.between(task.getStartedAt(), task.getCompletedAt()).toMinutes();
+            // Tiempo realmente trabajado: solo lo que cae dentro de la jornada.
+            long minutes = ProductionShift.workingMinutesBetween(
+                    task.getStartedAt(), task.getCompletedAt());
             task.setActualDurationMinutes((int) Math.max(0, minutes));
         }
         taskRepository.save(task);
