@@ -1642,6 +1642,7 @@ public class ProductDistributionService {
                 }
             });
         }
+        rotateVendorNumberAfterCancellingShipment(saved);
         return toShipmentResponse(saved);
     }
 
@@ -1666,7 +1667,9 @@ public class ProductDistributionService {
         order.setVendorShipmentVoidedAt(LocalDateTime.now());
         order.setVendorShipmentVoidedBy(securityUtil.getCurrentUserId());
         order.setUpdatedBy(securityUtil.getCurrentUserId());
-        return productionOrderRepository.save(order);
+        productionOrderRepository.save(order);
+        assignNextVendorShipmentNumber(order);
+        return order;
     }
 
     private void clearVendorShipmentVoidFlag(ProductionOrderEntity order) {
@@ -4248,13 +4251,17 @@ public class ProductDistributionService {
      * Número de envío para constancia OPI sin kiosko: ENVI-nnnnn (mismo correlativo que en la OP).
      */
     private String generateShipmentNumberForOpiDocument(ProductionOrderEntity order) {
+        rotateVendorShipmentNumberIfTaken(order);
         opiVendorShipmentNumberService.assignIfMissing(order);
         productionOrderRepository.save(order);
         String v = order.getVendorShipmentNumber();
-        if (v != null && !v.isBlank()) {
+        if (v != null && !v.isBlank() && !shipmentRepository.existsByShipmentNumber(v.trim())) {
             return v.trim();
         }
-        return opiVendorShipmentNumberService.nextNumber();
+        String next = opiVendorShipmentNumberService.nextNumber();
+        order.setVendorShipmentNumber(next);
+        productionOrderRepository.save(order);
+        return next;
     }
 
     /**
@@ -4541,7 +4548,7 @@ public class ProductDistributionService {
         List<ProductShipmentEntity> existing = shipmentRepository.findByProductionOrderId(productionOrderId);
         Optional<ProductShipmentEntity> confirmed = existing.stream()
                 .filter(s -> java.util.Objects.equals(locationId, s.getLocationId()))
-                .filter(s -> !"DRAFT".equalsIgnoreCase(String.valueOf(s.getStatus())))
+                .filter(s -> isActivePreparedShipment(s.getStatus()))
                 .findFirst();
         if (confirmed.isPresent()) {
             throw new BusinessException(
@@ -4580,6 +4587,7 @@ public class ProductDistributionService {
     }
 
     private ProductionOrderEntity ensureOpvVendorShipmentNumberOnOrder(ProductionOrderEntity order) {
+        rotateVendorShipmentNumberIfTaken(order);
         String before = order.getVendorShipmentNumber();
         opvVendorShipmentNumberService.assignIfMissing(order);
         boolean reconciled = opvVendorShipmentNumberService.reconcileVendorNumberIfColliding(order);
@@ -4587,6 +4595,68 @@ public class ProductDistributionService {
             return productionOrderRepository.save(order);
         }
         return order;
+    }
+
+    /**
+     * El documento anulado conserva su número. El siguiente envío de esa OP usa correlativo nuevo.
+     */
+    private void rotateVendorNumberAfterCancellingShipment(ProductShipmentEntity cancelled) {
+        if (cancelled == null || cancelled.getProductionOrderId() == null) {
+            return;
+        }
+        ProductionOrderEntity order = productionOrderRepository.findById(cancelled.getProductionOrderId())
+                .orElse(null);
+        if (order == null || !vendorNumberAppliesToShipment(order, cancelled)) {
+            return;
+        }
+        boolean otherActive = shipmentRepository.findByProductionOrderId(order.getId()).stream()
+                .filter(s -> !Objects.equals(s.getId(), cancelled.getId()))
+                .anyMatch(s -> isActivePreparedShipment(s.getStatus()));
+        if (otherActive) {
+            return;
+        }
+        assignNextVendorShipmentNumber(order);
+    }
+
+    private void rotateVendorShipmentNumberIfTaken(ProductionOrderEntity order) {
+        if (order == null) {
+            return;
+        }
+        String vendor = safeTrim(order.getVendorShipmentNumber());
+        if (vendor.isEmpty()) {
+            return;
+        }
+        if (shipmentRepository.existsByShipmentNumber(vendor)) {
+            assignNextVendorShipmentNumber(order);
+        }
+    }
+
+    private void assignNextVendorShipmentNumber(ProductionOrderEntity order) {
+        if (order == null) {
+            return;
+        }
+        String next = isLuisFelipeVendorOrder(order)
+                ? opvVendorShipmentNumberService.nextNumber()
+                : opiVendorShipmentNumberService.nextNumber();
+        order.setVendorShipmentNumber(next);
+        order.setUpdatedBy(securityUtil.getCurrentUserId());
+        productionOrderRepository.save(order);
+    }
+
+    private boolean vendorNumberAppliesToShipment(ProductionOrderEntity order, ProductShipmentEntity shipment) {
+        String vendor = safeTrim(order.getVendorShipmentNumber());
+        String number = safeTrim(shipment.getShipmentNumber());
+        if (vendor.isEmpty() || number.isEmpty()) {
+            return false;
+        }
+        String vendorUp = vendor.toUpperCase(Locale.ROOT);
+        String numberUp = number.toUpperCase(Locale.ROOT);
+        return numberUp.equals(vendorUp) || numberUp.startsWith(vendorUp + "-");
+    }
+
+    private boolean isActivePreparedShipment(String status) {
+        String st = status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
+        return !st.isEmpty() && !"DRAFT".equals(st) && !"CANCELLED".equals(st);
     }
 
     private boolean isLuisFelipeVendorOrder(ProductionOrderEntity order) {

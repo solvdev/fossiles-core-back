@@ -87,11 +87,22 @@ public class GlobalExceptionHandler {
                     "Hay líneas duplicadas en el envío (mismo producto/color/talla). Revise los ítems de la orden de producción.");
         } else if (message != null && message.contains("product_shipment")) {
             errors.put("message", "No se pudo guardar el envío por un conflicto en la base de datos. Recargue e intente de nuevo.");
+        } else if (isCustomerNitUniqueViolation(message)) {
+            errors.put("message",
+                    "La base de datos todavía exige NIT único, pero varios clientes pueden facturar al mismo NIT. "
+                            + "Ejecute en PostgreSQL: scripts/migration-customer-nit-non-unique.sql");
         } else {
             errors.put("message", "No se puede realizar esta operación debido a restricciones de integridad de datos.");
         }
         
         return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
+    }
+
+    private static boolean isCustomerNitUniqueViolation(String message) {
+        String lower = message.toLowerCase();
+        return lower.contains("customer_nit")
+                || lower.contains("uq_customer_nit")
+                || (lower.contains("customer") && lower.contains("key (nit)="));
     }
 
     @ExceptionHandler(Exception.class)
