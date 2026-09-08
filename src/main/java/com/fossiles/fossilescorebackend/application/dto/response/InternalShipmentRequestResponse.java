@@ -36,6 +36,8 @@ public class InternalShipmentRequestResponse {
     private Long productionOrderId;
     private String productionOrderCode;
     private String productionOrderStatus;
+    /** True si el ENVI ya existe y aún no tiene OPI generada desde esta solicitud. */
+    private Boolean canGenerateOpi;
     private Long opiAuthorizedBy;
     private LocalDateTime opiAuthorizedAt;
     private List<LineResponse> lines;

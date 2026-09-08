@@ -76,7 +76,7 @@ public class InternalShipmentRequestEntity {
     @Column(name = "product_shipment_id")
     private Long productShipmentId;
 
-    /** OPI generada automáticamente cuando no hay stock PT/Devoluciones. */
+    /** OPI vinculada: faltante al autorizar, o generada después del ENVI. */
     @Column(name = "production_order_id")
     private Long productionOrderId;
 
