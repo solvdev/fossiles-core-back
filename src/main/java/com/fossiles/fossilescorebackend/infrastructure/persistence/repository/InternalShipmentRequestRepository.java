@@ -30,6 +30,10 @@ public interface InternalShipmentRequestRepository
             @Param("toExclusive") java.time.LocalDateTime toExclusive
     );
 
+    java.util.Optional<InternalShipmentRequestEntity> findByProductShipmentId(Long productShipmentId);
+
+    java.util.List<InternalShipmentRequestEntity> findByProductShipmentIdIn(java.util.Collection<Long> productShipmentIds);
+
     boolean existsBySlipNumber(String slipNumber);
 
     @Query("SELECT r.slipNumber FROM InternalShipmentRequestEntity r WHERE r.slipNumber IS NOT NULL")

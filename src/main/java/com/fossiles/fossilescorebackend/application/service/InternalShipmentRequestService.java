@@ -41,6 +41,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 @Service
@@ -136,13 +137,7 @@ public class InternalShipmentRequestService {
                 Long productionOrderId = createOpiForShortages(entity, shortages);
                 entity.setProductionOrderId(productionOrderId);
                 requestRepository.save(entity);
-                String opiRef = productionOrderRepository.findById(productionOrderId)
-                        .map(ProductionOrderEntity::getCode)
-                        .orElse("OPI #" + productionOrderId);
-                throw new BusinessException(
-                        "No hay stock suficiente en Devoluciones / Bodega PT. Se generó la orden " + opiRef
-                                + " por el faltante. Autorice su producción y reciba el producto terminado en "
-                                + "Bodega PT antes de autorizar este envío.");
+                return toResponse(entity);
             }
         } else {
             assertLinkedOpiProductionAuthorized(entity);
@@ -211,8 +206,9 @@ public class InternalShipmentRequestService {
         accessGuard.assertCanApproveOrReject();
         InternalShipmentRequestEntity entity = requestRepository.findByIdWithLines(id)
                 .orElseThrow(() -> new ResourceNotFoundException("InternalShipmentRequest", id));
-        if (!"PENDIENTE".equalsIgnoreCase(safe(entity.getStatus()))) {
-            throw new BusinessException("Solo se pueden autorizar solicitudes pendientes.");
+        String status = safe(entity.getStatus());
+        if (!"PENDIENTE".equalsIgnoreCase(status) && !"APROBADA".equalsIgnoreCase(status)) {
+            throw new BusinessException("Solo se puede autorizar la producción de solicitudes pendientes o aprobadas.");
         }
         if (entity.getProductionOrderId() == null) {
             throw new BusinessException("Esta solicitud no tiene una OPI vinculada.");
@@ -238,6 +234,19 @@ public class InternalShipmentRequestService {
             entity.setReviewedBy(securityUtil.getCurrentUserId());
             entity.setReviewedAt(LocalDateTime.now());
         }
+        requestRepository.save(entity);
+        return toResponse(entity);
+    }
+
+    @Transactional
+    public InternalShipmentRequestResponse generateOpi(Long id)
+            throws BusinessException, ResourceNotFoundException {
+        accessGuard.assertCanApproveOrReject();
+        InternalShipmentRequestEntity entity = requestRepository.findByIdWithLines(id)
+                .orElseThrow(() -> new ResourceNotFoundException("InternalShipmentRequest", id));
+        assertCanGenerateOpi(entity, null);
+        Long productionOrderId = createOpiFromRequestLines(entity);
+        entity.setProductionOrderId(productionOrderId);
         requestRepository.save(entity);
         return toResponse(entity);
     }
@@ -276,7 +285,31 @@ public class InternalShipmentRequestService {
     @Transactional(readOnly = true)
     public List<ProductShipmentResponse> listExistingEnvi() throws BusinessException {
         accessGuard.assertCanViewExistingEnvi();
-        return productDistributionService.listAllInternalEnviShipments();
+        List<ProductShipmentResponse> shipments = productDistributionService.listAllInternalEnviShipments();
+        List<Long> shipmentIds = shipments.stream()
+                .map(ProductShipmentResponse::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (shipmentIds.isEmpty()) {
+            return shipments;
+        }
+        Map<Long, InternalShipmentRequestEntity> byShipmentId = requestRepository
+                .findByProductShipmentIdIn(shipmentIds).stream()
+                .filter(req -> req.getProductShipmentId() != null)
+                .collect(Collectors.toMap(
+                        InternalShipmentRequestEntity::getProductShipmentId,
+                        req -> req,
+                        (first, ignored) -> first));
+        for (ProductShipmentResponse shipment : shipments) {
+            InternalShipmentRequestEntity linked = byShipmentId.get(shipment.getId());
+            if (linked == null) {
+                shipment.setCanGenerateOpi(false);
+                continue;
+            }
+            shipment.setInternalShipmentRequestId(linked.getId());
+            shipment.setCanGenerateOpi(canGenerateOpi(linked, shipment.getProductionOrderId()));
+        }
+        return shipments;
     }
 
     @Transactional(readOnly = true)
@@ -411,24 +444,15 @@ public class InternalShipmentRequestService {
         if (shortages == null || shortages.isEmpty()) {
             return null;
         }
-        String orderCode = productionOrderCodeService.generateNextCode("INTERNA");
-        String recipient = request.getRecipientName() == null ? "Colaborador" : request.getRecipientName().trim();
         String requestTypeLabel = "PLANILLA".equalsIgnoreCase(safe(request.getRequestType()))
                 ? "Planilla"
                 : "Defectos";
-        ProductionOrderEntity order = ProductionOrderEntity.builder()
-                .code(orderCode)
-                .orderType("INTERNA")
-                .customerName(recipient)
-                .startDate(LocalDate.now())
-                .deliveryDate(LocalDate.now())
-                .observations("OPI generada por faltante de stock PT/Devoluciones. "
+        String recipient = request.getRecipientName() == null ? "Colaborador" : request.getRecipientName().trim();
+        ProductionOrderEntity savedOrder = createDraftInternaOrder(
+                request,
+                "OPI generada por faltante de stock PT/Devoluciones. "
                         + "Solicitud ENVI #" + request.getId() + " (" + requestTypeLabel + "). "
-                        + "Colaborador: " + recipient + ".")
-                .status("DRAFT")
-                .createdBy(securityUtil.getCurrentUserId())
-                .build();
-        ProductionOrderEntity savedOrder = productionOrderRepository.save(order);
+                        + "Colaborador: " + recipient + ".");
 
         for (DispatchStockShortageResponse shortage : shortages) {
             int qty = shortage.getShortageQuantity() == null
@@ -437,21 +461,132 @@ public class InternalShipmentRequestService {
             if (qty <= 0) {
                 continue;
             }
-            String sizeLabel = shortage.getSize();
-            String sizesData = buildProductionItemSizesData(sizeLabel, qty);
-            ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                    .productionOrderId(savedOrder.getId())
-                    .productId(shortage.getProductId())
-                    .colorId(shortage.getColorId())
-                    .quantity(qty)
-                    .warehouseReceivedQty(0)
-                    .sizesData(sizesData)
-                    .observations("Faltante solicitud ENVI #" + request.getId())
-                    .createdBy(securityUtil.getCurrentUserId())
-                    .build();
-            productionOrderItemRepository.save(item);
+            saveOpiItem(
+                    savedOrder.getId(),
+                    shortage.getProductId(),
+                    shortage.getColorId(),
+                    shortage.getSize(),
+                    qty,
+                    "Faltante solicitud ENVI #" + request.getId());
         }
         return savedOrder.getId();
+    }
+
+    private Long createOpiFromRequestLines(InternalShipmentRequestEntity request) throws BusinessException {
+        List<InternalShipmentRequestLineEntity> lines = request.getLines() == null
+                ? List.of()
+                : request.getLines();
+        List<InternalShipmentRequestLineEntity> validLines = lines.stream()
+                .filter(line -> line != null && line.getProductId() != null)
+                .filter(line -> line.getQuantity() != null && line.getQuantity().intValue() > 0)
+                .collect(Collectors.toList());
+        if (validLines.isEmpty()) {
+            throw new BusinessException("La solicitud no tiene cantidades válidas para generar la OPI.");
+        }
+        String requestTypeLabel = "PLANILLA".equalsIgnoreCase(safe(request.getRequestType()))
+                ? "Planilla"
+                : "Defectos";
+        String recipient = request.getRecipientName() == null ? "Colaborador" : request.getRecipientName().trim();
+        String enviRef = request.getProductShipmentId() == null
+                ? ""
+                : shipmentRepository.findById(request.getProductShipmentId())
+                        .map(ProductShipmentEntity::getShipmentNumber)
+                        .filter(number -> number != null && !number.isBlank())
+                        .map(number -> " Documento " + number + ".")
+                        .orElse("");
+        ProductionOrderEntity savedOrder = createDraftInternaOrder(
+                request,
+                "OPI generada desde envío interno autorizado. "
+                        + "Solicitud ENVI #" + request.getId() + " (" + requestTypeLabel + "). "
+                        + "Colaborador: " + recipient + "." + enviRef);
+        for (InternalShipmentRequestLineEntity line : validLines) {
+            int qty = line.getQuantity().intValue();
+            saveOpiItem(
+                    savedOrder.getId(),
+                    line.getProductId(),
+                    line.getColorId(),
+                    line.getSize(),
+                    qty,
+                    "Reposición solicitud ENVI #" + request.getId());
+        }
+        return savedOrder.getId();
+    }
+
+    private ProductionOrderEntity createDraftInternaOrder(
+            InternalShipmentRequestEntity request,
+            String observations) throws BusinessException {
+        String orderCode = productionOrderCodeService.generateNextCode("INTERNA");
+        String recipient = request.getRecipientName() == null ? "Colaborador" : request.getRecipientName().trim();
+        ProductionOrderEntity order = ProductionOrderEntity.builder()
+                .code(orderCode)
+                .orderType("INTERNA")
+                .customerName(recipient)
+                .startDate(LocalDate.now())
+                .deliveryDate(LocalDate.now())
+                .observations(observations)
+                .status("DRAFT")
+                .createdBy(securityUtil.getCurrentUserId())
+                .build();
+        return productionOrderRepository.save(order);
+    }
+
+    private void saveOpiItem(
+            Long orderId,
+            Long productId,
+            Long colorId,
+            String size,
+            int qty,
+            String observations) {
+        ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
+                .productionOrderId(orderId)
+                .productId(productId)
+                .colorId(colorId)
+                .quantity(qty)
+                .warehouseReceivedQty(0)
+                .sizesData(buildProductionItemSizesData(size, qty))
+                .observations(observations)
+                .createdBy(securityUtil.getCurrentUserId())
+                .build();
+        productionOrderItemRepository.save(item);
+    }
+
+    private void assertCanGenerateOpi(InternalShipmentRequestEntity entity, Long shipmentProductionOrderId)
+            throws BusinessException {
+        Long shipmentPoId = shipmentProductionOrderId;
+        if (shipmentPoId == null && entity.getProductShipmentId() != null) {
+            shipmentPoId = shipmentRepository.findById(entity.getProductShipmentId())
+                    .map(ProductShipmentEntity::getProductionOrderId)
+                    .orElse(null);
+        }
+        if (canGenerateOpi(entity, shipmentPoId)) {
+            return;
+        }
+        if (entity.getProductionOrderId() != null) {
+            throw new BusinessException("Esta solicitud ya tiene una OPI vinculada.");
+        }
+        if (shipmentPoId != null) {
+            throw new BusinessException("Este ENVI ya está asociado a una orden de producción.");
+        }
+        throw new BusinessException("No se puede generar OPI para esta solicitud.");
+    }
+
+    private boolean canGenerateOpi(InternalShipmentRequestEntity entity, Long shipmentProductionOrderId) {
+        if (entity == null) {
+            return false;
+        }
+        if (!"APROBADA".equalsIgnoreCase(safe(entity.getStatus()))) {
+            return false;
+        }
+        if (entity.getProductShipmentId() == null) {
+            return false;
+        }
+        if (entity.getProductionOrderId() != null) {
+            return false;
+        }
+        if ("OPI".equalsIgnoreCase(safe(entity.getRequestType()))) {
+            return false;
+        }
+        return shipmentProductionOrderId == null;
     }
 
     private void generateMaterialsForProductionOrder(Long productionOrderId) {
@@ -594,10 +729,13 @@ public class InternalShipmentRequestService {
 
     private InternalShipmentRequestResponse toResponse(InternalShipmentRequestEntity entity) {
         String shipmentNumber = null;
+        Long shipmentProductionOrderId = null;
         if (entity.getProductShipmentId() != null) {
-            shipmentNumber = shipmentRepository.findById(entity.getProductShipmentId())
-                    .map(ProductShipmentEntity::getShipmentNumber)
-                    .orElse(null);
+            ProductShipmentEntity shipment = shipmentRepository.findById(entity.getProductShipmentId()).orElse(null);
+            if (shipment != null) {
+                shipmentNumber = shipment.getShipmentNumber();
+                shipmentProductionOrderId = shipment.getProductionOrderId();
+            }
         }
         String productionOrderCode = null;
         String productionOrderStatus = null;
@@ -637,6 +775,7 @@ public class InternalShipmentRequestService {
                 .productionOrderId(entity.getProductionOrderId())
                 .productionOrderCode(productionOrderCode)
                 .productionOrderStatus(productionOrderStatus)
+                .canGenerateOpi(canGenerateOpi(entity, shipmentProductionOrderId))
                 .opiAuthorizedBy(entity.getOpiAuthorizedBy())
                 .opiAuthorizedAt(entity.getOpiAuthorizedAt())
                 .lines(lines)
