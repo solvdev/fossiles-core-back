@@ -241,7 +241,8 @@ public class ProductionOrderController {
         // Generar código automáticamente si no se proporciona
         String orderCode = request.getCode();
         if (orderCode == null || orderCode.trim().isEmpty()) {
-            orderCode = productionOrderCodeService.generateNextCode(effectiveOrderType, request.getSellerName());
+            orderCode = productionOrderCodeService.generateNextCode(
+                    effectiveOrderType, request.getSellerName(), request.getKioskOrder());
         }
 
         if (productionOrderRepository.existsByCode(orderCode)) {
@@ -1971,7 +1972,8 @@ public class ProductionOrderController {
             ProductionOrderRequest request,
             String orderType
     ) {
-        if ("CLIENTE_KIOSKO".equals(orderType)) {
+        boolean kioskNormal = "NORMAL".equals(orderType) && Boolean.TRUE.equals(request.getKioskOrder());
+        if ("CLIENTE_KIOSKO".equals(orderType) || kioskNormal) {
             entity.setCustomerId(null);
             String name = request.getCustomerName() == null ? "" : request.getCustomerName().trim();
             entity.setCustomerName(name.isEmpty() ? null : name);
