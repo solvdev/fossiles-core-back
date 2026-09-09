@@ -251,6 +251,19 @@ public class InternalShipmentRequestService {
         return toResponse(entity);
     }
 
+    @Transactional
+    public InternalShipmentRequestResponse generateOpiByShipment(Long shipmentId)
+            throws BusinessException, ResourceNotFoundException {
+        if (shipmentId == null) {
+            throw new BusinessException("Debe indicar el envío.");
+        }
+        Long requestId = requestRepository.findByProductShipmentId(shipmentId)
+                .map(InternalShipmentRequestEntity::getId)
+                .orElseThrow(() -> new BusinessException(
+                        "Este ENVI no tiene una solicitud interna ligada. No se puede generar OPI."));
+        return generateOpi(requestId);
+    }
+
     /**
      * Crea solicitud tipo OPI vinculada a una orden INTERNA recién registrada (estado DRAFT).
      */

@@ -21,6 +21,11 @@ public class ProductResponse {
     private String cinchoType;
     private Boolean cinchoForKids;
     private Double prdTime;
+    private Boolean entrecuerosEnabled;
+    private BigDecimal entrecuerosPriceUnit;
+    private BigDecimal entrecuerosPriceQty3;
+    private BigDecimal entrecuerosPriceQty6;
+    private BigDecimal entrecuerosPriceQty12;
     private BigDecimal salePrice;
     private BigDecimal discountedPrice;
     private BigDecimal sellerPrice;

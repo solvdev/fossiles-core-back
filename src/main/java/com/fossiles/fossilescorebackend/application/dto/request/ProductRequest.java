@@ -36,6 +36,16 @@ public class ProductRequest {
 
     private Double prdTime;
 
+    private Boolean entrecuerosEnabled;
+
+    private BigDecimal entrecuerosPriceUnit;
+
+    private BigDecimal entrecuerosPriceQty3;
+
+    private BigDecimal entrecuerosPriceQty6;
+
+    private BigDecimal entrecuerosPriceQty12;
+
     private BigDecimal salePrice;
 
     private BigDecimal discountedPrice;

@@ -27,6 +27,8 @@ public class LocationResponse {
     private String felMunicipio;
     private String felDepartamento;
     private Boolean posTestMode;
+    /** STANDARD o ENTRECUEROS. */
+    private String posMode;
     /** Fondo inicial de caja POS al abrir turno. */
     private BigDecimal posOpeningCashAmount;
     /** Código de serie de control interno (ej. A45, B). */

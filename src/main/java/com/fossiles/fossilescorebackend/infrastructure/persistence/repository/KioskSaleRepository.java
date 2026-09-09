@@ -130,6 +130,7 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
               AND s.saleDate >= :minSaleDate
               AND (s.promotionName IS NULL OR LOWER(TRIM(s.promotionName)) NOT LIKE 'boleta de cambio%')
               AND (s.felUuid IS NULL OR TRIM(s.felUuid) = '')
+              AND (s.felStatus IS NULL OR UPPER(TRIM(s.felStatus)) <> 'SKIPPED')
               AND (
                   s.invoiceId IS NULL
                   OR NOT EXISTS (

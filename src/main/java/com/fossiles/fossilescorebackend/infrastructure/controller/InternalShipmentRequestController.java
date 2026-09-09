@@ -76,6 +76,12 @@ public class InternalShipmentRequestController {
         return ResponseEntity.ok(internalShipmentRequestService.generateOpi(id));
     }
 
+    @PostMapping("/by-shipment/{shipmentId}/generate-opi")
+    public ResponseEntity<InternalShipmentRequestResponse> generateOpiByShipment(@PathVariable Long shipmentId)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(internalShipmentRequestService.generateOpiByShipment(shipmentId));
+    }
+
     @PostMapping("/{id}/reject")
     public ResponseEntity<InternalShipmentRequestResponse> reject(
             @PathVariable Long id,
