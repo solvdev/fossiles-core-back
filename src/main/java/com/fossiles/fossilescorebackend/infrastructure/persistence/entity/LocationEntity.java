@@ -64,6 +64,11 @@ public class LocationEntity {
     @Builder.Default
     private Boolean posTestMode = false;
 
+    /** STANDARD o ENTRECUEROS. */
+    @Column(name = "pos_mode", length = 30, nullable = false)
+    @Builder.Default
+    private String posMode = "STANDARD";
+
     /** Fondo inicial de caja POS al abrir turno (por kiosko). */
     @Column(name = "pos_opening_cash_amount", nullable = false, precision = 12, scale = 2)
     @Builder.Default
