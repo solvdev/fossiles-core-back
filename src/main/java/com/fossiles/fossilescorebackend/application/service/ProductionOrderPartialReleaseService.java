@@ -15,6 +15,7 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -428,6 +429,7 @@ public class ProductionOrderPartialReleaseService {
                 : PartialReleaseLineResponse.builder().productionOrderItemId(line.getProductionOrderItemId()).build();
 
         Map<String, Integer> sizes = parseSizesMap(line.getSizesData());
+        sizes.entrySet().removeIf(e -> e.getValue() == null || e.getValue() <= 0);
         int qty = sizes.isEmpty()
                 ? Math.max(0, line.getQuantity() != null ? line.getQuantity() : 0)
                 : sizes.values().stream().mapToInt(Integer::intValue).sum();
@@ -637,6 +639,9 @@ public class ProductionOrderPartialReleaseService {
         Map<Long, ProductionOrderItemEntity> itemCache = new HashMap<>();
 
         for (ProductionOrderPartialReleaseLineEntity line : lines) {
+            if (!lineHasPositiveQuantity(line)) {
+                continue;
+            }
             ProductionOrderItemEntity item = itemCache.computeIfAbsent(
                     line.getProductionOrderItemId(),
                     id -> productionOrderItemRepository.findById(id).orElse(null));
@@ -646,14 +651,16 @@ public class ProductionOrderPartialReleaseService {
             Map<String, Integer> sizes = parseSizesMap(line.getSizesData());
             if (!sizes.isEmpty()) {
                 for (Map.Entry<String, Integer> e : sizes.entrySet()) {
-                    if (e.getValue() <= 0) {
+                    int qty = e.getValue() != null ? e.getValue() : 0;
+                    if (qty <= 0) {
                         continue;
                     }
                     products.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
                             .productId(item.getProductId())
                             .colorId(item.getColorId())
                             .size(e.getKey())
-                            .quantity(BigDecimal.valueOf(e.getValue()))
+                            .quantity(BigDecimal.valueOf(qty))
+                            .unitPrice(resolveReleaseLineUnitPrice(item, e.getKey()))
                             .build());
                 }
             } else if (line.getQuantity() != null && line.getQuantity() > 0) {
@@ -662,6 +669,7 @@ public class ProductionOrderPartialReleaseService {
                         .colorId(item.getColorId())
                         .size("")
                         .quantity(BigDecimal.valueOf(line.getQuantity()))
+                        .unitPrice(resolveReleaseLineUnitPrice(item, null))
                         .build());
             }
         }
@@ -669,6 +677,11 @@ public class ProductionOrderPartialReleaseService {
             throw new BusinessException("La liberación no tiene productos con cantidad.");
         }
         return products;
+    }
+
+    private BigDecimal resolveReleaseLineUnitPrice(ProductionOrderItemEntity item, String sizeLabel) {
+        BigDecimal price = ProductionOrderItemPricing.resolveForSize(item, sizeLabel, null);
+        return price.compareTo(BigDecimal.ZERO) > 0 ? price : null;
     }
 
     private ProductionOrderEntity loadOrderForPartialReleases(Long productionOrderId)
