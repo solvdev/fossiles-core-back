@@ -14,4 +14,7 @@ public interface KioscoInternalCountItemRepository extends JpaRepository<KioscoI
 
     Optional<KioscoInternalCountItemEntity> findByInternalCountIdAndProductIdAndColorId(
             Long internalCountId, Long productId, Long colorId);
+
+    Optional<KioscoInternalCountItemEntity> findByInternalCountIdAndProductIdAndColorIdAndHardwareCondition(
+            Long internalCountId, Long productId, Long colorId, String hardwareCondition);
 }

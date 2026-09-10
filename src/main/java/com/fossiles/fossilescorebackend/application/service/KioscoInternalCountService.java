@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalC
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
+import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoInternalCountEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoInternalCountItemEntity;
@@ -95,14 +96,7 @@ public class KioscoInternalCountService {
             if (req.getProductId() == null) {
                 throw new BusinessException("productId es obligatorio en cada conteo.");
             }
-            KioscoInternalCountItemEntity item = internalCountItemRepository
-                    .findByInternalCountIdAndProductIdAndColorId(
-                            internalCountId, req.getProductId(), req.getColorId())
-                    .orElseGet(() -> KioscoInternalCountItemEntity.builder()
-                            .internalCountId(internalCountId)
-                            .productId(req.getProductId())
-                            .colorId(req.getColorId())
-                            .build());
+            KioscoInternalCountItemEntity item = findOrCreateInternalItem(internalCountId, req);
             applyItemPayload(item, req, userId);
             internalCountItemRepository.save(item);
         }
@@ -136,11 +130,15 @@ public class KioscoInternalCountService {
 
         Map<String, List<KioscoStockEntity>> stocksByKey = kioscoStockRepository
                 .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(count.getLocationId()).stream()
-                .collect(Collectors.groupingBy(s -> itemKey(s.getProductId(), s.getColorId())));
+                .collect(Collectors.groupingBy(s -> ProductBrandNames.countVariantKey(
+                        s.getProductId(), s.getColorId(), s.getHardwareCondition())));
 
         Map<String, KioscoInternalCountItemEntity> itemsByKey = internalCountItemRepository
                 .findByInternalCountId(count.getId()).stream()
-                .collect(Collectors.toMap(i -> itemKey(i.getProductId(), i.getColorId()), i -> i, (a, b) -> a));
+                .collect(Collectors.toMap(
+                        i -> ProductBrandNames.countVariantKey(i.getProductId(), i.getColorId(), i.getHardwareCondition()),
+                        i -> i,
+                        (a, b) -> a));
 
         List<Long> productIds = stocksByKey.values().stream()
                 .flatMap(List::stream)
@@ -206,7 +204,9 @@ public class KioscoInternalCountService {
                     KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
                             .productId(primary.getProductId())
                             .productCode(product.getCode())
-                            .productName(product.getName())
+                            .productName(appendBrandToName(
+                                    product.getName(),
+                                    ProductBrandNames.normalize(primary.getHardwareCondition())))
                             .colorId(primary.getColorId())
                             .colorName(Optional.ofNullable(primary.getColorId())
                                     .map(colorsById::get)
@@ -216,7 +216,9 @@ public class KioscoInternalCountService {
                             .cinchoType(ProductCinchoType.normalizeCinchoType(product.getCinchoType()))
                             .cinchoForKids(Boolean.TRUE.equals(product.getCinchoForKids()))
                             .packaging(ProductCinchoType.isPackagingProductCode(product.getCode()))
-                            .hardwareCondition(stocks.size() == 1 ? primary.getHardwareCondition() : null)
+                            .hardwareCondition(stocks.size() == 1
+                                    ? primary.getHardwareCondition()
+                                    : ProductBrandNames.normalize(primary.getHardwareCondition()))
                             .inventarioFinal(inventarioFinal)
                             .inventarioFinalByHardware(inventarioFinalByHardware.isEmpty() ? null : inventarioFinalByHardware)
                             .counts(counts)
@@ -468,8 +470,31 @@ public class KioscoInternalCountService {
         return securityUtil.getCurrentUserId();
     }
 
-    private static String itemKey(Long productId, Long colorId) {
-        return productId + ":" + (colorId != null ? colorId : "");
+    private KioscoInternalCountItemEntity findOrCreateInternalItem(
+            Long internalCountId,
+            KioscoPhysicalCountItemUpsertRequest req
+    ) {
+        String hardware = ProductBrandNames.resolveCountHardware(req.getHardwareCondition());
+        return internalCountItemRepository
+                .findByInternalCountIdAndProductIdAndColorIdAndHardwareCondition(
+                        internalCountId, req.getProductId(), req.getColorId(), hardware)
+                .orElseGet(() -> KioscoInternalCountItemEntity.builder()
+                        .internalCountId(internalCountId)
+                        .productId(req.getProductId())
+                        .colorId(req.getColorId())
+                        .hardwareCondition(hardware)
+                        .build());
+    }
+
+    private static String appendBrandToName(String name, String brand) {
+        if (brand == null || brand.isBlank()) {
+            return name;
+        }
+        String n = name != null ? name.trim() : "";
+        if (n.toUpperCase(Locale.ROOT).contains(brand)) {
+            return n;
+        }
+        return (n + " " + brand).trim();
     }
 
     private static int safeInt(Integer value) {

@@ -27,4 +27,16 @@ public final class ProductBrandNames {
         String n = value.trim().toUpperCase(Locale.ROOT).replaceAll("\\s+", " ");
         return OPTION_SET.contains(n) ? n : null;
     }
+
+    /** Clave de fila de conteo: producto+color, o producto+color+marca en Entre Cueros. */
+    public static String countVariantKey(Long productId, Long colorId, String hardwareCondition) {
+        String base = (productId != null ? productId : "") + ":" + (colorId != null ? colorId : "");
+        String brand = normalize(hardwareCondition);
+        return brand != null ? base + ":" + brand : base;
+    }
+
+    public static String resolveCountHardware(String raw) {
+        String brand = normalize(raw);
+        return brand != null ? brand : "NUEVO";
+    }
 }

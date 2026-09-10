@@ -12,6 +12,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalC
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
+import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoNotificationRecipientEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
@@ -265,13 +266,7 @@ public class KioscoInventoryCountService {
             Map<String, BigDecimal> normalized = req.getCounts() != null
                     ? normalizeCounts(req.getCounts())
                     : null;
-            KioscoPhysicalCountItemEntity item = itemRepository
-                    .findByCountIdAndProductIdAndColorId(countId, req.getProductId(), req.getColorId())
-                    .orElseGet(() -> KioscoPhysicalCountItemEntity.builder()
-                            .countId(countId)
-                            .productId(req.getProductId())
-                            .colorId(req.getColorId())
-                            .build());
+            KioscoPhysicalCountItemEntity item = findOrCreateCountItem(countId, req);
             if (normalized != null) {
                 item.setCountsData(ProductInventorySizesJson.serializeIncludingZeros(normalized));
             }
@@ -574,7 +569,10 @@ public class KioscoInventoryCountService {
         applyPrePeriodEntradasToKardexBySize(kardexByStockAndSize, gapEntradasByStockAndSize);
 
         Map<String, KioscoPhysicalCountItemEntity> itemsByKey = itemRepository.findByCountId(count.getId()).stream()
-                .collect(Collectors.toMap(i -> itemKey(i.getProductId(), i.getColorId()), i -> i, (a, b) -> a));
+                .collect(Collectors.toMap(
+                        i -> ProductBrandNames.countVariantKey(i.getProductId(), i.getColorId(), i.getHardwareCondition()),
+                        i -> i,
+                        (a, b) -> a));
 
         List<Long> productIds = kardexRows.stream()
                 .map(KioscoKardexReportResponse.KioscoKardexRow::getProductId)
@@ -607,7 +605,9 @@ public class KioscoInventoryCountService {
             String categoryName = resolveDisplayCategoryName(categoryKey, categoriesById);
             categoryNameByKey.putIfAbsent(categoryKey, categoryName);
 
-            KioscoPhysicalCountItemEntity item = itemsByKey.get(itemKey(kardexRow.getProductId(), kardexRow.getColorId()));
+            KioscoPhysicalCountItemEntity item = itemsByKey.get(
+                    ProductBrandNames.countVariantKey(
+                            kardexRow.getProductId(), kardexRow.getColorId(), kardexRow.getHardwareCondition()));
             Map<String, BigDecimal> countedValues = item != null
                     ? ProductInventorySizesJson.parse(item.getCountsData())
                     : Map.of();
@@ -618,8 +618,13 @@ public class KioscoInventoryCountService {
                     item != null ? item.getHardwareLocationCountsData() : null);
 
             String productColorKey = itemKey(kardexRow.getProductId(), kardexRow.getColorId());
-            List<KioscoStockEntity> stocksForRow = stocksByProductColor.getOrDefault(productColorKey, List.of());
-            KioscoStockEntity stock = stockByKey.get(productColorKey);
+            String rowBrand = ProductBrandNames.normalize(kardexRow.getHardwareCondition());
+            List<KioscoStockEntity> stocksForRow = stocksByProductColor.getOrDefault(productColorKey, List.of())
+                    .stream()
+                    .filter(s -> rowBrand == null
+                            || rowBrand.equals(ProductBrandNames.normalize(s.getHardwareCondition())))
+                    .collect(Collectors.toList());
+            KioscoStockEntity stock = stocksForRow.isEmpty() ? stockByKey.get(productColorKey) : stocksForRow.get(0);
             Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardexForStock = mergeSizeKardexForStocks(
                     stocksForRow, kardexByStockAndSize);
             // Incluir tallas con movimiento/envío en el periodo aunque el stock actual sea 0.
@@ -668,7 +673,7 @@ public class KioscoInventoryCountService {
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow row = KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
                     .productId(kardexRow.getProductId())
                     .productCode(kardexRow.getProductCode())
-                    .productName(kardexRow.getProductName())
+                    .productName(appendBrandToName(kardexRow.getProductName(), rowBrand))
                     .colorId(kardexRow.getColorId())
                     .colorName(kardexRow.getColorName())
                     .audienceCategory(product != null
@@ -676,8 +681,7 @@ public class KioscoInventoryCountService {
                             : ProductAudienceCategory.UNISEX)
                     .cinchoType(product != null ? ProductCinchoType.normalizeCinchoType(product.getCinchoType()) : null)
                     .cinchoForKids(product != null && Boolean.TRUE.equals(product.getCinchoForKids()))
-                    .hardwareCondition(stocksForRow.size() == 1 && stock != null
-                            ? stock.getHardwareCondition() : null)
+                    .hardwareCondition(resolveRowHardwareCondition(rowBrand, stocksForRow, stock))
                     .inventarioFinalByHardware(inventarioFinalByHardware.isEmpty() ? null : inventarioFinalByHardware)
                     .hardwareLocationCounts(hardwareLocationCounts)
                     .packaging(ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()))
@@ -883,6 +887,47 @@ public class KioscoInventoryCountService {
 
     private String itemKey(Long productId, Long colorId) {
         return productId + ":" + (colorId != null ? colorId : "");
+    }
+
+    private KioscoPhysicalCountItemEntity findOrCreateCountItem(
+            Long countId,
+            KioscoPhysicalCountItemUpsertRequest req
+    ) {
+        String hardware = ProductBrandNames.resolveCountHardware(req.getHardwareCondition());
+        return itemRepository
+                .findByCountIdAndProductIdAndColorIdAndHardwareCondition(
+                        countId, req.getProductId(), req.getColorId(), hardware)
+                .orElseGet(() -> KioscoPhysicalCountItemEntity.builder()
+                        .countId(countId)
+                        .productId(req.getProductId())
+                        .colorId(req.getColorId())
+                        .hardwareCondition(hardware)
+                        .build());
+    }
+
+    private String resolveRowHardwareCondition(
+            String rowBrand,
+            List<KioscoStockEntity> stocksForRow,
+            KioscoStockEntity stock
+    ) {
+        if (rowBrand != null) {
+            return rowBrand;
+        }
+        if (stocksForRow.size() == 1 && stock != null) {
+            return stock.getHardwareCondition();
+        }
+        return null;
+    }
+
+    private String appendBrandToName(String name, String brand) {
+        if (brand == null || brand.isBlank()) {
+            return name;
+        }
+        String n = name != null ? name.trim() : "";
+        if (n.toUpperCase(Locale.ROOT).contains(brand)) {
+            return n;
+        }
+        return (n + " " + brand).trim();
     }
 
     private boolean shouldIncludeInPhysicalCount(KioscoKardexReportResponse.KioscoKardexRow kardexRow) {
@@ -1424,7 +1469,8 @@ public class KioscoInventoryCountService {
         }
         Map<String, KioscoKardexReportResponse.KioscoKardexRow> merged = new LinkedHashMap<>();
         for (KioscoKardexReportResponse.KioscoKardexRow row : rows) {
-            String key = itemKey(row.getProductId(), row.getColorId());
+            String key = ProductBrandNames.countVariantKey(
+                    row.getProductId(), row.getColorId(), row.getHardwareCondition());
             KioscoKardexReportResponse.KioscoKardexRow existing = merged.get(key);
             if (existing == null) {
                 merged.put(key, row);
@@ -1438,6 +1484,7 @@ public class KioscoInventoryCountService {
                     .colorName(existing.getColorName())
                     .audienceCategory(existing.getAudienceCategory())
                     .cinchoType(existing.getCinchoType())
+                    .hardwareCondition(ProductBrandNames.normalize(existing.getHardwareCondition()))
                     .inventarioInicial(existing.getInventarioInicial() + row.getInventarioInicial())
                     .comprasAjustes(existing.getComprasAjustes() + row.getComprasAjustes())
                     .anulacionCompras(existing.getAnulacionCompras() + row.getAnulacionCompras())
