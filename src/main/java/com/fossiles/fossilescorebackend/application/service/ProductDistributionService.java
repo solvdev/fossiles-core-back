@@ -261,6 +261,10 @@ public class ProductDistributionService {
 
         List<ProductShipmentRequest.ProductShipmentDetailRequest> normalizedProducts =
                 normalizeShipmentProducts(request.getProducts());
+        Long partialReleaseId = request.getPartialReleaseId();
+        if (partialReleaseId != null && normalizedProducts.isEmpty()) {
+            throw new BusinessException("La liberación parcial no tiene productos con cantidad.");
+        }
         List<ProductShipmentEntity> allShipmentsForLocation = reqLocationId == null
                 ? shipmentRepository.findByProductionOrderIdAndLocationIdIsNullOrderByIdAsc(productionOrderId)
                 : shipmentRepository.findByProductionOrderIdAndLocationIdOrderByIdAsc(productionOrderId, reqLocationId);
@@ -293,7 +297,6 @@ public class ProductDistributionService {
             return toShipmentResponse(saved);
         }
 
-        Long partialReleaseId = request.getPartialReleaseId();
         List<ProductShipmentEntity> draftShipments = allShipmentsForLocation.stream()
                 .filter(s -> "DRAFT".equalsIgnoreCase(s.getStatus()))
                 .filter(s -> partialReleaseId == null
@@ -310,7 +313,7 @@ public class ProductDistributionService {
         } else if (isLuisFelipeVendorOrder(order)) {
             order = ensureOpvVendorShipmentNumberOnOrder(order);
             shipmentNumber = allocateLfCinchoPhysicalShipmentNumber(order);
-        } else if (isCincho) {
+        } else if (isCincho || isEntreCuerosCustomerOpv(order)) {
             shipmentNumber = generateOpcShipmentNumber(order);
         } else {
             shipmentNumber = generateShipmentNumberForOpiDocument(order);
@@ -898,9 +901,9 @@ public class ProductDistributionService {
                     "La orden INTERNA (OPI) está en borrador. Contabilidad debe autorizar la producción desde Autorizar envíos internos antes de generar envíos.");
         }
         if (!"INTERNA".equals(ot) && !"CLIENTE_KIOSKO".equals(ot) && !"NORMAL".equals(ot) && !isCinchoOrderType(ot)
-                && !isLuisFelipeVendorOrder(order)) {
+                && !isLuisFelipeVendorOrder(order) && !isEntreCuerosCustomerOpv(order)) {
             throw new BusinessException(
-                    "Solo órdenes INTERNA (OPI), CLIENTE_KIOSKO (OPCK), NORMAL (OPK), OPC (cinchos) u OPV Luis Felipe permiten envíos sin distribución.");
+                    "Solo órdenes INTERNA (OPI), CLIENTE_KIOSKO (OPCK), NORMAL (OPK), OPC (cinchos), OPV Luis Felipe u OPV Entre Cueros permiten envíos sin distribución.");
         }
     }
 
@@ -4665,6 +4668,31 @@ public class ProductDistributionService {
         }
         String seller = String.valueOf(order.getSellerName() == null ? "" : order.getSellerName()).trim().toUpperCase();
         return seller.contains("LUIS FELIPE");
+    }
+
+    private static String normalizeEntreCuerosToken(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String nfd = java.text.Normalizer.normalize(value.trim(), java.text.Normalizer.Form.NFD);
+        String withoutMarks = nfd.replaceAll("\\p{M}+", "");
+        return withoutMarks.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
+    }
+
+    private boolean isEntreCuerosCustomerOpv(ProductionOrderEntity order) {
+        if (order == null) {
+            return false;
+        }
+        String orderType = order.getOrderType() == null ? "" : order.getOrderType().trim().toUpperCase(Locale.ROOT);
+        String code = order.getCode() == null ? "" : order.getCode().trim().toUpperCase(Locale.ROOT);
+        if ("INTERNA".equals(orderType) || "CLIENTE_KIOSKO".equals(orderType) || isCinchoOrderType(orderType)) {
+            return false;
+        }
+        boolean opvOrder = "MARCAS".equals(orderType) || "OPV".equals(orderType) || code.startsWith("OPV-");
+        if (!opvOrder) {
+            return false;
+        }
+        return normalizeEntreCuerosToken(order.getCustomerName()).contains("ENTRECUEROS");
     }
 
     private String resolveLfDefaultDestination(ProductionOrderEntity order) {
