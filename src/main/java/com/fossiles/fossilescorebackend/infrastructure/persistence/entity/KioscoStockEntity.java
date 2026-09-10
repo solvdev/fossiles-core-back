@@ -56,8 +56,8 @@ public class KioscoStockEntity {
     @Builder.Default
     private Integer minimumStock = 0;
 
-    /** NUEVO | VIEJO — dimensión de stock (una fila por herraje). */
-    @Column(name = "hardware_condition", nullable = false, length = 20)
+    /** NUEVO | VIEJO (herraje) o marca en Entre Cueros. */
+    @Column(name = "hardware_condition", nullable = false, length = 40)
     @Builder.Default
     private String hardwareCondition = "NUEVO";
 

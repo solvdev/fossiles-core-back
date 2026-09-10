@@ -441,4 +441,115 @@ class KioscoOpeningInventoryServiceTest {
                 .name(name)
                 .build();
     }
+
+    private void stubEntrecuerosSession() {
+        Long entreCuerosLocationId = 42L;
+        when(locationRepository.existsById(entreCuerosLocationId)).thenReturn(true);
+        when(locationRepository.findById(entreCuerosLocationId)).thenReturn(Optional.of(LocationEntity.builder()
+                .id(entreCuerosLocationId)
+                .name("Entre Cueros")
+                .code("EC")
+                .posMode("ENTRECUEROS")
+                .build()));
+        AtomicReference<KioscoOpeningInventoryEntity> sessionRef = new AtomicReference<>(
+                KioscoOpeningInventoryEntity.builder()
+                        .id(sessionId)
+                        .locationId(entreCuerosLocationId)
+                        .status(KioscoOpeningInventoryStatus.DRAFT)
+                        .createdBy(userId)
+                        .createdAt(LocalDateTime.now())
+                        .updatedAt(LocalDateTime.now())
+                        .build());
+        when(openingInventoryRepository.findById(sessionId)).thenAnswer(inv -> Optional.of(sessionRef.get()));
+        when(openingInventoryRepository.existsByLocationIdAndStatus(
+                entreCuerosLocationId, KioscoOpeningInventoryStatus.APLICADO)).thenReturn(false);
+    }
+
+    @Test
+    void upsertItems_entrecuerosBilleteraRequiereMarca() {
+        stubEntrecuerosSession();
+        when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
+                .id(productId)
+                .code("BILL-001")
+                .name("Billetera")
+                .build()));
+        when(colorRepository.existsById(colorId)).thenReturn(true);
+
+        assertThatThrownBy(() -> service.upsertItems(sessionId, List.of(
+                KioscoOpeningInventoryItemUpsertRequest.builder()
+                        .productId(productId)
+                        .colorId(colorId)
+                        .hardwareCondition("NUEVO")
+                        .quantity(2)
+                        .build())))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("marca");
+    }
+
+    @Test
+    void upsertItems_entrecuerosBilleteraGuardaMarca() throws Exception {
+        stubEntrecuerosSession();
+        when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
+                .id(productId)
+                .code("BILL-001")
+                .name("Billetera")
+                .build()));
+        when(colorRepository.existsById(colorId)).thenReturn(true);
+        when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
+                sessionId, productId, colorId, "LEVIS")).thenReturn(Optional.empty());
+        when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
+                .thenReturn(List.of(KioscoOpeningInventoryItemEntity.builder()
+                        .openingInventoryId(sessionId)
+                        .productId(productId)
+                        .colorId(colorId)
+                        .hardwareCondition("LEVIS")
+                        .quantity(2)
+                        .build()));
+        when(productRepository.findAllById(List.of(productId))).thenReturn(List.of(ProductEntity.builder()
+                .id(productId)
+                .code("BILL-001")
+                .name("Billetera")
+                .build()));
+
+        service.upsertItems(sessionId, List.of(
+                KioscoOpeningInventoryItemUpsertRequest.builder()
+                        .productId(productId)
+                        .colorId(colorId)
+                        .hardwareCondition("levis")
+                        .quantity(2)
+                        .build()));
+
+        ArgumentCaptor<KioscoOpeningInventoryItemEntity> captor =
+                ArgumentCaptor.forClass(KioscoOpeningInventoryItemEntity.class);
+        verify(openingInventoryItemRepository).save(captor.capture());
+        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("LEVIS");
+    }
+
+    @Test
+    void upsertItems_entrecuerosCinchoIgnoraMarcaYUsaNuevo() throws Exception {
+        stubEntrecuerosSession();
+        when(productRepository.findById(fossProductId)).thenReturn(Optional.of(fossProduct(fossProductId)));
+        when(colorRepository.existsById(colorId)).thenReturn(true);
+        Map<String, Integer> sizes = new LinkedHashMap<>();
+        sizes.put("32", 1);
+        when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
+                sessionId, fossProductId, colorId, "NUEVO")).thenReturn(Optional.empty());
+        when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
+                .thenReturn(List.of());
+        when(productRepository.findAllById(List.of())).thenReturn(List.of());
+
+        service.upsertItems(sessionId, List.of(
+                KioscoOpeningInventoryItemUpsertRequest.builder()
+                        .productId(fossProductId)
+                        .colorId(colorId)
+                        .hardwareCondition("LEVIS")
+                        .quantity(1)
+                        .sizes(sizes)
+                        .build()));
+
+        ArgumentCaptor<KioscoOpeningInventoryItemEntity> captor =
+                ArgumentCaptor.forClass(KioscoOpeningInventoryItemEntity.class);
+        verify(openingInventoryItemRepository).save(captor.capture());
+        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("NUEVO");
+    }
 }

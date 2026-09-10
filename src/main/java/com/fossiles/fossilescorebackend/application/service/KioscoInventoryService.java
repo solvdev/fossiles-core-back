@@ -3373,8 +3373,7 @@ public class KioscoInventoryService {
     }
 
     private String resolveStockHardware(String hardwareCondition) {
-        String normalized = ProductHardwareCondition.normalize(hardwareCondition);
-        return normalized != null ? normalized : ProductHardwareCondition.NUEVO;
+        return ProductHardwareCondition.normalizeStockDimension(hardwareCondition);
     }
 
     private KioscoStockResponse applyStockMovement(

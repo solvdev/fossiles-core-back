@@ -42,7 +42,7 @@ public class KioscoOpeningInventoryItemEntity {
     @Column(name = "color_id")
     private Long colorId;
 
-    @Column(name = "hardware_condition", nullable = false, length = 10)
+    @Column(name = "hardware_condition", nullable = false, length = 40)
     @Builder.Default
     private String hardwareCondition = "NUEVO";
 

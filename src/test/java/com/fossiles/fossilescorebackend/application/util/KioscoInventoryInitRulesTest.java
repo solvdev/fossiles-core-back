@@ -113,4 +113,12 @@ class KioscoInventoryInitRulesTest {
         assertThat(KioscoInventoryInitRules.stockInitKey(1L, 10L, 2L, null))
                 .isEqualTo(KioscoInventoryInitRules.stockInitKey(1L, 10L, 2L, "NUEVO"));
     }
+
+    @Test
+    void stockInitKey_keepsBrandDistinctFromHardware() {
+        assertThat(KioscoInventoryInitRules.stockInitKey(42L, 10L, 2L, "LEVIS"))
+                .isNotEqualTo(KioscoInventoryInitRules.stockInitKey(42L, 10L, 2L, "NUEVO"));
+        assertThat(KioscoInventoryInitRules.stockInitKey(42L, 10L, 2L, "LEVIS"))
+                .isNotEqualTo(KioscoInventoryInitRules.stockInitKey(42L, 10L, 2L, "NAUTICA"));
+    }
 }
