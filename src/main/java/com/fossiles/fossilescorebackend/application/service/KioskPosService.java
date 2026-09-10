@@ -40,6 +40,7 @@ import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
+import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
@@ -230,10 +231,7 @@ public class KioskPosService {
                     ProductCategoryEntity category = product != null && product.getCategoryId() != null
                             ? categoriesById.get(product.getCategoryId())
                             : null;
-                    String hardware = ProductHardwareCondition.normalize(row.getHardwareCondition());
-                    if (hardware == null) {
-                        hardware = ProductHardwareCondition.NUEVO;
-                    }
+                    String hardware = ProductHardwareCondition.normalizeStockDimension(row.getHardwareCondition());
                     // Solo kiosco_stock: no mezclar tallas legacy (causaba "hay stock" en UI y 0 al cobrar).
                     Map<String, BigDecimal> sizes = resolveKioscoSizes(row);
                     BigDecimal quantity = sizes != null && !sizes.isEmpty()
@@ -3121,10 +3119,7 @@ public class KioskPosService {
     }
 
     private String inventoryKey(Long productId, Long colorId, String hardwareCondition, String size) {
-        String hardware = ProductHardwareCondition.normalize(hardwareCondition);
-        if (hardware == null) {
-            hardware = ProductHardwareCondition.NUEVO;
-        }
+        String hardware = ProductHardwareCondition.normalizeStockDimension(hardwareCondition);
         String base = productId + ":" + (colorId != null ? colorId : "null") + ":" + hardware;
         String normalized = ProductInventorySizesJson.normalizeKey(size);
         if (!normalized.isEmpty()) {
@@ -3134,8 +3129,7 @@ public class KioskPosService {
     }
 
     private String resolveItemHardwareCondition(String hardwareCondition) {
-        String hardware = ProductHardwareCondition.normalize(hardwareCondition);
-        return hardware != null ? hardware : ProductHardwareCondition.NUEVO;
+        return ProductHardwareCondition.normalizeStockDimension(hardwareCondition);
     }
 
     private String inventoryKey(Long productId, Long colorId, String size) {
@@ -3163,6 +3157,9 @@ public class KioskPosService {
         if (parts.length >= 3 && !parts[2].isBlank()) {
             String third = parts[2];
             String normalizedHardware = ProductHardwareCondition.normalize(third);
+            if (normalizedHardware == null) {
+                normalizedHardware = ProductBrandNames.normalize(third);
+            }
             if (normalizedHardware != null) {
                 hardware = normalizedHardware;
                 if (parts.length >= 4 && !parts[3].isBlank()) {

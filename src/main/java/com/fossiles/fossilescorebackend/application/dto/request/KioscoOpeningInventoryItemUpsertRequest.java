@@ -14,7 +14,7 @@ import java.util.Map;
 public class KioscoOpeningInventoryItemUpsertRequest {
     private Long productId;
     private Long colorId;
-    /** Cinchos: NUEVO | VIEJO. Omitir en productos sin herraje (default NUEVO). */
+    /** Cinchos: NUEVO | VIEJO. Entre Cueros (no cincho): marca (LEVIS, NAUTICA, …). */
     private String hardwareCondition;
     private Integer quantity;
     /** Cinchos FOSS: cantidad por talla. */

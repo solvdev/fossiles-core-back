@@ -79,10 +79,7 @@ public final class KioscoInventoryInitRules {
     }
 
     public static String stockInitKey(Long locationId, Long productId, Long colorId, String hardwareCondition) {
-        String hw = ProductHardwareCondition.normalize(hardwareCondition);
-        if (hw == null) {
-            hw = ProductHardwareCondition.NUEVO;
-        }
+        String hw = ProductHardwareCondition.normalizeStockDimension(hardwareCondition);
         return stockColorKey(locationId, productId, colorId) + "|" + hw;
     }
 

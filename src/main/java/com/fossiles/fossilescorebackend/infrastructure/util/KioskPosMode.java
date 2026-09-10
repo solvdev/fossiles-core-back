@@ -8,6 +8,7 @@ public final class KioskPosMode {
 
     public static final String STANDARD = "STANDARD";
     public static final String ENTRECUEROS = "ENTRECUEROS";
+    public static final long ENTRECUEROS_LOCATION_ID = 42L;
 
     private KioskPosMode() {
     }
@@ -28,6 +29,12 @@ public final class KioskPosMode {
     }
 
     public static boolean isEntrecueros(LocationEntity kiosk) {
-        return kiosk != null && isEntrecueros(kiosk.getPosMode());
+        if (kiosk == null) {
+            return false;
+        }
+        if (kiosk.getId() != null && kiosk.getId() == ENTRECUEROS_LOCATION_ID) {
+            return true;
+        }
+        return isEntrecueros(kiosk.getPosMode());
     }
 }

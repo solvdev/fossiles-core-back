@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoOpeningIn
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
+import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
@@ -25,6 +26,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -133,7 +135,7 @@ public class KioscoOpeningInventoryService {
                         KioscoInventoryInitRules.isCinchoProduct(product) ? targetSizes : null,
                         OPENING_INVENTORY_REASON,
                         userId,
-                        item.getHardwareCondition()
+                        ProductHardwareCondition.normalizeStockDimension(item.getHardwareCondition())
                 );
                 entradasApplied++;
             }
@@ -223,7 +225,7 @@ public class KioscoOpeningInventoryService {
         boolean foss = KioscoInventoryInitRules.isCinchoProduct(product);
 
         Long colorId = req.getColorId();
-        String hardware = resolveItemHardware(req.getHardwareCondition());
+        String hardware = resolveItemHardware(session, product, req.getHardwareCondition());
         if (packaging) {
             if (colorId != null) {
                 throw new BusinessException("Los empaques SUM- no usan color; omita colorId.");
@@ -294,8 +296,8 @@ public class KioscoOpeningInventoryService {
                 .filter(s -> Objects.equals(s.getProductId(), item.getProductId())
                         && Objects.equals(s.getColorId(), item.getColorId())
                         && Objects.equals(
-                                ProductHardwareCondition.normalize(s.getHardwareCondition()),
-                                ProductHardwareCondition.normalize(item.getHardwareCondition())))
+                                ProductHardwareCondition.normalizeStockDimension(s.getHardwareCondition()),
+                                ProductHardwareCondition.normalizeStockDimension(item.getHardwareCondition())))
                 .collect(Collectors.toList());
         int currentQty = stocks.stream().mapToInt(s -> safeInt(s.getCurrentStock())).sum();
         if (KioscoInventoryInitRules.isCinchoProduct(product)) {
@@ -497,7 +499,27 @@ public class KioscoOpeningInventoryService {
                 .collect(Collectors.joining(", "));
     }
 
-    private String resolveItemHardware(String raw) throws BusinessException {
+    private String resolveItemHardware(
+            KioscoOpeningInventoryEntity session,
+            ProductEntity product,
+            String raw
+    ) throws BusinessException {
+        boolean packaging = KioscoInventoryInitRules.isPackagingProduct(product);
+        boolean cincho = KioscoInventoryInitRules.isCinchoProduct(product);
+        LocationEntity location = locationRepository.findById(session.getLocationId()).orElse(null);
+        boolean entreCueros = KioskPosMode.isEntrecueros(location);
+
+        if (packaging || (entreCueros && cincho)) {
+            return ProductHardwareCondition.NUEVO;
+        }
+        if (entreCueros && !cincho) {
+            String brand = ProductBrandNames.normalize(raw);
+            if (brand == null) {
+                throw new BusinessException(
+                        "En Entre Cueros indique la marca (LEVIS, NAUTICA, TOMMY HILFIGER, LACOSTE o ABERCROMBIE).");
+            }
+            return brand;
+        }
         String hardware = ProductHardwareCondition.normalize(raw);
         if (hardware == null) {
             hardware = ProductHardwareCondition.NUEVO;
@@ -510,10 +532,7 @@ public class KioscoOpeningInventoryService {
     }
 
     private String resolveHardwareLabel(String hardware) {
-        if (ProductHardwareCondition.VIEJO.equals(ProductHardwareCondition.normalize(hardware))) {
-            return "Herraje viejo";
-        }
-        return "Herraje nuevo";
+        return ProductHardwareCondition.label(hardware);
     }
 
     private String resolveUsername(Long userId) {
