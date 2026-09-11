@@ -1973,12 +1973,7 @@ public class ProductionOrderController {
             String orderType
     ) {
         boolean kioskNormal = "NORMAL".equals(orderType) && Boolean.TRUE.equals(request.getKioskOrder());
-        String seller = request.getSellerName() != null ? request.getSellerName() : entity.getSellerName();
-        boolean luisFelipe = seller != null
-                && seller.trim().toUpperCase(java.util.Locale.ROOT).contains("LUIS FELIPE");
-        boolean cinchoCatalog = isCinchoOrderType(orderType) && luisFelipe && request.getCustomerId() != null;
-        boolean cinchoFreeText = isCinchoOrderType(orderType) && !cinchoCatalog;
-        if ("CLIENTE_KIOSKO".equals(orderType) || kioskNormal || cinchoFreeText) {
+        if ("CLIENTE_KIOSKO".equals(orderType) || kioskNormal) {
             entity.setCustomerId(null);
             String name = request.getCustomerName() == null ? "" : request.getCustomerName().trim();
             entity.setCustomerName(name.isEmpty() ? null : name);
