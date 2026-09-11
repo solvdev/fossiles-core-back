@@ -524,12 +524,12 @@ public class KioscoOpeningInventoryService {
             return audience;
         }
         if (entreCueros && KioscoInventoryInitRules.isWalletProduct(product)) {
-            String material = ProductHardwareCondition.resolveWalletMaterial(raw);
-            if (material == null) {
+            String wallet = ProductHardwareCondition.resolveWalletDimension(raw);
+            if (wallet == null) {
                 throw new BusinessException(
-                        "En Entre Cueros indique si la billetera es sintética o no.");
+                        "En Entre Cueros indique la marca de la billetera. Si es sintética use SINTETICO:MARCA.");
             }
-            return material;
+            return wallet;
         }
         if (entreCueros) {
             String brand = ProductBrandNames.normalize(raw);

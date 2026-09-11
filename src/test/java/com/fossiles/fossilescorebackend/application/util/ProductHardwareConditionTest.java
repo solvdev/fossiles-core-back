@@ -28,27 +28,25 @@ class ProductHardwareConditionTest {
         assertThat(ProductHardwareCondition.label("NINO")).isEqualTo("Niño");
         assertThat(ProductHardwareCondition.label("NINA")).isEqualTo("Niña");
         assertThat(ProductHardwareCondition.label("SINTETICO")).isEqualTo("Sintética");
-        assertThat(ProductHardwareCondition.label("sintetica")).isEqualTo("Sintética");
-        assertThat(ProductHardwareCondition.label("NO_SINTETICO")).isEqualTo("No sintética");
+        assertThat(ProductHardwareCondition.label("SINTETICO:LEVIS")).isEqualTo("Sintética · LEVIS");
     }
 
     @Test
-    void appendMaterialToName_distinguishesSynthetic() {
-        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan", "SINTETICO"))
-                .isEqualTo("Billetera Megan Sintética");
-        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan", "NO_SINTETICO"))
-                .isEqualTo("Billetera Megan No sintética");
-        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan Sintética", "SINTETICO"))
-                .isEqualTo("Billetera Megan Sintética");
-        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan No sintética", "NO_SINTETICO"))
-                .isEqualTo("Billetera Megan No sintética");
+    void appendMaterialToName_addsSyntheticAndBrand() {
+        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan", "LEVIS"))
+                .isEqualTo("Billetera Megan LEVIS");
+        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan", "SINTETICO:LEVIS"))
+                .isEqualTo("Billetera Megan Sintética LEVIS");
+        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan Sintética LEVIS", "SINTETICO:LEVIS"))
+                .isEqualTo("Billetera Megan Sintética LEVIS");
     }
 
     @Test
-    void resolveWalletMaterial_defaultsSyntheticAndKeepsNonSynthetic() {
-        assertThat(ProductHardwareCondition.resolveWalletMaterial(null)).isEqualTo("SINTETICO");
-        assertThat(ProductHardwareCondition.resolveWalletMaterial("NUEVO")).isEqualTo("SINTETICO");
-        assertThat(ProductHardwareCondition.resolveWalletMaterial("no sintetica")).isEqualTo("NO_SINTETICO");
-        assertThat(ProductHardwareCondition.resolveWalletMaterial("LEVIS")).isNull();
+    void resolveWalletDimension_requiresBrandAndDefaultsNonSynthetic() {
+        assertThat(ProductHardwareCondition.resolveWalletDimension(null)).isNull();
+        assertThat(ProductHardwareCondition.resolveWalletDimension("NUEVO")).isNull();
+        assertThat(ProductHardwareCondition.resolveWalletDimension("levis")).isEqualTo("LEVIS");
+        assertThat(ProductHardwareCondition.resolveWalletDimension("SINTETICO:levis")).isEqualTo("SINTETICO:LEVIS");
+        assertThat(ProductHardwareCondition.resolveWalletDimension("SINTETICO")).isNull();
     }
 }

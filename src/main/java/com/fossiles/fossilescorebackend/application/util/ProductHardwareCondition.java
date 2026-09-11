@@ -2,7 +2,7 @@ package com.fossiles.fossilescorebackend.application.util;
 
 import java.util.Locale;
 
-/** Dimensión de stock kiosco: herraje NUEVO/VIEJO, marca, niño/niña o sintético. */
+/** Dimensión de stock kiosco: herraje NUEVO/VIEJO, marca, niño/niña o sintético+marca. */
 public final class ProductHardwareCondition {
 
     public static final String NUEVO = "NUEVO";
@@ -30,7 +30,7 @@ public final class ProductHardwareCondition {
     }
 
     /**
-     * Dimensión de fila de stock: herraje, marca, niño/niña o SINTETICO.
+     * Dimensión de fila de stock: herraje, marca, niño/niña o SINTETICO:MARCA.
      */
     public static String normalizeStockDimension(String value) {
         String hardware = normalize(value);
@@ -39,6 +39,10 @@ public final class ProductHardwareCondition {
         }
         if (value == null || value.isBlank()) {
             return NUEVO;
+        }
+        String wallet = resolveWalletDimension(value);
+        if (wallet != null) {
+            return wallet;
         }
         String n = value.trim().toUpperCase(Locale.ROOT).replaceAll("\\s+", " ");
         String material = normalizeMaterialToken(n);
@@ -49,44 +53,76 @@ public final class ProductHardwareCondition {
     }
 
     public static boolean isSynthetic(String value) {
-        return SINTETICO.equals(normalizeMaterialToken(value));
+        String compact = compactKey(value).replace(" ", "").replace("_", "");
+        if (compact.isEmpty() || compact.startsWith("NOSINTETIC")) {
+            return false;
+        }
+        return SINTETICO.equals(compact)
+                || "SINTETICA".equals(compact)
+                || compact.startsWith(SINTETICO + ":")
+                || compact.startsWith("SINTETICA:");
     }
 
     public static boolean isNonSynthetic(String value) {
-        return NO_SINTETICO.equals(normalizeMaterialToken(value));
+        String compact = compactKey(value).replace(" ", "").replace("_", "");
+        return "NOSINTETICO".equals(compact) || "NOSINTETICA".equals(compact);
+    }
+
+    public static String stripSyntheticPrefix(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String n = value.trim();
+        int sep = n.indexOf(':');
+        if (sep > 0) {
+            String prefix = compactKey(n.substring(0, sep)).replace(" ", "").replace("_", "");
+            if (SINTETICO.equals(prefix) || "SINTETICA".equals(prefix)
+                    || "NOSINTETICO".equals(prefix) || "NOSINTETICA".equals(prefix)) {
+                return n.substring(sep + 1).trim();
+            }
+        }
+        String compact = compactKey(n).replace(" ", "").replace("_", "");
+        if (SINTETICO.equals(compact) || "SINTETICA".equals(compact)
+                || "NOSINTETICO".equals(compact) || "NOSINTETICA".equals(compact)) {
+            return "";
+        }
+        return n;
     }
 
     /**
-     * Billeteras Entre Cueros: SINTETICO o NO_SINTETICO.
-     * NUEVO / vacío → sintético por defecto. Marca u otro valor → null.
+     * Billeteras Entre Cueros: marca obligatoria.
+     * Sintético → SINTETICO:MARCA. Si no se marca sintético → solo MARCA.
      */
-    public static String resolveWalletMaterial(String raw) {
-        String material = normalizeMaterialToken(raw);
-        if (material != null) {
-            return material;
+    public static String resolveWalletDimension(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
         }
-        String hardware = normalize(raw);
-        if (hardware == null || NUEVO.equals(hardware)) {
-            return SINTETICO;
+        boolean synthetic = isSynthetic(raw);
+        String brand = ProductBrandNames.normalize(stripSyntheticPrefix(raw));
+        if (brand == null) {
+            return null;
         }
-        return null;
+        return synthetic ? SINTETICO + ":" + brand : brand;
     }
 
     public static String appendMaterialToName(String name, String hardware) {
-        String label = materialLabel(hardware);
-        if (label == null) {
-            return name != null ? name.trim() : "";
-        }
         String n = name != null ? name.trim() : "";
-        String compact = compactKey(n).replace(" ", "").replace("_", "");
-        if (NO_SINTETICO_LABEL.equals(label)) {
-            if (compact.contains("NOSINTETIC")) {
-                return n.isEmpty() ? label : n;
+        if (isSynthetic(hardware)) {
+            String compact = compactKey(n).replace(" ", "").replace("_", "");
+            if (n.isEmpty()) {
+                n = SINTETICO_LABEL;
+            } else if (!compact.contains("SINTETIC") || compact.contains("NOSINTETIC")) {
+                n = (n + " " + SINTETICO_LABEL).trim();
             }
-        } else if (compact.contains("SINTETIC") && !compact.contains("NOSINTETIC")) {
-            return n.isEmpty() ? label : n;
         }
-        return (n + " " + label).trim();
+        String brand = ProductBrandNames.normalize(stripSyntheticPrefix(hardware));
+        if (brand != null) {
+            String upper = n.toUpperCase(Locale.ROOT);
+            if (!upper.contains(brand)) {
+                n = (n + " " + brand).trim();
+            }
+        }
+        return n;
     }
 
     public static String appendSyntheticToName(String name) {
@@ -115,11 +151,21 @@ public final class ProductHardwareCondition {
         if (audience != null) {
             return audience;
         }
-        String dimension = normalizeStockDimension(value);
-        String material = materialLabel(dimension);
-        if (material != null) {
-            return material;
+        boolean synthetic = isSynthetic(value);
+        String brand = ProductBrandNames.normalize(stripSyntheticPrefix(value));
+        if (synthetic && brand != null) {
+            return SINTETICO_LABEL + " · " + brand;
         }
+        if (synthetic) {
+            return SINTETICO_LABEL;
+        }
+        if (isNonSynthetic(value)) {
+            return brand != null ? NO_SINTETICO_LABEL + " · " + brand : NO_SINTETICO_LABEL;
+        }
+        if (brand != null) {
+            return brand;
+        }
+        String dimension = normalizeStockDimension(value);
         if (NUEVO.equals(dimension)) {
             return "Herraje nuevo";
         }
@@ -131,7 +177,7 @@ public final class ProductHardwareCondition {
             return null;
         }
         String compact = compactKey(value).replace(" ", "").replace("_", "");
-        if ("NOSINTETICO".equals(compact) || "NOSINTETICA".equals(compact) || "CUERO".equals(compact)) {
+        if ("NOSINTETICO".equals(compact) || "NOSINTETICA".equals(compact)) {
             return NO_SINTETICO;
         }
         if (SINTETICO.equals(compact) || "SINTETICA".equals(compact)) {
@@ -141,6 +187,9 @@ public final class ProductHardwareCondition {
     }
 
     private static String compactKey(String value) {
+        if (value == null) {
+            return "";
+        }
         return value.trim().toUpperCase(Locale.ROOT)
                 .replace("Á", "A")
                 .replace("É", "E")

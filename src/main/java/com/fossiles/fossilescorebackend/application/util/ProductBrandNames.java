@@ -28,8 +28,12 @@ public final class ProductBrandNames {
         return OPTION_SET.contains(n) ? n : null;
     }
 
-    /** Marca, niño/niña o sintético; null si es herraje NUEVO/VIEJO. */
+    /** Marca, niño/niña o sintético+marca; null si es herraje NUEVO/VIEJO. */
     public static String resolveDistinctDimension(String hardwareCondition) {
+        String wallet = ProductHardwareCondition.resolveWalletDimension(hardwareCondition);
+        if (wallet != null) {
+            return wallet;
+        }
         String brand = normalize(hardwareCondition);
         if (brand != null) {
             return brand;

@@ -7,7 +7,6 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
-import com.fossiles.fossilescorebackend.application.util.ProductCinchoAudience;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoInternalCountEntity;
@@ -206,9 +205,9 @@ public class KioscoInternalCountService {
                     KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
                             .productId(primary.getProductId())
                             .productCode(product.getCode())
-                            .productName(appendBrandToName(
+                            .productName(ProductHardwareCondition.appendMaterialToName(
                                     product.getName(),
-                                    dimensionDisplayName(primary.getHardwareCondition())))
+                                    primary.getHardwareCondition()))
                             .colorId(primary.getColorId())
                             .colorName(Optional.ofNullable(primary.getColorId())
                                     .map(colorsById::get)
@@ -486,37 +485,6 @@ public class KioscoInternalCountService {
                         .colorId(req.getColorId())
                         .hardwareCondition(hardware)
                         .build());
-    }
-
-    private static String dimensionDisplayName(String hardwareCondition) {
-        String audience = ProductCinchoAudience.label(hardwareCondition);
-        if (audience != null) {
-            return audience;
-        }
-        if (ProductHardwareCondition.isSynthetic(hardwareCondition)) {
-            return ProductHardwareCondition.SINTETICO_LABEL;
-        }
-        if (ProductHardwareCondition.isNonSynthetic(hardwareCondition)) {
-            return ProductHardwareCondition.NO_SINTETICO_LABEL;
-        }
-        return ProductBrandNames.normalize(hardwareCondition);
-    }
-
-    private static String appendBrandToName(String name, String brand) {
-        if (brand == null || brand.isBlank()) {
-            return name;
-        }
-        if (ProductHardwareCondition.SINTETICO_LABEL.equals(brand)
-                || ProductHardwareCondition.NO_SINTETICO_LABEL.equals(brand)
-                || ProductHardwareCondition.isSynthetic(brand)
-                || ProductHardwareCondition.isNonSynthetic(brand)) {
-            return ProductHardwareCondition.appendMaterialToName(name, brand);
-        }
-        String n = name != null ? name.trim() : "";
-        if (n.toUpperCase(Locale.ROOT).contains(brand)) {
-            return n;
-        }
-        return (n + " " + brand).trim();
     }
 
     private static int safeInt(Integer value) {
