@@ -67,6 +67,24 @@ class KioscoInventoryInitRulesTest {
 
         assertThat(KioscoInventoryInitRules.resolveCinchoSizes(cincho))
                 .containsExactly("30", "32", "34", "36", "38", "40", "42", "46");
+        assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(cincho)).isFalse();
+    }
+
+    @Test
+    void kidsCinchoProduct_requiresCinchoAndKidsFlag() {
+        ProductEntity kids = ProductEntity.builder()
+                .code("FOSS-KIDS")
+                .cinchoType("CASUAL")
+                .cinchoForKids(true)
+                .build();
+        ProductEntity wallet = ProductEntity.builder()
+                .code("BILL-001")
+                .name("Billetera")
+                .cinchoForKids(true)
+                .build();
+
+        assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(kids)).isTrue();
+        assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(wallet)).isFalse();
     }
 
     @Test

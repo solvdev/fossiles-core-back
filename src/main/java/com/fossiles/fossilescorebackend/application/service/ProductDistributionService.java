@@ -59,6 +59,12 @@ import java.util.stream.Collectors;
 @Transactional
 public class ProductDistributionService {
 
+    /**
+     * Temporal: Preparar envíos marca SENT aunque falte stock en Devoluciones / Bodega PT.
+     * Descuenta lo disponible y no bloquea el envío por el faltante.
+     */
+    static final boolean SKIP_DISPATCH_STOCK_CHECK = true;
+
     private static final java.util.Set<String> TERMINAL_SHIPMENT_STATUSES =
             java.util.Set.of("SENT", "DELIVERED", "COMPLETED", "RECEIVED", "CANCELLED");
 
@@ -1879,7 +1885,6 @@ public class ProductDistributionService {
             throw new BusinessException("El envío no tiene destino (kiosko); no se puede registrar salida de PT.");
         }
 
-        List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
         List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipmentId);
         boolean hasPacking = shipment.getPackingItems() != null && !shipment.getPackingItems().trim().isEmpty();
         if (details.isEmpty() && !hasPacking) {
@@ -1895,41 +1900,44 @@ public class ProductDistributionService {
         // salida las mismas unidades quedarían contadas en los dos lados.
         String destinationLabel = resolveDispatchDestinationLabel(shipment);
 
-        // Pre-validar stock: Devoluciones primero, luego Bodega PT (total combinado).
-        List<String> shortages = new java.util.ArrayList<>();
-        for (ProductShipmentDetailEntity detail : details) {
-            BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
-            if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
-            if (isPackagingProduct(detail.getProductId())) continue;
+        if (!SKIP_DISPATCH_STOCK_CHECK) {
+            // Pre-validar stock: Devoluciones primero, luego Bodega PT (total combinado).
+            List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
+            List<String> shortages = new java.util.ArrayList<>();
+            for (ProductShipmentDetailEntity detail : details) {
+                BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
+                if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
+                if (isPackagingProduct(detail.getProductId())) continue;
 
-            String sizeLabel = detail.getSizeLabel();
-            BigDecimal alreadyOut = productInventoryService.getNetConsumedForLine(
-                    "SHIPMENT", shipment.getId(), ProductInventoryService.MOVEMENT_SHIPMENT,
-                    detail.getProductId(), null, detail.getColorId(), detail.getId());
-            BigDecimal stillNeeded = qtyToSend.subtract(alreadyOut);
-            if (stillNeeded.compareTo(BigDecimal.ZERO) <= 0) {
-                continue;
-            }
-
-            BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
-                    detail.getProductId(), detail.getColorId(), sizeLabel);
-            if (availableTotal.compareTo(stillNeeded) < 0) {
-                ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
-                String productName = product != null ? product.getCode() + " - " + product.getName() : "Producto #" + detail.getProductId();
-                String colorName = "";
-                if (detail.getColorId() != null) {
-                    ColorEntity color = colorRepository.findById(detail.getColorId()).orElse(null);
-                    colorName = color != null ? " (" + color.getName() + ")" : " (Color #" + detail.getColorId() + ")";
+                String sizeLabel = detail.getSizeLabel();
+                BigDecimal alreadyOut = productInventoryService.getNetConsumedForLine(
+                        "SHIPMENT", shipment.getId(), ProductInventoryService.MOVEMENT_SHIPMENT,
+                        detail.getProductId(), null, detail.getColorId(), detail.getId());
+                BigDecimal stillNeeded = qtyToSend.subtract(alreadyOut);
+                if (stillNeeded.compareTo(BigDecimal.ZERO) <= 0) {
+                    continue;
                 }
-                String stockBreakdown = buildDispatchStockBreakdown(
-                        detail.getProductId(), detail.getColorId(), sizeLabel, dispatchWarehouses);
-                shortages.add(productName + colorName + ": disponible " + availableTotal
-                        + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido " + stillNeeded);
+
+                BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
+                        detail.getProductId(), detail.getColorId(), sizeLabel);
+                if (availableTotal.compareTo(stillNeeded) < 0) {
+                    ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
+                    String productName = product != null ? product.getCode() + " - " + product.getName() : "Producto #" + detail.getProductId();
+                    String colorName = "";
+                    if (detail.getColorId() != null) {
+                        ColorEntity color = colorRepository.findById(detail.getColorId()).orElse(null);
+                        colorName = color != null ? " (" + color.getName() + ")" : " (Color #" + detail.getColorId() + ")";
+                    }
+                    String stockBreakdown = buildDispatchStockBreakdown(
+                            detail.getProductId(), detail.getColorId(), sizeLabel, dispatchWarehouses);
+                    shortages.add(productName + colorName + ": disponible " + availableTotal
+                            + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido " + stillNeeded);
+                }
             }
-        }
-        if (!shortages.isEmpty()) {
-            throw new BusinessException("Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• "
-                    + String.join("\n• ", shortages));
+            if (!shortages.isEmpty()) {
+                throw new BusinessException("Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• "
+                        + String.join("\n• ", shortages));
+            }
         }
 
         for (ProductShipmentDetailEntity detail : details) {
@@ -1947,7 +1955,8 @@ public class ProductDistributionService {
                     shipment.getShipmentNumber(),
                     "Salida a envio en transito hacia " + destinationLabel,
                     ProductInventoryService.MOVEMENT_SHIPMENT,
-                    detail.getId());
+                    detail.getId(),
+                    !SKIP_DISPATCH_STOCK_CHECK);
         }
 
         return transitionConfirmedShipmentToSent(shipmentId, shipment);

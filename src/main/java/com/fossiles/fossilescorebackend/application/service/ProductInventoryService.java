@@ -192,7 +192,7 @@ public class ProductInventoryService {
             String description,
             String kardexMovementType) throws BusinessException {
         decrementFromDispatchWarehouses(productId, colorId, sizeLabel, quantity, referenceType,
-                referenceId, referenceNumber, description, kardexMovementType, null);
+                referenceId, referenceNumber, description, kardexMovementType, null, true);
     }
 
     /**
@@ -213,6 +213,22 @@ public class ProductInventoryService {
             String description,
             String kardexMovementType,
             Long referenceLineId) throws BusinessException {
+        decrementFromDispatchWarehouses(productId, colorId, sizeLabel, quantity, referenceType,
+                referenceId, referenceNumber, description, kardexMovementType, referenceLineId, true);
+    }
+
+    public void decrementFromDispatchWarehouses(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String kardexMovementType,
+            Long referenceLineId,
+            boolean requireSufficientStock) throws BusinessException {
         if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
@@ -261,7 +277,7 @@ public class ProductInventoryService {
             remaining = remaining.subtract(consumed);
         }
 
-        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+        if (remaining.compareTo(BigDecimal.ZERO) > 0 && requireSufficientStock) {
             throw new BusinessException(
                     "Stock insuficiente en Devoluciones / Bodega PT (faltan " + remaining + " unidades).");
         }
