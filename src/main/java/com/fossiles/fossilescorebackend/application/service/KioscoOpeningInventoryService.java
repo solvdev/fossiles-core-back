@@ -516,12 +516,15 @@ public class KioscoOpeningInventoryService {
         if (packaging) {
             return ProductHardwareCondition.NUEVO;
         }
-        if (entreCueros && cincho) {
+        if (entreCueros && KioscoInventoryInitRules.isKidsCinchoProduct(product)) {
             String audience = ProductCinchoAudience.normalize(raw);
             if (audience == null) {
-                throw new BusinessException("En Entre Cueros indique si el cincho es de niño o de dama.");
+                throw new BusinessException("En Entre Cueros indique si el cincho de niño es Niño o Dama.");
             }
             return audience;
+        }
+        if (entreCueros && cincho) {
+            return ProductHardwareCondition.NUEVO;
         }
         if (entreCueros && KioscoInventoryInitRules.isWalletProduct(product)) {
             String wallet = ProductHardwareCondition.resolveWalletDimension(raw);

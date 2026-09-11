@@ -426,11 +426,16 @@ class KioscoOpeningInventoryServiceTest {
     }
 
     private ProductEntity fossProduct(Long id) {
+        return fossProduct(id, false);
+    }
+
+    private ProductEntity fossProduct(Long id, boolean kids) {
         return ProductEntity.builder()
                 .id(id)
                 .code("FOSS-001")
                 .name("Cincho FOSS")
                 .cinchoType("FOSS")
+                .cinchoForKids(kids)
                 .build();
     }
 
@@ -547,7 +552,7 @@ class KioscoOpeningInventoryServiceTest {
     @Test
     void upsertItems_entrecuerosCinchoRequiereNinoONina() {
         stubEntrecuerosSession();
-        when(productRepository.findById(fossProductId)).thenReturn(Optional.of(fossProduct(fossProductId)));
+        when(productRepository.findById(fossProductId)).thenReturn(Optional.of(fossProduct(fossProductId, true)));
         when(colorRepository.existsById(colorId)).thenReturn(true);
         Map<String, Integer> sizes = new LinkedHashMap<>();
         sizes.put("32", 1);
@@ -567,7 +572,7 @@ class KioscoOpeningInventoryServiceTest {
     @Test
     void upsertItems_entrecuerosCinchoGuardaNino() throws Exception {
         stubEntrecuerosSession();
-        when(productRepository.findById(fossProductId)).thenReturn(Optional.of(fossProduct(fossProductId)));
+        when(productRepository.findById(fossProductId)).thenReturn(Optional.of(fossProduct(fossProductId, true)));
         when(colorRepository.existsById(colorId)).thenReturn(true);
         Map<String, Integer> sizes = new LinkedHashMap<>();
         sizes.put("28", 1);
@@ -591,5 +596,34 @@ class KioscoOpeningInventoryServiceTest {
                 ArgumentCaptor.forClass(KioscoOpeningInventoryItemEntity.class);
         verify(openingInventoryItemRepository).save(captor.capture());
         assertThat(captor.getValue().getHardwareCondition()).isEqualTo("NINO");
+    }
+
+    @Test
+    void upsertItems_entrecuerosCinchoAdultoGuardaNuevo() throws Exception {
+        stubEntrecuerosSession();
+        when(productRepository.findById(fossProductId)).thenReturn(Optional.of(fossProduct(fossProductId)));
+        when(colorRepository.existsById(colorId)).thenReturn(true);
+        Map<String, Integer> sizes = new LinkedHashMap<>();
+        sizes.put("34", 1);
+        sizes.put("36", 2);
+        when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
+                sessionId, fossProductId, colorId, "NUEVO")).thenReturn(Optional.empty());
+        when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
+                .thenReturn(List.of());
+        when(productRepository.findAllById(List.of())).thenReturn(List.of());
+
+        service.upsertItems(sessionId, List.of(
+                KioscoOpeningInventoryItemUpsertRequest.builder()
+                        .productId(fossProductId)
+                        .colorId(colorId)
+                        .hardwareCondition("LEVIS")
+                        .quantity(3)
+                        .sizes(sizes)
+                        .build()));
+
+        ArgumentCaptor<KioscoOpeningInventoryItemEntity> captor =
+                ArgumentCaptor.forClass(KioscoOpeningInventoryItemEntity.class);
+        verify(openingInventoryItemRepository).save(captor.capture());
+        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("NUEVO");
     }
 }

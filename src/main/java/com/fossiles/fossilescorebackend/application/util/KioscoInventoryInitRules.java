@@ -46,6 +46,10 @@ public final class KioscoInventoryInitRules {
         return CinchoProductUtils.isFossCinchoProduct(product);
     }
 
+    public static boolean isKidsCinchoProduct(ProductEntity product) {
+        return isCinchoProduct(product) && Boolean.TRUE.equals(product.getCinchoForKids());
+    }
+
     public static boolean isWalletProduct(ProductEntity product) {
         if (product == null || isPackagingProduct(product) || isCinchoProduct(product)) {
             return false;
