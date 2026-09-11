@@ -9,6 +9,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoAudience;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
@@ -509,10 +510,17 @@ public class KioscoOpeningInventoryService {
         LocationEntity location = locationRepository.findById(session.getLocationId()).orElse(null);
         boolean entreCueros = KioskPosMode.isEntrecueros(location);
 
-        if (packaging || (entreCueros && cincho)) {
+        if (packaging) {
             return ProductHardwareCondition.NUEVO;
         }
-        if (entreCueros && !cincho) {
+        if (entreCueros && cincho) {
+            String audience = ProductCinchoAudience.normalize(raw);
+            if (audience == null) {
+                throw new BusinessException("En Entre Cueros indique si el cincho es de niño o de niña.");
+            }
+            return audience;
+        }
+        if (entreCueros) {
             String brand = ProductBrandNames.normalize(raw);
             if (brand == null) {
                 throw new BusinessException(

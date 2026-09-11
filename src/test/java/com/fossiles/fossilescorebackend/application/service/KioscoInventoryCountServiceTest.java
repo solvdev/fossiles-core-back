@@ -210,7 +210,7 @@ class KioscoInventoryCountServiceTest {
         stubPrincipalKardex(List.of(kardexRow(10)));
 
         AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
-        when(itemRepository.findByCountIdAndProductIdAndColorId(countId, productId, colorId)).thenReturn(Optional.empty());
+        when(itemRepository.findByCountIdAndProductIdAndColorIdAndHardwareCondition(countId, productId, colorId, "NUEVO")).thenReturn(Optional.empty());
         when(itemRepository.save(any(KioscoPhysicalCountItemEntity.class))).thenAnswer(inv -> {
             KioscoPhysicalCountItemEntity item = inv.getArgument(0);
             if (item.getId() == null) {
@@ -252,7 +252,7 @@ class KioscoInventoryCountServiceTest {
         stubPrincipalKardex(List.of(kardexRow(10)));
 
         AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
-        when(itemRepository.findByCountIdAndProductIdAndColorId(countId, productId, colorId)).thenReturn(Optional.empty());
+        when(itemRepository.findByCountIdAndProductIdAndColorIdAndHardwareCondition(countId, productId, colorId, "NUEVO")).thenReturn(Optional.empty());
         when(itemRepository.save(any(KioscoPhysicalCountItemEntity.class))).thenAnswer(inv -> {
             KioscoPhysicalCountItemEntity item = inv.getArgument(0);
             if (item.getId() == null) {
@@ -296,7 +296,7 @@ class KioscoInventoryCountServiceTest {
         stubPrincipalKardex(List.of(kardexRow(10)));
 
         AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
-        when(itemRepository.findByCountIdAndProductIdAndColorId(countId, productId, colorId)).thenReturn(Optional.empty());
+        when(itemRepository.findByCountIdAndProductIdAndColorIdAndHardwareCondition(countId, productId, colorId, "NUEVO")).thenReturn(Optional.empty());
         when(itemRepository.save(any(KioscoPhysicalCountItemEntity.class))).thenAnswer(inv -> {
             KioscoPhysicalCountItemEntity item = inv.getArgument(0);
             if (item.getId() == null) {

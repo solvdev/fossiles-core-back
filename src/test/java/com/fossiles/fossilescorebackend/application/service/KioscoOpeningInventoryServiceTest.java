@@ -526,14 +526,35 @@ class KioscoOpeningInventoryServiceTest {
     }
 
     @Test
-    void upsertItems_entrecuerosCinchoIgnoraMarcaYUsaNuevo() throws Exception {
+    void upsertItems_entrecuerosCinchoRequiereNinoONina() {
         stubEntrecuerosSession();
         when(productRepository.findById(fossProductId)).thenReturn(Optional.of(fossProduct(fossProductId)));
         when(colorRepository.existsById(colorId)).thenReturn(true);
         Map<String, Integer> sizes = new LinkedHashMap<>();
         sizes.put("32", 1);
+
+        assertThatThrownBy(() -> service.upsertItems(sessionId, List.of(
+                KioscoOpeningInventoryItemUpsertRequest.builder()
+                        .productId(fossProductId)
+                        .colorId(colorId)
+                        .hardwareCondition("LEVIS")
+                        .quantity(1)
+                        .sizes(sizes)
+                        .build())))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("niño");
+    }
+
+    @Test
+    void upsertItems_entrecuerosCinchoGuardaNino() throws Exception {
+        stubEntrecuerosSession();
+        when(productRepository.findById(fossProductId)).thenReturn(Optional.of(fossProduct(fossProductId)));
+        when(colorRepository.existsById(colorId)).thenReturn(true);
+        Map<String, Integer> sizes = new LinkedHashMap<>();
+        sizes.put("28", 1);
+        sizes.put("32", 2);
         when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
-                sessionId, fossProductId, colorId, "NUEVO")).thenReturn(Optional.empty());
+                sessionId, fossProductId, colorId, "NINO")).thenReturn(Optional.empty());
         when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
                 .thenReturn(List.of());
         when(productRepository.findAllById(List.of())).thenReturn(List.of());
@@ -542,14 +563,14 @@ class KioscoOpeningInventoryServiceTest {
                 KioscoOpeningInventoryItemUpsertRequest.builder()
                         .productId(fossProductId)
                         .colorId(colorId)
-                        .hardwareCondition("LEVIS")
-                        .quantity(1)
+                        .hardwareCondition("niño")
+                        .quantity(3)
                         .sizes(sizes)
                         .build()));
 
         ArgumentCaptor<KioscoOpeningInventoryItemEntity> captor =
                 ArgumentCaptor.forClass(KioscoOpeningInventoryItemEntity.class);
         verify(openingInventoryItemRepository).save(captor.capture());
-        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("NUEVO");
+        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("NINO");
     }
 }

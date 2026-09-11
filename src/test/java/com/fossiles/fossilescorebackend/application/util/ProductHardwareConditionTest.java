@@ -25,5 +25,7 @@ class ProductHardwareConditionTest {
     void label_showsBrandName() {
         assertThat(ProductHardwareCondition.label("LEVIS")).isEqualTo("LEVIS");
         assertThat(ProductHardwareCondition.label("NUEVO")).isEqualTo("Herraje nuevo");
+        assertThat(ProductHardwareCondition.label("NINO")).isEqualTo("Niño");
+        assertThat(ProductHardwareCondition.label("NINA")).isEqualTo("Niña");
     }
 }

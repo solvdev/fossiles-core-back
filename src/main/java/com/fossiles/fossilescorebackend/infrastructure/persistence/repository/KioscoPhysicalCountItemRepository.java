@@ -18,4 +18,7 @@ public interface KioscoPhysicalCountItemRepository extends JpaRepository<KioscoP
 
     Optional<KioscoPhysicalCountItemEntity> findByCountIdAndProductIdAndColorId(
             Long countId, Long productId, Long colorId);
+
+    Optional<KioscoPhysicalCountItemEntity> findByCountIdAndProductIdAndColorIdAndHardwareCondition(
+            Long countId, Long productId, Long colorId, String hardwareCondition);
 }
