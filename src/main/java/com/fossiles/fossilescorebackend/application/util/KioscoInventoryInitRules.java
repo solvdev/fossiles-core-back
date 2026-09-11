@@ -7,6 +7,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySize
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -43,6 +44,14 @@ public final class KioscoInventoryInitRules {
             return true;
         }
         return CinchoProductUtils.isFossCinchoProduct(product);
+    }
+
+    public static boolean isWalletProduct(ProductEntity product) {
+        if (product == null || isPackagingProduct(product) || isCinchoProduct(product)) {
+            return false;
+        }
+        String name = product.getName();
+        return name != null && name.toUpperCase(Locale.ROOT).contains("BILLETERA");
     }
 
     public static List<Long> resolveColorIds(ProductEntity product, List<Long> catalogColorIds) {

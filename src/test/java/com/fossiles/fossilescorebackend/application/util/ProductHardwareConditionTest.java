@@ -27,5 +27,15 @@ class ProductHardwareConditionTest {
         assertThat(ProductHardwareCondition.label("NUEVO")).isEqualTo("Herraje nuevo");
         assertThat(ProductHardwareCondition.label("NINO")).isEqualTo("Niño");
         assertThat(ProductHardwareCondition.label("NINA")).isEqualTo("Niña");
+        assertThat(ProductHardwareCondition.label("SINTETICO")).isEqualTo("Sintética");
+        assertThat(ProductHardwareCondition.label("sintetica")).isEqualTo("Sintética");
+    }
+
+    @Test
+    void appendSyntheticToName_addsLabelOnce() {
+        assertThat(ProductHardwareCondition.appendSyntheticToName("Billetera Megan"))
+                .isEqualTo("Billetera Megan Sintética");
+        assertThat(ProductHardwareCondition.appendSyntheticToName("Billetera Megan Sintética"))
+                .isEqualTo("Billetera Megan Sintética");
     }
 }

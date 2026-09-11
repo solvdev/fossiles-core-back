@@ -466,28 +466,7 @@ class KioscoOpeningInventoryServiceTest {
     }
 
     @Test
-    void upsertItems_entrecuerosBilleteraRequiereMarca() {
-        stubEntrecuerosSession();
-        when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
-                .id(productId)
-                .code("BILL-001")
-                .name("Billetera")
-                .build()));
-        when(colorRepository.existsById(colorId)).thenReturn(true);
-
-        assertThatThrownBy(() -> service.upsertItems(sessionId, List.of(
-                KioscoOpeningInventoryItemUpsertRequest.builder()
-                        .productId(productId)
-                        .colorId(colorId)
-                        .hardwareCondition("NUEVO")
-                        .quantity(2)
-                        .build())))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("marca");
-    }
-
-    @Test
-    void upsertItems_entrecuerosBilleteraGuardaMarca() throws Exception {
+    void upsertItems_entrecuerosBilleteraGuardaSinteticoPorDefecto() throws Exception {
         stubEntrecuerosSession();
         when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
                 .id(productId)
@@ -496,20 +475,39 @@ class KioscoOpeningInventoryServiceTest {
                 .build()));
         when(colorRepository.existsById(colorId)).thenReturn(true);
         when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
-                sessionId, productId, colorId, "LEVIS")).thenReturn(Optional.empty());
+                sessionId, productId, colorId, "SINTETICO")).thenReturn(Optional.empty());
         when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
-                .thenReturn(List.of(KioscoOpeningInventoryItemEntity.builder()
-                        .openingInventoryId(sessionId)
+                .thenReturn(List.of());
+        when(productRepository.findAllById(List.of())).thenReturn(List.of());
+
+        service.upsertItems(sessionId, List.of(
+                KioscoOpeningInventoryItemUpsertRequest.builder()
                         .productId(productId)
                         .colorId(colorId)
-                        .hardwareCondition("LEVIS")
+                        .hardwareCondition("NUEVO")
                         .quantity(2)
                         .build()));
-        when(productRepository.findAllById(List.of(productId))).thenReturn(List.of(ProductEntity.builder()
+
+        ArgumentCaptor<KioscoOpeningInventoryItemEntity> captor =
+                ArgumentCaptor.forClass(KioscoOpeningInventoryItemEntity.class);
+        verify(openingInventoryItemRepository).save(captor.capture());
+        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("SINTETICO");
+    }
+
+    @Test
+    void upsertItems_entrecuerosBilleteraIgnoraMarcaYGuardaSintetico() throws Exception {
+        stubEntrecuerosSession();
+        when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
                 .id(productId)
                 .code("BILL-001")
                 .name("Billetera")
                 .build()));
+        when(colorRepository.existsById(colorId)).thenReturn(true);
+        when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
+                sessionId, productId, colorId, "SINTETICO")).thenReturn(Optional.empty());
+        when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
+                .thenReturn(List.of());
+        when(productRepository.findAllById(List.of())).thenReturn(List.of());
 
         service.upsertItems(sessionId, List.of(
                 KioscoOpeningInventoryItemUpsertRequest.builder()
@@ -522,7 +520,7 @@ class KioscoOpeningInventoryServiceTest {
         ArgumentCaptor<KioscoOpeningInventoryItemEntity> captor =
                 ArgumentCaptor.forClass(KioscoOpeningInventoryItemEntity.class);
         verify(openingInventoryItemRepository).save(captor.capture());
-        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("LEVIS");
+        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("SINTETICO");
     }
 
     @Test

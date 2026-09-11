@@ -9,6 +9,7 @@ import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory
 import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoAudience;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
+import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoInternalCountEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoInternalCountItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoInternalCountStatus;
@@ -492,12 +493,19 @@ public class KioscoInternalCountService {
         if (audience != null) {
             return audience;
         }
+        if (ProductHardwareCondition.isSynthetic(hardwareCondition)) {
+            return ProductHardwareCondition.SINTETICO_LABEL;
+        }
         return ProductBrandNames.normalize(hardwareCondition);
     }
 
     private static String appendBrandToName(String name, String brand) {
         if (brand == null || brand.isBlank()) {
             return name;
+        }
+        if (ProductHardwareCondition.SINTETICO_LABEL.equals(brand)
+                || ProductHardwareCondition.isSynthetic(brand)) {
+            return ProductHardwareCondition.appendSyntheticToName(name);
         }
         String n = name != null ? name.trim() : "";
         if (n.toUpperCase(Locale.ROOT).contains(brand)) {

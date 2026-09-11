@@ -15,6 +15,7 @@ import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory
 import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoAudience;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
+import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoNotificationRecipientEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountItemEntity;
@@ -922,12 +923,22 @@ public class KioscoInventoryCountService {
 
     private static String displayDimension(String dimension) {
         String audience = ProductCinchoAudience.label(dimension);
-        return audience != null ? audience : dimension;
+        if (audience != null) {
+            return audience;
+        }
+        if (ProductHardwareCondition.isSynthetic(dimension)) {
+            return ProductHardwareCondition.SINTETICO_LABEL;
+        }
+        return dimension;
     }
 
     private String appendBrandToName(String name, String brand) {
         if (brand == null || brand.isBlank()) {
             return name;
+        }
+        if (ProductHardwareCondition.SINTETICO_LABEL.equals(brand)
+                || ProductHardwareCondition.isSynthetic(brand)) {
+            return ProductHardwareCondition.appendSyntheticToName(name);
         }
         String n = name != null ? name.trim() : "";
         if (n.toUpperCase(Locale.ROOT).contains(brand)) {

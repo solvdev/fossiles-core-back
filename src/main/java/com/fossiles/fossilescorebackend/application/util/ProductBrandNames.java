@@ -28,11 +28,14 @@ public final class ProductBrandNames {
         return OPTION_SET.contains(n) ? n : null;
     }
 
-    /** Marca o niño/niña; null si es herraje NUEVO/VIEJO. */
+    /** Marca, niño/niña o sintético; null si es herraje NUEVO/VIEJO. */
     public static String resolveDistinctDimension(String hardwareCondition) {
         String brand = normalize(hardwareCondition);
         if (brand != null) {
             return brand;
+        }
+        if (ProductHardwareCondition.isSynthetic(hardwareCondition)) {
+            return ProductHardwareCondition.SINTETICO;
         }
         return ProductCinchoAudience.normalize(hardwareCondition);
     }
