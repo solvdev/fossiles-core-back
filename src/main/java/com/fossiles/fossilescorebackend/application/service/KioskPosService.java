@@ -202,7 +202,7 @@ public class KioskPosService {
                     return KioskPosContextResponse.InventoryItem.builder()
                             .productId(row.getProductId())
                             .productCode(product != null ? product.getCode() : "")
-                            .productName(product != null ? product.getName() : "Producto")
+                            .productName(resolveInventoryProductName(product, ProductHardwareCondition.NUEVO))
                             .productImageUrl(product != null ? safeTrim(product.getImageUrl()) : "")
                             .colorId(row.getColorId())
                             .colorName(row.getColor() != null ? row.getColor().getName() : "")
@@ -240,7 +240,7 @@ public class KioskPosService {
                     return KioskPosContextResponse.InventoryItem.builder()
                             .productId(row.getProductId())
                             .productCode(product != null ? product.getCode() : "")
-                            .productName(product != null ? product.getName() : "Producto")
+                            .productName(resolveInventoryProductName(product, hardware))
                             .productImageUrl(product != null ? safeTrim(product.getImageUrl()) : "")
                             .colorId(row.getColorId())
                             .colorName(row.getColor() != null ? row.getColor().getName() : "")
@@ -3130,6 +3130,14 @@ public class KioskPosService {
 
     private String resolveItemHardwareCondition(String hardwareCondition) {
         return ProductHardwareCondition.normalizeStockDimension(hardwareCondition);
+    }
+
+    private String resolveInventoryProductName(ProductEntity product, String hardwareCondition) {
+        String name = product != null ? product.getName() : "Producto";
+        if (ProductHardwareCondition.isSynthetic(hardwareCondition)) {
+            return ProductHardwareCondition.appendSyntheticToName(name);
+        }
+        return name;
     }
 
     private String inventoryKey(Long productId, Long colorId, String size) {

@@ -335,10 +335,14 @@ public class KioscoOpeningInventoryService {
             ProductEntity product = productsById.get(item.getProductId());
             ColorEntity color = item.getColorId() != null ? colorsById.get(item.getColorId()) : null;
             Map<String, Integer> sizes = parseSizes(item.getSizesData());
+            String productName = product != null ? product.getName() : null;
+            if (ProductHardwareCondition.isSynthetic(item.getHardwareCondition())) {
+                productName = ProductHardwareCondition.appendSyntheticToName(productName);
+            }
             rows.add(KioscoOpeningInventoryReportResponse.ItemRow.builder()
                     .productId(item.getProductId())
                     .productCode(product != null ? product.getCode() : null)
-                    .productName(product != null ? product.getName() : null)
+                    .productName(productName)
                     .colorId(item.getColorId())
                     .colorName(color != null ? color.getName() : null)
                     .hardwareCondition(item.getHardwareCondition())
@@ -519,6 +523,9 @@ public class KioscoOpeningInventoryService {
                 throw new BusinessException("En Entre Cueros indique si el cincho es de niño o de niña.");
             }
             return audience;
+        }
+        if (entreCueros && KioscoInventoryInitRules.isWalletProduct(product)) {
+            return ProductHardwareCondition.SINTETICO;
         }
         if (entreCueros) {
             String brand = ProductBrandNames.normalize(raw);
