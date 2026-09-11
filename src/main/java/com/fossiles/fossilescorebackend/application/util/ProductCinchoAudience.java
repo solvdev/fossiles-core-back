@@ -4,13 +4,15 @@ import java.text.Normalizer;
 import java.util.List;
 import java.util.Locale;
 
-/** Cinchos Entre Cueros: dimensión de stock niño / niña. */
+/** Cinchos Entre Cueros: dimensión de stock niño / dama (mismas tallas). */
 public final class ProductCinchoAudience {
 
     public static final String NINO = "NINO";
+    public static final String DAMA = "DAMA";
+    /** Alias legado; se normaliza a DAMA. */
     public static final String NINA = "NINA";
 
-    public static final List<String> OPTIONS = List.of(NINO, NINA);
+    public static final List<String> OPTIONS = List.of(NINO, DAMA);
     public static final List<String> ENTRECUEROS_SIZES =
             List.of("16", "18", "20", "22", "24", "26", "28", "30", "32");
 
@@ -22,8 +24,11 @@ public final class ProductCinchoAudience {
             return null;
         }
         String n = stripDiacritics(value.trim().toUpperCase(Locale.ROOT)).replaceAll("\\s+", "");
-        if (NINO.equals(n) || NINA.equals(n)) {
-            return n;
+        if (NINO.equals(n)) {
+            return NINO;
+        }
+        if (DAMA.equals(n) || NINA.equals(n)) {
+            return DAMA;
         }
         return null;
     }
@@ -33,8 +38,8 @@ public final class ProductCinchoAudience {
         if (NINO.equals(n)) {
             return "Niño";
         }
-        if (NINA.equals(n)) {
-            return "Niña";
+        if (DAMA.equals(n)) {
+            return "Dama";
         }
         return null;
     }

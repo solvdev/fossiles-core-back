@@ -14,7 +14,7 @@ import java.util.Map;
 public class KioscoOpeningInventoryItemUpsertRequest {
     private Long productId;
     private Long colorId;
-    /** Cinchos: NUEVO | VIEJO. Entre Cueros: marca (billeteras) o NINO | NINA (cinchos). */
+    /** Cinchos: NUEVO | VIEJO. Entre Cueros: marca (billeteras) o NINO | DAMA (cinchos). */
     private String hardwareCondition;
     private Integer quantity;
     /** Cinchos FOSS: cantidad por talla. */

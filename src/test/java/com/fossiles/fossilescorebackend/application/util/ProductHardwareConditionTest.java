@@ -26,7 +26,8 @@ class ProductHardwareConditionTest {
         assertThat(ProductHardwareCondition.label("LEVIS")).isEqualTo("LEVIS");
         assertThat(ProductHardwareCondition.label("NUEVO")).isEqualTo("Herraje nuevo");
         assertThat(ProductHardwareCondition.label("NINO")).isEqualTo("Niño");
-        assertThat(ProductHardwareCondition.label("NINA")).isEqualTo("Niña");
+        assertThat(ProductHardwareCondition.label("NINA")).isEqualTo("Dama");
+        assertThat(ProductHardwareCondition.label("DAMA")).isEqualTo("Dama");
         assertThat(ProductHardwareCondition.label("SINTETICO")).isEqualTo("Sintética");
         assertThat(ProductHardwareCondition.label("SINTETICO:LEVIS")).isEqualTo("Sintética · LEVIS");
     }
@@ -37,8 +38,10 @@ class ProductHardwareConditionTest {
                 .isEqualTo("Billetera Megan LEVIS");
         assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan", "SINTETICO:LEVIS"))
                 .isEqualTo("Billetera Megan Sintética LEVIS");
-        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan Sintética LEVIS", "SINTETICO:LEVIS"))
-                .isEqualTo("Billetera Megan Sintética LEVIS");
+        assertThat(ProductHardwareCondition.appendMaterialToName("Cincho Cafe", "DAMA"))
+                .isEqualTo("Cincho Cafe Dama");
+        assertThat(ProductHardwareCondition.appendMaterialToName("Cincho Cafe", "NINO"))
+                .isEqualTo("Cincho Cafe Niño");
     }
 
     @Test
