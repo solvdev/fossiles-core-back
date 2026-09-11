@@ -13,7 +13,6 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
-import com.fossiles.fossilescorebackend.application.util.ProductCinchoAudience;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoNotificationRecipientEntity;
@@ -675,7 +674,8 @@ public class KioscoInventoryCountService {
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow row = KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
                     .productId(kardexRow.getProductId())
                     .productCode(kardexRow.getProductCode())
-                    .productName(appendBrandToName(kardexRow.getProductName(), displayDimension(rowDimension)))
+                    .productName(ProductHardwareCondition.appendMaterialToName(
+                            kardexRow.getProductName(), rowDimension))
                     .colorId(kardexRow.getColorId())
                     .colorName(kardexRow.getColorName())
                     .audienceCategory(product != null
@@ -919,37 +919,6 @@ public class KioscoInventoryCountService {
             return stock.getHardwareCondition();
         }
         return null;
-    }
-
-    private static String displayDimension(String dimension) {
-        String audience = ProductCinchoAudience.label(dimension);
-        if (audience != null) {
-            return audience;
-        }
-        if (ProductHardwareCondition.isSynthetic(dimension)) {
-            return ProductHardwareCondition.SINTETICO_LABEL;
-        }
-        if (ProductHardwareCondition.isNonSynthetic(dimension)) {
-            return ProductHardwareCondition.NO_SINTETICO_LABEL;
-        }
-        return dimension;
-    }
-
-    private String appendBrandToName(String name, String brand) {
-        if (brand == null || brand.isBlank()) {
-            return name;
-        }
-        if (ProductHardwareCondition.SINTETICO_LABEL.equals(brand)
-                || ProductHardwareCondition.NO_SINTETICO_LABEL.equals(brand)
-                || ProductHardwareCondition.isSynthetic(brand)
-                || ProductHardwareCondition.isNonSynthetic(brand)) {
-            return ProductHardwareCondition.appendMaterialToName(name, brand);
-        }
-        String n = name != null ? name.trim() : "";
-        if (n.toUpperCase(Locale.ROOT).contains(brand)) {
-            return n;
-        }
-        return (n + " " + brand).trim();
     }
 
     private boolean shouldIncludeInPhysicalCount(KioscoKardexReportResponse.KioscoKardexRow kardexRow) {
