@@ -29,13 +29,26 @@ class ProductHardwareConditionTest {
         assertThat(ProductHardwareCondition.label("NINA")).isEqualTo("Niña");
         assertThat(ProductHardwareCondition.label("SINTETICO")).isEqualTo("Sintética");
         assertThat(ProductHardwareCondition.label("sintetica")).isEqualTo("Sintética");
+        assertThat(ProductHardwareCondition.label("NO_SINTETICO")).isEqualTo("No sintética");
     }
 
     @Test
-    void appendSyntheticToName_addsLabelOnce() {
-        assertThat(ProductHardwareCondition.appendSyntheticToName("Billetera Megan"))
+    void appendMaterialToName_distinguishesSynthetic() {
+        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan", "SINTETICO"))
                 .isEqualTo("Billetera Megan Sintética");
-        assertThat(ProductHardwareCondition.appendSyntheticToName("Billetera Megan Sintética"))
+        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan", "NO_SINTETICO"))
+                .isEqualTo("Billetera Megan No sintética");
+        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan Sintética", "SINTETICO"))
                 .isEqualTo("Billetera Megan Sintética");
+        assertThat(ProductHardwareCondition.appendMaterialToName("Billetera Megan No sintética", "NO_SINTETICO"))
+                .isEqualTo("Billetera Megan No sintética");
+    }
+
+    @Test
+    void resolveWalletMaterial_defaultsSyntheticAndKeepsNonSynthetic() {
+        assertThat(ProductHardwareCondition.resolveWalletMaterial(null)).isEqualTo("SINTETICO");
+        assertThat(ProductHardwareCondition.resolveWalletMaterial("NUEVO")).isEqualTo("SINTETICO");
+        assertThat(ProductHardwareCondition.resolveWalletMaterial("no sintetica")).isEqualTo("NO_SINTETICO");
+        assertThat(ProductHardwareCondition.resolveWalletMaterial("LEVIS")).isNull();
     }
 }

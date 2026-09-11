@@ -495,7 +495,7 @@ class KioscoOpeningInventoryServiceTest {
     }
 
     @Test
-    void upsertItems_entrecuerosBilleteraIgnoraMarcaYGuardaSintetico() throws Exception {
+    void upsertItems_entrecuerosBilleteraGuardaNoSintetico() throws Exception {
         stubEntrecuerosSession();
         when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
                 .id(productId)
@@ -504,7 +504,7 @@ class KioscoOpeningInventoryServiceTest {
                 .build()));
         when(colorRepository.existsById(colorId)).thenReturn(true);
         when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
-                sessionId, productId, colorId, "SINTETICO")).thenReturn(Optional.empty());
+                sessionId, productId, colorId, "NO_SINTETICO")).thenReturn(Optional.empty());
         when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
                 .thenReturn(List.of());
         when(productRepository.findAllById(List.of())).thenReturn(List.of());
@@ -513,14 +513,35 @@ class KioscoOpeningInventoryServiceTest {
                 KioscoOpeningInventoryItemUpsertRequest.builder()
                         .productId(productId)
                         .colorId(colorId)
-                        .hardwareCondition("levis")
+                        .hardwareCondition("NO_SINTETICO")
                         .quantity(2)
                         .build()));
 
         ArgumentCaptor<KioscoOpeningInventoryItemEntity> captor =
                 ArgumentCaptor.forClass(KioscoOpeningInventoryItemEntity.class);
         verify(openingInventoryItemRepository).save(captor.capture());
-        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("SINTETICO");
+        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("NO_SINTETICO");
+    }
+
+    @Test
+    void upsertItems_entrecuerosBilleteraRechazaMarca() {
+        stubEntrecuerosSession();
+        when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
+                .id(productId)
+                .code("BILL-001")
+                .name("Billetera")
+                .build()));
+        when(colorRepository.existsById(colorId)).thenReturn(true);
+
+        assertThatThrownBy(() -> service.upsertItems(sessionId, List.of(
+                KioscoOpeningInventoryItemUpsertRequest.builder()
+                        .productId(productId)
+                        .colorId(colorId)
+                        .hardwareCondition("levis")
+                        .quantity(2)
+                        .build())))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("sintética");
     }
 
     @Test

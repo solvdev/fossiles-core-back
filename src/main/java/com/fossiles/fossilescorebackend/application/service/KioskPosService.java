@@ -3134,10 +3134,7 @@ public class KioskPosService {
 
     private String resolveInventoryProductName(ProductEntity product, String hardwareCondition) {
         String name = product != null ? product.getName() : "Producto";
-        if (ProductHardwareCondition.isSynthetic(hardwareCondition)) {
-            return ProductHardwareCondition.appendSyntheticToName(name);
-        }
-        return name;
+        return ProductHardwareCondition.appendMaterialToName(name, hardwareCondition);
     }
 
     private String inventoryKey(Long productId, Long colorId, String size) {

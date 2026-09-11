@@ -496,6 +496,9 @@ public class KioscoInternalCountService {
         if (ProductHardwareCondition.isSynthetic(hardwareCondition)) {
             return ProductHardwareCondition.SINTETICO_LABEL;
         }
+        if (ProductHardwareCondition.isNonSynthetic(hardwareCondition)) {
+            return ProductHardwareCondition.NO_SINTETICO_LABEL;
+        }
         return ProductBrandNames.normalize(hardwareCondition);
     }
 
@@ -504,8 +507,10 @@ public class KioscoInternalCountService {
             return name;
         }
         if (ProductHardwareCondition.SINTETICO_LABEL.equals(brand)
-                || ProductHardwareCondition.isSynthetic(brand)) {
-            return ProductHardwareCondition.appendSyntheticToName(name);
+                || ProductHardwareCondition.NO_SINTETICO_LABEL.equals(brand)
+                || ProductHardwareCondition.isSynthetic(brand)
+                || ProductHardwareCondition.isNonSynthetic(brand)) {
+            return ProductHardwareCondition.appendMaterialToName(name, brand);
         }
         String n = name != null ? name.trim() : "";
         if (n.toUpperCase(Locale.ROOT).contains(brand)) {

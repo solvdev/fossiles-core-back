@@ -336,9 +336,8 @@ public class KioscoOpeningInventoryService {
             ColorEntity color = item.getColorId() != null ? colorsById.get(item.getColorId()) : null;
             Map<String, Integer> sizes = parseSizes(item.getSizesData());
             String productName = product != null ? product.getName() : null;
-            if (ProductHardwareCondition.isSynthetic(item.getHardwareCondition())) {
-                productName = ProductHardwareCondition.appendSyntheticToName(productName);
-            }
+            productName = ProductHardwareCondition.appendMaterialToName(
+                    productName, item.getHardwareCondition());
             rows.add(KioscoOpeningInventoryReportResponse.ItemRow.builder()
                     .productId(item.getProductId())
                     .productCode(product != null ? product.getCode() : null)
@@ -525,7 +524,12 @@ public class KioscoOpeningInventoryService {
             return audience;
         }
         if (entreCueros && KioscoInventoryInitRules.isWalletProduct(product)) {
-            return ProductHardwareCondition.SINTETICO;
+            String material = ProductHardwareCondition.resolveWalletMaterial(raw);
+            if (material == null) {
+                throw new BusinessException(
+                        "En Entre Cueros indique si la billetera es sintética o no.");
+            }
+            return material;
         }
         if (entreCueros) {
             String brand = ProductBrandNames.normalize(raw);
