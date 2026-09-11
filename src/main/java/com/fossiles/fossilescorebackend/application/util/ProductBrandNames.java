@@ -37,6 +37,9 @@ public final class ProductBrandNames {
         if (ProductHardwareCondition.isSynthetic(hardwareCondition)) {
             return ProductHardwareCondition.SINTETICO;
         }
+        if (ProductHardwareCondition.isNonSynthetic(hardwareCondition)) {
+            return ProductHardwareCondition.NO_SINTETICO;
+        }
         return ProductCinchoAudience.normalize(hardwareCondition);
     }
 
