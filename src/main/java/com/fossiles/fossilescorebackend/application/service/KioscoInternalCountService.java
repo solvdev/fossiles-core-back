@@ -7,6 +7,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoAudience;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoInternalCountEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoInternalCountItemEntity;
@@ -206,7 +207,7 @@ public class KioscoInternalCountService {
                             .productCode(product.getCode())
                             .productName(appendBrandToName(
                                     product.getName(),
-                                    ProductBrandNames.normalize(primary.getHardwareCondition())))
+                                    dimensionDisplayName(primary.getHardwareCondition())))
                             .colorId(primary.getColorId())
                             .colorName(Optional.ofNullable(primary.getColorId())
                                     .map(colorsById::get)
@@ -218,7 +219,7 @@ public class KioscoInternalCountService {
                             .packaging(ProductCinchoType.isPackagingProductCode(product.getCode()))
                             .hardwareCondition(stocks.size() == 1
                                     ? primary.getHardwareCondition()
-                                    : ProductBrandNames.normalize(primary.getHardwareCondition()))
+                                    : ProductBrandNames.resolveDistinctDimension(primary.getHardwareCondition()))
                             .inventarioFinal(inventarioFinal)
                             .inventarioFinalByHardware(inventarioFinalByHardware.isEmpty() ? null : inventarioFinalByHardware)
                             .counts(counts)
@@ -484,6 +485,14 @@ public class KioscoInternalCountService {
                         .colorId(req.getColorId())
                         .hardwareCondition(hardware)
                         .build());
+    }
+
+    private static String dimensionDisplayName(String hardwareCondition) {
+        String audience = ProductCinchoAudience.label(hardwareCondition);
+        if (audience != null) {
+            return audience;
+        }
+        return ProductBrandNames.normalize(hardwareCondition);
     }
 
     private static String appendBrandToName(String name, String brand) {

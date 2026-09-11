@@ -28,15 +28,24 @@ public final class ProductBrandNames {
         return OPTION_SET.contains(n) ? n : null;
     }
 
-    /** Clave de fila de conteo: producto+color, o producto+color+marca en Entre Cueros. */
+    /** Marca o niño/niña; null si es herraje NUEVO/VIEJO. */
+    public static String resolveDistinctDimension(String hardwareCondition) {
+        String brand = normalize(hardwareCondition);
+        if (brand != null) {
+            return brand;
+        }
+        return ProductCinchoAudience.normalize(hardwareCondition);
+    }
+
+    /** Clave de fila de conteo: producto+color, o producto+color+marca/niño-niña. */
     public static String countVariantKey(Long productId, Long colorId, String hardwareCondition) {
         String base = (productId != null ? productId : "") + ":" + (colorId != null ? colorId : "");
-        String brand = normalize(hardwareCondition);
-        return brand != null ? base + ":" + brand : base;
+        String dimension = resolveDistinctDimension(hardwareCondition);
+        return dimension != null ? base + ":" + dimension : base;
     }
 
     public static String resolveCountHardware(String raw) {
-        String brand = normalize(raw);
-        return brand != null ? brand : "NUEVO";
+        String dimension = resolveDistinctDimension(raw);
+        return dimension != null ? dimension : "NUEVO";
     }
 }

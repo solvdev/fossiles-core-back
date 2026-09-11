@@ -47,6 +47,10 @@ public final class ProductHardwareCondition {
         if (VIEJO.equals(n)) {
             return "Herraje viejo";
         }
+        String audience = ProductCinchoAudience.label(value);
+        if (audience != null) {
+            return audience;
+        }
         String dimension = normalizeStockDimension(value);
         if (NUEVO.equals(dimension)) {
             return "Herraje nuevo";

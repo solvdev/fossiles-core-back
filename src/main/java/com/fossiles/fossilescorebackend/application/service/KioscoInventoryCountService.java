@@ -13,6 +13,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoAudience;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoNotificationRecipientEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
@@ -618,11 +619,11 @@ public class KioscoInventoryCountService {
                     item != null ? item.getHardwareLocationCountsData() : null);
 
             String productColorKey = itemKey(kardexRow.getProductId(), kardexRow.getColorId());
-            String rowBrand = ProductBrandNames.normalize(kardexRow.getHardwareCondition());
+            String rowDimension = ProductBrandNames.resolveDistinctDimension(kardexRow.getHardwareCondition());
             List<KioscoStockEntity> stocksForRow = stocksByProductColor.getOrDefault(productColorKey, List.of())
                     .stream()
-                    .filter(s -> rowBrand == null
-                            || rowBrand.equals(ProductBrandNames.normalize(s.getHardwareCondition())))
+                    .filter(s -> rowDimension == null
+                            || rowDimension.equals(ProductBrandNames.resolveDistinctDimension(s.getHardwareCondition())))
                     .collect(Collectors.toList());
             KioscoStockEntity stock = stocksForRow.isEmpty() ? stockByKey.get(productColorKey) : stocksForRow.get(0);
             Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardexForStock = mergeSizeKardexForStocks(
@@ -673,7 +674,7 @@ public class KioscoInventoryCountService {
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow row = KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
                     .productId(kardexRow.getProductId())
                     .productCode(kardexRow.getProductCode())
-                    .productName(appendBrandToName(kardexRow.getProductName(), rowBrand))
+                    .productName(appendBrandToName(kardexRow.getProductName(), displayDimension(rowDimension)))
                     .colorId(kardexRow.getColorId())
                     .colorName(kardexRow.getColorName())
                     .audienceCategory(product != null
@@ -681,7 +682,7 @@ public class KioscoInventoryCountService {
                             : ProductAudienceCategory.UNISEX)
                     .cinchoType(product != null ? ProductCinchoType.normalizeCinchoType(product.getCinchoType()) : null)
                     .cinchoForKids(product != null && Boolean.TRUE.equals(product.getCinchoForKids()))
-                    .hardwareCondition(resolveRowHardwareCondition(rowBrand, stocksForRow, stock))
+                    .hardwareCondition(resolveRowHardwareCondition(rowDimension, stocksForRow, stock))
                     .inventarioFinalByHardware(inventarioFinalByHardware.isEmpty() ? null : inventarioFinalByHardware)
                     .hardwareLocationCounts(hardwareLocationCounts)
                     .packaging(ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()))
@@ -906,17 +907,22 @@ public class KioscoInventoryCountService {
     }
 
     private String resolveRowHardwareCondition(
-            String rowBrand,
+            String rowDimension,
             List<KioscoStockEntity> stocksForRow,
             KioscoStockEntity stock
     ) {
-        if (rowBrand != null) {
-            return rowBrand;
+        if (rowDimension != null) {
+            return rowDimension;
         }
         if (stocksForRow.size() == 1 && stock != null) {
             return stock.getHardwareCondition();
         }
         return null;
+    }
+
+    private static String displayDimension(String dimension) {
+        String audience = ProductCinchoAudience.label(dimension);
+        return audience != null ? audience : dimension;
     }
 
     private String appendBrandToName(String name, String brand) {
@@ -1461,6 +1467,11 @@ public class KioscoInventoryCountService {
         return packaging ? 0 : salidaDevolucion;
     }
 
+    private static String firstNonNullDimension(String hardwareCondition) {
+        String dimension = ProductBrandNames.resolveDistinctDimension(hardwareCondition);
+        return dimension != null ? dimension : hardwareCondition;
+    }
+
     private List<KioscoKardexReportResponse.KioscoKardexRow> mergeKardexRowsByProductColor(
             List<KioscoKardexReportResponse.KioscoKardexRow> rows
     ) {
@@ -1484,7 +1495,7 @@ public class KioscoInventoryCountService {
                     .colorName(existing.getColorName())
                     .audienceCategory(existing.getAudienceCategory())
                     .cinchoType(existing.getCinchoType())
-                    .hardwareCondition(ProductBrandNames.normalize(existing.getHardwareCondition()))
+                    .hardwareCondition(firstNonNullDimension(existing.getHardwareCondition()))
                     .inventarioInicial(existing.getInventarioInicial() + row.getInventarioInicial())
                     .comprasAjustes(existing.getComprasAjustes() + row.getComprasAjustes())
                     .anulacionCompras(existing.getAnulacionCompras() + row.getAnulacionCompras())
