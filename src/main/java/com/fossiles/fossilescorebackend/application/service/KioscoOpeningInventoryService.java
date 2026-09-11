@@ -519,7 +519,7 @@ public class KioscoOpeningInventoryService {
         if (entreCueros && cincho) {
             String audience = ProductCinchoAudience.normalize(raw);
             if (audience == null) {
-                throw new BusinessException("En Entre Cueros indique si el cincho es de niño o de niña.");
+                throw new BusinessException("En Entre Cueros indique si el cincho es de niño o de dama.");
             }
             return audience;
         }

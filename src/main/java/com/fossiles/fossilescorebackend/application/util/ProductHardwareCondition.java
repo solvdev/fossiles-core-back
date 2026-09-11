@@ -40,6 +40,10 @@ public final class ProductHardwareCondition {
         if (value == null || value.isBlank()) {
             return NUEVO;
         }
+        String audience = ProductCinchoAudience.normalize(value);
+        if (audience != null) {
+            return audience;
+        }
         String wallet = resolveWalletDimension(value);
         if (wallet != null) {
             return wallet;
@@ -120,6 +124,14 @@ public final class ProductHardwareCondition {
             String upper = n.toUpperCase(Locale.ROOT);
             if (!upper.contains(brand)) {
                 n = (n + " " + brand).trim();
+            }
+        }
+        String audience = ProductCinchoAudience.label(hardware);
+        if (audience != null) {
+            String compact = compactKey(n).replace(" ", "");
+            String audienceKey = compactKey(audience).replace(" ", "");
+            if (!compact.contains(audienceKey) && !compact.contains("NINA") && !compact.contains("DAMA")) {
+                n = (n + " " + audience).trim();
             }
         }
         return n;

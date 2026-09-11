@@ -9,8 +9,9 @@ class ProductCinchoAudienceTest {
     @Test
     void normalize_mapsNinoNinaWithAccents() {
         assertThat(ProductCinchoAudience.normalize("niño")).isEqualTo("NINO");
-        assertThat(ProductCinchoAudience.normalize("NINA")).isEqualTo("NINA");
-        assertThat(ProductCinchoAudience.normalize("Niña")).isEqualTo("NINA");
+        assertThat(ProductCinchoAudience.normalize("NINA")).isEqualTo("DAMA");
+        assertThat(ProductCinchoAudience.normalize("Niña")).isEqualTo("DAMA");
+        assertThat(ProductCinchoAudience.normalize("Dama")).isEqualTo("DAMA");
         assertThat(ProductCinchoAudience.normalize("LEVIS")).isNull();
         assertThat(ProductCinchoAudience.normalize("NUEVO")).isNull();
     }
@@ -18,6 +19,7 @@ class ProductCinchoAudienceTest {
     @Test
     void label_spanish() {
         assertThat(ProductCinchoAudience.label("NINO")).isEqualTo("Niño");
-        assertThat(ProductCinchoAudience.label("niña")).isEqualTo("Niña");
+        assertThat(ProductCinchoAudience.label("niña")).isEqualTo("Dama");
+        assertThat(ProductCinchoAudience.label("dama")).isEqualTo("Dama");
     }
 }
