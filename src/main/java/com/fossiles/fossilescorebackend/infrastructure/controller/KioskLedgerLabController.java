@@ -1,8 +1,10 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMovementUpsertRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabReclassifyRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabMovementResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReclassifyResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllKiosksResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabSplitSizesResponse;
@@ -111,6 +113,22 @@ public class KioskLedgerLabController {
     ) throws BusinessException, ResourceNotFoundException {
         guard.requireEramirez();
         return ResponseEntity.ok(ledgerLabService.updateStock(stockId, request));
+    }
+
+    @PostMapping("/stocks/reclassify")
+    public ResponseEntity<KioskLedgerLabReclassifyResponse> reclassifyStocks(
+            @RequestBody KioskLedgerLabReclassifyRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        guard.requireEramirez();
+        return ResponseEntity.ok(ledgerLabService.reclassifyStocks(request));
+    }
+
+    @DeleteMapping("/stocks/{stockId}")
+    public ResponseEntity<Void> deleteStock(@PathVariable Long stockId)
+            throws BusinessException, ResourceNotFoundException {
+        guard.requireEramirez();
+        ledgerLabService.deleteStock(stockId);
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/stocks/{stockId}/replay")

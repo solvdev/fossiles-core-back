@@ -566,7 +566,7 @@ class KioscoOpeningInventoryServiceTest {
                         .sizes(sizes)
                         .build())))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("niño");
+                .hasMessageContaining("Niño");
     }
 
     @Test
@@ -599,31 +599,23 @@ class KioscoOpeningInventoryServiceTest {
     }
 
     @Test
-    void upsertItems_entrecuerosCinchoAdultoGuardaNuevo() throws Exception {
+    void upsertItems_entrecuerosCinchoAdultoRequiereNinoODama() {
         stubEntrecuerosSession();
         when(productRepository.findById(fossProductId)).thenReturn(Optional.of(fossProduct(fossProductId)));
         when(colorRepository.existsById(colorId)).thenReturn(true);
         Map<String, Integer> sizes = new LinkedHashMap<>();
         sizes.put("34", 1);
         sizes.put("36", 2);
-        when(openingInventoryItemRepository.findByOpeningInventoryIdAndProductIdAndColorIdAndHardwareCondition(
-                sessionId, fossProductId, colorId, "NUEVO")).thenReturn(Optional.empty());
-        when(openingInventoryItemRepository.findByOpeningInventoryIdOrderByProductIdAscColorIdAsc(sessionId))
-                .thenReturn(List.of());
-        when(productRepository.findAllById(List.of())).thenReturn(List.of());
 
-        service.upsertItems(sessionId, List.of(
+        assertThatThrownBy(() -> service.upsertItems(sessionId, List.of(
                 KioscoOpeningInventoryItemUpsertRequest.builder()
                         .productId(fossProductId)
                         .colorId(colorId)
                         .hardwareCondition("LEVIS")
                         .quantity(3)
                         .sizes(sizes)
-                        .build()));
-
-        ArgumentCaptor<KioscoOpeningInventoryItemEntity> captor =
-                ArgumentCaptor.forClass(KioscoOpeningInventoryItemEntity.class);
-        verify(openingInventoryItemRepository).save(captor.capture());
-        assertThat(captor.getValue().getHardwareCondition()).isEqualTo("NUEVO");
+                        .build())))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Niño");
     }
 }
