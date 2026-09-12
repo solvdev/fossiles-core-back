@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMoveSizesRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMovementUpsertRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabReclassifyRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
@@ -45,11 +46,13 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -67,6 +70,7 @@ public class KioskLedgerLabService {
     private final ColorRepository colorRepository;
     private final KioskSaleRepository kioskSaleRepository;
     private final ProductShipmentRepository productShipmentRepository;
+    private final KioscoStockProvisioningService kioscoStockProvisioningService;
     private final EntityManager entityManager;
 
     @Transactional(readOnly = true)
@@ -802,6 +806,86 @@ public class KioskLedgerLabService {
                 .sizeKeysCreated(createdKeys)
                 .stock(toStockResponse(stock, resolveProduct(stock), resolveColor(stock), resolveLocation(stock), null))
                 .build();
+    }
+
+    /**
+     * Mueve tallas concretas a otra dimensión PARA (NINO/DAMA) sin tocar el resto.
+     * Si el inventario inicial está agregado, primero lo desglosa por talla.
+     */
+    @Transactional
+    public KioskLedgerLabStockResponse moveSizesToPara(Long stockId, KioskLedgerLabMoveSizesRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        String actor = guard.requireEramirezUsername();
+        if (request == null || request.getSizeKeys() == null || request.getSizeKeys().isEmpty()) {
+            throw new BusinessException("Indica las tallas a mover.");
+        }
+        String next = ProductHardwareCondition.normalizeStockDimension(request.getHardwareCondition());
+        Set<String> keys = new HashSet<>();
+        for (String raw : request.getSizeKeys()) {
+            String key = ProductInventorySizesJson.normalizeKey(raw);
+            if (!key.isEmpty()) {
+                keys.add(key);
+            }
+        }
+        if (keys.isEmpty()) {
+            throw new BusinessException("Indica las tallas a mover.");
+        }
+
+        KioscoStockEntity source = kioscoStockRepository.findById(stockId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioscoStock", stockId));
+        String current = ProductHardwareCondition.normalizeStockDimension(source.getHardwareCondition());
+        if (next.equals(current)) {
+            throw new BusinessException("Elige un PARA distinto al actual (" + current + ").");
+        }
+
+        List<KioscoMovementEntity> sourceMovements = kioscoMovementRepository
+                .findByKioscoStockIdOrderByCreatedAtAscIdAsc(stockId);
+        boolean hasAggregated = sourceMovements.stream().anyMatch(this::isAggregatedOpeningMovement);
+        if (hasAggregated) {
+            splitOpeningBySizes(stockId);
+            source = kioscoStockRepository.findById(stockId)
+                    .orElseThrow(() -> new ResourceNotFoundException("KioscoStock", stockId));
+            sourceMovements = kioscoMovementRepository
+                    .findByKioscoStockIdOrderByCreatedAtAscIdAsc(stockId);
+        }
+
+        List<KioscoMovementEntity> toMove = sourceMovements.stream()
+                .filter((movement) -> keys.contains(ProductInventorySizesJson.normalizeKey(movement.getSizeKey())))
+                .collect(Collectors.toList());
+        if (toMove.isEmpty()) {
+            throw new BusinessException(
+                    "No hay movimientos con esas tallas. Desglosa por tallas y vuelve a intentar.");
+        }
+
+        Long userId = securityUtil.getCurrentUserId();
+        KioscoStockEntity target = kioscoStockProvisioningService.ensureStockRow(
+                source.getLocationId(),
+                source.getProductId(),
+                source.getColorId(),
+                userId,
+                next);
+        if (target.getId().equals(source.getId())) {
+            throw new BusinessException("No se pudo crear la fila destino PARA " + next + ".");
+        }
+
+        entityManager.flush();
+        for (KioscoMovementEntity movement : toMove) {
+            movement.setKioscoStockId(target.getId());
+            kioscoMovementRepository.save(movement);
+        }
+        entityManager.flush();
+
+        try {
+            kioscoInventoryService.replayMovementStockChain(source.getId());
+            kioscoInventoryService.replayMovementStockChain(target.getId());
+        } finally {
+            kioscoInventoryService.disableAdminMovementMutation();
+        }
+
+        target = kioscoStockRepository.findById(target.getId()).orElse(target);
+        log.warn("LEDGER_LAB_MOVE_SIZES actor={} fromId={} toId={} para={} sizes={} moved={}",
+                actor, stockId, target.getId(), next, keys, toMove.size());
+        return toStockResponse(target, resolveProduct(target), resolveColor(target), resolveLocation(target), null);
     }
 
     private boolean isAggregatedOpeningMovement(KioscoMovementEntity movement) {

@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMoveSizesRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMovementUpsertRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabReclassifyRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
@@ -158,5 +159,14 @@ public class KioskLedgerLabController {
             throws BusinessException, ResourceNotFoundException {
         guard.requireEramirez();
         return ResponseEntity.ok(ledgerLabService.splitOpeningBySizes(stockId));
+    }
+
+    @PostMapping("/stocks/{stockId}/move-sizes")
+    public ResponseEntity<KioskLedgerLabStockResponse> moveSizesToPara(
+            @PathVariable Long stockId,
+            @RequestBody KioskLedgerLabMoveSizesRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        guard.requireEramirez();
+        return ResponseEntity.ok(ledgerLabService.moveSizesToPara(stockId, request));
     }
 }
