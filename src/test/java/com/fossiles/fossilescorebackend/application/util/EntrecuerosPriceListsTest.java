@@ -42,6 +42,14 @@ class EntrecuerosPriceListsTest {
                 .isEqualByComparingTo("100.00");
         assertThat(EntrecuerosPriceLists.resolveUnitPrice(wallet, "SINTETICO:LEVIS", BigDecimal.ONE))
                 .isEqualByComparingTo("40.00");
+        ProductEntity otherWallet = ProductEntity.builder()
+                .id(12L)
+                .name("Billetera otra")
+                .build();
+        assertThat(EntrecuerosPriceLists.volumeKey(11L, wallet, "SINTETICO:ABERCROMBIE"))
+                .isEqualTo(EntrecuerosPriceLists.volumeKey(12L, otherWallet, "SINTETICO:ABERCROMBIE"));
+        assertThat(EntrecuerosPriceLists.resolveUnitPrice(otherWallet, "SINTETICO:ABERCROMBIE", new BigDecimal("4")))
+                .isEqualByComparingTo("30.00");
     }
 
     @Test

@@ -54,7 +54,11 @@ public final class EntrecuerosPriceLists {
     }
 
     public static String volumeKey(Long productId, ProductEntity product, String hardware) {
-        return (productId != null ? productId : "") + "|" + kind(product, hardware).name();
+        Kind kind = kind(product, hardware);
+        if (kind == Kind.PRODUCT) {
+            return (productId != null ? productId : "") + "|" + kind.name();
+        }
+        return kind.name();
     }
 
     public static BigDecimal resolveUnitPrice(ProductEntity product, String hardware, BigDecimal quantity) {
