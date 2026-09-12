@@ -44,7 +44,7 @@ public class KioskExchangeSlipGivenItemEntity {
     @Column(name = "size", length = 20)
     private String size;
 
-    @Column(name = "hardware_condition", length = 20)
+    @Column(name = "hardware_condition", length = 40)
     private String hardwareCondition;
 
     @Column(name = "quantity", precision = 12, scale = 3, nullable = false)

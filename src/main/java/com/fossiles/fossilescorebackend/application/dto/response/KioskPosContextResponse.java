@@ -56,6 +56,7 @@ public class KioskPosContextResponse {
         private Long categoryId;
         private String categoryName;
         private String audienceCategory;
+        private String cinchoType;
         private BigDecimal quantity;
         private BigDecimal suggestedUnitPrice;
         private Boolean entrecuerosEnabled;

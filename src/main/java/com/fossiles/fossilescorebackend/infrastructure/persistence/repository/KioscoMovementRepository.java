@@ -323,21 +323,32 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             @Param("sizeKey") String sizeKey
     );
 
-    @Query("SELECT COUNT(m) > 0 FROM KioscoMovementEntity m "
-            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
-            + "WHERE m.physicalSlipNumber = :slip "
-            + "AND m.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_SALIDA "
-            + "AND s.productId = :productId "
-            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
-            + "AND ((:sizeKey IS NULL AND (m.sizeKey IS NULL OR m.sizeKey = '')) "
-            + "OR m.sizeKey = :sizeKey) "
-            + "AND m.quantity = :quantity")
+    @Query("SELECT COUNT(salida) > 0 FROM KioscoMovementEntity salida "
+            + "JOIN KioscoStockEntity so ON so.id = salida.kioscoStockId "
+            + "JOIN KioscoMovementEntity entrada ON entrada.physicalSlipNumber = salida.physicalSlipNumber "
+            + "AND entrada.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_ENTRADA "
+            + "AND entrada.quantity = salida.quantity "
+            + "JOIN KioscoStockEntity sd ON sd.id = entrada.kioscoStockId "
+            + "WHERE salida.physicalSlipNumber = :slip "
+            + "AND salida.movementType = com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_SALIDA "
+            + "AND so.productId = :productId "
+            + "AND sd.productId = :productId "
+            + "AND ((:colorId IS NULL AND so.colorId IS NULL) OR so.colorId = :colorId) "
+            + "AND ((:colorId IS NULL AND sd.colorId IS NULL) OR sd.colorId = :colorId) "
+            + "AND ((:sizeKey IS NULL AND (salida.sizeKey IS NULL OR salida.sizeKey = '') "
+            + "AND (entrada.sizeKey IS NULL OR entrada.sizeKey = '')) "
+            + "OR (salida.sizeKey = :sizeKey AND entrada.sizeKey = :sizeKey)) "
+            + "AND salida.quantity = :quantity "
+            + "AND so.hardwareCondition = :originHardware "
+            + "AND sd.hardwareCondition = :destHardware")
     boolean existsTrasladoBoletaDuplicateLine(
             @Param("slip") String slip,
             @Param("productId") Long productId,
             @Param("colorId") Long colorId,
             @Param("sizeKey") String sizeKey,
-            @Param("quantity") Integer quantity
+            @Param("quantity") Integer quantity,
+            @Param("originHardware") String originHardware,
+            @Param("destHardware") String destHardware
     );
 
     boolean existsByPhysicalSlipNumber(String physicalSlipNumber);
