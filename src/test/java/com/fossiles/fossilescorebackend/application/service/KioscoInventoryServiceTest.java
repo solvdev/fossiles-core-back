@@ -464,7 +464,7 @@ class KioscoInventoryServiceTest {
     @Test
     void trasladoBoleta_rechazaLineaDuplicadaEnMismaSolicitud() {
         when(kioscoMovementRepository.findByPhysicalSlipNumber("BT-DUP")).thenReturn(List.of());
-        when(kioscoMovementRepository.existsTrasladoBoletaDuplicateLine(any(), any(), any(), any(), any()))
+        when(kioscoMovementRepository.existsTrasladoBoletaDuplicateLine(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(false);
 
         KioscoInventoryTrasladoRequest request = KioscoInventoryTrasladoRequest.builder()
@@ -489,7 +489,7 @@ class KioscoInventoryServiceTest {
     void trasladoBoleta_rechazaLineaYaRegistradaEnBoleta() {
         when(kioscoMovementRepository.findByPhysicalSlipNumber("BT-EXIST")).thenReturn(List.of());
         when(kioscoMovementRepository.existsTrasladoBoletaDuplicateLine(
-                "BT-EXIST", productId, colorId, "32", 2))
+                "BT-EXIST", productId, colorId, "32", 2, "NUEVO", "NUEVO"))
                 .thenReturn(true);
 
         KioscoInventoryTrasladoRequest request = KioscoInventoryTrasladoRequest.builder()

@@ -24,8 +24,12 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
+import com.fossiles.fossilescorebackend.application.util.KioscoStockDimension;
+import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoAudience;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
+import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
@@ -381,7 +385,7 @@ public class ProductDistributionService {
         }
 
         List<ProductShipmentRequest.ProductShipmentDetailRequest> products =
-                buildShipmentProductsFromOrderItems(productionOrderId);
+                buildShipmentProductsFromOrderItems(productionOrderId, request.getLocationId());
         if (products.isEmpty()) {
             throw new BusinessException("La orden no tiene productos con cantidad para enviar.");
         }
@@ -1004,15 +1008,19 @@ public class ProductDistributionService {
     }
 
     private List<ProductShipmentRequest.ProductShipmentDetailRequest> buildShipmentProductsFromOrderItems(
-            Long productionOrderId) throws ResourceNotFoundException, BusinessException {
+            Long productionOrderId,
+            Long locationId) throws ResourceNotFoundException, BusinessException {
         ProductionOrderEntity order = productionOrderRepository.findById(productionOrderId).orElse(null);
         boolean preferSellerPrice = isLuisFelipeVendorOrder(order);
+        LocationEntity dest = locationId != null ? locationRepository.findById(locationId).orElse(null) : null;
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
         List<ProductShipmentRequest.ProductShipmentDetailRequest> lines = new ArrayList<>();
         for (ProductionOrderItemEntity item : items) {
             if (item.getProductId() == null) {
                 continue;
             }
+            ProductEntity product = productRepository.findById(item.getProductId()).orElse(null);
+            String hardware = inferShipmentHardware(dest, product, item);
             boolean addedFromSizes = false;
             if (item.getSizesData() != null && !item.getSizesData().isBlank()) {
                 try {
@@ -1029,6 +1037,7 @@ public class ProductDistributionService {
                                 .productId(item.getProductId())
                                 .colorId(item.getColorId())
                                 .size(entry.getKey())
+                                .hardwareCondition(hardware)
                                 .quantity(BigDecimal.valueOf(qty))
                                 .unitPrice(unitPrice)
                                 .build());
@@ -1044,6 +1053,7 @@ public class ProductDistributionService {
                         .productId(item.getProductId())
                         .colorId(item.getColorId())
                         .size("")
+                        .hardwareCondition(hardware)
                         .quantity(BigDecimal.valueOf(item.getQuantity()))
                         .unitPrice(unitPrice)
                         .build());
@@ -1451,7 +1461,8 @@ public class ProductDistributionService {
                         .productId(line.getProductId())
                         .colorId(line.getColorId())
                         .sizeLabel(normalizeSize(line.getSize()))
-                        .hardwareCondition(normalizeHardwareCondition(line.getHardwareCondition()))
+                        .hardwareCondition(persistShipmentHardware(
+                                shipment.getLocationId(), line.getProductId(), line.getHardwareCondition()))
                         .quantity(line.getQuantity())
                         .unitPrice(line.getUnitPrice())
                         .build();
@@ -4475,9 +4486,49 @@ public class ProductDistributionService {
         return size == null ? "" : size.trim().toUpperCase();
     }
 
-    private String normalizeHardwareCondition(String value) {
-        String normalized = ProductHardwareCondition.normalize(value);
-        return normalized != null ? normalized : "";
+    private String persistShipmentHardware(Long locationId, Long productId, String raw)
+            throws BusinessException, ResourceNotFoundException {
+        if (productId == null) {
+            return ProductHardwareCondition.normalizeStockDimension(raw);
+        }
+        LocationEntity location = locationId == null ? null : locationRepository.findById(locationId).orElse(null);
+        ProductEntity product = productRepository.findById(productId)
+                .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
+        if (KioskPosMode.isEntrecueros(location)) {
+            return KioscoStockDimension.resolve(location, product, raw, false);
+        }
+        String hardware = ProductHardwareCondition.normalize(raw);
+        return hardware != null ? hardware : "";
+    }
+
+    private String inferShipmentHardware(
+            LocationEntity dest,
+            ProductEntity product,
+            ProductionOrderItemEntity item
+    ) {
+        if (dest == null || product == null || !KioskPosMode.isEntrecueros(dest)) {
+            return "";
+        }
+        KioscoStockDimension.Kind kind = KioscoStockDimension.kind(dest, product);
+        if (kind == KioscoStockDimension.Kind.NONE) {
+            return ProductHardwareCondition.NUEVO;
+        }
+        if (kind == KioscoStockDimension.Kind.PARA) {
+            String audience = ProductCinchoAudience.normalize(item.getBrandName());
+            if (audience != null) {
+                return audience;
+            }
+            return Boolean.TRUE.equals(product.getCinchoForKids())
+                    ? ProductCinchoAudience.NINO
+                    : null;
+        }
+        if (kind == KioscoStockDimension.Kind.WALLET) {
+            return ProductHardwareCondition.resolveWalletDimension(item.getBrandName());
+        }
+        if (kind == KioscoStockDimension.Kind.MARCA) {
+            return ProductBrandNames.normalize(item.getBrandName());
+        }
+        return "";
     }
 
     private int extractTrailingSequence(String shipmentNumber) {
@@ -4498,6 +4549,7 @@ public class ProductDistributionService {
         Map<String, Long> keyToProductId = new HashMap<>();
         Map<String, Long> keyToColorId = new HashMap<>();
         Map<String, String> keyToSize = new HashMap<>();
+        Map<String, String> keyToHardware = new HashMap<>();
         Map<String, BigDecimal> keyToUnitPrice = new HashMap<>();
 
         if (products != null) {
@@ -4511,13 +4563,18 @@ public class ProductDistributionService {
                     throw new ResourceNotFoundException("Product", productRequest.getProductId());
                 }
                 String normalizedSize = normalizeSize(productRequest.getSize());
+                String hardware = productRequest.getHardwareCondition() == null
+                        || productRequest.getHardwareCondition().isBlank()
+                        ? ""
+                        : ProductHardwareCondition.normalizeStockDimension(productRequest.getHardwareCondition());
                 String key = productRequest.getProductId() + ":" +
                         (productRequest.getColorId() == null ? "null" : productRequest.getColorId()) + ":" +
-                        normalizedSize;
+                        normalizedSize + ":" + hardware;
                 groupedQuantities.merge(key, productRequest.getQuantity(), BigDecimal::add);
                 keyToProductId.put(key, productRequest.getProductId());
                 keyToColorId.put(key, productRequest.getColorId());
                 keyToSize.put(key, normalizedSize);
+                keyToHardware.put(key, hardware);
                 if (productRequest.getUnitPrice() != null && !keyToUnitPrice.containsKey(key)) {
                     keyToUnitPrice.put(key, productRequest.getUnitPrice());
                 }
@@ -4529,6 +4586,7 @@ public class ProductDistributionService {
                         .productId(keyToProductId.get(entry.getKey()))
                         .colorId(keyToColorId.get(entry.getKey()))
                         .size(keyToSize.getOrDefault(entry.getKey(), ""))
+                        .hardwareCondition(keyToHardware.getOrDefault(entry.getKey(), ""))
                         .quantity(entry.getValue())
                         .unitPrice(keyToUnitPrice.get(entry.getKey()))
                         .build())

@@ -36,8 +36,8 @@ public class ProductShipmentDetailEntity {
     @Builder.Default
     private String sizeLabel = "";
 
-    /** NUEVO | VIEJO — herraje del producto enviado. */
-    @Column(name = "hardware_condition", length = 20)
+    /** NUEVO | VIEJO, PARA o marca / SINTETICO:MARCA en Entre Cueros. */
+    @Column(name = "hardware_condition", length = 40)
     private String hardwareCondition;
 
     @Column(name = "quantity", nullable = false, precision = 12, scale = 3)

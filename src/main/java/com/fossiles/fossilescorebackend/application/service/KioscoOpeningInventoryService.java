@@ -8,8 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoOpeningIn
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
-import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
-import com.fossiles.fossilescorebackend.application.util.ProductCinchoAudience;
+import com.fossiles.fossilescorebackend.application.util.KioscoStockDimension;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
@@ -27,7 +26,6 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
-import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -508,46 +506,8 @@ public class KioscoOpeningInventoryService {
             ProductEntity product,
             String raw
     ) throws BusinessException {
-        boolean packaging = KioscoInventoryInitRules.isPackagingProduct(product);
-        boolean cincho = KioscoInventoryInitRules.isCinchoProduct(product);
         LocationEntity location = locationRepository.findById(session.getLocationId()).orElse(null);
-        boolean entreCueros = KioskPosMode.isEntrecueros(location);
-
-        if (packaging) {
-            return ProductHardwareCondition.NUEVO;
-        }
-        if (entreCueros && cincho) {
-            String audience = ProductCinchoAudience.normalize(raw);
-            if (audience == null) {
-                throw new BusinessException("En Entre Cueros indique si el cincho es Niño o Dama.");
-            }
-            return audience;
-        }
-        if (entreCueros && KioscoInventoryInitRules.isWalletProduct(product)) {
-            String wallet = ProductHardwareCondition.resolveWalletDimension(raw);
-            if (wallet == null) {
-                throw new BusinessException(
-                        "En Entre Cueros indique la marca de la billetera. Si es sintética use SINTETICO:MARCA.");
-            }
-            return wallet;
-        }
-        if (entreCueros) {
-            String brand = ProductBrandNames.normalize(raw);
-            if (brand == null) {
-                throw new BusinessException(
-                        "En Entre Cueros indique la marca (LEVIS, NAUTICA, TOMMY HILFIGER, LACOSTE o ABERCROMBIE).");
-            }
-            return brand;
-        }
-        String hardware = ProductHardwareCondition.normalize(raw);
-        if (hardware == null) {
-            hardware = ProductHardwareCondition.NUEVO;
-        }
-        if (!ProductHardwareCondition.NUEVO.equals(hardware)
-                && !ProductHardwareCondition.VIEJO.equals(hardware)) {
-            throw new BusinessException("Herraje inválido: use NUEVO o VIEJO.");
-        }
-        return hardware;
+        return KioscoStockDimension.resolve(location, product, raw, false);
     }
 
     private String resolveHardwareLabel(String hardware) {

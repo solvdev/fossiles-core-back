@@ -37,6 +37,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.TaxpayerLookupR
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
+import com.fossiles.fossilescorebackend.application.util.EntrecuerosPriceLists;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
@@ -211,8 +212,11 @@ public class KioskPosService {
                             .audienceCategory(product != null
                                     ? ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory())
                                     : ProductAudienceCategory.UNISEX)
+                            .cinchoType(product != null
+                                    ? ProductCinchoType.normalizeCinchoType(product.getCinchoType())
+                                    : null)
                             .quantity(row.getQuantity() != null ? row.getQuantity() : BigDecimal.ZERO)
-                            .suggestedUnitPrice(resolveCatalogUnitPrice(kiosk, product))
+                            .suggestedUnitPrice(resolveCatalogUnitPrice(kiosk, product, ProductHardwareCondition.NUEVO))
                             .entrecuerosEnabled(product != null && Boolean.TRUE.equals(product.getEntrecuerosEnabled()))
                             .entrecuerosPriceUnit(product != null ? product.getEntrecuerosPriceUnit() : null)
                             .entrecuerosPriceQty3(product != null ? product.getEntrecuerosPriceQty3() : null)
@@ -249,8 +253,11 @@ public class KioskPosService {
                             .audienceCategory(product != null
                                     ? ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory())
                                     : ProductAudienceCategory.UNISEX)
+                            .cinchoType(product != null
+                                    ? ProductCinchoType.normalizeCinchoType(product.getCinchoType())
+                                    : null)
                             .quantity(quantity)
-                            .suggestedUnitPrice(resolveCatalogUnitPrice(kiosk, product))
+                            .suggestedUnitPrice(resolveCatalogUnitPrice(kiosk, product, hardware))
                             .entrecuerosEnabled(product != null && Boolean.TRUE.equals(product.getEntrecuerosEnabled()))
                             .entrecuerosPriceUnit(product != null ? product.getEntrecuerosPriceUnit() : null)
                             .entrecuerosPriceQty3(product != null ? product.getEntrecuerosPriceQty3() : null)
@@ -358,13 +365,18 @@ public class KioskPosService {
         List<PreparedLine> preparedLines = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal totalItems = BigDecimal.ZERO;
-        Map<Long, BigDecimal> qtyByProduct = new HashMap<>();
+        Map<String, BigDecimal> qtyByPriceKey = new HashMap<>();
         if (entrecueros) {
             for (KioskPosSaleRequest.ItemRequest itemRequest : request.getItems()) {
                 if (itemRequest == null || itemRequest.getProductId() == null || itemRequest.getQuantity() == null) {
                     continue;
                 }
-                qtyByProduct.merge(itemRequest.getProductId(), itemRequest.getQuantity(), BigDecimal::add);
+                ProductEntity volumeProduct = productRepository.findById(itemRequest.getProductId()).orElse(null);
+                String volumeHardware = resolveItemHardwareCondition(itemRequest.getHardwareCondition());
+                qtyByPriceKey.merge(
+                        EntrecuerosPriceLists.volumeKey(itemRequest.getProductId(), volumeProduct, volumeHardware),
+                        itemRequest.getQuantity(),
+                        BigDecimal::add);
             }
         }
 
@@ -419,8 +431,12 @@ public class KioskPosService {
             }
 
             BigDecimal unitPrice = entrecueros
-                    ? EntrecuerosVolumePricing.resolveUnitPrice(
-                            product, qtyByProduct.getOrDefault(product.getId(), quantity))
+                    ? EntrecuerosPriceLists.resolveUnitPrice(
+                            product,
+                            hardware,
+                            qtyByPriceKey.getOrDefault(
+                                    EntrecuerosPriceLists.volumeKey(product.getId(), product, hardware),
+                                    quantity))
                     : resolvePosUnitPrice(product, sizeLabel);
             // Línea con precio editado (Miraflores): monto final, sin descuento sobre esa línea.
             boolean finalUnitPrice = false;
@@ -2557,13 +2573,18 @@ public class KioskPosService {
             List<KioskPosPromotionEstimateRequest.ItemRequest> items
     ) throws BusinessException, ResourceNotFoundException {
         boolean entrecueros = KioskPosMode.isEntrecueros(kiosk);
-        Map<Long, BigDecimal> qtyByProduct = new HashMap<>();
+        Map<String, BigDecimal> qtyByPriceKey = new HashMap<>();
         if (entrecueros) {
             for (KioskPosPromotionEstimateRequest.ItemRequest itemRequest : items) {
                 if (itemRequest == null || itemRequest.getProductId() == null || itemRequest.getQuantity() == null) {
                     continue;
                 }
-                qtyByProduct.merge(itemRequest.getProductId(), itemRequest.getQuantity(), BigDecimal::add);
+                ProductEntity volumeProduct = productRepository.findById(itemRequest.getProductId()).orElse(null);
+                String volumeHardware = resolveItemHardwareCondition(itemRequest.getHardwareCondition());
+                qtyByPriceKey.merge(
+                        EntrecuerosPriceLists.volumeKey(itemRequest.getProductId(), volumeProduct, volumeHardware),
+                        itemRequest.getQuantity(),
+                        BigDecimal::add);
             }
         }
         List<PreparedLine> preparedLines = new ArrayList<>();
@@ -2583,9 +2604,14 @@ public class KioskPosService {
                         .orElseThrow(() -> new ResourceNotFoundException("Color", itemRequest.getColorId()));
             }
             String sizeLabel = ProductInventorySizesJson.normalizeKey(itemRequest.getSize());
+            String hardware = resolveItemHardwareCondition(itemRequest.getHardwareCondition());
             BigDecimal unitPrice = entrecueros
-                    ? EntrecuerosVolumePricing.resolveUnitPrice(
-                            product, qtyByProduct.getOrDefault(product.getId(), quantity))
+                    ? EntrecuerosPriceLists.resolveUnitPrice(
+                            product,
+                            hardware,
+                            qtyByPriceKey.getOrDefault(
+                                    EntrecuerosPriceLists.volumeKey(product.getId(), product, hardware),
+                                    quantity))
                     : resolvePosUnitPrice(product, sizeLabel);
             BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
             preparedLines.add(new PreparedLine(
@@ -3018,8 +3044,12 @@ public class KioskPosService {
     }
 
     private BigDecimal resolveCatalogUnitPrice(LocationEntity kiosk, ProductEntity product) {
+        return resolveCatalogUnitPrice(kiosk, product, ProductHardwareCondition.NUEVO);
+    }
+
+    private BigDecimal resolveCatalogUnitPrice(LocationEntity kiosk, ProductEntity product, String hardware) {
         if (KioskPosMode.isEntrecueros(kiosk)) {
-            return EntrecuerosVolumePricing.resolveUnitPrice(product, BigDecimal.ONE);
+            return EntrecuerosPriceLists.resolveUnitPrice(product, hardware, BigDecimal.ONE);
         }
         return resolvePosUnitPrice(product);
     }
@@ -3105,6 +3135,7 @@ public class KioskPosService {
                     .categoryId(category != null ? category.getId() : null)
                     .categoryName(category != null ? category.getName() : "")
                     .audienceCategory(ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory()))
+                    .cinchoType(ProductCinchoType.normalizeCinchoType(product.getCinchoType()))
                     .quantity(BigDecimal.ZERO)
                     .suggestedUnitPrice(resolveCatalogUnitPrice(kiosk, product))
                     .entrecuerosEnabled(Boolean.TRUE.equals(product.getEntrecuerosEnabled()))
