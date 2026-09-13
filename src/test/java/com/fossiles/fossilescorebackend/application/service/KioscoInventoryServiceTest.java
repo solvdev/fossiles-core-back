@@ -177,16 +177,49 @@ class KioscoInventoryServiceTest {
     void entradaDesdeIntegracion_conTalla_actualizaSizesData() throws Exception {
         KioscoStockEntity stock = stockEntity(0, 0);
         when(kioscoStockRepository.findForUpdate(locationId, productId, colorId)).thenReturn(Optional.of(stock));
+        when(kioscoMovementRepository.findByKioscoStockIdOrderByCreatedAtAscIdAsc(100L)).thenReturn(List.of());
 
         KioscoStockResponse response = service.registrarEntradaDesdeIntegracion(
                 locationId, productId, colorId, new BigDecimal("4"), 200L, userId, "32");
 
         assertThat(response.getCurrentStock()).isEqualTo(4);
-        // Sin sizes_data previo no se inventa desglose; la talla queda en el movimiento.
+        assertThat(response.getSizes().get("32")).isEqualByComparingTo("4");
         ArgumentCaptor<KioscoMovementEntity> movementCaptor = ArgumentCaptor.forClass(KioscoMovementEntity.class);
         verify(kioscoMovementRepository).save(movementCaptor.capture());
         assertThat(movementCaptor.getValue().getSizeKey()).isEqualTo("32");
         verify(productInventoryService, never()).incrementInventory(anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void entradaDesdeIntegracion_conTallaNueva_recuperaTallasPreviasDelKardex() throws Exception {
+        KioscoStockEntity stock = stockEntity(3, 0);
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId)).thenReturn(Optional.of(stock));
+        when(kioscoMovementRepository.findByKioscoStockIdOrderByCreatedAtAscIdAsc(100L))
+                .thenReturn(List.of(movementWithSize(KioscoMovementType.ENTRADA, 3, "32")));
+
+        KioscoStockResponse response = service.registrarEntradaDesdeIntegracion(
+                locationId, productId, colorId, new BigDecimal("2"), 201L, userId, "34");
+
+        assertThat(response.getCurrentStock()).isEqualTo(5);
+        assertThat(ProductInventorySizesJson.parse(stock.getSizesData()).get("32"))
+                .isEqualByComparingTo("3");
+        assertThat(ProductInventorySizesJson.parse(stock.getSizesData()).get("34"))
+                .isEqualByComparingTo("2");
+    }
+
+    @Test
+    void entradaDesdeIntegracion_conTalla_mergeSiYaHayDesglose() throws Exception {
+        KioscoStockEntity stock = stockEntity(3, 0);
+        stock.setSizesData("{\"32\":3}");
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId)).thenReturn(Optional.of(stock));
+
+        KioscoStockResponse response = service.registrarEntradaDesdeIntegracion(
+                locationId, productId, colorId, new BigDecimal("2"), 202L, userId, "34");
+
+        assertThat(response.getCurrentStock()).isEqualTo(5);
+        assertThat(response.getSizes().get("32")).isEqualByComparingTo("3");
+        assertThat(response.getSizes().get("34")).isEqualByComparingTo("2");
+        verify(kioscoMovementRepository, never()).findByKioscoStockIdOrderByCreatedAtAscIdAsc(any());
     }
 
     @Test
