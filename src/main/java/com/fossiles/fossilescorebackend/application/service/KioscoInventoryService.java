@@ -3696,6 +3696,13 @@ public class KioscoInventoryService {
                 physicalCountId
         );
 
+        if (affectsStock
+                && delta > 0
+                && !ProductInventorySizesJson.normalizeKey(sizeKey).isEmpty()
+                && !ProductInventorySizesJson.hasNonEmptyBreakdown(stock.getSizesData())) {
+            hydrateSizesDataFromLedger(stock, movement);
+        }
+
         if (syncLegacy && affectsStock) {
             try {
                 syncLegacyInventory(locationId, productId, colorId, delta, sizeKey);
@@ -3745,8 +3752,8 @@ public class KioscoInventoryService {
             return total;
         }
 
-        // Sin sizes_data: NO inventar un mapa de una sola talla (eso ponía current=qty y borraba el resto).
-        // Solo mover el total agregado. El desglose se recupera con replay desde movimientos.
+        // Sin sizes_data: no inventar un mapa de una sola talla aquí (ocultaría el resto del ledger).
+        // El desglose se hidrata tras persistir el movimiento (hydrateSizesDataFromLedger).
         int next = safeInt(stock.getCurrentStock()) + delta;
         if (next < 0) {
             throw new BusinessException("Stock insuficiente en kiosko. Disponible: " + safeInt(stock.getCurrentStock())
@@ -4538,6 +4545,34 @@ public class KioscoInventoryService {
             }
         }
         return 0;
+    }
+
+    /**
+     * Envios/entradas con talla y {@code sizes_data} vacío: reconstruye el desglose desde el kardex
+     * para que el POS muestre unidades por talla sin un replay manual.
+     */
+    private void hydrateSizesDataFromLedger(KioscoStockEntity stock, KioscoMovementEntity justSaved) {
+        if (stock == null || stock.getId() == null) {
+            return;
+        }
+        entityManager.flush();
+        List<KioscoMovementEntity> movements = kioscoMovementRepository
+                .findByKioscoStockIdOrderByCreatedAtAscIdAsc(stock.getId());
+        if (movements == null || movements.isEmpty()) {
+            movements = new ArrayList<>();
+        } else {
+            movements = new ArrayList<>(movements);
+        }
+        if (justSaved != null) {
+            Long savedId = justSaved.getId();
+            boolean included = savedId != null
+                    && movements.stream().anyMatch(movement -> savedId.equals(movement.getId()));
+            if (!included) {
+                movements.add(justSaved);
+            }
+        }
+        rebuildSizesDataFromMovements(stock, movements);
+        kioscoStockRepository.save(stock);
     }
 
     /**
