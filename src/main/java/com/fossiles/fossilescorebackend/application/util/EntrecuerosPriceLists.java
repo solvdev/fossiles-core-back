@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Locale;
+import java.util.Map;
 
 /** Listas de precio Entrecueros por variante (mismo SKU, distinto PARA / material). */
 public final class EntrecuerosPriceLists {
@@ -20,6 +21,9 @@ public final class EntrecuerosPriceLists {
         CARDHOLDER_SYNTHETIC,
         PRODUCT
     }
+
+    public static final int WHOLESALE_UNLOCK_QTY = 6;
+    private static final BigDecimal LOWEST_TIER_QTY = BigDecimal.valueOf(12);
 
     private EntrecuerosPriceLists() {
     }
@@ -59,6 +63,26 @@ public final class EntrecuerosPriceLists {
             return (productId != null ? productId : "") + "|" + kind.name();
         }
         return kind.name();
+    }
+
+    public static boolean unlocksWholesale(Map<String, BigDecimal> qtyByPriceKey) {
+        if (qtyByPriceKey == null || qtyByPriceKey.isEmpty()) {
+            return false;
+        }
+        BigDecimal threshold = BigDecimal.valueOf(WHOLESALE_UNLOCK_QTY);
+        for (BigDecimal qty : qtyByPriceKey.values()) {
+            if (qty != null && qty.compareTo(threshold) >= 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static BigDecimal quantityForPrice(BigDecimal ownQty, boolean wholesaleUnlocked) {
+        if (wholesaleUnlocked) {
+            return LOWEST_TIER_QTY;
+        }
+        return ownQty == null ? BigDecimal.ZERO : ownQty;
     }
 
     public static BigDecimal resolveUnitPrice(ProductEntity product, String hardware, BigDecimal quantity) {
