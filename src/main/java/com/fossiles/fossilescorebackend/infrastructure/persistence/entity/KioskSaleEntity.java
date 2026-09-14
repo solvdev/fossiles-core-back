@@ -131,6 +131,10 @@ public class KioskSaleEntity {
     @Column(name = "comments", length = 1500)
     private String comments;
 
+    /** Hoja de envío de Entrecueros (papel del kiosco). */
+    @Column(name = "shipping_sheet_number", length = 40)
+    private String shippingSheetNumber;
+
     @Column(name = "fel_status", length = 30)
     private String felStatus;
 
