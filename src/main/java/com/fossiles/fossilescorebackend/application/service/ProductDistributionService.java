@@ -1020,7 +1020,6 @@ public class ProductDistributionService {
                 continue;
             }
             ProductEntity product = productRepository.findById(item.getProductId()).orElse(null);
-            String hardware = inferShipmentHardware(dest, product, item);
             boolean addedFromSizes = false;
             if (item.getSizesData() != null && !item.getSizesData().isBlank()) {
                 try {
@@ -1037,7 +1036,7 @@ public class ProductDistributionService {
                                 .productId(item.getProductId())
                                 .colorId(item.getColorId())
                                 .size(entry.getKey())
-                                .hardwareCondition(hardware)
+                                .hardwareCondition(inferShipmentHardware(dest, product, item, entry.getKey()))
                                 .quantity(BigDecimal.valueOf(qty))
                                 .unitPrice(unitPrice)
                                 .build());
@@ -1053,7 +1052,7 @@ public class ProductDistributionService {
                         .productId(item.getProductId())
                         .colorId(item.getColorId())
                         .size("")
-                        .hardwareCondition(hardware)
+                        .hardwareCondition(inferShipmentHardware(dest, product, item, null))
                         .quantity(BigDecimal.valueOf(item.getQuantity()))
                         .unitPrice(unitPrice)
                         .build());
@@ -1462,7 +1461,10 @@ public class ProductDistributionService {
                         .colorId(line.getColorId())
                         .sizeLabel(normalizeSize(line.getSize()))
                         .hardwareCondition(persistShipmentHardware(
-                                shipment.getLocationId(), line.getProductId(), line.getHardwareCondition()))
+                                shipment.getLocationId(),
+                                line.getProductId(),
+                                line.getHardwareCondition(),
+                                line.getSize()))
                         .quantity(line.getQuantity())
                         .unitPrice(line.getUnitPrice())
                         .build();
@@ -3755,41 +3757,12 @@ public class ProductDistributionService {
             String lineRef) throws ResourceNotFoundException, BusinessException {
         boolean kioscoApplied = kioscoInventoryService.hasShipmentReceiptLineApplied(
                 shipment.getLocationId(), shipment.getId(), lineRef);
-        boolean kardexApplied = productInventoryService.hasProductKardexMovement(
-                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
-                detail.getProductId(), shipment.getLocationId(), detail.getColorId(), lineRef);
-
-        if (kioscoApplied && kardexApplied) {
-            return;
-        }
         if (kioscoApplied) {
-            // Kardex missing: backfill kardex only — never re-apply kiosco ENTRADA.
-            backfillReceiptKardexForDetail(shipment, detail, qtyReceived, lineRef);
-            return;
-        }
-        if (kardexApplied) {
-            applyKioscoReceiptLineOnly(shipment, detail, qtyReceived, lineRef);
             return;
         }
 
         String sizeKey = detail.getSizeLabel() != null ? detail.getSizeLabel().trim() : "";
         String sizeKeyForInventory = sizeKey.isEmpty() ? null : sizeKey;
-
-        BigDecimal before = productInventoryService
-                .getInventoryByProductAndLocationAndColor(
-                        detail.getProductId(), shipment.getLocationId(), detail.getColorId())
-                .getQuantity();
-        productInventoryService.incrementInventory(
-                detail.getProductId(),
-                shipment.getLocationId(),
-                detail.getColorId(),
-                qtyReceived,
-                null,
-                "SHIPMENT",
-                shipment.getId(),
-                shipment.getShipmentNumber(),
-                "Recepcion de envio en kiosko",
-                sizeKeyForInventory);
         kioscoInventoryService.registrarEntradaDesdeIntegracion(
                 shipment.getLocationId(),
                 detail.getProductId(),
@@ -3800,54 +3773,6 @@ public class ProductDistributionService {
                 sizeKeyForInventory,
                 lineRef,
                 detail.getHardwareCondition());
-        BigDecimal after = productInventoryService
-                .getInventoryByProductAndLocationAndColor(
-                        detail.getProductId(), shipment.getLocationId(), detail.getColorId())
-                .getQuantity();
-
-        productInventoryService.recordProductMovementIfAbsent(
-                detail.getProductId(),
-                shipment.getLocationId(),
-                detail.getColorId(),
-                "TRANSFER_IN",
-                qtyReceived,
-                before,
-                after,
-                null,
-                "SHIPMENT",
-                shipment.getId(),
-                lineRef,
-                "Recepcion de envio en kiosko"
-        );
-    }
-
-    private void backfillReceiptKardexForDetail(
-            ProductShipmentEntity shipment,
-            ProductShipmentDetailEntity detail,
-            BigDecimal qtyReceived,
-            String lineRef) throws ResourceNotFoundException {
-        BigDecimal current = productInventoryService
-                .getInventoryByProductAndLocationAndColor(
-                        detail.getProductId(), shipment.getLocationId(), detail.getColorId())
-                .getQuantity();
-        if (current == null) {
-            current = BigDecimal.ZERO;
-        }
-        // Inventory qty already reflects the kiosco ENTRADA sync; only record the missing kardex row.
-        productInventoryService.recordProductMovementIfAbsent(
-                detail.getProductId(),
-                shipment.getLocationId(),
-                detail.getColorId(),
-                "TRANSFER_IN",
-                qtyReceived,
-                current.subtract(qtyReceived),
-                current,
-                null,
-                "SHIPMENT",
-                shipment.getId(),
-                lineRef,
-                "Recepcion de envio en kiosko"
-        );
     }
 
     private void applyReceiptPackingItemsToKioskStock(
@@ -3986,67 +3911,10 @@ public class ProductDistributionService {
         String lineRef = shipmentPackingLineReference(shipment, materialId);
         boolean kioscoApplied = kioscoInventoryService.hasShipmentReceiptLineApplied(
                 shipment.getLocationId(), shipment.getId(), lineRef);
-        boolean kardexApplied = productInventoryService.hasProductKardexMovement(
-                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
-                product.getId(), shipment.getLocationId(), null, lineRef);
-
-        if (kioscoApplied && kardexApplied) {
-            return;
-        }
         if (kioscoApplied) {
-            BigDecimal current = productInventoryService
-                    .getInventoryByProductAndLocationAndColor(
-                            product.getId(), shipment.getLocationId(), null)
-                    .getQuantity();
-            if (current == null) {
-                current = BigDecimal.ZERO;
-            }
-            productInventoryService.recordProductMovementIfAbsent(
-                    product.getId(),
-                    shipment.getLocationId(),
-                    null,
-                    "TRANSFER_IN",
-                    qtyReceived,
-                    current.subtract(qtyReceived),
-                    current,
-                    null,
-                    "SHIPMENT",
-                    shipment.getId(),
-                    lineRef,
-                    "Recepcion de empaque SUM- en kiosko");
-            return;
-        }
-        if (kardexApplied) {
-            if (!kioscoInventoryService.hasShipmentReceiptLineApplied(
-                    shipment.getLocationId(), shipment.getId(), lineRef)) {
-                kioscoInventoryService.registrarEntradaDesdeIntegracion(
-                        shipment.getLocationId(),
-                        product.getId(),
-                        null,
-                        qtyReceived,
-                        shipment.getId(),
-                        securityUtil.getCurrentUserId(),
-                        null,
-                        lineRef);
-            }
             return;
         }
 
-        BigDecimal before = productInventoryService
-                .getInventoryByProductAndLocationAndColor(
-                        product.getId(), shipment.getLocationId(), null)
-                .getQuantity();
-        productInventoryService.incrementInventory(
-                product.getId(),
-                shipment.getLocationId(),
-                null,
-                qtyReceived,
-                null,
-                "SHIPMENT",
-                shipment.getId(),
-                shipment.getShipmentNumber(),
-                "Recepcion de empaque SUM- en kiosko",
-                null);
         kioscoInventoryService.registrarEntradaDesdeIntegracion(
                 shipment.getLocationId(),
                 product.getId(),
@@ -4056,23 +3924,6 @@ public class ProductDistributionService {
                 securityUtil.getCurrentUserId(),
                 null,
                 lineRef);
-        BigDecimal after = productInventoryService
-                .getInventoryByProductAndLocationAndColor(
-                        product.getId(), shipment.getLocationId(), null)
-                .getQuantity();
-        productInventoryService.recordProductMovementIfAbsent(
-                product.getId(),
-                shipment.getLocationId(),
-                null,
-                "TRANSFER_IN",
-                qtyReceived,
-                before,
-                after,
-                null,
-                "SHIPMENT",
-                shipment.getId(),
-                lineRef,
-                "Recepcion de empaque SUM- en kiosko");
     }
 
     private Optional<ProductEntity> resolvePackagingProductFromMaterial(Long materialId) {
@@ -4486,7 +4337,7 @@ public class ProductDistributionService {
         return size == null ? "" : size.trim().toUpperCase();
     }
 
-    private String persistShipmentHardware(Long locationId, Long productId, String raw)
+    private String persistShipmentHardware(Long locationId, Long productId, String raw, String size)
             throws BusinessException, ResourceNotFoundException {
         if (productId == null) {
             return ProductHardwareCondition.normalizeStockDimension(raw);
@@ -4495,7 +4346,7 @@ public class ProductDistributionService {
         ProductEntity product = productRepository.findById(productId)
                 .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
         if (KioskPosMode.isEntrecueros(location)) {
-            return KioscoStockDimension.resolve(location, product, raw, false);
+            return KioscoStockDimension.resolve(location, product, raw, false, size);
         }
         String hardware = ProductHardwareCondition.normalize(raw);
         return hardware != null ? hardware : "";
@@ -4504,7 +4355,8 @@ public class ProductDistributionService {
     private String inferShipmentHardware(
             LocationEntity dest,
             ProductEntity product,
-            ProductionOrderItemEntity item
+            ProductionOrderItemEntity item,
+            String size
     ) {
         if (dest == null || product == null || !KioskPosMode.isEntrecueros(dest)) {
             return "";
@@ -4518,9 +4370,7 @@ public class ProductDistributionService {
             if (audience != null) {
                 return audience;
             }
-            return Boolean.TRUE.equals(product.getCinchoForKids())
-                    ? ProductCinchoAudience.NINO
-                    : null;
+            return ProductCinchoAudience.fromSize(size);
         }
         if (kind == KioscoStockDimension.Kind.WALLET) {
             return ProductHardwareCondition.resolveWalletDimension(item.getBrandName());

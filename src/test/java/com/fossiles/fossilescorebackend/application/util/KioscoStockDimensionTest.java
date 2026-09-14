@@ -20,7 +20,16 @@ class KioscoStockDimensionTest {
     }
 
     private static ProductEntity cincho() {
-        return ProductEntity.builder().id(1L).code("N-113-JR").name("Cincho casual").cinchoType("CASUAL").build();
+        return ProductEntity.builder().id(1L).code("N-113").name("Cincho casual").cinchoType("CASUAL").build();
+    }
+
+    private static ProductEntity kidsCincho() {
+        return ProductEntity.builder()
+                .id(5L)
+                .code("N-113-JR")
+                .name("Cincho junior")
+                .cinchoType("CASUAL")
+                .build();
     }
 
     private static ProductEntity wallet() {
@@ -44,17 +53,41 @@ class KioscoStockDimensionTest {
     }
 
     @Test
-    void entreCuerosCincho_requiresAudience() throws Exception {
+    void entreCuerosAdultCincho_doesNotUseAudience() throws Exception {
+        assertThat(KioscoStockDimension.kind(entreCueros(), cincho()))
+                .isEqualTo(KioscoStockDimension.Kind.NONE);
+        assertThat(KioscoStockDimension.resolve(entreCueros(), cincho(), "NUEVO", false))
+                .isEqualTo("NUEVO");
         assertThat(KioscoStockDimension.resolve(entreCueros(), cincho(), "nino", false))
+                .isEqualTo("NUEVO");
+    }
+
+    @Test
+    void entreCuerosKidsCincho_requiresAudience() throws Exception {
+        assertThat(KioscoStockDimension.resolve(entreCueros(), kidsCincho(), "nino", false))
                 .isEqualTo("NINO");
-        assertThatThrownBy(() -> KioscoStockDimension.resolve(entreCueros(), cincho(), "NUEVO", false))
+        assertThat(KioscoStockDimension.resolve(entreCueros(), kidsCincho(), "dama", false))
+                .isEqualTo("DAMA");
+        assertThatThrownBy(() -> KioscoStockDimension.resolve(entreCueros(), kidsCincho(), "NUEVO", false))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("Niño o Dama");
     }
 
     @Test
-    void entreCuerosCincho_allowsResidualOnOutflow() throws Exception {
-        assertThat(KioscoStockDimension.resolve(entreCueros(), cincho(), "NUEVO", true))
+    void entreCuerosJrCincho_infersAudienceFromSizeOnReceipt() throws Exception {
+        assertThat(KioscoStockDimension.kind(entreCueros(), kidsCincho()))
+                .isEqualTo(KioscoStockDimension.Kind.PARA);
+        assertThat(KioscoStockDimension.resolve(entreCueros(), kidsCincho(), "NUEVO", false, "28"))
+                .isEqualTo("NINO");
+        assertThat(KioscoStockDimension.resolve(entreCueros(), kidsCincho(), null, false, "30"))
+                .isEqualTo("DAMA");
+        assertThat(KioscoStockDimension.resolve(entreCueros(), kidsCincho(), "", false, "32"))
+                .isEqualTo("DAMA");
+    }
+
+    @Test
+    void entreCuerosKidsCincho_allowsResidualOnOutflow() throws Exception {
+        assertThat(KioscoStockDimension.resolve(entreCueros(), kidsCincho(), "NUEVO", true))
                 .isEqualTo("NUEVO");
     }
 

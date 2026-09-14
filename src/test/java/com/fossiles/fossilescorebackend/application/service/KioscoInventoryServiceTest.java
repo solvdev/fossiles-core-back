@@ -168,9 +168,8 @@ class KioscoInventoryServiceTest {
         KioscoStockResponse response = service.registrarEntrada(locationId, productId, colorId, 3, 123L, userId);
 
         assertThat(response.getCurrentStock()).isEqualTo(8);
-        verify(productInventoryService).incrementInventory(
-                eq(productId), eq(locationId), eq(colorId), eq(new BigDecimal("3")),
-                eq(null), eq("KIOSCO_INVENTORY"), eq(null), eq(null), any(), eq(null));
+        verify(productInventoryService, never()).incrementInventory(
+                anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -301,9 +300,8 @@ class KioscoInventoryServiceTest {
         KioscoStockResponse response = service.registrarVenta(locationId, productId, colorId, 3, 777L, userId);
 
         assertThat(response.getCurrentStock()).isEqualTo(7);
-        verify(productInventoryService).decrementInventory(
-                eq(productId), eq(locationId), eq(colorId), eq(new BigDecimal("3")),
-                eq("KIOSCO_INVENTORY"), eq(null), eq(null), any(), eq(null));
+        verify(productInventoryService, never()).decrementInventory(
+                anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test

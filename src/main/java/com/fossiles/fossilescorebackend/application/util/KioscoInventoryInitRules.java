@@ -47,7 +47,22 @@ public final class KioscoInventoryInitRules {
     }
 
     public static boolean isKidsCinchoProduct(ProductEntity product) {
-        return isCinchoProduct(product) && Boolean.TRUE.equals(product.getCinchoForKids());
+        return isCinchoProduct(product)
+                && (Boolean.TRUE.equals(product.getCinchoForKids()) || hasJrCode(product));
+    }
+
+    /** Cinchos junior: el código trae el token JR (p.ej. N-113-JR). */
+    public static boolean hasJrCode(ProductEntity product) {
+        if (product == null || product.getCode() == null || product.getCode().isBlank()) {
+            return false;
+        }
+        String[] parts = product.getCode().toUpperCase(Locale.ROOT).split("[^A-Z0-9]+");
+        for (String part : parts) {
+            if ("JR".equals(part)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static boolean isWalletProduct(ProductEntity product) {
