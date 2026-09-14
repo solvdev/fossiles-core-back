@@ -38,6 +38,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.application.util.EntrecuerosPriceLists;
+import com.fossiles.fossilescorebackend.application.util.EntrecuerosShippingSheet;
 import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
@@ -495,6 +496,10 @@ public class KioskPosService {
             );
         }
 
+        String shippingSheetNumber = entrecueros
+                ? requireEntrecuerosShippingSheet(request.getShippingSheetNumber())
+                : null;
+
         PaymentSnapshot payment = resolvePaymentSnapshot(
                 normalizedPaymentMethod,
                 totalAmount,
@@ -586,6 +591,7 @@ public class KioskPosService {
                 .testSale(isPosTestSale(kiosk))
                 .cashSessionId(openSession.getId())
                 .felStatus(entrecueros && !Boolean.TRUE.equals(request.getRequestInvoice()) ? "SKIPPED" : null)
+                .shippingSheetNumber(shippingSheetNumber)
                 .createdBy(user.getId())
                 .items(new ArrayList<>())
                 .build();
@@ -3664,7 +3670,8 @@ public class KioskPosService {
                 .felNumero(sale.getFelNumero())
                 .felError(sale.getFelError())
                 .felCertifiedAt(sale.getFelCertifiedAt())
-                .internalNumber(invoiceInfo != null ? invoiceInfo.getInternalNumber() : null)
+                .internalNumber(composeSaleInternalNumber(sale, invoiceInfo))
+                .shippingSheetNumber(sale.getShippingSheetNumber())
                 .invoice(invoiceInfo)
                 .depositSlipNumber(sale.getDepositSlipNumber())
                 .depositBank(sale.getDepositBank())
@@ -3985,6 +3992,21 @@ public class KioskPosService {
             throw new BusinessException(
                     "Debe indicar el número de referencia de la transferencia o depósito.");
         }
+    }
+
+    private String requireEntrecuerosShippingSheet(String raw) throws BusinessException {
+        String value = EntrecuerosShippingSheet.normalize(raw);
+        if (value == null) {
+            throw new BusinessException("En Entre Cueros debe indicar el número de hoja de envío.");
+        }
+        return value;
+    }
+
+    private String composeSaleInternalNumber(
+            KioskSaleEntity sale, KioskPosSaleResponse.InvoiceInfo invoiceInfo) {
+        String invoiceInternal = invoiceInfo != null ? invoiceInfo.getInternalNumber() : null;
+        return EntrecuerosShippingSheet.composeInternalNumber(
+                invoiceInternal, sale != null ? sale.getShippingSheetNumber() : null);
     }
 
     private String normalizeTaxId(String value) {
@@ -4779,9 +4801,11 @@ public class KioskPosService {
             KioskSaleEntity linkedSale = kioskSaleRepository.findById(entity.getKioskSaleId()).orElse(null);
             if (linkedSale != null) {
                 saleNumber = linkedSale.getSaleNumber();
-                if (linkedSale.getInvoiceId() != null) {
-                    internalNumber = taxInvoiceService.getInternalNumber(linkedSale.getInvoiceId());
-                }
+                String invoiceInternal = linkedSale.getInvoiceId() != null
+                        ? taxInvoiceService.getInternalNumber(linkedSale.getInvoiceId())
+                        : null;
+                internalNumber = EntrecuerosShippingSheet.composeInternalNumber(
+                        invoiceInternal, linkedSale.getShippingSheetNumber());
             }
         }
         return KioskCashExpenseResponse.builder()
@@ -4949,15 +4973,20 @@ public class KioskPosService {
         if (sale.getInvoiceId() != null && invoicesById.containsKey(sale.getInvoiceId())) {
             String internal = safeTrim(invoicesById.get(sale.getInvoiceId()).getInternalNumber());
             if (!internal.isBlank()) {
-                return internal;
+                return EntrecuerosShippingSheet.composeInternalNumber(internal, sale.getShippingSheetNumber());
             }
         }
         String serie = safeTrim(sale.getFelSerie());
         String numero = safeTrim(sale.getFelNumero());
+        String felLabel = "";
         if (!serie.isBlank() && !numero.isBlank()) {
-            return serie + "-" + numero;
+            felLabel = serie + "-" + numero;
+        } else {
+            felLabel = (serie + " " + numero).trim();
         }
-        return (serie + " " + numero).trim();
+        return EntrecuerosShippingSheet.composeInternalNumber(
+                felLabel.isBlank() ? null : felLabel,
+                sale.getShippingSheetNumber());
     }
 
     static BigDecimal resolveCardAmountForReport(KioskSaleEntity sale) {

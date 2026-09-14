@@ -60,6 +60,8 @@ public class KioskPosSaleRequest {
     private Boolean requestInvoice;
     /** Cobrar precio de catálogo sin descuento POS ni promoción. */
     private Boolean chargeWithoutDiscount;
+    /** Número de hoja de envío (Entrecueros). */
+    private String shippingSheetNumber;
 
     @NotEmpty(message = "Debes agregar al menos un producto.")
     @Valid
