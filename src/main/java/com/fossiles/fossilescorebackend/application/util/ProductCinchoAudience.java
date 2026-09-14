@@ -44,6 +44,34 @@ public final class ProductCinchoAudience {
         return null;
     }
 
+    /** En recepción JR: talla menor a 30 es Niño; 30 o mayor es Dama. */
+    public static String fromSize(String sizeKey) {
+        Integer size = parseSize(sizeKey);
+        if (size == null) {
+            return null;
+        }
+        return size >= 30 ? DAMA : NINO;
+    }
+
+    private static Integer parseSize(String sizeKey) {
+        if (sizeKey == null || sizeKey.isBlank()) {
+            return null;
+        }
+        String digits = sizeKey.trim();
+        int i = 0;
+        while (i < digits.length() && Character.isDigit(digits.charAt(i))) {
+            i++;
+        }
+        if (i == 0) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(digits.substring(0, i));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
     private static String stripDiacritics(String value) {
         return Normalizer.normalize(value, Normalizer.Form.NFD).replaceAll("\\p{M}+", "");
     }

@@ -22,4 +22,14 @@ class ProductCinchoAudienceTest {
         assertThat(ProductCinchoAudience.label("niña")).isEqualTo("Dama");
         assertThat(ProductCinchoAudience.label("dama")).isEqualTo("Dama");
     }
+
+    @Test
+    void fromSize_splitsNinoAndDamaAt30() {
+        assertThat(ProductCinchoAudience.fromSize("16")).isEqualTo("NINO");
+        assertThat(ProductCinchoAudience.fromSize("28")).isEqualTo("NINO");
+        assertThat(ProductCinchoAudience.fromSize("30")).isEqualTo("DAMA");
+        assertThat(ProductCinchoAudience.fromSize("32")).isEqualTo("DAMA");
+        assertThat(ProductCinchoAudience.fromSize(null)).isNull();
+        assertThat(ProductCinchoAudience.fromSize("NUEVO")).isNull();
+    }
 }

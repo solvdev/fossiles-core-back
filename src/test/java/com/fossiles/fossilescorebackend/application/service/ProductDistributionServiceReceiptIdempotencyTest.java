@@ -119,24 +119,18 @@ class ProductDistributionServiceReceiptIdempotencyTest {
     }
 
     @Test
-    void applyReceipt_normalOnce_appliesKioscoAndKardex() throws Exception {
+    void applyReceipt_normalOnce_appliesKioscoOnly() throws Exception {
         when(kioscoInventoryService.hasShipmentReceiptLineApplied(locationId, shipmentId, lineRef)).thenReturn(false);
-        when(productInventoryService.hasProductKardexMovement(
-                "SHIPMENT", shipmentId, "TRANSFER_IN", productId, locationId, colorId, lineRef))
-                .thenReturn(false);
 
         invokeApplyReceipt(new BigDecimal("5"));
 
         verify(kioscoInventoryService).registrarEntradaDesdeIntegracion(
                 eq(locationId), eq(productId), eq(colorId), eq(new BigDecimal("5")),
                 eq(shipmentId), eq(userId), isNull(), eq(lineRef), isNull());
-        verify(productInventoryService).incrementInventory(
-                eq(productId), eq(locationId), eq(colorId), eq(new BigDecimal("5")),
-                isNull(), eq("SHIPMENT"), eq(shipmentId), eq("ENV-1"), any(), isNull());
-        verify(productInventoryService).recordProductMovementIfAbsent(
-                eq(productId), eq(locationId), eq(colorId), eq("TRANSFER_IN"),
-                eq(new BigDecimal("5")), any(), any(), isNull(),
-                eq("SHIPMENT"), eq(shipmentId), eq(lineRef), any());
+        verify(productInventoryService, never()).incrementInventory(
+                anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(productInventoryService, never()).recordProductMovementIfAbsent(
+                anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -157,11 +151,8 @@ class ProductDistributionServiceReceiptIdempotencyTest {
     }
 
     @Test
-    void applyReceipt_kioscoOkKardexMissing_onlyBackfillsKardex() throws Exception {
+    void applyReceipt_kioscoAlreadyApplied_isNoOp() throws Exception {
         when(kioscoInventoryService.hasShipmentReceiptLineApplied(locationId, shipmentId, lineRef)).thenReturn(true);
-        when(productInventoryService.hasProductKardexMovement(
-                "SHIPMENT", shipmentId, "TRANSFER_IN", productId, locationId, colorId, lineRef))
-                .thenReturn(false);
 
         invokeApplyReceipt(new BigDecimal("5"));
 
@@ -169,10 +160,8 @@ class ProductDistributionServiceReceiptIdempotencyTest {
                 anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any());
         verify(productInventoryService, never()).incrementInventory(
                 anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
-        verify(productInventoryService).recordProductMovementIfAbsent(
-                eq(productId), eq(locationId), eq(colorId), eq("TRANSFER_IN"),
-                eq(new BigDecimal("5")), any(), any(), isNull(),
-                eq("SHIPMENT"), eq(shipmentId), eq(lineRef), any());
+        verify(productInventoryService, never()).recordProductMovementIfAbsent(
+                anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test

@@ -28,8 +28,11 @@ public final class KioscoStockDimension {
         if (!KioskPosMode.isEntrecueros(location)) {
             return Kind.HERRAJE;
         }
-        if (KioscoInventoryInitRules.isCinchoProduct(product)) {
+        if (KioscoInventoryInitRules.isKidsCinchoProduct(product)) {
             return Kind.PARA;
+        }
+        if (KioscoInventoryInitRules.isCinchoProduct(product)) {
+            return Kind.NONE;
         }
         if (KioscoInventoryInitRules.isWalletProduct(product)) {
             return Kind.WALLET;
@@ -45,6 +48,16 @@ public final class KioscoStockDimension {
             ProductEntity product,
             String raw,
             boolean allowResidual
+    ) throws BusinessException {
+        return resolve(location, product, raw, allowResidual, null);
+    }
+
+    public static String resolve(
+            LocationEntity location,
+            ProductEntity product,
+            String raw,
+            boolean allowResidual,
+            String sizeKey
     ) throws BusinessException {
         Kind kind = kind(location, product);
         if (kind == Kind.NONE) {
@@ -67,6 +80,9 @@ public final class KioscoStockDimension {
         }
         if (kind == Kind.PARA) {
             String audience = ProductCinchoAudience.normalize(raw);
+            if (audience == null) {
+                audience = ProductCinchoAudience.fromSize(sizeKey);
+            }
             if (audience == null) {
                 throw new BusinessException("En Entre Cueros indique si el cincho es Niño o Dama.");
             }

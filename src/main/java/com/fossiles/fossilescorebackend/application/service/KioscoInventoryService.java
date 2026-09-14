@@ -1,6 +1,5 @@
 package com.fossiles.fossilescorebackend.application.service;
 
-import com.fossiles.fossilescorebackend.application.dto.request.ProductInventoryLocationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryCambioRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoInventoryTrasladoRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoConsolidatedReportResponse;
@@ -116,7 +115,6 @@ public class KioscoInventoryService {
             from = idx + 1;
         }
     }
-    private static final String REFERENCE_KIOSCO_INVENTORY = "KIOSCO_INVENTORY";
     private static final String ADMIN_MOVEMENT_MUTATION_KEY = "app.kiosco_movement_admin_mutation";
 
     private final KioscoStockRepository kioscoStockRepository;
@@ -170,7 +168,7 @@ public class KioscoInventoryService {
             String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
         return registrarEntradaInternal(
-                locationId, productId, colorId, quantity, referenceId, userId, true, sizeKey, null,
+                locationId, productId, colorId, quantity, referenceId, userId, false, sizeKey, null,
                 resolveLocationHardware(locationId, productId, hardwareCondition, false));
     }
 
@@ -208,7 +206,7 @@ public class KioscoInventoryService {
             String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
         return registrarVentaInternal(
-                locationId, productId, colorId, quantity, invoiceId, userId, true, sizeKey,
+                locationId, productId, colorId, quantity, invoiceId, userId, false, sizeKey,
                 resolveLocationHardware(locationId, productId, hardwareCondition, true));
     }
 
@@ -793,10 +791,20 @@ public class KioscoInventoryService {
             String raw,
             boolean allowResidual
     ) throws BusinessException, ResourceNotFoundException {
+        return resolveLocationHardware(locationId, productId, raw, allowResidual, null);
+    }
+
+    private String resolveLocationHardware(
+            Long locationId,
+            Long productId,
+            String raw,
+            boolean allowResidual,
+            String sizeKey
+    ) throws BusinessException, ResourceNotFoundException {
         LocationEntity location = locationRepository.findById(locationId).orElse(null);
         ProductEntity product = productRepository.findById(productId)
                 .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
-        return KioscoStockDimension.resolve(location, product, raw, allowResidual);
+        return KioscoStockDimension.resolve(location, product, raw, allowResidual, sizeKey);
     }
 
     /**
@@ -1564,7 +1572,6 @@ public class KioscoInventoryService {
             saveMovement(savedStock, KioscoMovementType.AJUSTE, Math.abs(delta), before, targetTotal,
                     null, reason.trim(), true, resolvedUserId, null, null);
 
-            syncLegacyInventoryToTargetSizes(locationId, productId, colorId, targetSizes);
             if (delta < 0) {
                 verificarStockMinimo(locationId, productId, colorId);
             }
@@ -1586,7 +1593,6 @@ public class KioscoInventoryService {
         saveMovement(savedStock, KioscoMovementType.AJUSTE, Math.abs(delta), before, after,
                 null, reason.trim(), true, resolvedUserId, null, null);
 
-        syncLegacyInventory(locationId, productId, colorId, delta, null);
         if (delta < 0) {
             verificarStockMinimo(locationId, productId, colorId);
         }
@@ -1671,7 +1677,7 @@ public class KioscoInventoryService {
                 last = applyStockMovement(
                         locationId, productId, colorId, delta, null, null, null,
                         resolvedUserId, KioscoMovementType.ENTRADA, delta, true,
-                        trimmedReason, entry.getKey(), true, null, null, hardware);
+                        trimmedReason, entry.getKey(), false, null, null, hardware);
             }
             for (Map.Entry<String, Integer> entry : deltasBySize.entrySet()) {
                 int delta = entry.getValue();
@@ -1682,11 +1688,10 @@ public class KioscoInventoryService {
                 last = applyStockMovement(
                         locationId, productId, colorId, qty, null, null, null,
                         resolvedUserId, KioscoMovementType.MERMA, -qty, true,
-                        trimmedReason, entry.getKey(), true, null, null, hardware);
+                        trimmedReason, entry.getKey(), false, null, null, hardware);
                 decreased = true;
             }
 
-            syncLegacyInventoryToTargetSizes(locationId, productId, colorId, normalizedTargetSizes);
             if (decreased) {
                 verificarStockMinimo(locationId, productId, colorId);
             }
@@ -1704,13 +1709,13 @@ public class KioscoInventoryService {
             return applyStockMovement(
                     locationId, productId, colorId, delta, null, null, null,
                     resolvedUserId, KioscoMovementType.ENTRADA, delta, true,
-                    trimmedReason, null, true, null, null, hardware);
+                    trimmedReason, null, false, null, null, hardware);
         }
         int qty = -delta;
         KioscoStockResponse response = applyStockMovement(
                 locationId, productId, colorId, qty, null, null, null,
                 resolvedUserId, KioscoMovementType.MERMA, -qty, true,
-                trimmedReason, null, true, null, null, hardware);
+                trimmedReason, null, false, null, null, hardware);
         verificarStockMinimo(locationId, productId, colorId);
         return response;
     }
@@ -1882,7 +1887,7 @@ public class KioscoInventoryService {
                 false,
                 null,
                 null,
-                resolveLocationHardware(destinationLocationId, productId, hardwareCondition, false)
+                resolveLocationHardware(destinationLocationId, productId, hardwareCondition, false, sizeKey)
         );
         return response;
     }
@@ -3899,40 +3904,8 @@ public class KioscoInventoryService {
                 locationId, productId, colorId, userId, hardware);
     }
 
-    private void syncLegacyInventory(Long locationId, Long productId, Long colorId, int delta, String sizeKey)
-            throws BusinessException, ResourceNotFoundException {
-        if (delta == 0) {
-            return;
-        }
-        BigDecimal qty = BigDecimal.valueOf(Math.abs(delta));
-        String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
-        String sizeForLegacy = normalizedSize.isEmpty() ? null : normalizedSize;
-        if (delta > 0) {
-            productInventoryService.incrementInventoryIsolated(
-                    productId,
-                    locationId,
-                    colorId,
-                    qty,
-                    null,
-                    REFERENCE_KIOSCO_INVENTORY,
-                    null,
-                    null,
-                    "Sincronización desde módulo kiosco",
-                    sizeForLegacy
-            );
-            return;
-        }
-        productInventoryService.decrementInventoryIsolated(
-                productId,
-                locationId,
-                colorId,
-                qty,
-                REFERENCE_KIOSCO_INVENTORY,
-                null,
-                null,
-                "Sincronización desde módulo kiosco",
-                sizeForLegacy
-        );
+    /** Kiosko solo vive en kiosco_stock; ya no se replica a product_inventory_location. */
+    private void syncLegacyInventory(Long locationId, Long productId, Long colorId, int delta, String sizeKey) {
     }
 
     private void validateLocationIsKiosk(Long locationId) throws ResourceNotFoundException, BusinessException {
@@ -4811,15 +4784,7 @@ public class KioscoInventoryService {
             Long productId,
             Long colorId,
             Map<String, BigDecimal> targetSizes
-    ) throws BusinessException, ResourceNotFoundException {
-        BigDecimal total = ProductInventorySizesJson.sum(targetSizes);
-        productInventoryService.createOrUpdateInventoryIsolated(ProductInventoryLocationRequest.builder()
-                .productId(productId)
-                .locationId(locationId)
-                .colorId(colorId)
-                .quantity(total)
-                .sizes(new LinkedHashMap<>(targetSizes))
-                .build());
+    ) {
     }
 
     /**
@@ -4849,28 +4814,8 @@ public class KioscoInventoryService {
         }
     }
 
-    /** Fuerza inventario legacy al stock actual del módulo kiosco. */
-    private void alignLegacyInventoryToKioscoStock(KioscoStockEntity stock)
-            throws BusinessException, ResourceNotFoundException {
-        if (stock == null) {
-            return;
-        }
-        Map<String, BigDecimal> sizes = ProductInventorySizesJson.parse(stock.getSizesData());
-        if (!sizes.isEmpty()) {
-            syncLegacyInventoryToTargetSizes(
-                    stock.getLocationId(),
-                    stock.getProductId(),
-                    stock.getColorId(),
-                    sizes
-            );
-            return;
-        }
-        productInventoryService.createOrUpdateInventoryIsolated(ProductInventoryLocationRequest.builder()
-                .productId(stock.getProductId())
-                .locationId(stock.getLocationId())
-                .colorId(stock.getColorId())
-                .quantity(BigDecimal.valueOf(safeInt(stock.getCurrentStock())))
-                .build());
+    /** Kiosko solo vive en kiosco_stock; ya no se replica a product_inventory_location. */
+    private void alignLegacyInventoryToKioscoStock(KioscoStockEntity stock) {
     }
 
     @lombok.Data

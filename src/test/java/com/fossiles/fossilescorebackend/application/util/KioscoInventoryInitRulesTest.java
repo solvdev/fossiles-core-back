@@ -71,11 +71,17 @@ class KioscoInventoryInitRulesTest {
     }
 
     @Test
-    void kidsCinchoProduct_requiresCinchoAndKidsFlag() {
+    void kidsCinchoProduct_requiresCinchoAndKidsFlagOrJrCode() {
         ProductEntity kids = ProductEntity.builder()
                 .code("FOSS-KIDS")
                 .cinchoType("CASUAL")
                 .cinchoForKids(true)
+                .build();
+        ProductEntity jr = ProductEntity.builder()
+                .code("N-113-JR")
+                .name("Cincho junior")
+                .cinchoType("CASUAL")
+                .cinchoForKids(false)
                 .build();
         ProductEntity wallet = ProductEntity.builder()
                 .code("BILL-001")
@@ -84,6 +90,8 @@ class KioscoInventoryInitRulesTest {
                 .build();
 
         assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(kids)).isTrue();
+        assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(jr)).isTrue();
+        assertThat(KioscoInventoryInitRules.hasJrCode(jr)).isTrue();
         assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(wallet)).isFalse();
     }
 
