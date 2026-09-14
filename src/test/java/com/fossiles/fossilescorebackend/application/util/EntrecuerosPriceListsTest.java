@@ -69,4 +69,32 @@ class EntrecuerosPriceListsTest {
         assertThat(EntrecuerosPriceLists.resolveUnitPrice(cardholder, "SINTETICO:NAUTICA", new BigDecimal("3")))
                 .isEqualByComparingTo("6.00");
     }
+
+    @Test
+    void dozenOrHalfDozenUnlocksLowestPriceOnOtherProducts() {
+        ProductEntity cincho = ProductEntity.builder()
+                .name("Cincho casual")
+                .cinchoType("CASUAL")
+                .build();
+        ProductEntity wallet = ProductEntity.builder()
+                .name("Billetera clasica")
+                .build();
+
+        assertThat(EntrecuerosPriceLists.unlocksWholesale(java.util.Map.of(
+                "CASUAL", new BigDecimal("12")))).isTrue();
+        assertThat(EntrecuerosPriceLists.unlocksWholesale(java.util.Map.of(
+                "CASUAL", new BigDecimal("6")))).isTrue();
+        assertThat(EntrecuerosPriceLists.unlocksWholesale(java.util.Map.of(
+                "CASUAL", new BigDecimal("5")))).isFalse();
+
+        BigDecimal walletQty = EntrecuerosPriceLists.quantityForPrice(BigDecimal.ONE, true);
+        assertThat(EntrecuerosPriceLists.resolveUnitPrice(wallet, "LEVIS", walletQty))
+                .isEqualByComparingTo("55.00");
+        assertThat(EntrecuerosPriceLists.resolveUnitPrice(wallet, "LEVIS", BigDecimal.ONE))
+                .isEqualByComparingTo("100.00");
+
+        BigDecimal cinchoQty = EntrecuerosPriceLists.quantityForPrice(BigDecimal.ONE, true);
+        assertThat(EntrecuerosPriceLists.resolveUnitPrice(cincho, "NUEVO", cinchoQty))
+                .isEqualByComparingTo("75.00");
+    }
 }

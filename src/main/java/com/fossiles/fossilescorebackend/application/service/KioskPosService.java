@@ -38,6 +38,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.application.util.EntrecuerosPriceLists;
+import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
@@ -372,13 +373,15 @@ public class KioskPosService {
                     continue;
                 }
                 ProductEntity volumeProduct = productRepository.findById(itemRequest.getProductId()).orElse(null);
-                String volumeHardware = resolveItemHardwareCondition(itemRequest.getHardwareCondition());
-                qtyByPriceKey.merge(
-                        EntrecuerosPriceLists.volumeKey(itemRequest.getProductId(), volumeProduct, volumeHardware),
-                        itemRequest.getQuantity(),
-                        BigDecimal::add);
+                addEntrecuerosVolumeQty(
+                        qtyByPriceKey,
+                        itemRequest.getProductId(),
+                        volumeProduct,
+                        resolveItemHardwareCondition(itemRequest.getHardwareCondition()),
+                        itemRequest.getQuantity());
             }
         }
+        boolean wholesaleUnlocked = entrecueros && EntrecuerosPriceLists.unlocksWholesale(qtyByPriceKey);
 
         for (KioskPosSaleRequest.ItemRequest itemRequest : request.getItems()) {
             if (itemRequest == null || itemRequest.getProductId() == null) {
@@ -431,12 +434,8 @@ public class KioskPosService {
             }
 
             BigDecimal unitPrice = entrecueros
-                    ? EntrecuerosPriceLists.resolveUnitPrice(
-                            product,
-                            hardware,
-                            qtyByPriceKey.getOrDefault(
-                                    EntrecuerosPriceLists.volumeKey(product.getId(), product, hardware),
-                                    quantity))
+                    ? resolveEntrecuerosLineUnitPrice(
+                            product, hardware, quantity, qtyByPriceKey, wholesaleUnlocked)
                     : resolvePosUnitPrice(product, sizeLabel);
             // Línea con precio editado (Miraflores): monto final, sin descuento sobre esa línea.
             boolean finalUnitPrice = false;
@@ -2568,6 +2567,41 @@ public class KioskPosService {
         return product != null && !isPackagingProduct(product);
     }
 
+    private void addEntrecuerosVolumeQty(
+            Map<String, BigDecimal> qtyByPriceKey,
+            Long productId,
+            ProductEntity product,
+            String hardware,
+            BigDecimal quantity
+    ) {
+        if (product != null && KioscoInventoryInitRules.isPackagingProduct(product)) {
+            return;
+        }
+        qtyByPriceKey.merge(
+                EntrecuerosPriceLists.volumeKey(productId, product, hardware),
+                quantity,
+                BigDecimal::add);
+    }
+
+    private BigDecimal resolveEntrecuerosLineUnitPrice(
+            ProductEntity product,
+            String hardware,
+            BigDecimal lineQty,
+            Map<String, BigDecimal> qtyByPriceKey,
+            boolean wholesaleUnlocked
+    ) {
+        if (KioscoInventoryInitRules.isPackagingProduct(product)) {
+            return EntrecuerosPriceLists.resolveUnitPrice(product, hardware, lineQty);
+        }
+        BigDecimal ownQty = qtyByPriceKey.getOrDefault(
+                EntrecuerosPriceLists.volumeKey(product.getId(), product, hardware),
+                lineQty);
+        return EntrecuerosPriceLists.resolveUnitPrice(
+                product,
+                hardware,
+                EntrecuerosPriceLists.quantityForPrice(ownQty, wholesaleUnlocked));
+    }
+
     private List<PreparedLine> buildPreparedLinesForEstimate(
             LocationEntity kiosk,
             List<KioskPosPromotionEstimateRequest.ItemRequest> items
@@ -2580,13 +2614,15 @@ public class KioskPosService {
                     continue;
                 }
                 ProductEntity volumeProduct = productRepository.findById(itemRequest.getProductId()).orElse(null);
-                String volumeHardware = resolveItemHardwareCondition(itemRequest.getHardwareCondition());
-                qtyByPriceKey.merge(
-                        EntrecuerosPriceLists.volumeKey(itemRequest.getProductId(), volumeProduct, volumeHardware),
-                        itemRequest.getQuantity(),
-                        BigDecimal::add);
+                addEntrecuerosVolumeQty(
+                        qtyByPriceKey,
+                        itemRequest.getProductId(),
+                        volumeProduct,
+                        resolveItemHardwareCondition(itemRequest.getHardwareCondition()),
+                        itemRequest.getQuantity());
             }
         }
+        boolean wholesaleUnlocked = entrecueros && EntrecuerosPriceLists.unlocksWholesale(qtyByPriceKey);
         List<PreparedLine> preparedLines = new ArrayList<>();
         for (KioskPosPromotionEstimateRequest.ItemRequest itemRequest : items) {
             if (itemRequest == null || itemRequest.getProductId() == null) {
@@ -2606,12 +2642,8 @@ public class KioskPosService {
             String sizeLabel = ProductInventorySizesJson.normalizeKey(itemRequest.getSize());
             String hardware = resolveItemHardwareCondition(itemRequest.getHardwareCondition());
             BigDecimal unitPrice = entrecueros
-                    ? EntrecuerosPriceLists.resolveUnitPrice(
-                            product,
-                            hardware,
-                            qtyByPriceKey.getOrDefault(
-                                    EntrecuerosPriceLists.volumeKey(product.getId(), product, hardware),
-                                    quantity))
+                    ? resolveEntrecuerosLineUnitPrice(
+                            product, hardware, quantity, qtyByPriceKey, wholesaleUnlocked)
                     : resolvePosUnitPrice(product, sizeLabel);
             BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
             preparedLines.add(new PreparedLine(
