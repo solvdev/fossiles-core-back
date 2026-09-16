@@ -592,6 +592,39 @@ public class InventoryService {
     }
 
     /**
+     * Kardex público: últimos movimientos, sin lotes FIFO (el escaneo móvil no los usa).
+     */
+    public List<MaterialInventoryKardexResponse> getPublicMaterialKardex(Long materialId) {
+        return getPublicMaterialKardexPage(materialId, 0, 100).getContent();
+    }
+
+    /**
+     * Kardex público paginado. Sin FIFO ni N+1 por renglón.
+     */
+    public MaterialInventoryKardexPageResponse getPublicMaterialKardexPage(Long materialId, int page, int size) {
+        int pageSize = Math.min(Math.max(size, 1), 100);
+        int pageIndex = Math.max(page, 0);
+        Pageable pageable = PageRequest.of(pageIndex, pageSize, Sort.by(Sort.Direction.DESC, "movementDate"));
+        Page<MaterialInventoryKardex> result =
+                materialInventoryKardexRepository.findByMaterialIdOrderByMovementDateDesc(materialId, pageable);
+        MaterialEntity material = materialRepository.findById(materialId).orElse(null);
+        String uomCode = material != null ? resolveMaterialUomCode(material) : null;
+        String uomName = material != null ? resolveMaterialUomName(material) : null;
+        List<MaterialInventoryKardexResponse> content = result.getContent().stream()
+                .map(row -> toPublicMaterialKardexResponse(row, material, uomCode, uomName))
+                .collect(Collectors.toList());
+        return MaterialInventoryKardexPageResponse.builder()
+                .content(content)
+                .totalElements(result.getTotalElements())
+                .totalPages(result.getTotalPages())
+                .size(result.getSize())
+                .number(result.getNumber())
+                .first(result.isFirst())
+                .last(result.isLast())
+                .build();
+    }
+
+    /**
      * Kardex paginado por material (más recientes primero). Tamaño máximo de página: 100.
      */
     public MaterialInventoryKardexPageResponse getMaterialKardexPage(Long materialId, int page, int size) {
@@ -1495,7 +1528,7 @@ public class InventoryService {
                         .fechaEntrada(batch.getEntryDate())
                         .cantidad(batch.getQuantityAvailable())
                         .costoUnitario(batch.getUnitCost())
-                        .total(batch.getQuantityAvailable().multiply(batch.getUnitCost()))
+                        .total(safeMultiply(batch.getQuantityAvailable(), batch.getUnitCost()))
                         .build())
                 .collect(Collectors.toList());
 
@@ -1527,6 +1560,67 @@ public class InventoryService {
                 .totalSalida(totalSalida)
                 .lotesFifo(lotesFifo)
                 .build();
+    }
+
+    private MaterialInventoryKardexResponse toPublicMaterialKardexResponse(
+            MaterialInventoryKardex entity,
+            MaterialEntity material,
+            String uomCode,
+            String uomName) {
+        BigDecimal cantidadEntrada = null;
+        BigDecimal costoUnitarioEntrada = null;
+        BigDecimal totalEntrada = null;
+        BigDecimal cantidadSalida = null;
+        BigDecimal costoUnitarioSalida = null;
+        BigDecimal totalSalida = null;
+
+        if (entity.getQuantity() != null) {
+            if (entity.getQuantity().compareTo(BigDecimal.ZERO) >= 0) {
+                cantidadEntrada = entity.getQuantity();
+                costoUnitarioEntrada = entity.getUnitCost();
+                totalEntrada = entity.getTotalCost();
+            } else {
+                cantidadSalida = entity.getQuantity().abs();
+                costoUnitarioSalida = entity.getUnitCost();
+                totalSalida = entity.getTotalCost();
+            }
+        }
+
+        return MaterialInventoryKardexResponse.builder()
+                .id(entity.getId())
+                .materialId(entity.getMaterialId())
+                .materialSku(material != null ? material.getSku() : null)
+                .materialName(material != null ? material.getName() : null)
+                .uomCode(uomCode)
+                .uomName(uomName)
+                .movementType(entity.getMovementType())
+                .quantity(entity.getQuantity())
+                .quantityBefore(entity.getQuantityBefore())
+                .quantityAfter(entity.getQuantityAfter())
+                .unitCost(entity.getUnitCost())
+                .totalCost(entity.getTotalCost())
+                .referenceType(entity.getReferenceType())
+                .referenceId(entity.getReferenceId())
+                .referenceNumber(entity.getReferenceNumber())
+                .description(entity.getDescription())
+                .movementDate(entity.getMovementDate())
+                .createdAt(entity.getCreatedAt())
+                .createdBy(entity.getCreatedBy())
+                .cantidadEntrada(cantidadEntrada)
+                .costoUnitarioEntrada(costoUnitarioEntrada)
+                .totalEntrada(totalEntrada)
+                .cantidadSalida(cantidadSalida)
+                .costoUnitarioSalida(costoUnitarioSalida)
+                .totalSalida(totalSalida)
+                .lotesFifo(List.of())
+                .build();
+    }
+
+    private static BigDecimal safeMultiply(BigDecimal left, BigDecimal right) {
+        if (left == null || right == null) {
+            return null;
+        }
+        return left.multiply(right);
     }
 
     private String resolveUomCode(Long uomId) {

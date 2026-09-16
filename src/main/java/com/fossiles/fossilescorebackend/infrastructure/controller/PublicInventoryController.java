@@ -30,8 +30,8 @@ public class PublicInventoryController {
     }
 
     /**
-     * Sin {@code page} ni {@code size}: lista completa (compatibilidad con clientes existentes).
-     * Con cualquiera de los dos parámetros: respuesta paginada ({@code content}, {@code totalElements}, etc.).
+     * Con {@code page}/{@code size}: página de movimientos (sin lotes FIFO).
+     * Sin esos parámetros: últimos 100 movimientos (array, para apps viejas).
      */
     @GetMapping("/{materialId}/kardex")
     public ResponseEntity<?> getMaterialKardex(
@@ -41,9 +41,9 @@ public class PublicInventoryController {
         if (page != null || size != null) {
             int p = page != null ? page : 0;
             int s = size != null ? size : 30;
-            return ResponseEntity.ok(inventoryService.getMaterialKardexPage(materialId, p, s));
+            return ResponseEntity.ok(inventoryService.getPublicMaterialKardexPage(materialId, p, s));
         }
-        return ResponseEntity.ok(inventoryService.getMaterialKardex(materialId));
+        return ResponseEntity.ok(inventoryService.getPublicMaterialKardex(materialId));
     }
 
     @PostMapping("/{materialId}/movements")
