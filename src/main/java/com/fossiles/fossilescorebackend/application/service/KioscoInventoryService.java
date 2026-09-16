@@ -1055,7 +1055,7 @@ public class KioscoInventoryService {
 
     /**
      * Cambio: ingreso del producto devuelto ({@code CAMBIO +} → Comp.) y egreso del entregado
-     * ({@code CAMBIO −} → Sal. en kardex). Ambos movimientos son tipo CAMBIO; el signo define entrada/salida.
+     * ({@code CAMBIO −} → Sal. en kardex, o {@code VENTA} si hay diferencia cobrada).
      * Stock fuente de verdad: módulo kiosco (no legacy). Herraje del egreso = el indicado o el que tenga
      * disponibilidad (NUEVO → VIEJO), igual que ventas POS.
      */
@@ -1203,6 +1203,7 @@ public class KioscoInventoryService {
 
     /**
      * Un ingreso del producto devuelto + N egresos de productos entregados.
+     * Sin diferencia: egreso {@code CAMBIO −} (Sal.). Con diferencia cobrada: egreso {@code VENTA}.
      */
     public CambioResult registrarCambioMulti(
             Long locationId,
@@ -1216,6 +1217,36 @@ public class KioscoInventoryService {
             String reason,
             Long userId,
             String physicalSlipNumber
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarCambioMulti(
+                locationId,
+                returnedProductId,
+                returnedColorId,
+                returnedQuantity,
+                returnedSize,
+                returnedHardwareCondition,
+                givenLines,
+                referenceId,
+                reason,
+                userId,
+                physicalSlipNumber,
+                false
+        );
+    }
+
+    public CambioResult registrarCambioMulti(
+            Long locationId,
+            Long returnedProductId,
+            Long returnedColorId,
+            Integer returnedQuantity,
+            String returnedSize,
+            String returnedHardwareCondition,
+            List<CambioGivenLine> givenLines,
+            Long referenceId,
+            String reason,
+            Long userId,
+            String physicalSlipNumber,
+            boolean givenAsVenta
     ) throws BusinessException, ResourceNotFoundException {
         Long resolvedUserId = resolveUserIdRequired(userId);
         validateLocationIsKiosk(locationId);
@@ -1283,7 +1314,7 @@ public class KioscoInventoryService {
                     null,
                     null,
                     resolvedUserId,
-                    KioscoMovementType.CAMBIO,
+                    givenAsVenta ? KioscoMovementType.VENTA : KioscoMovementType.CAMBIO,
                     -line.getQuantity(),
                     true,
                     reasonOrNull,
@@ -4842,7 +4873,7 @@ public class KioscoInventoryService {
         private Long returnedMovementId;
         /** Primer egreso (compat 1→1). */
         private Long givenMovementId;
-        /** Todos los egresos CAMBIO (−) cuando hay 1→N. */
+        /** Todos los egresos del entregado (CAMBIO − o VENTA) cuando hay 1→N. */
         private java.util.List<Long> givenMovementIds;
     }
 

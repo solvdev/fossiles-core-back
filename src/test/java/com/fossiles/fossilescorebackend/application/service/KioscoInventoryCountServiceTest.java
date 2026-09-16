@@ -64,6 +64,8 @@ class KioscoInventoryCountServiceTest {
     @Mock
     private KioscoInventoryService kioscoInventoryService;
     @Mock
+    private KioskExchangeService kioskExchangeService;
+    @Mock
     private KioscoStockRepository kioscoStockRepository;
     @Mock
     private KioskExchangeSlipRepository exchangeSlipRepository;
