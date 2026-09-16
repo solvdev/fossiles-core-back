@@ -43,6 +43,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,14 +52,17 @@ import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class KioskExchangeService {
 
     private static final String SLIP_TYPE_EXCHANGE = "EXCHANGE";
@@ -173,6 +177,83 @@ public class KioskExchangeService {
         return toSlipResponse(slip, ctx);
     }
 
+    /**
+     * Egresos de boletas con diferencia que quedaron como CAMBIO/DEVOLUCION_A_CLIENTE
+     * se recategorizan a VENTA para que el conteo físico los muestre en Ventas.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int reclassifyDifferenceExchangeGivenAsVenta() {
+        List<KioskExchangeSlipEntity> slips = exchangeSlipRepository.findCompletedExchangesWithDifference();
+        int updated = 0;
+        List<String> recategorized = new ArrayList<>();
+        for (KioskExchangeSlipEntity slip : slips) {
+            int n = reclassifyGivenMovementsOfSlip(slip);
+            if (n > 0) {
+                updated += n;
+                recategorized.add(slip.getSlipNumber() + "×" + n);
+            }
+        }
+        if (updated > 0) {
+            kioscoMovementRepository.flush();
+            log.info(
+                    "KIOSK_EXCHANGE_GIVEN_AS_VENTA updated={} slips={}",
+                    updated,
+                    recategorized);
+        }
+        return updated;
+    }
+
+    private int reclassifyGivenMovementsOfSlip(KioskExchangeSlipEntity slip) {
+        Set<Long> movementIds = new LinkedHashSet<>();
+        if (slip.getGivenMovementId() != null) {
+            movementIds.add(slip.getGivenMovementId());
+        }
+        if (slip.getId() != null) {
+            for (KioskExchangeSlipGivenItemEntity item :
+                    exchangeSlipGivenItemRepository.findByExchangeSlipIdOrderByLineNoAsc(slip.getId())) {
+                if (item != null && item.getGivenMovementId() != null) {
+                    movementIds.add(item.getGivenMovementId());
+                }
+            }
+        }
+        if (movementIds.isEmpty() && !safeTrim(slip.getSlipNumber()).isEmpty()) {
+            List<Long> locationIds = resolveLocationIdsForSeries(slip.getSeriesCode(), slip.getKioskLocationId());
+            for (KioscoMovementEntity movement : kioscoMovementRepository
+                    .findByPhysicalSlipNumberAndKioscoStock_LocationIdIn(slip.getSlipNumber(), locationIds)) {
+                if (isDifferenceGivenOutflow(movement)) {
+                    movementIds.add(movement.getId());
+                }
+            }
+        }
+        int updated = 0;
+        for (Long movementId : movementIds) {
+            if (movementId == null) {
+                continue;
+            }
+            KioscoMovementEntity movement = kioscoMovementRepository.findById(movementId).orElse(null);
+            if (!isDifferenceGivenOutflow(movement)) {
+                continue;
+            }
+            movement.setMovementType(KioscoMovementType.VENTA);
+            kioscoMovementRepository.save(movement);
+            updated++;
+        }
+        return updated;
+    }
+
+    private static boolean isDifferenceGivenOutflow(KioscoMovementEntity movement) {
+        if (movement == null || movement.getMovementType() == null) {
+            return false;
+        }
+        if (movement.getMovementType() != KioscoMovementType.CAMBIO
+                && movement.getMovementType() != KioscoMovementType.DEVOLUCION_A_CLIENTE) {
+            return false;
+        }
+        return movement.getStockAfter() != null
+                && movement.getStockBefore() != null
+                && movement.getStockAfter() < movement.getStockBefore();
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public KioskExchangeSlipResponse rejectExchange(Long slipId, Long kioskLocationId, KioskExchangeRejectRequest request)
             throws BusinessException, ResourceNotFoundException {
@@ -273,7 +354,7 @@ public class KioskExchangeService {
                 .items(saleItems)
                 .build();
 
-        // Factura/caja de la diferencia sin VENTA de stock; el egreso va como CAMBIO (−).
+        // Factura/caja de la diferencia; el stock del entregado se registra como VENTA al finalizar.
         KioskPosSaleResponse sale = kioskPosService.createExchangeSale(saleRequest, slipNumber);
 
         return finalizeExchangeWithStock(
@@ -372,7 +453,9 @@ public class KioskExchangeService {
                 slip.getId(),
                 cambioReason,
                 user.getId(),
-                slipNumber
+                slipNumber,
+                preview.getDifferenceAmount() != null
+                        && preview.getDifferenceAmount().compareTo(BigDecimal.ZERO) > 0
         );
         slip.setReturnMovementId(cambio.getReturnedMovementId());
         slip.setGivenMovementId(cambio.getGivenMovementId());
@@ -447,7 +530,7 @@ public class KioskExchangeService {
                 slip.setReturnMovementId(movement.getId());
             } else if (movement.getMovementType() == KioscoMovementType.DEVOLUCION_A_CLIENTE
                     || movement.getMovementType() == KioscoMovementType.VENTA) {
-                // Legado: egresos de cambio previos a tipificar ambos como CAMBIO.
+                // Egreso del entregado: VENTA si hubo diferencia; DEVOLUCION_A_CLIENTE es legado.
                 slip.setGivenMovementId(movement.getId());
             }
         }

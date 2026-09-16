@@ -99,6 +99,7 @@ public class KioscoInventoryCountService {
     private final KioscoPhysicalCountPresenceRepository presenceRepository;
     private final KioscoNotificationRecipientRepository notificationRecipientRepository;
     private final KioscoInventoryService kioscoInventoryService;
+    private final KioskExchangeService kioskExchangeService;
     private final KioscoStockRepository kioscoStockRepository;
     private final KioskExchangeSlipRepository exchangeSlipRepository;
     private final LocationRepository locationRepository;
@@ -471,6 +472,7 @@ public class KioscoInventoryCountService {
 
     private KioscoPhysicalCountReportResponse buildReport(KioscoPhysicalCountEntity count, LocalDateTime balanceAsOfInclusive)
             throws BusinessException, ResourceNotFoundException {
+        kioskExchangeService.reclassifyDifferenceExchangeGivenAsVenta();
         boolean isSubcount = balanceAsOfInclusive != null;
         LocalDateTime periodFromAt = resolvePeriodFromAt(count);
         LocalDateTime periodToAt = resolvePeriodToAt(count);

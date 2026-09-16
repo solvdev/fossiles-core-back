@@ -359,7 +359,7 @@ public class KioskPosService {
         }
 
         Map<String, BigDecimal> aggregatedQty = aggregateItemQuantities(request.getItems());
-        // Cambio: no valida/descuenta stock aquí (lo mueven CAMBIO + / CAMBIO −; empaque solo factura).
+        // Cambio: no valida/descuenta stock aquí (lo mueve la boleta: CAMBIO + y VENTA o CAMBIO −).
         if (!exchangeSale) {
             lockAndValidateStock(kiosk.getId(), aggregatedQty);
         }
@@ -620,7 +620,7 @@ public class KioskPosService {
         for (Map.Entry<String, BigDecimal> entry : aggregatedQty.entrySet()) {
             ParsedInventoryKey parsed = parseInventoryKey(entry.getKey());
             BigDecimal qty = entry.getValue();
-            // Cambio: el stock lo mueven CAMBIO + / CAMBIO −; la venta solo factura la diferencia.
+            // Cambio: POS no mueve stock. El entregado con diferencia queda VENTA al finalizar la boleta.
             if (exchangeSale) {
                 continue;
             }

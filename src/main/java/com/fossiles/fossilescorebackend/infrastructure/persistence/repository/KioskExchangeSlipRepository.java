@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -36,4 +37,10 @@ public interface KioskExchangeSlipRepository extends JpaRepository<KioskExchange
             Long kioskLocationId,
             Long physicalCountId
     );
+
+    @Query("SELECT s FROM KioskExchangeSlipEntity s "
+            + "WHERE UPPER(s.slipType) = 'EXCHANGE' "
+            + "AND UPPER(s.status) = 'COMPLETED' "
+            + "AND s.differenceAmount IS NOT NULL AND s.differenceAmount > 0")
+    List<KioskExchangeSlipEntity> findCompletedExchangesWithDifference();
 }
