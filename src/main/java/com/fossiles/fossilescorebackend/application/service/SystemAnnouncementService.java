@@ -197,6 +197,11 @@ public class SystemAnnouncementService {
                         .data(data));
             } catch (Exception e) {
                 deadEmitters.add(emitter);
+                try {
+                    emitter.complete();
+                } catch (Exception ignored) {
+                    // El socket ya está cerrado.
+                }
             }
         }
 
