@@ -178,29 +178,34 @@ public class KioskExchangeService {
     }
 
     /**
-     * Egresos de boletas con diferencia que quedaron como CAMBIO/DEVOLUCION_A_CLIENTE
-     * se recategorizan a VENTA para que el conteo físico los muestre en Ventas.
+     * Egresos de boletas de cambio que quedaron como VENTA se recategorizan a CAMBIO
+     * para que el conteo físico los muestre en Comp./Ent. (ingreso) y Vtas./Sal. (egreso).
      */
     @Transactional(rollbackFor = Exception.class)
-    public int reclassifyDifferenceExchangeGivenAsVenta() {
-        List<KioskExchangeSlipEntity> slips = exchangeSlipRepository.findCompletedExchangesWithDifference();
-        int updated = 0;
-        List<String> recategorized = new ArrayList<>();
-        for (KioskExchangeSlipEntity slip : slips) {
-            int n = reclassifyGivenMovementsOfSlip(slip);
-            if (n > 0) {
-                updated += n;
-                recategorized.add(slip.getSlipNumber() + "×" + n);
+    public int reclassifyExchangeGivenAsCambio() {
+        kioscoInventoryService.enableAdminMovementMutation();
+        try {
+            List<KioskExchangeSlipEntity> slips = exchangeSlipRepository.findCompletedExchanges();
+            int updated = 0;
+            List<String> recategorized = new ArrayList<>();
+            for (KioskExchangeSlipEntity slip : slips) {
+                int n = reclassifyGivenMovementsOfSlip(slip);
+                if (n > 0) {
+                    updated += n;
+                    recategorized.add(slip.getSlipNumber() + "×" + n);
+                }
             }
+            if (updated > 0) {
+                kioscoMovementRepository.flush();
+                log.info(
+                        "KIOSK_EXCHANGE_GIVEN_AS_CAMBIO updated={} slips={}",
+                        updated,
+                        recategorized);
+            }
+            return updated;
+        } finally {
+            kioscoInventoryService.disableAdminMovementMutation();
         }
-        if (updated > 0) {
-            kioscoMovementRepository.flush();
-            log.info(
-                    "KIOSK_EXCHANGE_GIVEN_AS_VENTA updated={} slips={}",
-                    updated,
-                    recategorized);
-        }
-        return updated;
     }
 
     private int reclassifyGivenMovementsOfSlip(KioskExchangeSlipEntity slip) {
@@ -220,7 +225,7 @@ public class KioskExchangeService {
             List<Long> locationIds = resolveLocationIdsForSeries(slip.getSeriesCode(), slip.getKioskLocationId());
             for (KioscoMovementEntity movement : kioscoMovementRepository
                     .findByPhysicalSlipNumberAndKioscoStock_LocationIdIn(slip.getSlipNumber(), locationIds)) {
-                if (isDifferenceGivenOutflow(movement)) {
+                if (isExchangeGivenOutflowToReclassify(movement)) {
                     movementIds.add(movement.getId());
                 }
             }
@@ -231,21 +236,21 @@ public class KioskExchangeService {
                 continue;
             }
             KioscoMovementEntity movement = kioscoMovementRepository.findById(movementId).orElse(null);
-            if (!isDifferenceGivenOutflow(movement)) {
+            if (!isExchangeGivenOutflowToReclassify(movement)) {
                 continue;
             }
-            movement.setMovementType(KioscoMovementType.VENTA);
+            movement.setMovementType(KioscoMovementType.CAMBIO);
             kioscoMovementRepository.save(movement);
             updated++;
         }
         return updated;
     }
 
-    private static boolean isDifferenceGivenOutflow(KioscoMovementEntity movement) {
+    private static boolean isExchangeGivenOutflowToReclassify(KioscoMovementEntity movement) {
         if (movement == null || movement.getMovementType() == null) {
             return false;
         }
-        if (movement.getMovementType() != KioscoMovementType.CAMBIO
+        if (movement.getMovementType() != KioscoMovementType.VENTA
                 && movement.getMovementType() != KioscoMovementType.DEVOLUCION_A_CLIENTE) {
             return false;
         }
@@ -453,9 +458,7 @@ public class KioskExchangeService {
                 slip.getId(),
                 cambioReason,
                 user.getId(),
-                slipNumber,
-                preview.getDifferenceAmount() != null
-                        && preview.getDifferenceAmount().compareTo(BigDecimal.ZERO) > 0
+                slipNumber
         );
         slip.setReturnMovementId(cambio.getReturnedMovementId());
         slip.setGivenMovementId(cambio.getGivenMovementId());

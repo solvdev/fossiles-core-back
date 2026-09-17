@@ -40,6 +40,11 @@ public interface KioskExchangeSlipRepository extends JpaRepository<KioskExchange
 
     @Query("SELECT s FROM KioskExchangeSlipEntity s "
             + "WHERE UPPER(s.slipType) = 'EXCHANGE' "
+            + "AND UPPER(s.status) = 'COMPLETED'")
+    List<KioskExchangeSlipEntity> findCompletedExchanges();
+
+    @Query("SELECT s FROM KioskExchangeSlipEntity s "
+            + "WHERE UPPER(s.slipType) = 'EXCHANGE' "
             + "AND UPPER(s.status) = 'COMPLETED' "
             + "AND s.differenceAmount IS NOT NULL AND s.differenceAmount > 0")
     List<KioskExchangeSlipEntity> findCompletedExchangesWithDifference();

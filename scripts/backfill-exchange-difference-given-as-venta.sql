@@ -1,4 +1,7 @@
--- Recategoriza SOLO egresos de boletas de cambio CON diferencia (difference_amount > 0).
+-- NO EJECUTAR. Quedó invertido por scripts/backfill-exchange-given-as-cambio.sql
+-- (egresos de boleta de cambio deben ser CAMBIO, no VENTA).
+--
+-- Recategorizaba SOLO egresos de boletas de cambio CON diferencia (difference_amount > 0).
 -- Sin diferencia / saldo a favor: se quedan como CAMBIO (Salida).
 -- El producto devuelto (CAMBIO +) no se toca.
 
