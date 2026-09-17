@@ -18,6 +18,8 @@ import com.fossiles.fossilescorebackend.application.util.KioscoStockDimension;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.InventoryTransfer;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipGivenItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
@@ -30,6 +32,8 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.InventoryTransferRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipGivenItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
@@ -120,6 +124,8 @@ public class KioscoInventoryService {
     private final KioscoStockRepository kioscoStockRepository;
     private final KioscoStockProvisioningService kioscoStockProvisioningService;
     private final KioscoMovementRepository kioscoMovementRepository;
+    private final KioskExchangeSlipRepository kioskExchangeSlipRepository;
+    private final KioskExchangeSlipGivenItemRepository kioskExchangeSlipGivenItemRepository;
     private final LocationRepository locationRepository;
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
@@ -1054,8 +1060,8 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Cambio: ingreso del producto devuelto ({@code CAMBIO +} → Comp./Ent.) y egreso del entregado
-     * ({@code CAMBIO −} → Vtas./Sal.).
+     * Cambio: ingreso del producto devuelto y egreso del entregado.
+     * En conteo: sin diferencia de precio → Ent./Sal.; con diferencia → Comp./Vtas.
      * Stock fuente de verdad: módulo kiosco (no legacy). Herraje del egreso = el indicado o el que tenga
      * disponibilidad (NUEVO → VIEJO), igual que ventas POS.
      */
@@ -1202,8 +1208,7 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Un ingreso del producto devuelto ({@code CAMBIO +} → Comp./Ent.) + N egresos
-     * de productos entregados ({@code CAMBIO −} → Vtas./Sal.).
+     * Un ingreso del producto devuelto ({@code CAMBIO +}) + N egresos del entregado ({@code CAMBIO −}).
      */
     public CambioResult registrarCambioMulti(
             Long locationId,
@@ -2360,6 +2365,7 @@ public class KioscoInventoryService {
         LocalDateTime endCutoffExclusive = balanceCutoffExclusive != null ? balanceCutoffExclusive : toExclusive;
         Map<Long, Integer> initialBalanceByStockId = computeBalanceByStockId(locationId, fromInclusive);
         Map<Long, Integer> endBalanceByStockId = computeBalanceByStockId(locationId, endCutoffExclusive);
+        PricedExchangeIndex pricedExchanges = loadPricedExchangeIndex(locationId);
 
         Map<Long, KardexAccumulator> accByStockId = new LinkedHashMap<>();
         for (KioscoMovementEntity m : collectPeriodMovements(locationId, fromInclusive, toExclusive, physicalCountId)) {
@@ -2371,7 +2377,7 @@ public class KioscoInventoryService {
                 continue;
             }
             accByStockId.computeIfAbsent(m.getKioscoStockId(), k -> new KardexAccumulator())
-                    .apply(m.getMovementType(), delta);
+                    .apply(m.getMovementType(), delta, pricedExchanges.matches(m));
         }
 
         List<KioscoKardexReportResponse.KioscoKardexRow> rows = new ArrayList<>();
@@ -2468,6 +2474,7 @@ public class KioscoInventoryService {
         // stockId -> shipmentIds relacionados a ENTRADAs (con o sin talla) para desglosar desde el envío.
         Map<Long, Set<Long>> shipmentIdsByStock = new LinkedHashMap<>();
         Map<String, Long> shipmentIdByNumberCache = new HashMap<>();
+        PricedExchangeIndex pricedExchanges = loadPricedExchangeIndex(locationId);
         for (KioscoMovementEntity m : collectPeriodMovements(locationId, fromInclusive, toExclusive, physicalCountId)) {
             if (m.getKioscoStockId() == null || !Boolean.TRUE.equals(m.getAffectsStock())) {
                 continue;
@@ -2480,7 +2487,7 @@ public class KioscoInventoryService {
             accByStockAndSize
                     .computeIfAbsent(m.getKioscoStockId(), k -> new LinkedHashMap<>())
                     .computeIfAbsent(sizeKey, k -> new KardexAccumulator())
-                    .apply(m.getMovementType(), delta);
+                    .apply(m.getMovementType(), delta, pricedExchanges.matches(m));
 
             // Cualquier ENTRADA ligada a envío: el reporte puede usar product_shipment_detail.
             if (m.getMovementType() == KioscoMovementType.ENTRADA && delta > 0) {
@@ -2554,6 +2561,72 @@ public class KioscoInventoryService {
             return false;
         }
         return createdAt.isBefore(toDtExclusive);
+    }
+
+    /**
+     * Boletas de cambio con diferencia de precio en este kiosko.
+     * El kardex usa Comp./Vtas. para esos movimientos; el resto de CAMBIO va a Ent./Sal.
+     */
+    private PricedExchangeIndex loadPricedExchangeIndex(Long locationId) {
+        if (locationId == null) {
+            return PricedExchangeIndex.empty();
+        }
+        List<KioskExchangeSlipEntity> slips = kioskExchangeSlipRepository
+                .findPricedExchangesByKioskLocationId(locationId);
+        if (slips == null || slips.isEmpty()) {
+            return PricedExchangeIndex.empty();
+        }
+        Set<Long> movementIds = new HashSet<>();
+        Set<Long> slipIds = new HashSet<>();
+        Set<String> slipNumbers = new HashSet<>();
+        for (KioskExchangeSlipEntity slip : slips) {
+            if (slip == null) {
+                continue;
+            }
+            if (slip.getId() != null) {
+                slipIds.add(slip.getId());
+            }
+            String number = slip.getSlipNumber() == null ? "" : slip.getSlipNumber().trim();
+            if (!number.isEmpty()) {
+                slipNumbers.add(number);
+            }
+            if (slip.getReturnMovementId() != null) {
+                movementIds.add(slip.getReturnMovementId());
+            }
+            if (slip.getGivenMovementId() != null) {
+                movementIds.add(slip.getGivenMovementId());
+            }
+        }
+        if (!slipIds.isEmpty()) {
+            for (KioskExchangeSlipGivenItemEntity item : kioskExchangeSlipGivenItemRepository.findByExchangeSlipIdIn(slipIds)) {
+                if (item != null && item.getGivenMovementId() != null) {
+                    movementIds.add(item.getGivenMovementId());
+                }
+            }
+        }
+        return new PricedExchangeIndex(movementIds, slipIds, slipNumbers);
+    }
+
+    private record PricedExchangeIndex(Set<Long> movementIds, Set<Long> slipIds, Set<String> slipNumbers) {
+        static PricedExchangeIndex empty() {
+            return new PricedExchangeIndex(Set.of(), Set.of(), Set.of());
+        }
+
+        boolean matches(KioscoMovementEntity movement) {
+            if (movement == null) {
+                return false;
+            }
+            if (movement.getId() != null && movementIds.contains(movement.getId())) {
+                return true;
+            }
+            if (movement.getReferenceId() != null && slipIds.contains(movement.getReferenceId())) {
+                return true;
+            }
+            String slipNumber = movement.getPhysicalSlipNumber() == null
+                    ? ""
+                    : movement.getPhysicalSlipNumber().trim();
+            return !slipNumber.isEmpty() && slipNumbers.contains(slipNumber);
+        }
     }
 
     /**
@@ -3034,7 +3107,7 @@ public class KioscoInventoryService {
         private int cambioIn;
         private int cambioOut;
 
-        void apply(KioscoMovementType type, int delta) {
+        void apply(KioscoMovementType type, int delta, boolean pricedCambio) {
             switch (type) {
                 case AJUSTE -> {
                     if (delta > 0) {
@@ -3076,10 +3149,16 @@ public class KioscoInventoryService {
                     }
                 }
                 case CAMBIO -> {
-                    if (delta > 0) {
-                        comprasAjustes += delta;
+                    if (pricedCambio) {
+                        if (delta > 0) {
+                            comprasAjustes += delta;
+                        } else {
+                            ventas += -delta;
+                        }
+                    } else if (delta > 0) {
+                        entradas += delta;
                     } else {
-                        ventas += -delta;
+                        salida += -delta;
                     }
                 }
             }
