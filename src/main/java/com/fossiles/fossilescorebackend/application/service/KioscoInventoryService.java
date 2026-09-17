@@ -2729,9 +2729,9 @@ public class KioscoInventoryService {
         public final int salida;
         /** Solo devoluciones a bodega / reintegros (para cuadrar conteo si aún están en piso). */
         public final int salidaDevolucion;
-        /** CAMBIO+ ya incluido en Comp. y Ent.; se resta una vez en {@link #netDelta()}. */
+        /** Reservado: CAMBIO ingreso va solo a Comp.; no se duplica en Ent. */
         public final int cambioIn;
-        /** CAMBIO− ya incluido en Vtas. y Sal.; se suma una vez en {@link #netDelta()}. */
+        /** Reservado: CAMBIO egreso va solo a Vtas.; no se duplica en Sal. */
         public final int cambioOut;
 
         private SizeKardexBucket(
@@ -2791,13 +2791,8 @@ public class KioscoInventoryService {
                     && ventas == 0 && anulacionVenta == 0 && salida == 0 && salidaDevolucion == 0;
         }
 
-        /**
-         * Neto del periodo. Comp.+Ent. de un CAMBIO+ y Vtas.+Sal. de un CAMBIO− se muestran
-         * en ambas columnas, pero el Fin. cuenta cada cantidad una sola vez.
-         */
         public int netDelta() {
-            return comprasAjustes - anulacionCompras + entradas - ventas + anulacionVenta - salida
-                    - cambioIn + cambioOut;
+            return comprasAjustes - anulacionCompras + entradas - ventas + anulacionVenta - salida;
         }
 
         public SizeKardexBucket plus(int comprasDelta, int anulacionComprasDelta, int entradasDelta,
@@ -3083,21 +3078,15 @@ public class KioscoInventoryService {
                 case CAMBIO -> {
                     if (delta > 0) {
                         comprasAjustes += delta;
-                        entradas += delta;
-                        cambioIn += delta;
                     } else {
-                        int qty = -delta;
-                        ventas += qty;
-                        salida += qty;
-                        cambioOut += qty;
+                        ventas += -delta;
                     }
                 }
             }
         }
 
         int applyTo(int initial) {
-            return initial + comprasAjustes - anulacionCompras + entradas - ventas + anulacionVenta - salida
-                    - cambioIn + cambioOut;
+            return initial + comprasAjustes - anulacionCompras + entradas - ventas + anulacionVenta - salida;
         }
 
         boolean isEmpty() {
