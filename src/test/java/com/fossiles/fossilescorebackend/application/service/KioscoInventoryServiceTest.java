@@ -761,7 +761,7 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
-    void kardex_boletaCambio_seReflejaEnCompraEntradaYVentaSalida_sinDuplicarFin() throws Exception {
+    void kardex_boletaCambio_ingresoEnCompraYEgresoEnVenta_sinEntradaNiSalida() throws Exception {
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId))
                 .thenReturn(List.of(stockEntity(0, 0)));
 
@@ -794,16 +794,16 @@ class KioscoInventoryServiceTest {
         KioscoKardexReportResponse.KioscoKardexRow row = report.getRows().get(0);
         assertThat(row.getInventarioInicial()).isEqualTo(10);
         assertThat(row.getComprasAjustes()).isEqualTo(1);
-        assertThat(row.getEntradas()).isEqualTo(1);
+        assertThat(row.getEntradas()).isEqualTo(0);
         assertThat(row.getVentas()).isEqualTo(1);
-        assertThat(row.getSalida()).isEqualTo(1);
-        assertThat(row.getCambioIn()).isEqualTo(1);
-        assertThat(row.getCambioOut()).isEqualTo(1);
+        assertThat(row.getSalida()).isEqualTo(0);
+        assertThat(row.getCambioIn()).isEqualTo(0);
+        assertThat(row.getCambioOut()).isEqualTo(0);
         assertThat(row.getInventarioFinal()).isEqualTo(10);
-        assertThat(KioscoInventoryService.SizeKardexBucket.of(2, 0, 2, 0, 0, 0, 0, 2, 0).netDelta())
-                .isEqualTo(2);
-        assertThat(KioscoInventoryService.SizeKardexBucket.of(0, 0, 0, 3, 0, 3, 0, 0, 3).netDelta())
-                .isEqualTo(-3);
+        assertThat(KioscoInventoryService.SizeKardexBucket.of(1, 0, 0, 0, 0, 0).netDelta())
+                .isEqualTo(1);
+        assertThat(KioscoInventoryService.SizeKardexBucket.of(0, 0, 0, 1, 0, 0).netDelta())
+                .isEqualTo(-1);
     }
 
     @Test
