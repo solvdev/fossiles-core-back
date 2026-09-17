@@ -69,6 +69,12 @@ public final class ProductionPlanningConstants {
     /**
      * Familia para cola/prioridad de distribución: OPV / OPK / OPI / OPCK / OPL.
      * {@code null} si no aplica al tablero de prioridad.
+     *
+     * <p><b>No conoce OPD ni los cinchos, y es a propósito.</b> Su único llamador —la cola
+     * de distribución en TaskController— trata el {@code null} como «esta orden no entra a
+     * la cola» y se la salta. Ampliarlo a las siete familias metería distribución y cinchos
+     * en la planificación, que es otra decisión. Para listados y filtros de interfaz está
+     * {@link #orderFamilyLabel}, que sí las cubre.
      */
     public static String distributionFamilyLabel(String orderType, String code) {
         String ot = orderType == null ? "" : orderType.trim();
@@ -84,6 +90,38 @@ public final class ProductionPlanningConstants {
         if (c.startsWith("OPI-")) return "OPI";
         if (c.startsWith("OPCK-")) return "OPCK";
         return null;
+    }
+
+    /**
+     * Familia comercial de la orden, para listados y filtros de interfaz:
+     * OPL | OPK | OPV | OPI | OPCK | OPD | OPC, con el prefijo del código como fallback.
+     *
+     * <p>Cubre las siete familias, incluidas DISTRIBUTION (OPD) y los tres tipos de cincho
+     * (OPC), que {@link #distributionFamilyLabel} deja fuera a propósito.
+     *
+     * <p><b>No sustituye a {@code distributionFamilyLabel}.</b> Aquel devuelve {@code null}
+     * precisamente para las familias que no entran al tablero de prioridad, y su llamador
+     * usa ese {@code null} como filtro para saltarse la orden. Cambiarlo por este metería
+     * las órdenes de distribución y los cinchos en la cola de planificación, que es otra
+     * decisión y no la de un listado.
+     *
+     * @return la familia, o {@code null} si no hay tipo ni código de los que deducirla.
+     */
+    public static String orderFamilyLabel(String orderType, String code) {
+        String ot = orderType == null ? "" : orderType.trim().toUpperCase(Locale.ROOT);
+        switch (ot) {
+            case "VENTA_EN_LINEA": return "OPL";
+            case "NORMAL": return "OPK";
+            case "MARCAS", "OPV": return "OPV";
+            case "INTERNA": return "OPI";
+            case "CLIENTE_KIOSKO": return "OPCK";
+            case "DISTRIBUTION": return "OPD";
+            case "CINCHOS", "CINCHOS_FOSSILES", "CINCHOS_MARCAS": return "OPC";
+            default:
+                String c = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
+                int dash = c.indexOf('-');
+                return dash > 0 ? c.substring(0, dash) : (c.isEmpty() ? null : c);
+        }
     }
 
     /** Solo se trabaja de lunes a viernes: ninguna tarea debe programarse sábado/domingo. */

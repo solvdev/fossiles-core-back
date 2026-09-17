@@ -27,6 +27,39 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     /** Tareas sin mesa pero con fecha (cola / pendiente de asignar). */
     List<TaskEntity> findByDeskIsNullAndScheduledDate(LocalDate scheduledDate);
 
+    /**
+     * OPs que tienen alguna tarea cuyo código contiene el texto buscado.
+     *
+     * El auxiliar busca por el número de su boleta, que es el código de la TAREA.
+     * El listado del organizador solo sabía filtrar por código de OP y cliente, así
+     * que tecleando "TK-03367" no encontraba nada.
+     */
+    @Query("""
+            SELECT DISTINCT t.productionOrderId FROM TaskEntity t
+            WHERE t.productionOrderId IS NOT NULL
+              AND LOWER(t.code) LIKE CONCAT('%', :search, '%')
+            """)
+    List<Long> findProductionOrderIdsByTaskCodeLike(@Param("search") String search);
+
+    /**
+     * "No terminadas": tareas que se empezaron un día anterior y siguen abiertas.
+     *
+     * A las 17:00 la gente se va y lo que quedó IN_PROGRESS se arrastra. No hace falta
+     * estado nuevo ni job: la condición es esta consulta. Conservan su mesa porque nada
+     * se la quita (el `desk` solo se limpia al COMPLETED y al AWAITING_WAREHOUSE).
+     *
+     * Se dejan fuera las AWAITING_WAREHOUSE a propósito: ésas ya terminaron en mesa y
+     * lo que esperan es que bodega reciba la pieza, que es otra cola.
+     */
+    @Query("""
+            SELECT t FROM TaskEntity t
+            WHERE t.status = 'IN_PROGRESS'
+              AND t.scheduledDate IS NOT NULL
+              AND t.scheduledDate < :today
+            ORDER BY t.scheduledDate ASC, t.desk ASC NULLS LAST, t.id
+            """)
+    List<TaskEntity> findUnfinishedCarryOver(@Param("today") LocalDate today);
+
     /** Backlog del organizador: PENDING atrasadas, sin fecha, o sin mesa (aunque la fecha sea hoy). */
     @Query("""
             SELECT t FROM TaskEntity t

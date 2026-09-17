@@ -1,10 +1,9 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import lombok.RequiredArgsConstructor;
@@ -28,8 +27,9 @@ public class TaskDeskBackfillService {
     private static final double MAX_HOURS_PER_DESK_PER_DAY = ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY;
 
     private final TaskRepository taskRepository;
-    private final TaskItemRepository taskItemRepository;
     private final ProductionOrderRepository productionOrderRepository;
+    private final ProductionPlanningLock productionPlanningLock;
+    private final TaskDeskHoursService taskDeskHoursService;
 
     /**
      * @param freedDesk     mesa que queda libre (1..maxDesks)
@@ -47,6 +47,9 @@ public class TaskDeskBackfillService {
         if (!ProductionPlanningConstants.isWorkday(anchorDate)) {
             return; // solo se trabaja lunes a viernes; no rellenar mesas en fin de semana
         }
+        // Mismo turno que el auto-plan: si no, los dos leen la mesa recién liberada
+        // como vacía y los dos le cuelgan trabajo hasta el tope.
+        productionPlanningLock.acquire();
 
         List<TaskEntity> pool = taskRepository.findPendingAndInProgressOrdered();
 
@@ -95,7 +98,7 @@ public class TaskDeskBackfillService {
                 .thenComparingLong(poId -> poId != null ? poId : Long.MAX_VALUE);
 
         Comparator<TaskEntity> withinPoComparator = Comparator
-                .comparing((TaskEntity t) -> -getTaskBaseHours(t))
+                .comparing((TaskEntity t) -> -taskDeskHoursService.baseHours(t))
                 .thenComparing(TaskEntity::getDeliveryDate, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(TaskEntity::getPriority, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(TaskEntity::getId);
@@ -124,7 +127,7 @@ public class TaskDeskBackfillService {
 
                 for (int i = 0; i < list.size(); i++) {
                     TaskEntity cand = list.get(i);
-                    double h = getTaskBaseHours(cand);
+                    double h = taskDeskHoursService.baseHours(cand);
                     boolean oversizedSingle = h > MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
 
                     boolean canOvercap = canOvercapDeskDay; // anchorDate ya es el día ancla del evento
@@ -152,7 +155,7 @@ public class TaskDeskBackfillService {
                 // Como fallback, intentar tareas sin productionOrderId (van al final y nunca pueden sobrepasar tope).
                 for (int i = 0; i < withoutPo.size(); i++) {
                     TaskEntity cand = withoutPo.get(i);
-                    double h = getTaskBaseHours(cand);
+                    double h = taskDeskHoursService.baseHours(cand);
                     boolean oversizedSingle = h > MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
                     boolean fits = (oversizedSingle && load <= 1e-9) || (load + h <= MAX_HOURS_PER_DESK_PER_DAY + 1e-9);
                     if (!fits) continue;
@@ -175,24 +178,6 @@ public class TaskDeskBackfillService {
         }
     }
 
-    private double getTaskBaseHours(TaskEntity task) {
-        if (task == null) return 0.0;
-        if (ProductionPlanningConstants.isOnlineSaleOrder(null, task.getProductionOrderCode())) {
-            return 0.0;
-        }
-        double extra = 0.0;
-        if (task.getId() != null) {
-            extra = taskItemRepository.findByTaskId(task.getId()).stream()
-                    .filter(item -> Boolean.TRUE.equals(item.getDaySaleExtra()))
-                    .map(TaskItemEntity::getEstimatedHours)
-                    .filter(Objects::nonNull)
-                    .mapToDouble(Double::doubleValue)
-                    .sum();
-        }
-        return ProductionPlanningConstants.deskCupoBaseHours(
-                task.getEstimatedHours(), task.getProductionOrderCode(), extra);
-    }
-
     private boolean canOvercapDeskDay(String orderType) {
         return ProductionPlanningConstants.canOvercapDeskDay(orderType);
     }
@@ -202,7 +187,7 @@ public class TaskDeskBackfillService {
                 .filter(t -> "PENDING".equals(t.getStatus()) || "IN_PROGRESS".equals(t.getStatus()))
                 .filter(t -> t.getDesk() != null && t.getDesk().equals(desk))
                 .filter(t -> Objects.equals(t.getScheduledDate(), date))
-                .mapToDouble(this::getTaskBaseHours)
+                .mapToDouble(taskDeskHoursService::baseHours)
                 .sum();
     }
 }
