@@ -17,10 +17,12 @@ public interface KioskSaleItemRepository extends JpaRepository<KioskSaleItemEnti
 
     /**
      * Ventas reales por producto/color/kiosko. Excluye anuladas y ventas de piloto.
+     * Incluye colorName porque hay líneas con color_id distinto o nulo para el mismo color.
      */
     @Query("""
             SELECT i.productId,
                    i.colorId,
+                   i.colorName,
                    s.kioskLocationId,
                    COALESCE(SUM(i.quantity), 0),
                    COALESCE(SUM(i.lineTotal), 0),
@@ -32,7 +34,7 @@ public interface KioskSaleItemRepository extends JpaRepository<KioskSaleItemEnti
               AND s.saleDate >= :startDate
               AND s.saleDate <= :endDate
               AND s.kioskLocationId IN :kioskLocationIds
-            GROUP BY i.productId, i.colorId, s.kioskLocationId
+            GROUP BY i.productId, i.colorId, i.colorName, s.kioskLocationId
             """)
     List<Object[]> aggregateCompletedSalesByProductColor(
             @Param("startDate") LocalDate startDate,

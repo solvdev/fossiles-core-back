@@ -92,7 +92,7 @@ class KioskSalesByProductColorReportServiceTest {
         when(kioskSaleItemRepository.aggregateCompletedSalesByProductColor(
                 LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L, 2L)
         )).thenReturn(java.util.Arrays.asList(
-                new Object[] { 10L, 21L, 1L, new BigDecimal("5"), new BigDecimal("1500.00"), 3L }
+                new Object[] { 10L, 21L, "Negro", 1L, new BigDecimal("5"), new BigDecimal("1500.00"), 3L }
         ));
         stubCatalog();
 
@@ -133,7 +133,7 @@ class KioskSalesByProductColorReportServiceTest {
         when(kioskSaleItemRepository.aggregateCompletedSalesByProductColor(
                 LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L)
         )).thenReturn(java.util.Arrays.asList(
-                new Object[] { 10L, 21L, 1L, new BigDecimal("2"), new BigDecimal("400.00"), 1L }
+                new Object[] { 10L, 21L, "Negro", 1L, new BigDecimal("2"), new BigDecimal("400.00"), 1L }
         ));
         stubCatalog();
 
@@ -144,6 +144,30 @@ class KioskSalesByProductColorReportServiceTest {
         assertThat(report.getProducts().get(0).getColors()).hasSize(1);
         assertThat(report.getProducts().get(0).getColors().get(0).getColorId()).isEqualTo(21L);
         assertThat(report.getKioskLabel()).contains("Kiosko Norte");
+    }
+
+    @Test
+    void mergesSalesByColorNameEvenIfColorIdsDiffer() throws BusinessException {
+        stubAdmin();
+        when(locationRepository.findAll()).thenReturn(List.of(kioskA));
+        when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L))).thenReturn(java.util.Arrays.asList(
+                new Object[] { 1L, 10L, 21L, 4 }
+        ));
+        when(kioskSaleItemRepository.aggregateCompletedSalesByProductColor(
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L)
+        )).thenReturn(java.util.Arrays.asList(
+                new Object[] { 10L, 21L, "Negro", 1L, new BigDecimal("2"), new BigDecimal("400.00"), 1L },
+                new Object[] { 10L, 99L, "NEGRO", 1L, new BigDecimal("3"), new BigDecimal("600.00"), 1L }
+        ));
+        stubCatalog();
+
+        KioskSalesByProductColorReportResponse report = service.getReport(
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), 1L, true);
+
+        assertThat(report.getProducts()).hasSize(1);
+        assertThat(report.getProducts().get(0).getColors()).hasSize(1);
+        assertThat(report.getProducts().get(0).getColors().get(0).getQuantity()).isEqualByComparingTo("5.000");
+        assertThat(report.getProducts().get(0).getTotalQuantity()).isEqualByComparingTo("5.000");
     }
 
     @Test
