@@ -121,4 +121,12 @@ public interface KioscoStockRepository extends JpaRepository<KioscoStockEntity, 
     List<KioscoStockEntity> findByProductId(Long productId);
 
     List<KioscoStockEntity> findByProductIdAndColorId(Long productId, Long colorId);
+
+    @Query("""
+            SELECT s.locationId, s.productId, s.colorId, COALESCE(SUM(s.currentStock), 0)
+            FROM KioscoStockEntity s
+            WHERE s.locationId IN :locationIds
+            GROUP BY s.locationId, s.productId, s.colorId
+            """)
+    List<Object[]> aggregateStockByProductColor(@Param("locationIds") List<Long> locationIds);
 }
