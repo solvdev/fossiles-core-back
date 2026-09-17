@@ -84,6 +84,7 @@ class KioskSalesByProductColorReportServiceTest {
                 .build();
         black = ColorEntity.builder().id(21L).name("Negro").build();
         brown = ColorEntity.builder().id(22L).name("Cafe").build();
+        lenient().when(colorRepository.findAll()).thenReturn(List.of(black, brown));
         lenient().when(kioscoMovementRepository.aggregateEntriesByProductColor(anyList(), any(), any()))
                 .thenReturn(List.of());
     }
@@ -184,7 +185,7 @@ class KioskSalesByProductColorReportServiceTest {
     }
 
     @Test
-    void mergesSalesByColorNameEvenIfColorIdsDiffer() throws BusinessException {
+    void joinsSalesStockAndEntriesOnCatalogColorIdEvenIfSaleNameDiffers() throws BusinessException {
         stubAdmin();
         when(locationRepository.findAll()).thenReturn(List.of(kioskA));
         when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L))).thenReturn(rows(
@@ -194,8 +195,10 @@ class KioskSalesByProductColorReportServiceTest {
                 LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L)
         )).thenReturn(rows(
                 new Object[] { 10L, 21L, "Negro", 1L, new BigDecimal("2"), new BigDecimal("400.00"), 1L },
-                new Object[] { 10L, 99L, "NEGRO", 1L, new BigDecimal("3"), new BigDecimal("600.00"), 1L }
+                new Object[] { 10L, 21L, "NEGRO", 1L, new BigDecimal("3"), new BigDecimal("600.00"), 1L }
         ));
+        when(kioscoMovementRepository.aggregateEntriesByProductColor(anyList(), any(), any()))
+                .thenReturn(rows(new Object[] { 1L, 10L, 21L, 7 }));
         stubCatalog();
 
         KioskSalesByProductColorReportResponse report = service.getReport(
@@ -203,8 +206,72 @@ class KioskSalesByProductColorReportServiceTest {
 
         assertThat(report.getProducts()).hasSize(1);
         assertThat(report.getProducts().get(0).getColors()).hasSize(1);
-        assertThat(report.getProducts().get(0).getColors().get(0).getQuantity()).isEqualByComparingTo("5.000");
+        var cell = report.getProducts().get(0).getColors().get(0);
+        assertThat(cell.getColorId()).isEqualTo(21L);
+        assertThat(cell.getQuantity()).isEqualByComparingTo("5.000");
+        assertThat(cell.getCurrentStock()).isEqualTo(4);
+        assertThat(cell.getQuantityIn()).isEqualTo(7);
         assertThat(report.getProducts().get(0).getTotalQuantity()).isEqualByComparingTo("5.000");
+        assertThat(report.getProducts().get(0).getCurrentStock()).isEqualTo(4);
+        assertThat(report.getTotals().getQuantityIn()).isEqualTo(7);
+    }
+
+    @Test
+    void resolvesSaleWithoutColorIdUsingCatalogName() throws BusinessException {
+        stubAdmin();
+        when(locationRepository.findAll()).thenReturn(List.of(kioskA));
+        when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L))).thenReturn(rows(
+                new Object[] { 1L, 10L, 21L, 4 }
+        ));
+        when(kioskSaleItemRepository.aggregateCompletedSalesByProductColor(
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L)
+        )).thenReturn(rows(
+                new Object[] { 10L, null, "NEGRO", 1L, new BigDecimal("2"), new BigDecimal("400.00"), 1L }
+        ));
+        stubCatalog();
+
+        KioskSalesByProductColorReportResponse report = service.getReport(
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), 1L, true);
+
+        assertThat(report.getProducts().get(0).getColors()).hasSize(1);
+        var cell = report.getProducts().get(0).getColors().get(0);
+        assertThat(cell.getColorId()).isEqualTo(21L);
+        assertThat(cell.getQuantity()).isEqualByComparingTo("2.000");
+        assertThat(cell.getCurrentStock()).isEqualTo(4);
+    }
+
+    @Test
+    void keepsDistinctCatalogColorsSeparateEvenIfNamesLookAlike() throws BusinessException {
+        ColorEntity negro2 = ColorEntity.builder().id(99L).name("Negro mate").build();
+        lenient().when(colorRepository.findAll()).thenReturn(List.of(black, brown, negro2));
+        stubAdmin();
+        when(locationRepository.findAll()).thenReturn(List.of(kioskA));
+        when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L))).thenReturn(rows(
+                new Object[] { 1L, 10L, 21L, 4 },
+                new Object[] { 1L, 10L, 99L, 8 }
+        ));
+        when(kioskSaleItemRepository.aggregateCompletedSalesByProductColor(
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L)
+        )).thenReturn(rows(
+                new Object[] { 10L, 21L, "Negro", 1L, new BigDecimal("2"), new BigDecimal("400.00"), 1L },
+                new Object[] { 10L, 99L, "Negro mate", 1L, new BigDecimal("3"), new BigDecimal("600.00"), 1L }
+        ));
+        stubCatalog();
+
+        KioskSalesByProductColorReportResponse report = service.getReport(
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), 1L, true);
+
+        assertThat(report.getProducts().get(0).getColors()).hasSize(2);
+        var negro = report.getProducts().get(0).getColors().stream()
+                .filter(c -> Long.valueOf(21L).equals(c.getColorId())).findFirst().orElseThrow();
+        var mate = report.getProducts().get(0).getColors().stream()
+                .filter(c -> Long.valueOf(99L).equals(c.getColorId())).findFirst().orElseThrow();
+        assertThat(negro.getQuantity()).isEqualByComparingTo("2.000");
+        assertThat(negro.getCurrentStock()).isEqualTo(4);
+        assertThat(mate.getQuantity()).isEqualByComparingTo("3.000");
+        assertThat(mate.getCurrentStock()).isEqualTo(8);
+        assertThat(report.getProducts().get(0).getTotalQuantity()).isEqualByComparingTo("5.000");
+        assertThat(report.getProducts().get(0).getCurrentStock()).isEqualTo(12);
     }
 
     @Test
@@ -234,7 +301,6 @@ class KioskSalesByProductColorReportServiceTest {
 
     private void stubCatalog() {
         when(productRepository.findAllById(anyList())).thenReturn(List.of(wallet));
-        when(colorRepository.findAllById(anyList())).thenReturn(List.of(black, brown));
         when(productCategoryRepository.findAllById(anyList())).thenReturn(List.of(
                 ProductCategoryEntity.builder().id(3L).code("BOL").name("Billeteras").build()
         ));

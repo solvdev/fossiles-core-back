@@ -17,7 +17,7 @@ public interface KioskSaleItemRepository extends JpaRepository<KioskSaleItemEnti
 
     /**
      * Ventas reales por producto/color/kiosko. Excluye anuladas y ventas de piloto.
-     * Incluye colorName porque hay líneas con color_id distinto o nulo para el mismo color.
+     * Agrupa por color_id; el nombre se usa solo como respaldo si el id viene nulo.
      */
     @Query("""
             SELECT i.productId,

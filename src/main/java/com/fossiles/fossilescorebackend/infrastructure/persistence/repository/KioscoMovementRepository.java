@@ -371,13 +371,20 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
     );
 
     /**
-     * Entradas reales al kiosko (recepción y traslado in) por producto/color.
+     * Entradas reales al kiosko (recepción y traslado in) por producto/color de stock.
+     * Suma el delta de inventario, no el texto de cantidad, y solo movimientos que afectan stock.
      */
     @Query("""
-            SELECT s.locationId, s.productId, s.colorId, COALESCE(SUM(m.quantity), 0)
+            SELECT s.locationId, s.productId, s.colorId,
+                   COALESCE(SUM(CASE
+                       WHEN m.stockAfter IS NOT NULL AND m.stockBefore IS NOT NULL
+                           THEN m.stockAfter - m.stockBefore
+                       ELSE m.quantity
+                   END), 0)
             FROM KioscoMovementEntity m
             JOIN m.kioscoStock s
             WHERE s.locationId IN :locationIds
+              AND (m.affectsStock IS NULL OR m.affectsStock = true)
               AND m.movementType IN (
                   com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA,
                   com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_ENTRADA
