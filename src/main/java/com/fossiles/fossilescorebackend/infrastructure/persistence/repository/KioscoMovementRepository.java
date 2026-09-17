@@ -371,9 +371,9 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
     );
 
     /**
-     * Entradas al kiosko iguales al ledger: {@code quantity} de ENTRADA y TRASLADO_ENTRADA
-     * que afectan stock, en el kiosko del stock. No usa stock_after - stock_before
-     * (ese delta a veces no es la cantidad recibida). Excluye inventario inicial de migración.
+     * Entradas históricas al kiosko hasta {@code toExclusive}: quantity de ENTRADA y
+     * TRASLADO_ENTRADA (incluye inventario inicial). No incluye CAMBIO: ese ingreso
+     * en conteo es Compra. Agrupa kiosko + producto + color.
      */
     @Query("""
             SELECT s.locationId, s.productId, s.colorId, COALESCE(SUM(m.quantity), 0)
@@ -382,18 +382,15 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             WHERE s.locationId IN :locationIds
               AND (m.affectsStock IS NULL OR m.affectsStock = true)
               AND m.quantity > 0
+              AND m.createdAt < :toExclusive
               AND m.movementType IN (
                   com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA,
                   com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_ENTRADA
               )
-              AND (m.reason IS NULL OR LOWER(m.reason) NOT LIKE 'inventario inicial%')
-              AND m.createdAt >= :fromInclusive
-              AND m.createdAt < :toExclusive
             GROUP BY s.locationId, s.productId, s.colorId
             """)
     List<Object[]> aggregateEntriesByProductColor(
             @Param("locationIds") List<Long> locationIds,
-            @Param("fromInclusive") LocalDateTime fromInclusive,
             @Param("toExclusive") LocalDateTime toExclusive
     );
 

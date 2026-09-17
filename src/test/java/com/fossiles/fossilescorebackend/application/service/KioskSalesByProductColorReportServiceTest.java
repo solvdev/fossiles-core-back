@@ -85,7 +85,7 @@ class KioskSalesByProductColorReportServiceTest {
         black = ColorEntity.builder().id(21L).name("Negro").build();
         brown = ColorEntity.builder().id(22L).name("Cafe").build();
         lenient().when(colorRepository.findAll()).thenReturn(List.of(black, brown));
-        lenient().when(kioscoMovementRepository.aggregateEntriesByProductColor(anyList(), any(), any()))
+        lenient().when(kioscoMovementRepository.aggregateEntriesByProductColor(anyList(), any()))
                 .thenReturn(List.of());
     }
 
@@ -168,7 +168,7 @@ class KioskSalesByProductColorReportServiceTest {
         when(kioskSaleItemRepository.aggregateCompletedSalesByProductColor(
                 LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L)
         )).thenReturn(List.of());
-        when(kioscoMovementRepository.aggregateEntriesByProductColor(anyList(), any(), any()))
+        when(kioscoMovementRepository.aggregateEntriesByProductColor(anyList(), any()))
                 .thenReturn(rows(
                         new Object[] { 1L, 10L, 21L, 8 }
                 ));
@@ -197,7 +197,7 @@ class KioskSalesByProductColorReportServiceTest {
                 new Object[] { 10L, 21L, "Negro", 1L, new BigDecimal("2"), new BigDecimal("400.00"), 1L },
                 new Object[] { 10L, 21L, "NEGRO", 1L, new BigDecimal("3"), new BigDecimal("600.00"), 1L }
         ));
-        when(kioscoMovementRepository.aggregateEntriesByProductColor(anyList(), any(), any()))
+        when(kioscoMovementRepository.aggregateEntriesByProductColor(anyList(), any()))
                 .thenReturn(rows(new Object[] { 1L, 10L, 21L, 7 }));
         stubCatalog();
 

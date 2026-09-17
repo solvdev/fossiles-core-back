@@ -40,11 +40,11 @@ public class KioscoKardexReportResponse {
         /** CASUAL o REVERSIBLE */
         private String cinchoType;
         private int inventarioInicial;
-        /** Ingresos por correccion de inventario, boletas de cambio con diferencia y ajustes positivos. */
+        /** Ingresos por correccion de inventario, boletas de cambio (cualquier ingreso) y ajustes positivos. */
         private int comprasAjustes;
         /** Correccion de un ajuste mal hecho en compras/ajustes. */
         private int anulacionCompras;
-        /** Envios de distribucion, traslados in y cambios sin diferencia de precio. */
+        /** Envios de distribucion y traslados in. */
         private int entradas;
         /** Ventas POS y egresos de boleta de cambio con diferencia de precio. */
         private int ventas;
