@@ -17,6 +17,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
@@ -31,6 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -56,6 +58,7 @@ public class KioskSalesByProductColorReportService {
     private final ProductCategoryRepository productCategoryRepository;
     private final KioscoStockRepository kioscoStockRepository;
     private final KioskSaleItemRepository kioskSaleItemRepository;
+    private final KioscoMovementRepository kioscoMovementRepository;
 
     public KioskSalesByProductColorReportResponse getReport(
             LocalDate startDate,
@@ -93,6 +96,9 @@ public class KioskSalesByProductColorReportService {
 
         List<Object[]> stockRows = kioscoStockRepository.aggregateStockByProductColor(kioskIds);
         List<Object[]> saleRows = kioskSaleItemRepository.aggregateCompletedSalesByProductColor(from, to, kioskIds);
+        LocalDateTime fromAt = from.atStartOfDay();
+        LocalDateTime toExclusive = to.plusDays(1).atStartOfDay();
+        List<Object[]> entryRows = kioscoMovementRepository.aggregateEntriesByProductColor(kioskIds, fromAt, toExclusive);
 
         for (Object[] row : stockRows) {
             Long colorId = asLong(row[2]);
@@ -102,6 +108,12 @@ public class KioskSalesByProductColorReportService {
         }
         for (Object[] row : saleRows) {
             Long colorId = asLong(row[1]);
+            if (colorId != null) {
+                colorIds.add(colorId);
+            }
+        }
+        for (Object[] row : entryRows) {
+            Long colorId = asLong(row[2]);
             if (colorId != null) {
                 colorIds.add(colorId);
             }
@@ -145,6 +157,20 @@ public class KioskSalesByProductColorReportService {
             productIds.add(productId);
         }
 
+        for (Object[] row : entryRows) {
+            Long productId = asLong(row[1]);
+            if (productId == null) {
+                continue;
+            }
+            Long colorId = asLong(row[2]);
+            Long kioskId = asLong(row[0]);
+            String colorNorm = colorKey(catalogColorName(colorId, colorsById), colorId);
+            MutableCell cell = cells.computeIfAbsent(new SkuKioskKey(productId, colorNorm, kioskId), k -> new MutableCell());
+            cell.entries += asInt(row[3]);
+            mergeColorIdentity(cell, colorId, catalogColorName(colorId, colorsById));
+            productIds.add(productId);
+        }
+
         Map<Long, ProductEntity> productsById = productRepository.findAllById(new ArrayList<>(productIds)).stream()
                 .filter(Objects::nonNull)
                 .collect(Collectors.toMap(ProductEntity::getId, item -> item, (a, b) -> a));
@@ -175,6 +201,7 @@ public class KioskSalesByProductColorReportService {
             BigDecimal amount = BigDecimal.ZERO;
             int tickets = 0;
             int stock = 0;
+            int entries = 0;
             Long colorId = null;
             String colorName = "Sin color";
             List<KioskCell> kioskCells = new ArrayList<>();
@@ -187,17 +214,18 @@ public class KioskSalesByProductColorReportService {
                 amount = amount.add(cell.amount);
                 tickets += cell.tickets;
                 stock += cell.stock;
+                entries += cell.entries;
                 if (colorId == null && cell.colorId != null) {
                     colorId = cell.colorId;
                 }
                 if (cell.colorName != null && !cell.colorName.isBlank()) {
                     colorName = cell.colorName.trim();
                 }
-                if (cell.quantity.signum() > 0 || cell.stock > 0 || cell.tickets > 0) {
+                if (cell.quantity.signum() > 0 || cell.stock > 0 || cell.tickets > 0 || cell.entries > 0) {
                     kioskCells.add(toKioskCell(kiosk.getId(), cell));
                 }
             }
-            if (!includeZeroSales && qty.signum() <= 0) {
+            if (!includeZeroSales && qty.signum() <= 0 && stock <= 0 && entries <= 0) {
                 continue;
             }
 
@@ -224,6 +252,7 @@ public class KioskSalesByProductColorReportService {
                     .amount(amount.setScale(2, RoundingMode.HALF_UP))
                     .tickets(tickets)
                     .currentStock(stock)
+                    .quantityIn(entries)
                     .byKiosk(kioskCells)
                     .build();
             acc.colors.add(colorCell);
@@ -231,6 +260,7 @@ public class KioskSalesByProductColorReportService {
             acc.totalAmount = acc.totalAmount.add(amount);
             acc.totalTickets += tickets;
             acc.currentStock += stock;
+            acc.totalQuantityIn += entries;
             if (qty.signum() > 0) {
                 acc.colorsWithSales += 1;
             } else {
@@ -257,6 +287,7 @@ public class KioskSalesByProductColorReportService {
                             total.amount = total.amount.add(nz(kioskCell.getAmount()));
                             total.tickets += kioskCell.getTickets() == null ? 0 : kioskCell.getTickets();
                             total.stock += kioskCell.getCurrentStock() == null ? 0 : kioskCell.getCurrentStock();
+                            total.entries += kioskCell.getQuantityIn() == null ? 0 : kioskCell.getQuantityIn();
                         }
                     }
                     List<KioskCell> kioskRows = targetKiosks.stream()
@@ -277,6 +308,7 @@ public class KioskSalesByProductColorReportService {
                             .totalAmount(acc.totalAmount.setScale(2, RoundingMode.HALF_UP))
                             .totalTickets(acc.totalTickets)
                             .currentStock(acc.currentStock)
+                            .totalQuantityIn(acc.totalQuantityIn)
                             .colorsWithSales(acc.colorsWithSales)
                             .colorsWithoutSales(acc.colorsWithoutSales)
                             .colors(acc.colors)
@@ -302,6 +334,8 @@ public class KioskSalesByProductColorReportService {
         BigDecimal totalQty = BigDecimal.ZERO;
         BigDecimal totalAmount = BigDecimal.ZERO;
         int totalTickets = 0;
+        int totalEntries = 0;
+        int totalStock = 0;
         for (ProductRow row : productRows) {
             if (nz(row.getTotalQuantity()).signum() > 0) {
                 productsWithSales += 1;
@@ -311,6 +345,8 @@ public class KioskSalesByProductColorReportService {
             totalQty = totalQty.add(nz(row.getTotalQuantity()));
             totalAmount = totalAmount.add(nz(row.getTotalAmount()));
             totalTickets += row.getTotalTickets() == null ? 0 : row.getTotalTickets();
+            totalEntries += row.getTotalQuantityIn() == null ? 0 : row.getTotalQuantityIn();
+            totalStock += row.getCurrentStock() == null ? 0 : row.getCurrentStock();
             combos += row.getColors() == null ? 0 : row.getColors().size();
             combosWithSales += row.getColorsWithSales() == null ? 0 : row.getColorsWithSales();
             combosWithoutSales += row.getColorsWithoutSales() == null ? 0 : row.getColorsWithoutSales();
@@ -345,6 +381,8 @@ public class KioskSalesByProductColorReportService {
                         .products(productRows.size())
                         .productsWithSales(productsWithSales)
                         .productsWithoutSales(productsWithoutSales)
+                        .quantityIn(totalEntries)
+                        .currentStock(totalStock)
                         .colorCombinations(combos)
                         .colorCombinationsWithSales(combosWithSales)
                         .colorCombinationsWithoutSales(combosWithoutSales)
@@ -409,6 +447,7 @@ public class KioskSalesByProductColorReportService {
                 .amount(cell.amount.setScale(2, RoundingMode.HALF_UP))
                 .tickets(cell.tickets)
                 .currentStock(cell.stock)
+                .quantityIn(cell.entries)
                 .build();
     }
 
@@ -534,6 +573,7 @@ public class KioskSalesByProductColorReportService {
         private BigDecimal amount = BigDecimal.ZERO;
         private int tickets;
         private int stock;
+        private int entries;
         private Long colorId;
         private String colorName;
     }
@@ -549,6 +589,7 @@ public class KioskSalesByProductColorReportService {
         private BigDecimal totalAmount = BigDecimal.ZERO;
         private int totalTickets;
         private int currentStock;
+        private int totalQuantityIn;
         private int colorsWithSales;
         private int colorsWithoutSales;
         private final List<ColorCell> colors = new ArrayList<>();

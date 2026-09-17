@@ -65,6 +65,7 @@ public class KioskSalesByProductColorReportResponse {
         private BigDecimal totalAmount;
         private Integer totalTickets;
         private Integer currentStock;
+        private Integer totalQuantityIn;
         private Integer colorsWithSales;
         private Integer colorsWithoutSales;
 
@@ -86,6 +87,7 @@ public class KioskSalesByProductColorReportResponse {
         private BigDecimal amount;
         private Integer tickets;
         private Integer currentStock;
+        private Integer quantityIn;
 
         @Builder.Default
         private List<KioskCell> byKiosk = new ArrayList<>();
@@ -101,6 +103,7 @@ public class KioskSalesByProductColorReportResponse {
         private BigDecimal amount;
         private Integer tickets;
         private Integer currentStock;
+        private Integer quantityIn;
     }
 
     @Data
@@ -114,6 +117,8 @@ public class KioskSalesByProductColorReportResponse {
         private Integer products;
         private Integer productsWithSales;
         private Integer productsWithoutSales;
+        private Integer quantityIn;
+        private Integer currentStock;
         private Integer colorCombinations;
         private Integer colorCombinationsWithSales;
         private Integer colorCombinationsWithoutSales;
