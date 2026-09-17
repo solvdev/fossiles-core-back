@@ -92,7 +92,6 @@ public class KioskSalesByProductColorReportService {
 
         Map<SkuKioskKey, MutableCell> cells = new HashMap<>();
         Set<Long> productIds = new HashSet<>();
-        Set<Long> colorIds = new HashSet<>();
 
         List<Object[]> stockRows = kioscoStockRepository.aggregateStockByProductColor(kioskIds);
         List<Object[]> saleRows = kioskSaleItemRepository.aggregateCompletedSalesByProductColor(from, to, kioskIds);
@@ -100,30 +99,16 @@ public class KioskSalesByProductColorReportService {
         LocalDateTime toExclusive = to.plusDays(1).atStartOfDay();
         List<Object[]> entryRows = kioscoMovementRepository.aggregateEntriesByProductColor(kioskIds, fromAt, toExclusive);
 
-        for (Object[] row : stockRows) {
-            Long colorId = asLong(row[2]);
-            if (colorId != null) {
-                colorIds.add(colorId);
+        Map<Long, ColorEntity> colorsById = colorRepository.findAll().stream()
+                .filter(color -> color != null && color.getId() != null)
+                .collect(Collectors.toMap(ColorEntity::getId, item -> item, (a, b) -> a));
+        Map<String, Long> colorIdByNormName = new LinkedHashMap<>();
+        for (ColorEntity color : colorsById.values()) {
+            String norm = normalizeColorName(safe(color.getName()));
+            if (!norm.isEmpty()) {
+                colorIdByNormName.putIfAbsent(norm, color.getId());
             }
         }
-        for (Object[] row : saleRows) {
-            Long colorId = asLong(row[1]);
-            if (colorId != null) {
-                colorIds.add(colorId);
-            }
-        }
-        for (Object[] row : entryRows) {
-            Long colorId = asLong(row[2]);
-            if (colorId != null) {
-                colorIds.add(colorId);
-            }
-        }
-
-        Map<Long, ColorEntity> colorsById = colorIds.isEmpty()
-                ? Map.of()
-                : colorRepository.findAllById(new ArrayList<>(colorIds)).stream()
-                        .filter(Objects::nonNull)
-                        .collect(Collectors.toMap(ColorEntity::getId, item -> item, (a, b) -> a));
 
         for (Object[] row : stockRows) {
             Long productId = asLong(row[1]);
@@ -132,8 +117,7 @@ public class KioskSalesByProductColorReportService {
             }
             Long colorId = asLong(row[2]);
             Long kioskId = asLong(row[0]);
-            String colorNorm = colorKey(catalogColorName(colorId, colorsById), colorId);
-            MutableCell cell = cells.computeIfAbsent(new SkuKioskKey(productId, colorNorm, kioskId), k -> new MutableCell());
+            MutableCell cell = cells.computeIfAbsent(new SkuKioskKey(productId, colorId, kioskId), k -> new MutableCell());
             cell.stock += asInt(row[3]);
             mergeColorIdentity(cell, colorId, catalogColorName(colorId, colorsById));
             productIds.add(productId);
@@ -144,12 +128,14 @@ public class KioskSalesByProductColorReportService {
             if (productId == null) {
                 continue;
             }
-            Long colorId = asLong(row[1]);
+            Long colorId = resolveSaleColorId(asLong(row[1]), asString(row[2]), colorsById, colorIdByNormName);
             String saleColorName = asString(row[2]);
             Long kioskId = asLong(row[3]);
-            String displayName = !saleColorName.isEmpty() ? saleColorName : catalogColorName(colorId, colorsById);
-            String colorNorm = colorKey(displayName, colorId);
-            MutableCell cell = cells.computeIfAbsent(new SkuKioskKey(productId, colorNorm, kioskId), k -> new MutableCell());
+            String displayName = catalogColorName(colorId, colorsById);
+            if (displayName.isEmpty()) {
+                displayName = saleColorName;
+            }
+            MutableCell cell = cells.computeIfAbsent(new SkuKioskKey(productId, colorId, kioskId), k -> new MutableCell());
             cell.quantity = cell.quantity.add(asDecimal(row[4]));
             cell.amount = cell.amount.add(asDecimal(row[5]));
             cell.tickets += asInt(row[6]);
@@ -164,9 +150,8 @@ public class KioskSalesByProductColorReportService {
             }
             Long colorId = asLong(row[2]);
             Long kioskId = asLong(row[0]);
-            String colorNorm = colorKey(catalogColorName(colorId, colorsById), colorId);
-            MutableCell cell = cells.computeIfAbsent(new SkuKioskKey(productId, colorNorm, kioskId), k -> new MutableCell());
-            cell.entries += asInt(row[3]);
+            MutableCell cell = cells.computeIfAbsent(new SkuKioskKey(productId, colorId, kioskId), k -> new MutableCell());
+            cell.entries += Math.max(0, asInt(row[3]));
             mergeColorIdentity(cell, colorId, catalogColorName(colorId, colorsById));
             productIds.add(productId);
         }
@@ -187,12 +172,13 @@ public class KioskSalesByProductColorReportService {
         Map<SkuKey, Map<Long, MutableCell>> bySku = new HashMap<>();
         for (Map.Entry<SkuKioskKey, MutableCell> entry : cells.entrySet()) {
             SkuKioskKey key = entry.getKey();
-            bySku.computeIfAbsent(new SkuKey(key.productId(), key.colorNorm()), k -> new HashMap<>())
+            bySku.computeIfAbsent(new SkuKey(key.productId(), key.colorId()), k -> new HashMap<>())
                     .put(key.kioskId(), entry.getValue());
         }
 
         Map<Long, ProductAccumulator> products = new LinkedHashMap<>();
-        Map<String, ColorRef> colorRefsByNorm = new LinkedHashMap<>();
+        Map<Long, ColorRef> colorRefsById = new LinkedHashMap<>();
+        Map<String, ColorRef> colorRefsWithoutId = new LinkedHashMap<>();
 
         for (Map.Entry<SkuKey, Map<Long, MutableCell>> skuEntry : bySku.entrySet()) {
             SkuKey sku = skuEntry.getKey();
@@ -202,7 +188,7 @@ public class KioskSalesByProductColorReportService {
             int tickets = 0;
             int stock = 0;
             int entries = 0;
-            Long colorId = null;
+            Long colorId = sku.colorId();
             String colorName = "Sin color";
             List<KioskCell> kioskCells = new ArrayList<>();
             for (LocationEntity kiosk : targetKiosks) {
@@ -218,7 +204,10 @@ public class KioskSalesByProductColorReportService {
                 if (colorId == null && cell.colorId != null) {
                     colorId = cell.colorId;
                 }
-                if (cell.colorName != null && !cell.colorName.isBlank()) {
+                String catalogName = catalogColorName(cell.colorId != null ? cell.colorId : colorId, colorsById);
+                if (!catalogName.isEmpty()) {
+                    colorName = catalogName;
+                } else if (cell.colorName != null && !cell.colorName.isBlank()) {
                     colorName = cell.colorName.trim();
                 }
                 if (cell.quantity.signum() > 0 || cell.stock > 0 || cell.tickets > 0 || cell.entries > 0) {
@@ -266,10 +255,18 @@ public class KioskSalesByProductColorReportService {
             } else {
                 acc.colorsWithoutSales += 1;
             }
-            colorRefsByNorm.putIfAbsent(sku.colorNorm(), ColorRef.builder()
-                    .id(colorId)
-                    .name(colorName)
-                    .build());
+            if (colorId != null) {
+                String catalogName = catalogColorName(colorId, colorsById);
+                colorRefsById.putIfAbsent(colorId, ColorRef.builder()
+                        .id(colorId)
+                        .name(catalogName.isEmpty() ? colorName : catalogName)
+                        .build());
+            } else {
+                colorRefsWithoutId.putIfAbsent(normalizeColorName(colorName), ColorRef.builder()
+                        .id(null)
+                        .name(colorName)
+                        .build());
+            }
         }
 
         List<ProductRow> productRows = products.values().stream()
@@ -321,10 +318,12 @@ public class KioskSalesByProductColorReportService {
                                 String.CASE_INSENSITIVE_ORDER))
                 .toList();
 
-        List<ColorRef> colorRefs = colorRefsByNorm.values().stream()
-                .sorted(Comparator.comparing(ref -> ref.getName() == null ? "" : ref.getName(),
-                        String.CASE_INSENSITIVE_ORDER))
-                .toList();
+        List<ColorRef> colorRefs = new ArrayList<>();
+        colorRefs.addAll(colorRefsById.values());
+        colorRefs.addAll(colorRefsWithoutId.values());
+        colorRefs.sort(Comparator.comparing((ColorRef ref) -> ref.getName() == null ? "" : ref.getName(),
+                String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(ref -> ref.getId() == null ? 0L : ref.getId()));
 
         int productsWithSales = 0;
         int productsWithoutSales = 0;
@@ -487,12 +486,20 @@ public class KioskSalesByProductColorReportService {
         return color != null ? safe(color.getName()) : "";
     }
 
-    private static String colorKey(String name, Long colorId) {
-        String normalized = normalizeColorName(name);
-        if (!normalized.isEmpty()) {
-            return normalized;
+    private static Long resolveSaleColorId(
+            Long colorId,
+            String saleColorName,
+            Map<Long, ColorEntity> colorsById,
+            Map<String, Long> colorIdByNormName
+    ) {
+        if (colorId != null && colorsById.containsKey(colorId)) {
+            return colorId;
         }
-        return colorId == null ? "SIN_COLOR" : "ID:" + colorId;
+        Long byName = colorIdByNormName.get(normalizeColorName(saleColorName));
+        if (byName != null) {
+            return byName;
+        }
+        return colorId;
     }
 
     private static String normalizeColorName(String value) {
@@ -562,10 +569,10 @@ public class KioskSalesByProductColorReportService {
         return new BigDecimal(text);
     }
 
-    private record SkuKey(Long productId, String colorNorm) {
+    private record SkuKey(Long productId, Long colorId) {
     }
 
-    private record SkuKioskKey(Long productId, String colorNorm, Long kioskId) {
+    private record SkuKioskKey(Long productId, Long colorId, Long kioskId) {
     }
 
     private static final class MutableCell {
