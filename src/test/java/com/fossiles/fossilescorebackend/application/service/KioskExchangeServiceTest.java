@@ -209,7 +209,7 @@ class KioskExchangeServiceTest {
                 .containsOnly(KioscoMovementType.CAMBIO);
         assertThat(slipMoves).filteredOn(m -> m.getStockAfter() < m.getStockBefore())
                 .extracting(KioscoMovementEntity::getMovementType)
-                .containsOnly(KioscoMovementType.VENTA);
+                .containsOnly(KioscoMovementType.CAMBIO);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_A_CLIENTE);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE);
 
@@ -219,7 +219,7 @@ class KioskExchangeServiceTest {
     }
 
     @Test
-    void reclassifyDifferenceExchangeGivenAsVenta_movesLegacyCambioOutflowToVenta() throws Exception {
+    void reclassifyExchangeGivenAsCambio_movesLegacyVentaOutflowToCambio() throws Exception {
         KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0);
         KioskExchangeCompleteResponse result = kioskExchangeService.completeExchange(
                 KioskExchangeCompleteRequest.builder()
@@ -237,14 +237,14 @@ class KioskExchangeServiceTest {
                         .build());
 
         KioscoMovementEntity given = kioscoMovementRepository.findById(result.getSlip().getGivenMovementId()).orElseThrow();
-        given.setMovementType(KioscoMovementType.CAMBIO);
+        given.setMovementType(KioscoMovementType.VENTA);
         kioscoMovementRepository.saveAndFlush(given);
 
-        int updated = kioskExchangeService.reclassifyDifferenceExchangeGivenAsVenta();
+        int updated = kioskExchangeService.reclassifyExchangeGivenAsCambio();
         assertThat(updated).isGreaterThanOrEqualTo(1);
 
         KioscoMovementEntity recategorized = kioscoMovementRepository.findById(given.getId()).orElseThrow();
-        assertThat(recategorized.getMovementType()).isEqualTo(KioscoMovementType.VENTA);
+        assertThat(recategorized.getMovementType()).isEqualTo(KioscoMovementType.CAMBIO);
         KioscoMovementEntity returned = kioscoMovementRepository.findById(result.getSlip().getReturnMovementId()).orElseThrow();
         assertThat(returned.getMovementType()).isEqualTo(KioscoMovementType.CAMBIO);
     }
@@ -628,7 +628,7 @@ class KioskExchangeServiceTest {
                 .containsOnly(KioscoMovementType.CAMBIO);
         assertThat(slipMoves).filteredOn(m -> m.getStockAfter() < m.getStockBefore())
                 .extracting(KioscoMovementEntity::getMovementType)
-                .containsOnly(KioscoMovementType.VENTA);
+                .containsOnly(KioscoMovementType.CAMBIO);
     }
 
     private int currentStock(Long productId) {

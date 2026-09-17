@@ -359,7 +359,7 @@ public class KioskPosService {
         }
 
         Map<String, BigDecimal> aggregatedQty = aggregateItemQuantities(request.getItems());
-        // Cambio: no valida/descuenta stock aquí (lo mueve la boleta: CAMBIO + y VENTA o CAMBIO −).
+        // Cambio: no valida/descuenta stock aquí (lo mueve la boleta: CAMBIO + y CAMBIO −).
         if (!exchangeSale) {
             lockAndValidateStock(kiosk.getId(), aggregatedQty);
         }

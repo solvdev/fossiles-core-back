@@ -1054,8 +1054,8 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Cambio: ingreso del producto devuelto ({@code CAMBIO +} → Comp.) y egreso del entregado
-     * ({@code CAMBIO −} → Sal. en kardex, o {@code VENTA} si hay diferencia cobrada).
+     * Cambio: ingreso del producto devuelto ({@code CAMBIO +} → Comp./Ent.) y egreso del entregado
+     * ({@code CAMBIO −} → Vtas./Sal.).
      * Stock fuente de verdad: módulo kiosco (no legacy). Herraje del egreso = el indicado o el que tenga
      * disponibilidad (NUEVO → VIEJO), igual que ventas POS.
      */
@@ -1202,8 +1202,8 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Un ingreso del producto devuelto + N egresos de productos entregados.
-     * Sin diferencia: egreso {@code CAMBIO −} (Sal.). Con diferencia cobrada: egreso {@code VENTA}.
+     * Un ingreso del producto devuelto ({@code CAMBIO +} → Comp./Ent.) + N egresos
+     * de productos entregados ({@code CAMBIO −} → Vtas./Sal.).
      */
     public CambioResult registrarCambioMulti(
             Long locationId,
@@ -1217,36 +1217,6 @@ public class KioscoInventoryService {
             String reason,
             Long userId,
             String physicalSlipNumber
-    ) throws BusinessException, ResourceNotFoundException {
-        return registrarCambioMulti(
-                locationId,
-                returnedProductId,
-                returnedColorId,
-                returnedQuantity,
-                returnedSize,
-                returnedHardwareCondition,
-                givenLines,
-                referenceId,
-                reason,
-                userId,
-                physicalSlipNumber,
-                false
-        );
-    }
-
-    public CambioResult registrarCambioMulti(
-            Long locationId,
-            Long returnedProductId,
-            Long returnedColorId,
-            Integer returnedQuantity,
-            String returnedSize,
-            String returnedHardwareCondition,
-            List<CambioGivenLine> givenLines,
-            Long referenceId,
-            String reason,
-            Long userId,
-            String physicalSlipNumber,
-            boolean givenAsVenta
     ) throws BusinessException, ResourceNotFoundException {
         Long resolvedUserId = resolveUserIdRequired(userId);
         validateLocationIsKiosk(locationId);
@@ -1314,7 +1284,7 @@ public class KioscoInventoryService {
                     null,
                     null,
                     resolvedUserId,
-                    givenAsVenta ? KioscoMovementType.VENTA : KioscoMovementType.CAMBIO,
+                    KioscoMovementType.CAMBIO,
                     -line.getQuantity(),
                     true,
                     reasonOrNull,
@@ -2308,6 +2278,8 @@ public class KioscoInventoryService {
                 .anulacionVenta(rows.stream().mapToInt(KioscoKardexReportResponse.KioscoKardexRow::getAnulacionVenta).sum())
                 .salida(rows.stream().mapToInt(KioscoKardexReportResponse.KioscoKardexRow::getSalida).sum())
                 .inventarioFinal(rows.stream().mapToInt(KioscoKardexReportResponse.KioscoKardexRow::getInventarioFinal).sum())
+                .cambioIn(rows.stream().mapToInt(KioscoKardexReportResponse.KioscoKardexRow::getCambioIn).sum())
+                .cambioOut(rows.stream().mapToInt(KioscoKardexReportResponse.KioscoKardexRow::getCambioOut).sum())
                 .build();
 
         return KioscoKardexReportResponse.builder()
@@ -2435,6 +2407,8 @@ public class KioscoInventoryService {
                     .salida(acc.salida)
                     .salidaDevolucion(acc.salidaDevolucion)
                     .inventarioFinal(finalBalance)
+                    .cambioIn(acc.cambioIn)
+                    .cambioOut(acc.cambioOut)
                     .hardwareCondition(stock.getHardwareCondition())
                     .build());
         }
@@ -2755,10 +2729,15 @@ public class KioscoInventoryService {
         public final int salida;
         /** Solo devoluciones a bodega / reintegros (para cuadrar conteo si aún están en piso). */
         public final int salidaDevolucion;
+        /** CAMBIO+ ya incluido en Comp. y Ent.; se resta una vez en {@link #netDelta()}. */
+        public final int cambioIn;
+        /** CAMBIO− ya incluido en Vtas. y Sal.; se suma una vez en {@link #netDelta()}. */
+        public final int cambioOut;
 
         private SizeKardexBucket(
                 int comprasAjustes, int anulacionCompras, int entradas,
-                int ventas, int anulacionVenta, int salida, int salidaDevolucion
+                int ventas, int anulacionVenta, int salida, int salidaDevolucion,
+                int cambioIn, int cambioOut
         ) {
             this.comprasAjustes = comprasAjustes;
             this.anulacionCompras = anulacionCompras;
@@ -2767,6 +2746,8 @@ public class KioscoInventoryService {
             this.anulacionVenta = anulacionVenta;
             this.salida = salida;
             this.salidaDevolucion = salidaDevolucion;
+            this.cambioIn = cambioIn;
+            this.cambioOut = cambioOut;
         }
 
         public static SizeKardexBucket of(
@@ -2780,18 +2761,29 @@ public class KioscoInventoryService {
                 int comprasAjustes, int anulacionCompras, int entradas,
                 int ventas, int anulacionVenta, int salida, int salidaDevolucion
         ) {
+            return of(comprasAjustes, anulacionCompras, entradas, ventas, anulacionVenta, salida,
+                    salidaDevolucion, 0, 0);
+        }
+
+        public static SizeKardexBucket of(
+                int comprasAjustes, int anulacionCompras, int entradas,
+                int ventas, int anulacionVenta, int salida, int salidaDevolucion,
+                int cambioIn, int cambioOut
+        ) {
             return new SizeKardexBucket(
-                    comprasAjustes, anulacionCompras, entradas, ventas, anulacionVenta, salida, salidaDevolucion);
+                    comprasAjustes, anulacionCompras, entradas, ventas, anulacionVenta, salida,
+                    salidaDevolucion, cambioIn, cambioOut);
         }
 
         static SizeKardexBucket from(KardexAccumulator acc) {
             return new SizeKardexBucket(
                     acc.comprasAjustes, acc.anulacionCompras, acc.entradas,
-                    acc.ventas, acc.anulacionVenta, acc.salida, acc.salidaDevolucion);
+                    acc.ventas, acc.anulacionVenta, acc.salida, acc.salidaDevolucion,
+                    acc.cambioIn, acc.cambioOut);
         }
 
         public static SizeKardexBucket empty() {
-            return new SizeKardexBucket(0, 0, 0, 0, 0, 0, 0);
+            return new SizeKardexBucket(0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         public boolean isEmpty() {
@@ -2799,9 +2791,13 @@ public class KioscoInventoryService {
                     && ventas == 0 && anulacionVenta == 0 && salida == 0 && salidaDevolucion == 0;
         }
 
-        /** Neto del periodo (suma algebraica de columnas kardex). */
+        /**
+         * Neto del periodo. Comp.+Ent. de un CAMBIO+ y Vtas.+Sal. de un CAMBIO− se muestran
+         * en ambas columnas, pero el Fin. cuenta cada cantidad una sola vez.
+         */
         public int netDelta() {
-            return comprasAjustes - anulacionCompras + entradas - ventas + anulacionVenta - salida;
+            return comprasAjustes - anulacionCompras + entradas - ventas + anulacionVenta - salida
+                    - cambioIn + cambioOut;
         }
 
         public SizeKardexBucket plus(int comprasDelta, int anulacionComprasDelta, int entradasDelta,
@@ -2819,7 +2815,26 @@ public class KioscoInventoryService {
                     ventas + ventasDelta,
                     anulacionVenta + anulacionVentaDelta,
                     salida + salidaDelta,
-                    salidaDevolucion + salidaDevolucionDelta
+                    salidaDevolucion + salidaDevolucionDelta,
+                    cambioIn,
+                    cambioOut
+            );
+        }
+
+        public SizeKardexBucket plus(SizeKardexBucket other) {
+            if (other == null) {
+                return this;
+            }
+            return new SizeKardexBucket(
+                    comprasAjustes + other.comprasAjustes,
+                    anulacionCompras + other.anulacionCompras,
+                    entradas + other.entradas,
+                    ventas + other.ventas,
+                    anulacionVenta + other.anulacionVenta,
+                    salida + other.salida,
+                    salidaDevolucion + other.salidaDevolucion,
+                    cambioIn + other.cambioIn,
+                    cambioOut + other.cambioOut
             );
         }
     }
@@ -3021,6 +3036,8 @@ public class KioscoInventoryService {
         private int anulacionVenta;
         private int salida;
         private int salidaDevolucion;
+        private int cambioIn;
+        private int cambioOut;
 
         void apply(KioscoMovementType type, int delta) {
             switch (type) {
@@ -3066,15 +3083,21 @@ public class KioscoInventoryService {
                 case CAMBIO -> {
                     if (delta > 0) {
                         comprasAjustes += delta;
+                        entradas += delta;
+                        cambioIn += delta;
                     } else {
-                        salida += -delta;
+                        int qty = -delta;
+                        ventas += qty;
+                        salida += qty;
+                        cambioOut += qty;
                     }
                 }
             }
         }
 
         int applyTo(int initial) {
-            return initial + comprasAjustes - anulacionCompras + entradas - ventas + anulacionVenta - salida;
+            return initial + comprasAjustes - anulacionCompras + entradas - ventas + anulacionVenta - salida
+                    - cambioIn + cambioOut;
         }
 
         boolean isEmpty() {

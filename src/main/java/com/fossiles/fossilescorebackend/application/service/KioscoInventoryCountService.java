@@ -472,7 +472,7 @@ public class KioscoInventoryCountService {
 
     private KioscoPhysicalCountReportResponse buildReport(KioscoPhysicalCountEntity count, LocalDateTime balanceAsOfInclusive)
             throws BusinessException, ResourceNotFoundException {
-        kioskExchangeService.reclassifyDifferenceExchangeGivenAsVenta();
+        kioskExchangeService.reclassifyExchangeGivenAsCambio();
         boolean isSubcount = balanceAsOfInclusive != null;
         LocalDateTime periodFromAt = resolvePeriodFromAt(count);
         LocalDateTime periodToAt = resolvePeriodToAt(count);
@@ -704,6 +704,8 @@ public class KioscoInventoryCountService {
                     .anulacionVenta(kardexRow.getAnulacionVenta())
                     .salida(kardexRow.getSalida())
                     .salidaDevolucion(kardexRow.getSalidaDevolucion())
+                    .cambioIn(kardexRow.getCambioIn())
+                    .cambioOut(kardexRow.getCambioOut())
                     .inventarioFinal(inventarioFinal)
                     .counts(counts)
                     .total(total)
@@ -795,6 +797,8 @@ public class KioscoInventoryCountService {
                 .anulacionVenta(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getAnulacionVenta))
                 .salida(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getSalida))
                 .salidaDevolucion(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getSalidaDevolucion))
+                .cambioIn(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getCambioIn))
+                .cambioOut(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getCambioOut))
                 .inventarioFinal(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getInventarioFinal))
                 .counts(totalCounts)
                 .total(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getTotal))
@@ -1188,6 +1192,8 @@ public class KioscoInventoryCountService {
                 .anulacionVenta(0)
                 .salida(0)
                 .salidaDevolucion(0)
+                .cambioIn(0)
+                .cambioOut(0)
                 .build();
     }
 
@@ -1491,6 +1497,8 @@ public class KioscoInventoryCountService {
                     .anulacionVenta(existing.getAnulacionVenta() + row.getAnulacionVenta())
                     .salida(existing.getSalida() + row.getSalida())
                     .salidaDevolucion(existing.getSalidaDevolucion() + row.getSalidaDevolucion())
+                    .cambioIn(existing.getCambioIn() + row.getCambioIn())
+                    .cambioOut(existing.getCambioOut() + row.getCambioOut())
                     .inventarioFinal(existing.getInventarioFinal() + row.getInventarioFinal())
                     .build());
         }
@@ -1535,15 +1543,7 @@ public class KioscoInventoryCountService {
                 }
                 KioscoInventoryService.SizeKardexBucket current =
                         merged.getOrDefault(sizeKey, KioscoInventoryService.SizeKardexBucket.empty());
-                merged.put(sizeKey, current.plus(
-                        bucket.comprasAjustes,
-                        bucket.anulacionCompras,
-                        bucket.entradas,
-                        bucket.ventas,
-                        bucket.anulacionVenta,
-                        bucket.salida,
-                        bucket.salidaDevolucion
-                ));
+                merged.put(sizeKey, current.plus(bucket));
             }
         }
         return merged;
@@ -1632,7 +1632,9 @@ public class KioscoInventoryCountService {
                 + entradas
                 - row.getVentas()
                 + row.getAnulacionVenta()
-                - row.getSalida();
+                - row.getSalida()
+                - row.getCambioIn()
+                + row.getCambioOut();
     }
 
     private static void applyPrePeriodEntradasToKardexBySize(
@@ -1688,15 +1690,7 @@ public class KioscoInventoryCountService {
                 KioscoInventoryService.SizeKardexBucket unallocated =
                         sizeKardex.getOrDefault("", KioscoInventoryService.SizeKardexBucket.empty());
                 if (first && !unallocated.isEmpty()) {
-                    bucket = bucket.plus(
-                            unallocated.comprasAjustes,
-                            unallocated.anulacionCompras,
-                            unallocated.entradas,
-                            unallocated.ventas,
-                            unallocated.anulacionVenta,
-                            unallocated.salida,
-                            unallocated.salidaDevolucion
-                    );
+                    bucket = bucket.plus(unallocated);
                 }
             } else {
                 bucket = first ? bucketFromAggregateRow(base) : KioscoInventoryService.SizeKardexBucket.empty();
@@ -1735,7 +1729,9 @@ public class KioscoInventoryCountService {
                 base.getVentas(),
                 base.getAnulacionVenta(),
                 base.getSalida(),
-                base.getSalidaDevolucion()
+                base.getSalidaDevolucion(),
+                base.getCambioIn(),
+                base.getCambioOut()
         );
     }
 
@@ -1853,6 +1849,8 @@ public class KioscoInventoryCountService {
                 .anulacionVenta(bucket.anulacionVenta)
                 .salida(bucket.salida)
                 .salidaDevolucion(bucket.salidaDevolucion)
+                .cambioIn(bucket.cambioIn)
+                .cambioOut(bucket.cambioOut)
                 .inventarioFinal(inventarioFinal)
                 .counts(counts)
                 .total(total)
