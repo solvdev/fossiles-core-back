@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
@@ -30,6 +31,8 @@ public class ProductionTaskGenerationService {
     private static final List<String> DESKS_COUNT_CONFIG_KEYS = ProductionPlanningConstants.DESKS_COUNT_CONFIG_KEYS;
 
     private final TaskRepository taskRepository;
+    private final TaskDeskHoursService taskDeskHoursService;
+    private final ProductionPlanningLock productionPlanningLock;
     private final TaskItemRepository taskItemRepository;
     private final ProductionOrderRepository productionOrderRepository;
     private final ProductionOrderItemRepository productionOrderItemRepository;
@@ -524,14 +527,22 @@ public class ProductionTaskGenerationService {
     }
 
     private SchedulingContext buildSchedulingContext(int numDesks) {
+        // Mismo turno que el auto-plan, plan-window y el relleno de mesa liberada: de aquí
+        // al commit, la foto de la carga y las tareas que se creen a partir de ella son de
+        // este hilo solo. Esta generación corre a diario, así que era el hueco con más
+        // exposición real de los que quedaban sin candado.
+        productionPlanningLock.acquire();
+
         Map<LocalDate, Map<Integer, Double>> scheduleMap = new HashMap<>();
         List<TaskEntity> activeTasks = taskRepository.findPendingAndInProgressOrdered();
 
         for (TaskEntity task : activeTasks) {
             if ("CANCELLED".equals(task.getStatus())) continue;
 
-            if (task.getScheduledDate() != null && task.getDesk() != null && task.getEstimatedHours() != null) {
-                double baseHours = getTaskBaseHours(task);
+            // Sin la condición de estimatedHours != null: una tarea sin estimado ocupa la
+            // mesa igual, y excluirla la hacía desaparecer del mapa de carga.
+            if (task.getScheduledDate() != null && task.getDesk() != null) {
+                double baseHours = taskDeskHoursService.baseHours(task);
                 scheduleMap.computeIfAbsent(task.getScheduledDate(), k -> new HashMap<>());
                 scheduleMap.get(task.getScheduledDate())
                         .merge(task.getDesk(), baseHours, Double::sum);
@@ -603,23 +614,6 @@ public class ProductionTaskGenerationService {
         return resolveNumDesks().count();
     }
 
-    private double getTaskBaseHours(TaskEntity task) {
-        if (task == null) return 0.0;
-        if (ProductionPlanningConstants.isOnlineSaleOrder(null, task.getProductionOrderCode())) {
-            return 0.0;
-        }
-        double extra = 0.0;
-        if (task.getId() != null) {
-            extra = taskItemRepository.findByTaskId(task.getId()).stream()
-                    .filter(item -> Boolean.TRUE.equals(item.getDaySaleExtra()))
-                    .map(TaskItemEntity::getEstimatedHours)
-                    .filter(Objects::nonNull)
-                    .mapToDouble(Double::doubleValue)
-                    .sum();
-        }
-        return ProductionPlanningConstants.deskCupoBaseHours(
-                task.getEstimatedHours(), task.getProductionOrderCode(), extra);
-    }
 
     @Builder
     @Data

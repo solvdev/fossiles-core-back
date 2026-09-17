@@ -122,7 +122,8 @@ class KioscoInventoryCountServiceTest {
         when(kioscoInventoryService.computeSizeBalanceByStockAndSize(any(), any())).thenReturn(Map.of());
         when(kioscoInventoryService.computePrePeriodEntradasByStockId(any(), any(), any())).thenReturn(Map.of());
         when(kioscoInventoryService.computePrePeriodEntradasByStockAndSize(any(), any(), any())).thenReturn(Map.of());
-        when(kioscoInventoryService.buildKardexByStockAndSize(any(), any(), any(), any())).thenReturn(Map.of());
+        when(kioscoInventoryService.buildKardexByStockAndSize(
+                any(), any(LocalDateTime.class), any(LocalDateTime.class), any())).thenReturn(Map.of());
         when(exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
     }
 
@@ -163,7 +164,7 @@ class KioscoInventoryCountServiceTest {
         });
         stubPrincipalKardex(List.of(kardexRow(10)));
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
 
         assertThat(report.getId()).isEqualTo(countId);
         assertThat(report.getStatus()).isEqualTo("DRAFT");
@@ -189,7 +190,7 @@ class KioscoInventoryCountServiceTest {
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.of(existing));
         stubPrincipalKardex(List.of(kardexRow(10)));
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
 
         assertThat(report.getId()).isEqualTo(countId);
         // maxAbsDiff (10) ya coincide con lo calculado, por lo que no hace falta persistir de nuevo.
@@ -507,7 +508,7 @@ class KioscoInventoryCountServiceTest {
             return entity;
         });
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
 
         assertThat(report.getCategories()).hasSize(1);
         assertThat(report.getCategories().get(0).getCategoryName()).isEqualTo("Empaques");
@@ -558,7 +559,7 @@ class KioscoInventoryCountServiceTest {
             return entity;
         });
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
 
         assertThat(report.getCategories()).hasSize(2);
         assertThat(report.getCategories().stream().map(c -> c.getCategoryName()))
@@ -601,7 +602,7 @@ class KioscoInventoryCountServiceTest {
             return entity;
         });
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
 
         var rows = report.getCategories().get(0).getRows();
         assertThat(rows).hasSize(2);
@@ -665,7 +666,7 @@ class KioscoInventoryCountServiceTest {
             return entity;
         });
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
 
         var rows = report.getCategories().get(0).getRows();
         assertThat(rows).hasSize(3);
@@ -709,7 +710,7 @@ class KioscoInventoryCountServiceTest {
             return entity;
         });
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
 
         var row = report.getCategories().get(0).getRows().get(0);
         assertThat(row.getSizeLabel()).isEqualTo("34");
@@ -733,7 +734,7 @@ class KioscoInventoryCountServiceTest {
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
         stubSubcountKardex(asOf, List.of(kardexRow(7)));
 
-        KioscoPhysicalCountReportResponse report = service.getSubcountReport(countId, asOf);
+        KioscoPhysicalCountReportResponse report = service.getSubcountReport(countId, asOf.toString());
 
         assertThat(report.getReportType()).isEqualTo("SUBCONTEO");
         assertThat(report.getAsOfDate()).isEqualTo(asOf);
@@ -783,7 +784,7 @@ class KioscoInventoryCountServiceTest {
                         .build()
         ));
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
 
         assertThat(report.getCategories()).hasSize(1);
         KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow subtotal =
@@ -805,7 +806,7 @@ class KioscoInventoryCountServiceTest {
                 .build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
 
-        assertThatThrownBy(() -> service.getSubcountReport(countId, LocalDate.of(2026, 7, 1)))
+        assertThatThrownBy(() -> service.getSubcountReport(countId, LocalDate.of(2026, 7, 1).toString()))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("fecha de corte");
     }
@@ -880,7 +881,7 @@ class KioscoInventoryCountServiceTest {
             return entity;
         });
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
 
         var row = report.getCategories().get(0).getRows().get(0);
         assertThat(row.getInventarioInicial()).isZero();
@@ -951,7 +952,7 @@ class KioscoInventoryCountServiceTest {
             return entity;
         });
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from, to);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
 
         var row = report.getCategories().get(0).getRows().get(0);
         assertThat(row.getInventarioInicial()).isEqualTo(1);
@@ -1033,7 +1034,7 @@ class KioscoInventoryCountServiceTest {
                 eq(locationId), eq(currentFrom), eq(currentTo), eq(countId)))
                 .thenReturn(Map.of());
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, currentFrom, currentTo);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, currentFrom.toString(), currentTo.toString());
 
         var row = report.getCategories().get(0).getRows().get(0);
         assertThat(row.getInventarioInicial()).isZero();
@@ -1141,7 +1142,7 @@ class KioscoInventoryCountServiceTest {
                 .id(productId).code("FOSS-33").name("CINCHO DALILA").categoryId(categoryId)
                 .cinchoType("REVERSIBLE").build()));
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, currentFrom, currentTo);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, currentFrom.toString(), currentTo.toString());
 
         var row = report.getCategories().get(0).getRows().get(0);
         assertThat(row.getInventarioInicial()).isZero();
@@ -1240,7 +1241,7 @@ class KioscoInventoryCountServiceTest {
                         .build()
         ));
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, currentFrom, currentTo);
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, currentFrom.toString(), currentTo.toString());
 
         var row = report.getCategories().get(0).getRows().get(0);
         assertThat(row.getInventarioInicial()).isEqualTo(3);

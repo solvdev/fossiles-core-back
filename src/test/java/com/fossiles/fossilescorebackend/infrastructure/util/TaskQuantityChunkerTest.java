@@ -17,7 +17,10 @@ class TaskQuantityChunkerTest {
     @Test
     void splitsFiveWithDefaultTwo() {
         assertThat(TaskQuantityChunker.splitQuantity(5, 2)).containsExactly(2, 2, 1);
-        assertThat(TaskQuantityChunker.splitQuantity(5, null)).containsExactly(2, 2, 1);
+        // splitQuantity recibe un int; el nulo lo resuelve resolveUnitsPerTask antes,
+        // que es justo lo que hace el llamador real (ProductionAutoPlannerService).
+        assertThat(TaskQuantityChunker.splitQuantity(5, TaskQuantityChunker.resolveUnitsPerTask(null)))
+                .containsExactly(2, 2, 1);
     }
 
     @Test

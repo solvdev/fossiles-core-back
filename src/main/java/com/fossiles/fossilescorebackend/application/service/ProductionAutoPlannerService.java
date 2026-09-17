@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.ProductionDaySa
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
@@ -24,6 +25,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningCo
 import com.fossiles.fossilescorebackend.infrastructure.util.TaskQuantityChunker;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,7 +39,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
 @Service
@@ -53,14 +54,33 @@ public class ProductionAutoPlannerService {
     private final LeatherRequirementService leatherRequirementService;
     private final ProductionDeskCountService productionDeskCountService;
     private final SmartMaterialRequestService smartMaterialRequestService;
-    private final ReentrantLock planLock = new ReentrantLock();
+    private final ProductionPlanningLock productionPlanningLock;
+    private final TaskDeskHoursService taskDeskHoursService;
+
+    /**
+     * Este mismo bean, pero visto a través del proxy de Spring.
+     *
+     * <p>Llamar a {@code planPending()} con {@code this} se salta el proxy y con él
+     * la anotación {@code @Transactional}: el auto-plan del cron llevaba corriendo
+     * sin transacción propia, cada tarea confirmándose por su cuenta. Sin
+     * transacción no hay a qué amarrar el candado de {@link ProductionPlanningLock},
+     * así que el turno hay que pedirlo desde dentro de una.
+     *
+     * <p>{@code ObjectProvider} resuelve el bean al usarlo, no al construirlo, que es
+     * lo que evita la dependencia circular de inyectarse a sí mismo.
+     */
+    private final ObjectProvider<ProductionAutoPlannerService> selfProvider;
+
+    private ProductionAutoPlannerService self() {
+        return selfProvider.getObject();
+    }
 
     public void planQuietly(Long productionOrderId) {
         if (productionOrderId == null) {
             return;
         }
         try {
-            planOrder(productionOrderId);
+            self().planOrder(productionOrderId);
         } catch (Exception e) {
             log.warn("Auto-plan OP {}: {}", productionOrderId, e.getMessage());
         }
@@ -68,7 +88,7 @@ public class ProductionAutoPlannerService {
 
     public void planAllQuietly() {
         try {
-            planPending();
+            self().planPending();
         } catch (Exception e) {
             log.warn("Auto-plan global: {}", e.getMessage());
         }
@@ -76,12 +96,7 @@ public class ProductionAutoPlannerService {
 
     @Transactional
     public ProductionAutoPlanResult planPending() throws BusinessException, ResourceNotFoundException {
-        planLock.lock();
-        try {
-            return planOrders(eligibleOrders(null));
-        } finally {
-            planLock.unlock();
-        }
+        return planOrders(eligibleOrders(null));
     }
 
     @Transactional
@@ -89,12 +104,7 @@ public class ProductionAutoPlannerService {
             throws BusinessException, ResourceNotFoundException {
         ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
-        planLock.lock();
-        try {
-            return planOrders(List.of(po));
-        } finally {
-            planLock.unlock();
-        }
+        return planOrders(List.of(po));
     }
 
     @Transactional(readOnly = true)
@@ -147,6 +157,9 @@ public class ProductionAutoPlannerService {
         if (orders == null || orders.isEmpty()) {
             return result;
         }
+        // Turno antes de leer nada: de aquí al commit, la foto de la carga de las
+        // mesas y las tareas que se creen a partir de ella son de este hilo solo.
+        productionPlanningLock.acquire();
 
         LocalDate today = DeskSlotFinder.nextWorkday(GuatemalaDateTime.today());
         int numDesks = productionDeskCountService.getDay(today).getNumDesks();
@@ -379,11 +392,11 @@ public class ProductionAutoPlannerService {
             if (task.getScheduledDate() == null || task.getDesk() == null) {
                 continue;
             }
-            double hours = ProductionPlanningConstants.isOnlineSaleOrder(null, task.getProductionOrderCode())
-                    ? 0.0
-                    : (task.getEstimatedHours() != null ? task.getEstimatedHours() : 0.0);
+            // Antes calculaba las horas aquí con estimatedHours crudo, sin descontar los
+            // ítems de venta del día: la misma mesa se veía con un número aquí y con otro
+            // en plan-window. Ahora los dos leen del mismo sitio.
             schedule.computeIfAbsent(task.getScheduledDate(), d -> new HashMap<>())
-                    .merge(task.getDesk(), hours, Double::sum);
+                    .merge(task.getDesk(), taskDeskHoursService.baseHours(task), Double::sum);
         }
         return schedule;
     }

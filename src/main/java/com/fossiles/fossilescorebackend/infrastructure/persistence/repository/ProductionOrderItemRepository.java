@@ -10,11 +10,15 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
 import java.util.List;
 
 @Repository
 public interface ProductionOrderItemRepository extends JpaRepository<ProductionOrderItemEntity, Long> {
     List<ProductionOrderItemEntity> findByProductionOrderId(Long productionOrderId);
+
+    /** Los ítems de varias OP de una sola consulta, para no pedirlos orden por orden. */
+    List<ProductionOrderItemEntity> findByProductionOrderIdIn(Collection<Long> productionOrderIds);
 
     /**
      * Lock pesimista para crear tareas desde el organizador sin sobre-asignar cantidades

@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.CreateManualTask
 import com.fossiles.fossilescorebackend.application.dto.request.PlanWindowRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DistributionQueueProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialsTaskViewResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.OrganizerOrderPageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OrganizerProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OplDispatchSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductionAutoPlanResult;
@@ -11,6 +12,8 @@ import com.fossiles.fossilescorebackend.application.dto.response.ProductionDaySa
 import com.fossiles.fossilescorebackend.application.dto.response.TaskResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaskTicketResponse;
 import com.fossiles.fossilescorebackend.application.service.ProductionAutoPlannerService;
+import com.fossiles.fossilescorebackend.application.service.ProductionDeskCountService;
+import com.fossiles.fossilescorebackend.application.service.TaskDeskHoursService;
 import com.fossiles.fossilescorebackend.application.service.OplDispatchSummaryService;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -20,10 +23,12 @@ import com.fossiles.fossilescorebackend.application.service.ProductionTaskLifecy
 import com.fossiles.fossilescorebackend.application.service.TaskCodeGenerator;
 import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillService;
 import com.fossiles.fossilescorebackend.application.service.TaskOrganizerService;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -39,6 +44,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -76,6 +82,9 @@ public class TaskController {
     private final ProductionDeskSupervisorRepository productionDeskSupervisorRepository;
     private final ProductionAutoPlannerService productionAutoPlannerService;
     private final OplDispatchSummaryService oplDispatchSummaryService;
+    private final ProductionPlanningLock productionPlanningLock;
+    private final ProductionDeskCountService productionDeskCountService;
+    private final TaskDeskHoursService taskDeskHoursService;
     private final SecurityUtil securityUtil;
 
     // ==================== CRUD ====================
@@ -120,10 +129,12 @@ public class TaskController {
      * @param type OPL (venta en línea), REGULAR (las demás) o ALL
      */
     @GetMapping("/organizer/orders")
-    public ResponseEntity<List<OrganizerProductionOrderResponse>> getOrganizerOrders(
+    public ResponseEntity<OrganizerOrderPageResponse> getOrganizerOrders(
             @RequestParam(name = "type", defaultValue = "ALL") String type,
-            @RequestParam(name = "search", required = false) String search) {
-        return ResponseEntity.ok(taskOrganizerService.getOrganizerOrders(type, search));
+            @RequestParam(name = "search", required = false) String search,
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "30") int size) throws BusinessException {
+        return ResponseEntity.ok(taskOrganizerService.getOrganizerOrders(type, search, page, size));
     }
 
     /**
@@ -177,6 +188,22 @@ public class TaskController {
     public ResponseEntity<List<TaskResponse>> getPendingBacklog() {
         LocalDate today = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDate();
         List<TaskResponse> tasks = taskRepository.findPendingBacklog(today).stream()
+                .map(this::toResponse)
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(tasks);
+    }
+
+    /**
+     * "No terminadas": las que se empezaron un día anterior y siguen abiertas.
+     *
+     * El backlog de arriba filtra {@code status = 'PENDING'} en igualdad estricta, así que
+     * una tarea que alguien empezó y no cerró no salía en ninguna pantalla: es la que el
+     * auxiliar no encuentra. Conservan mesa y, por tanto, encargado del día.
+     */
+    @GetMapping("/organizer/unfinished")
+    public ResponseEntity<List<TaskResponse>> getUnfinishedCarryOver() {
+        LocalDate today = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDate();
+        List<TaskResponse> tasks = taskRepository.findUnfinishedCarryOver(today).stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
         return ResponseEntity.ok(tasks);
@@ -387,6 +414,10 @@ public class TaskController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
             @RequestParam(required = false) Integer desksCount) {
 
+        // Mismo turno que el auto-plan y que plan-window: este endpoint lee la carga del
+        // día, elige la mesa menos cargada y escribe encima de lo que leyó.
+        productionPlanningLock.acquire();
+
         int maxConfiguredDesks = getNumDesks();
         int activeDesks = desksCount == null ? maxConfiguredDesks : Math.max(1, Math.min(desksCount, maxConfiguredDesks));
 
@@ -404,8 +435,14 @@ public class TaskController {
                     "message", "No hay tareas pendientes para redistribuir en la fecha indicada."));
         }
 
+        // Las horas de venta del día de una sola consulta: el comparador de abajo pregunta
+        // por cada tarea y varias veces, así que resolverlo tarea a tarea multiplica los
+        // viajes a la base dentro de la transacción.
+        Map<Long, Double> extraByTaskId = taskDeskHoursService.daySaleExtraByTaskId(
+                candidates.stream().map(TaskEntity::getId).filter(Objects::nonNull).toList());
+
         Comparator<TaskEntity> byPriorityThenWorkload = Comparator
-                .comparing((TaskEntity t) -> -getTaskBaseHours(t))
+                .comparing((TaskEntity t) -> -taskDeskHoursService.baseHours(t, extraByTaskId))
                 .thenComparing(TaskEntity::getDeliveryDate, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(TaskEntity::getPriority, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(TaskEntity::getId);
@@ -422,7 +459,7 @@ public class TaskController {
         int updated = 0;
         for (TaskEntity task : sorted) {
             int targetDesk = findLeastLoadedDesk(deskLoads);
-            double taskHours = getTaskBaseHours(task);
+            double taskHours = taskDeskHoursService.baseHours(task, extraByTaskId);
             deskLoads.merge(targetDesk, taskHours, Double::sum);
 
             if (!Objects.equals(task.getDesk(), targetDesk)) {
@@ -515,11 +552,22 @@ public class TaskController {
             @RequestParam(required = false) Integer desksCount,
             @RequestParam(required = false) Integer horizonDays,
             @RequestParam(required = false) Long productionOrderId,
-            @RequestBody(required = false) PlanWindowRequest planBody) {
+            @RequestBody(required = false) PlanWindowRequest planBody) throws BusinessException {
 
+        // Mismo turno que el auto-plan y que el relleno de mesa liberada: los tres
+        // leen la carga por mesa y escriben encima de lo que leyeron.
+        productionPlanningLock.acquire();
+
+        // Dentro del turno, no antes: estas prioridades deciden el orden de la cola que
+        // se reparte tres líneas más abajo, así que escribirlas fuera del candado dejaba
+        // una ventana en la que otro hilo podía repartir con el orden viejo.
         mergeSchedulingPrioritiesFromRequest(planBody != null ? planBody.getSchedulingPriorities() : null);
 
-        int maxConfiguredDesks = getNumDesks();
+        // Las mesas del día salen de production_desk_count, igual que en el auto-planner
+        // (ProductionAutoPlannerService:164). El getNumDesks() de este controlador solo mira
+        // system_config y cae a 12, así que los dos planificadores repartían sobre números
+        // distintos: el mismo día podía tener 8 mesas para uno y 12 para el otro.
+        int maxConfiguredDesks = productionDeskCountService.getDay(startDate).getNumDesks();
         int activeDesks = desksCount == null ? maxConfiguredDesks : Math.max(1, Math.min(desksCount, maxConfiguredDesks));
         int days = horizonDays == null ? 5 : Math.max(1, horizonDays);
 
@@ -546,13 +594,24 @@ public class TaskController {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toCollection(HashSet::new));
         List<ProductionOrderEntity> pos = poIds.isEmpty() ? List.of() : productionOrderRepository.findAllById(poIds);
+        // Las horas de venta del día de TODAS las candidatas, de una sola consulta. Sin
+        // esto, cada llamada a baseHours consultaba task_item por su cuenta, y como se
+        // llama desde el comparador y desde dos bucles, una corrida de mil tareas hacía
+        // miles de viajes a la base sin soltar el candado: pasaba de segundos a minutos.
+        Map<Long, Double> extraByTaskId = taskDeskHoursService.daySaleExtraByTaskId(
+                candidates.stream().map(TaskEntity::getId).filter(Objects::nonNull).toList());
+
         Map<Long, Integer> prioByPo = new HashMap<>();
         Map<Long, LocalDateTime> createdAtByPo = new HashMap<>();
         Map<Long, Boolean> canOvercapByPo = new HashMap<>();
         for (ProductionOrderEntity po : pos) {
             Long id = po.getId();
             if (id == null) continue;
-            prioByPo.put(id, Optional.ofNullable(po.getSchedulingPriority()).orElse(Integer.MAX_VALUE));
+            // El mismo NULL se resolvía aquí con MAX_VALUE (al final de la cola) y en el
+            // auto-plan con resolve() (que da 0 a las OPL). La misma orden salía primera
+            // en un planificador y última en el otro. Ahora los dos usan resolve().
+            prioByPo.put(id, Optional.ofNullable(po.getSchedulingPriority())
+                    .orElseGet(() -> ProductionOrderPlanPriority.resolve(po.getOrderType(), po.getCode())));
             createdAtByPo.put(id, po.getCreatedAt() != null ? po.getCreatedAt() : LocalDateTime.MAX);
             canOvercapByPo.put(id, canOvercapDeskDay(po.getOrderType()));
         }
@@ -571,8 +630,15 @@ public class TaskController {
                 .filter(t -> t.getProductionOrderId() != null)
                 .collect(Collectors.groupingBy(TaskEntity::getProductionOrderId));
 
+        // El reparto es por OP, así que una tarea sin OP no entra en ninguna cola. Antes
+        // desaparecía en silencio y ni siquiera se contaba (selected se calcula sobre las
+        // agrupadas): se reporta aparte para que el usuario sepa que existe.
+        List<TaskEntity> tasksWithoutPo = candidates.stream()
+                .filter(t -> t.getProductionOrderId() == null)
+                .toList();
+
         Comparator<TaskEntity> withinPoComparator = Comparator
-                .comparing((TaskEntity t) -> -getTaskBaseHours(t))
+                .comparing((TaskEntity t) -> -taskDeskHoursService.baseHours(t, extraByTaskId))
                 .thenComparing(TaskEntity::getDeliveryDate, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(TaskEntity::getPriority, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(TaskEntity::getId);
@@ -592,18 +658,41 @@ public class TaskController {
             for (int desk = 1; desk <= activeDesks; desk++) m.put(desk, 0.0);
             loadsByDate.put(date, m);
         }
+        // Momento de referencia único para toda la corrida: si cada tarea leyera su propio
+        // reloj, dos tareas de la misma mesa se descontarían con instantes distintos.
+        LocalDateTime ahora = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDateTime();
+        LocalDate primerDiaHabil = siguienteDiaHabil(startDate);
+        LocalDate ultimoDiaHorizonte = startDate.plusDays(days - 1L);
+
         for (TaskEntity t : pool) {
             if (!"IN_PROGRESS".equals(t.getStatus())) continue;
             if (t.getDesk() == null || t.getScheduledDate() == null) continue;
             if (t.getDesk() < 1 || t.getDesk() > activeDesks) continue;
-            Map<Integer, Double> m = loadsByDate.get(t.getScheduledDate());
-            if (m == null) continue; // fuera del horizonte
-            m.put(t.getDesk(), m.getOrDefault(t.getDesk(), 0.0) + getTaskBaseHours(t));
+
+            // Una tarea en curso ocupa su mesa AHORA, aunque su fecha sea vieja o caiga en
+            // fin de semana. Antes esos dos casos hacían `continue` y la mesa aparecía
+            // vacía: se le encimaban 4 h nuevas sobre trabajo que seguía ahí. Se pliega la
+            // carga al primer día hábil del horizonte, sin tocar la fecha de la tarea
+            // (reescribirla la sacaría de la vista de atrasos de bodega).
+            LocalDate diaDeCarga = t.getScheduledDate();
+            if (diaDeCarga.isAfter(ultimoDiaHorizonte)) continue; // futuro legítimo
+            Map<Integer, Double> m = loadsByDate.get(diaDeCarga);
+            if (m == null) m = loadsByDate.get(primerDiaHabil);
+            if (m == null) continue;
+
+            m.put(t.getDesk(),
+                    m.getOrDefault(t.getDesk(), 0.0) + taskDeskHoursService.remainingDeskHours(t, ahora, extraByTaskId));
         }
 
         int updated = 0;
         LocalDate maxAssignedDate = startDate;
         int selected = 0;
+        int placed = 0;
+
+        // Lo que no cupo. Antes el `if (chosenDesk != -1)` no tenía rama else: la tarea se
+        // quedaba con su mesa y su fecha viejas y la respuesta no lo decía en ningún sitio,
+        // así que el usuario no podía distinguir "ya estaba bien" de "no cupo".
+        List<Map<String, Object>> notPlaced = new ArrayList<>();
 
         List<Long> opQueue = tasksByPo.keySet().stream()
                 .sorted(opQueueComparator)
@@ -617,33 +706,64 @@ public class TaskController {
 
             boolean canOvercapDeskDay = Boolean.TRUE.equals(canOvercapByPo.get(poId));
             for (TaskEntity task : poTasks) {
-                double taskHours = getTaskBaseHours(task);
+                double taskHours = taskDeskHoursService.baseHours(task, extraByTaskId);
 
                 LocalDate targetDate = startDate;
                 boolean assigned = false;
 
-                int maxDayIdx = canOvercapDeskDay ? 0 : Math.max(0, days - 1);
-                for (int dayIdx = 0; dayIdx <= maxDayIdx && !assigned; dayIdx++) {
+                // Una venta en línea o de kiosko que ya quedó colocada en un día posterior
+                // conserva mesa y día: no se la trae de vuelta al día de la corrida. Antes
+                // el tope de un solo día hacía justo lo contrario — cada corrida les
+                // reescribía la fecha a hoy y les reasignaba la mesa menos cargada.
+                LocalDate fechaPrevia = task.getScheduledDate();
+                Integer mesaPrevia = task.getDesk();
+                boolean arrastrada = canOvercapDeskDay
+                        && mesaPrevia != null
+                        && mesaPrevia >= 1 && mesaPrevia <= activeDesks
+                        && fechaPrevia != null
+                        && fechaPrevia.isAfter(startDate);
+
+                int startDayIdx = 0;
+                if (arrastrada) {
+                    long desplazamiento = ChronoUnit.DAYS.between(startDate, fechaPrevia);
+                    if (desplazamiento < days) startDayIdx = (int) desplazamiento;
+                }
+
+                int maxDayIdx = Math.max(0, days - 1);
+                for (int dayIdx = startDayIdx; dayIdx <= maxDayIdx && !assigned; dayIdx++) {
                     targetDate = startDate.plusDays(dayIdx);
                     Map<Integer, Double> loads = loadsByDate.get(targetDate);
                     if (loads == null) continue;
 
                     int chosenDesk = -1;
-                    double chosenDeskLoad = Double.POSITIVE_INFINITY;
-                    for (int desk = 1; desk <= activeDesks; desk++) {
-                        double currentLoad = loads.getOrDefault(desk, 0.0);
 
-                        boolean oversizedSingle = taskHours > MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
-                        boolean canOvercap = canOvercapDeskDay && targetDate.equals(startDate);
-                        boolean fits =
-                                canOvercap
-                                        || (oversizedSingle && currentLoad <= 1e-9)
-                                        || (currentLoad + taskHours <= MAX_HOURS_PER_DESK_PER_DAY + 1e-9);
+                    if (arrastrada && targetDate.equals(fechaPrevia)) {
+                        // La mesa se conserva porque se deja de elegir, no porque puntúe
+                        // mejor: el barrido de abajo se queda siempre con la menos cargada,
+                        // y como la carga cambia cada día la tarea iría saltando de mesa.
+                        chosenDesk = mesaPrevia;
+                    } else {
+                        double chosenDeskLoad = Double.POSITIVE_INFINITY;
+                        for (int desk = 1; desk <= activeDesks; desk++) {
+                            double currentLoad = loads.getOrDefault(desk, 0.0);
 
-                        if (!fits) continue;
-                        if (currentLoad < chosenDeskLoad) {
-                            chosenDeskLoad = currentLoad;
-                            chosenDesk = desk;
+                            boolean oversizedSingle = taskHours > MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
+                            // El permiso de pasarse del cupo viaja con la tarea arrastrada a
+                            // su propia mesa: si se quedara anclado al día de la corrida, una
+                            // OPCK lo perdería justo el día en que más lo necesita.
+                            boolean canOvercap = canOvercapDeskDay
+                                    && (targetDate.equals(startDate)
+                                        || (arrastrada && mesaPrevia != null && desk == mesaPrevia));
+                            boolean fits =
+                                    canOvercap
+                                            || (oversizedSingle && currentLoad <= 1e-9)
+                                            || (currentLoad + taskHours <= MAX_HOURS_PER_DESK_PER_DAY + 1e-9);
+
+                            if (!fits) continue;
+                            if (currentLoad < chosenDeskLoad) {
+                                chosenDeskLoad = currentLoad;
+                                chosenDesk = desk;
+                            }
                         }
                     }
 
@@ -658,21 +778,82 @@ public class TaskController {
                             updated++;
                         }
                         assigned = true;
+                        placed++;
                     }
+                }
+
+                if (!assigned) {
+                    String motivo = arrastrada
+                            ? "Viene arrastrada de " + fechaPrevia + " en la mesa " + mesaPrevia
+                              + " y esa mesa ya no tiene hueco en el horizonte."
+                            : "No cupo en las " + activeDesks + " mesas dentro de los "
+                              + days + " día(s) del horizonte.";
+
+                    Map<String, Object> fila = new LinkedHashMap<>();
+                    fila.put("taskId", task.getId());
+                    fila.put("taskCode", task.getCode());
+                    fila.put("productionOrderCode", task.getProductionOrderCode());
+                    fila.put("hours", taskHours);
+                    fila.put("currentDesk", task.getDesk());
+                    fila.put("currentDate", task.getScheduledDate());
+                    // Ahora todas tienen día siguiente: las de venta en línea y kiosko ya no
+                    // están ancladas al día de la corrida.
+                    fila.put("nextDayCandidate", siguienteDiaHabil(startDate.plusDays(days)));
+                    fila.put("keepsDesk", arrastrada ? mesaPrevia : null);
+                    fila.put("reason", motivo);
+                    notPlaced.add(fila);
                 }
             }
         }
 
-        return ResponseEntity.ok(Map.of(
-                "startDate", startDate,
-                "activeDesks", activeDesks,
-                "horizonDays", days,
-                "selectedTasks", selected,
-                "updatedTasks", updated,
-                "maxAssignedDate", maxAssignedDate,
-                "message", "Distribución por OP completada: " + selected
-                        + " tarea(s) procesada(s) desde " + startDate
-                        + " (horizonte " + days + " día(s))."));
+        for (TaskEntity task : tasksWithoutPo) {
+            selected++;
+            Map<String, Object> fila = new LinkedHashMap<>();
+            fila.put("taskId", task.getId());
+            fila.put("taskCode", task.getCode());
+            fila.put("productionOrderCode", null);
+            fila.put("hours", taskDeskHoursService.baseHours(task, extraByTaskId));
+            fila.put("currentDesk", task.getDesk());
+            fila.put("currentDate", task.getScheduledDate());
+            fila.put("nextDayCandidate", null);
+            fila.put("reason", "Sin orden de producción: el reparto va por OP y esta tarea "
+                    + "no pertenece a ninguna.");
+            notPlaced.add(fila);
+        }
+
+        String message = notPlaced.isEmpty()
+                ? "Distribución por OP completada: " + placed + " de " + selected
+                  + " tarea(s) colocada(s) desde " + startDate
+                  + " (horizonte " + days + " día(s))."
+                : "Distribución por OP parcial: " + placed + " de " + selected
+                  + " tarea(s) colocada(s). " + notPlaced.size()
+                  + " no cupo/cupieron en el horizonte de " + days + " día(s).";
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("startDate", startDate);
+        body.put("activeDesks", activeDesks);
+        body.put("horizonDays", days);
+        body.put("selectedTasks", selected);
+        body.put("placedTasks", placed);
+        body.put("updatedTasks", updated);
+        body.put("notPlacedTasks", notPlaced.size());
+        body.put("notPlaced", notPlaced);
+        body.put("maxAssignedDate", maxAssignedDate);
+        body.put("message", message);
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * Primer día hábil desde {@code desde} inclusive. Se usa para decirle al usuario a qué
+     * día se iría el trabajo que no cupo en el horizonte, sin proponerle un fin de semana.
+     * El tope de 14 vueltas es una guarda: sábado y domingo nunca encadenan tantos.
+     */
+    private LocalDate siguienteDiaHabil(LocalDate desde) {
+        LocalDate cursor = desde;
+        for (int i = 0; i < 14 && !ProductionPlanningConstants.isWorkday(cursor); i++) {
+            cursor = cursor.plusDays(1);
+        }
+        return cursor;
     }
 
     @PutMapping("/{id:\\d+}/status")
@@ -1841,23 +2022,6 @@ public class TaskController {
         return resolveNumDesks().count();
     }
 
-    private double getTaskBaseHours(TaskEntity task) {
-        if (task == null) return 0.0;
-        if (ProductionPlanningConstants.isOnlineSaleOrder(null, task.getProductionOrderCode())) {
-            return 0.0;
-        }
-        double extra = 0.0;
-        if (task.getId() != null) {
-            extra = taskItemRepository.findByTaskId(task.getId()).stream()
-                    .filter(item -> Boolean.TRUE.equals(item.getDaySaleExtra()))
-                    .map(TaskItemEntity::getEstimatedHours)
-                    .filter(Objects::nonNull)
-                    .mapToDouble(Double::doubleValue)
-                    .sum();
-        }
-        return ProductionPlanningConstants.deskCupoBaseHours(
-                task.getEstimatedHours(), task.getProductionOrderCode(), extra);
-    }
 
     private int findLeastLoadedDesk(Map<Integer, Double> deskLoads) {
         return deskLoads.entrySet().stream()
@@ -2385,10 +2549,16 @@ public class TaskController {
         return ProductionPlanningConstants.canOvercapDeskDay(orderType);
     }
 
+    /** Primera prioridad que el usuario puede asignar a mano: 0 y 1 son cupos reservados. */
+    private static final int MIN_MANUAL_SCHEDULING_PRIORITY = 2;
+    /** Última: 100 es el valor por defecto de las órdenes sin prioridad propia. */
+    private static final int MAX_MANUAL_SCHEDULING_PRIORITY = 99;
+
     private void mergeSchedulingPrioritiesFromRequest(Map<String, Integer> schedulingPriorities) {
         if (schedulingPriorities == null || schedulingPriorities.isEmpty()) {
             return;
         }
+        Map<Long, Integer> porId = new HashMap<>();
         for (Map.Entry<String, Integer> e : schedulingPriorities.entrySet()) {
             if (e.getKey() == null || e.getKey().isBlank()) continue;
             long id;
@@ -2398,12 +2568,25 @@ public class TaskController {
                 continue;
             }
             Integer p = e.getValue();
-            if (p == null || p < 1) continue;
-            productionOrderRepository.findById(id).ifPresent(po -> {
-                po.setSchedulingPriority(p);
-                productionOrderRepository.save(po);
-            });
+            // Rango válido 2..99. Por debajo están los cupos reservados (0 = venta en
+            // línea, 1 = cliente kiosko) y 100 es el valor por defecto del resto: una
+            // prioridad manual fuera de ese rango no adelanta a nadie o empata con una
+            // familia, y en ambos casos el usuario no vería reflejado lo que arrastró.
+            if (p == null || p < MIN_MANUAL_SCHEDULING_PRIORITY || p > MAX_MANUAL_SCHEDULING_PRIORITY) {
+                continue;
+            }
+            porId.put(id, p);
         }
+
+        if (porId.isEmpty()) return;
+
+        // Antes era una consulta y un save por orden. Con una cola de 30 órdenes eso eran
+        // 60 viajes a la base dentro de la transacción que sostiene el candado.
+        List<ProductionOrderEntity> ordenes = productionOrderRepository.findAllById(porId.keySet());
+        for (ProductionOrderEntity po : ordenes) {
+            po.setSchedulingPriority(porId.get(po.getId()));
+        }
+        productionOrderRepository.saveAll(ordenes);
     }
 
     private Map<Long, Integer> loadSchedulingPriorityByProductionOrderId(Set<Long> productionOrderIds) {
