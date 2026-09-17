@@ -370,6 +370,28 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             java.util.Collection<Long> locationIds
     );
 
+    /**
+     * Entradas reales al kiosko (recepción y traslado in) por producto/color.
+     */
+    @Query("""
+            SELECT s.locationId, s.productId, s.colorId, COALESCE(SUM(m.quantity), 0)
+            FROM KioscoMovementEntity m
+            JOIN m.kioscoStock s
+            WHERE s.locationId IN :locationIds
+              AND m.movementType IN (
+                  com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.ENTRADA,
+                  com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType.TRASLADO_ENTRADA
+              )
+              AND m.createdAt >= :fromInclusive
+              AND m.createdAt < :toExclusive
+            GROUP BY s.locationId, s.productId, s.colorId
+            """)
+    List<Object[]> aggregateEntriesByProductColor(
+            @Param("locationIds") List<Long> locationIds,
+            @Param("fromInclusive") LocalDateTime fromInclusive,
+            @Param("toExclusive") LocalDateTime toExclusive
+    );
+
     @Modifying
     @Query("UPDATE KioscoMovementEntity m SET m.kioscoStockId = :toStockId "
             + "WHERE m.kioscoStockId = :fromStockId")

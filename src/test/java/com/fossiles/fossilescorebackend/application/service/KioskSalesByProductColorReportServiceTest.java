@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.RoleEn
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
@@ -25,13 +26,16 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -53,6 +57,8 @@ class KioskSalesByProductColorReportServiceTest {
     private KioscoStockRepository kioscoStockRepository;
     @Mock
     private KioskSaleItemRepository kioskSaleItemRepository;
+    @Mock
+    private KioscoMovementRepository kioscoMovementRepository;
 
     @InjectMocks
     private KioskSalesByProductColorReportService service;
@@ -78,20 +84,22 @@ class KioskSalesByProductColorReportServiceTest {
                 .build();
         black = ColorEntity.builder().id(21L).name("Negro").build();
         brown = ColorEntity.builder().id(22L).name("Cafe").build();
+        lenient().when(kioscoMovementRepository.aggregateEntriesByProductColor(anyList(), any(), any()))
+                .thenReturn(List.of());
     }
 
     @Test
     void excludesVoidAndTestSalesAndPilotKiosks() throws BusinessException {
         stubAdmin();
         when(locationRepository.findAll()).thenReturn(List.of(kioskA, kioskB, pilot));
-        when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L, 2L))).thenReturn(java.util.Arrays.asList(
+        when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L, 2L))).thenReturn(rows(
                 new Object[] { 1L, 10L, 21L, 4 },
                 new Object[] { 1L, 10L, 22L, 2 },
                 new Object[] { 2L, 10L, 21L, 1 }
         ));
         when(kioskSaleItemRepository.aggregateCompletedSalesByProductColor(
                 LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L, 2L)
-        )).thenReturn(java.util.Arrays.asList(
+        )).thenReturn(rows(
                 new Object[] { 10L, 21L, "Negro", 1L, new BigDecimal("5"), new BigDecimal("1500.00"), 3L }
         ));
         stubCatalog();
@@ -123,16 +131,16 @@ class KioskSalesByProductColorReportServiceTest {
     }
 
     @Test
-    void hidesZeroSalesWhenRequested() throws BusinessException {
+    void keepsStockOnlyColorsEvenWhenZeroSalesHidden() throws BusinessException {
         stubAdmin();
         when(locationRepository.findAll()).thenReturn(List.of(kioskA));
-        when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L))).thenReturn(java.util.Arrays.asList(
+        when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L))).thenReturn(rows(
                 new Object[] { 1L, 10L, 21L, 4 },
                 new Object[] { 1L, 10L, 22L, 2 }
         ));
         when(kioskSaleItemRepository.aggregateCompletedSalesByProductColor(
                 LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L)
-        )).thenReturn(java.util.Arrays.asList(
+        )).thenReturn(rows(
                 new Object[] { 10L, 21L, "Negro", 1L, new BigDecimal("2"), new BigDecimal("400.00"), 1L }
         ));
         stubCatalog();
@@ -141,21 +149,50 @@ class KioskSalesByProductColorReportServiceTest {
                 LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), 1L, false);
 
         assertThat(report.getProducts()).hasSize(1);
-        assertThat(report.getProducts().get(0).getColors()).hasSize(1);
-        assertThat(report.getProducts().get(0).getColors().get(0).getColorId()).isEqualTo(21L);
+        assertThat(report.getProducts().get(0).getColors()).hasSize(2);
+        var brownCell = report.getProducts().get(0).getColors().stream()
+                .filter(c -> Long.valueOf(22L).equals(c.getColorId()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(brownCell.getQuantity()).isEqualByComparingTo("0.000");
+        assertThat(brownCell.getCurrentStock()).isEqualTo(2);
         assertThat(report.getKioskLabel()).contains("Kiosko Norte");
+    }
+
+    @Test
+    void includesEntriesEvenWithoutSales() throws BusinessException {
+        stubAdmin();
+        when(locationRepository.findAll()).thenReturn(List.of(kioskA));
+        when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L))).thenReturn(List.of());
+        when(kioskSaleItemRepository.aggregateCompletedSalesByProductColor(
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L)
+        )).thenReturn(List.of());
+        when(kioscoMovementRepository.aggregateEntriesByProductColor(anyList(), any(), any()))
+                .thenReturn(rows(
+                        new Object[] { 1L, 10L, 21L, 8 }
+                ));
+        stubCatalog();
+
+        KioskSalesByProductColorReportResponse report = service.getReport(
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), 1L, false);
+
+        assertThat(report.getProducts()).hasSize(1);
+        var blackCell = report.getProducts().get(0).getColors().get(0);
+        assertThat(blackCell.getQuantityIn()).isEqualTo(8);
+        assertThat(blackCell.getQuantity()).isEqualByComparingTo("0.000");
+        assertThat(report.getTotals().getQuantityIn()).isEqualTo(8);
     }
 
     @Test
     void mergesSalesByColorNameEvenIfColorIdsDiffer() throws BusinessException {
         stubAdmin();
         when(locationRepository.findAll()).thenReturn(List.of(kioskA));
-        when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L))).thenReturn(java.util.Arrays.asList(
+        when(kioscoStockRepository.aggregateStockByProductColor(List.of(1L))).thenReturn(rows(
                 new Object[] { 1L, 10L, 21L, 4 }
         ));
         when(kioskSaleItemRepository.aggregateCompletedSalesByProductColor(
                 LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 17), List.of(1L)
-        )).thenReturn(java.util.Arrays.asList(
+        )).thenReturn(rows(
                 new Object[] { 10L, 21L, "Negro", 1L, new BigDecimal("2"), new BigDecimal("400.00"), 1L },
                 new Object[] { 10L, 99L, "NEGRO", 1L, new BigDecimal("3"), new BigDecimal("600.00"), 1L }
         ));
@@ -201,5 +238,10 @@ class KioskSalesByProductColorReportServiceTest {
         when(productCategoryRepository.findAllById(anyList())).thenReturn(List.of(
                 ProductCategoryEntity.builder().id(3L).code("BOL").name("Billeteras").build()
         ));
+    }
+
+    @SafeVarargs
+    private static List<Object[]> rows(Object[]... items) {
+        return Arrays.asList(items);
     }
 }
