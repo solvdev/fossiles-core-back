@@ -1061,7 +1061,7 @@ public class KioscoInventoryService {
 
     /**
      * Cambio: ingreso del producto devuelto y egreso del entregado.
-     * En conteo: sin diferencia de precio → Ent./Sal.; con diferencia → Comp./Vtas.
+     * En conteo: todo ingreso de cambio → Comp.; egreso con diferencia → Vtas.; sin diferencia → Sal.
      * Stock fuente de verdad: módulo kiosco (no legacy). Herraje del egreso = el indicado o el que tenga
      * disponibilidad (NUEVO → VIEJO), igual que ventas POS.
      */
@@ -2565,7 +2565,8 @@ public class KioscoInventoryService {
 
     /**
      * Boletas de cambio con diferencia de precio en este kiosko.
-     * El kardex usa Comp./Vtas. para esos movimientos; el resto de CAMBIO va a Ent./Sal.
+     * El kardex usa Vtas. en el egreso de esas boletas; el egreso sin diferencia va a Sal.
+     * El ingreso de cualquier cambio siempre va a Comp.
      */
     private PricedExchangeIndex loadPricedExchangeIndex(Long locationId) {
         if (locationId == null) {
@@ -3149,14 +3150,10 @@ public class KioscoInventoryService {
                     }
                 }
                 case CAMBIO -> {
-                    if (pricedCambio) {
-                        if (delta > 0) {
-                            comprasAjustes += delta;
-                        } else {
-                            ventas += -delta;
-                        }
-                    } else if (delta > 0) {
-                        entradas += delta;
+                    if (delta > 0) {
+                        comprasAjustes += delta;
+                    } else if (pricedCambio) {
+                        ventas += -delta;
                     } else {
                         salida += -delta;
                     }

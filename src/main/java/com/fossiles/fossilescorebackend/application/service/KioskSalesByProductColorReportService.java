@@ -95,9 +95,8 @@ public class KioskSalesByProductColorReportService {
 
         List<Object[]> stockRows = kioscoStockRepository.aggregateStockByProductColor(kioskIds);
         List<Object[]> saleRows = kioskSaleItemRepository.aggregateCompletedSalesByProductColor(from, to, kioskIds);
-        LocalDateTime fromAt = from.atStartOfDay();
         LocalDateTime toExclusive = to.plusDays(1).atStartOfDay();
-        List<Object[]> entryRows = kioscoMovementRepository.aggregateEntriesByProductColor(kioskIds, fromAt, toExclusive);
+        List<Object[]> entryRows = kioscoMovementRepository.aggregateEntriesByProductColor(kioskIds, toExclusive);
 
         Map<Long, ColorEntity> colorsById = colorRepository.findAll().stream()
                 .filter(color -> color != null && color.getId() != null)

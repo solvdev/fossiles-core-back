@@ -770,7 +770,7 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
-    void kardex_boletaCambio_sinDiferencia_vaAEntradaYSalida() throws Exception {
+    void kardex_boletaCambio_sinDiferencia_ingresoEnCompraYEgresoEnSalida() throws Exception {
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId))
                 .thenReturn(List.of(stockEntity(0, 0)));
 
@@ -802,8 +802,8 @@ class KioscoInventoryServiceTest {
         KioscoKardexReportResponse report = service.getKardexReport(locationId, from, to);
         KioscoKardexReportResponse.KioscoKardexRow row = report.getRows().get(0);
         assertThat(row.getInventarioInicial()).isEqualTo(10);
-        assertThat(row.getComprasAjustes()).isEqualTo(0);
-        assertThat(row.getEntradas()).isEqualTo(1);
+        assertThat(row.getComprasAjustes()).isEqualTo(1);
+        assertThat(row.getEntradas()).isEqualTo(0);
         assertThat(row.getVentas()).isEqualTo(0);
         assertThat(row.getSalida()).isEqualTo(1);
         assertThat(row.getInventarioFinal()).isEqualTo(10);
