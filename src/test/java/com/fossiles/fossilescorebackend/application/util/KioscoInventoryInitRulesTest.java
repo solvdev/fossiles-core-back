@@ -66,7 +66,7 @@ class KioscoInventoryInitRulesTest {
                 .build();
 
         assertThat(KioscoInventoryInitRules.resolveCinchoSizes(cincho))
-                .containsExactly("30", "32", "34", "36", "38", "40", "42", "46");
+                .containsExactly("30", "32", "34", "36", "38", "40", "42", "44", "46");
         assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(cincho)).isFalse();
     }
 

@@ -26,8 +26,8 @@ public final class KioscoInventoryInitRules {
     /** Niño: 16–30 por pares. */
     public static final List<String> KIDS_CINCHO_SIZES = List.of("16", "18", "20", "22", "24", "26", "28", "30");
 
-    /** Dama / caballero: 30–46 por pares. */
-    public static final List<String> ADULT_CINCHO_SIZES = List.of("30", "32", "34", "36", "38", "40", "42", "46");
+    /** Dama / caballero: 30–46 por pares (incluye 44). */
+    public static final List<String> ADULT_CINCHO_SIZES = List.of("30", "32", "34", "36", "38", "40", "42", "44", "46");
 
     private KioscoInventoryInitRules() {
     }
