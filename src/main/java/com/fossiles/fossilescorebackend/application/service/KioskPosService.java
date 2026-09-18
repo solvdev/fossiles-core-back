@@ -41,9 +41,9 @@ import com.fossiles.fossilescorebackend.application.util.EntrecuerosPriceLists;
 import com.fossiles.fossilescorebackend.application.util.EntrecuerosShippingSheet;
 import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
+import com.fossiles.fossilescorebackend.application.util.KioskPosInventoryKey;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
-import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
@@ -3188,13 +3188,7 @@ public class KioskPosService {
     }
 
     private String inventoryKey(Long productId, Long colorId, String hardwareCondition, String size) {
-        String hardware = ProductHardwareCondition.normalizeStockDimension(hardwareCondition);
-        String base = productId + ":" + (colorId != null ? colorId : "null") + ":" + hardware;
-        String normalized = ProductInventorySizesJson.normalizeKey(size);
-        if (!normalized.isEmpty()) {
-            return base + ":" + normalized;
-        }
-        return base;
+        return KioskPosInventoryKey.format(productId, colorId, hardwareCondition, size);
     }
 
     private String resolveItemHardwareCondition(String hardwareCondition) {
@@ -3219,34 +3213,13 @@ public class KioskPosService {
     private record ParsedInventoryKey(Long productId, Long colorId, String size, String hardwareCondition) {}
 
     private ParsedInventoryKey parseInventoryKey(String key) {
-        String[] parts = key.split(":", -1);
-        if (parts.length < 2) {
-            throw new IllegalArgumentException("Clave de inventario inválida: " + key);
-        }
-        Long productId = Long.parseLong(parts[0]);
-        String colorPart = parts[1];
-        Long colorId = "null".equals(colorPart) ? null : Long.parseLong(colorPart);
-        String hardware = ProductHardwareCondition.NUEVO;
-        String size = null;
-        if (parts.length >= 3 && !parts[2].isBlank()) {
-            String third = parts[2];
-            String normalizedHardware = ProductHardwareCondition.normalize(third);
-            if (normalizedHardware == null) {
-                normalizedHardware = ProductBrandNames.normalize(third);
-            }
-            if (normalizedHardware != null) {
-                hardware = normalizedHardware;
-                if (parts.length >= 4 && !parts[3].isBlank()) {
-                    size = parts[3];
-                }
-            } else {
-                size = third;
-            }
-        }
-        if (size != null && size.isBlank()) {
-            size = null;
-        }
-        return new ParsedInventoryKey(productId, colorId, size, hardware);
+        KioskPosInventoryKey.Parsed parsed = KioskPosInventoryKey.parse(key);
+        return new ParsedInventoryKey(
+                parsed.productId(),
+                parsed.colorId(),
+                parsed.size(),
+                parsed.hardwareCondition()
+        );
     }
 
     private boolean isPromotionActiveOnDate(KioskPromotionEntity promotion, LocalDate date) {
