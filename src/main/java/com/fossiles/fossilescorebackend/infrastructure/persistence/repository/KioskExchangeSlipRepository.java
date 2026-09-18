@@ -50,10 +50,11 @@ public interface KioskExchangeSlipRepository extends JpaRepository<KioskExchange
             + "AND s.differenceAmount IS NOT NULL AND s.differenceAmount > 0")
     List<KioskExchangeSlipEntity> findCompletedExchangesWithDifference();
 
+    /** Egresos que el kardex cuenta como Vtas.: solo diferencia a cobrar (a favor de la empresa). */
     @Query("SELECT s FROM KioskExchangeSlipEntity s "
             + "WHERE s.kioskLocationId = :locationId "
             + "AND UPPER(s.slipType) = 'EXCHANGE' "
-            + "AND s.differenceAmount IS NOT NULL AND s.differenceAmount <> 0")
+            + "AND s.differenceAmount IS NOT NULL AND s.differenceAmount > 0")
     List<KioskExchangeSlipEntity> findPricedExchangesByKioskLocationId(
             @Param("locationId") Long locationId
     );

@@ -46,18 +46,18 @@ public class KioscoKardexReportResponse {
         private int anulacionCompras;
         /** Envios de distribucion y traslados in. */
         private int entradas;
-        /** Ventas POS y egresos de boleta de cambio con diferencia de precio. */
+        /** Ventas POS y egresos de boleta de cambio con diferencia a cobrar. */
         private int ventas;
         /** Regresa a inventario el valor de una venta anulada. */
         private int anulacionVenta;
-        /** Devoluciones a oficina, traslados salientes, merma y cambios sin diferencia de precio. */
+        /** Devoluciones a oficina, traslados, merma, cambios sin diferencia o con saldo a favor del cliente. */
         private int salida;
         /** Subconjunto de salida: devoluciones a bodega / reintegros del periodo. */
         private int salidaDevolucion;
         private int inventarioFinal;
         /** Reservado: CAMBIO ingreso va solo a comprasAjustes. */
         private int cambioIn;
-        /** Reservado: CAMBIO egreso va solo a ventas. */
+        /** Reservado: CAMBIO egreso con cobro va a ventas; el resto a salida. */
         private int cambioOut;
         /** NUEVO | VIEJO cuando el stock está partido por herraje. */
         private String hardwareCondition;

@@ -859,6 +859,55 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
+    void kardex_boletaCambio_conSaldoAFavor_vaACompraYSalida() throws Exception {
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId))
+                .thenReturn(List.of(stockEntity(0, 0)));
+        when(kioskExchangeSlipRepository.findPricedExchangesByKioskLocationId(locationId)).thenReturn(List.of(
+                KioskExchangeSlipEntity.builder()
+                        .id(89L)
+                        .slipNumber("A15-101")
+                        .differenceAmount(new BigDecimal("-50.00"))
+                        .returnMovementId(1901L)
+                        .givenMovementId(1902L)
+                        .build()
+        ));
+
+        LocalDate from = LocalDate.of(2026, 6, 1);
+        LocalDate to = LocalDate.of(2026, 6, 30);
+        LocalDateTime periodStart = from.atStartOfDay();
+
+        KioscoMovementEntity prePeriodEntrada = movement(KioscoMovementType.ENTRADA, 0, 10, 1900L);
+        List<KioscoMovementEntity> periodMoves = List.of(
+                movement(KioscoMovementType.CAMBIO, 10, 11, 1901L),
+                movement(KioscoMovementType.CAMBIO, 11, 10, 1902L)
+        );
+
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(eq(locationId), any(LocalDateTime.class)))
+                .thenAnswer(invocation -> {
+                    LocalDateTime cutoff = invocation.getArgument(1);
+                    if (!cutoff.isAfter(periodStart)) {
+                        return List.of(prePeriodEntrada);
+                    }
+                    java.util.ArrayList<KioscoMovementEntity> all = new java.util.ArrayList<>();
+                    all.add(prePeriodEntrada);
+                    all.addAll(periodMoves);
+                    return all;
+                });
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBetween(
+                eq(locationId), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(periodMoves);
+
+        KioscoKardexReportResponse report = service.getKardexReport(locationId, from, to);
+        KioscoKardexReportResponse.KioscoKardexRow row = report.getRows().get(0);
+        assertThat(row.getInventarioInicial()).isEqualTo(10);
+        assertThat(row.getComprasAjustes()).isEqualTo(1);
+        assertThat(row.getEntradas()).isEqualTo(0);
+        assertThat(row.getVentas()).isEqualTo(0);
+        assertThat(row.getSalida()).isEqualTo(1);
+        assertThat(row.getInventarioFinal()).isEqualTo(10);
+    }
+
+    @Test
     void kardex_falla_siRangoDeFechasInvertido() {
         assertThatThrownBy(() -> service.getKardexReport(locationId, LocalDate.of(2026, 6, 30), LocalDate.of(2026, 6, 1)))
                 .isInstanceOf(BusinessException.class)

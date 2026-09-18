@@ -85,6 +85,7 @@ public class KioskExchangeSlipEntity {
     @Column(name = "given_amount", precision = 12, scale = 2)
     private BigDecimal givenAmount;
 
+    /** Positivo = a cobrar (Vtas.); negativo = saldo a favor del cliente (Sal.); cero = sin diferencia. */
     @Column(name = "difference_amount", precision = 12, scale = 2)
     private BigDecimal differenceAmount;
 

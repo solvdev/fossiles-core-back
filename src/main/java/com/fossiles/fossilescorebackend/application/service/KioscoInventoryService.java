@@ -1061,7 +1061,8 @@ public class KioscoInventoryService {
 
     /**
      * Cambio: ingreso del producto devuelto y egreso del entregado.
-     * En conteo: todo ingreso de cambio → Comp.; egreso con diferencia → Vtas.; sin diferencia → Sal.
+     * En conteo: todo ingreso de cambio → Comp.; egreso con diferencia a cobrar → Vtas.;
+     * sin diferencia o saldo a favor del cliente → Sal.
      * Stock fuente de verdad: módulo kiosco (no legacy). Herraje del egreso = el indicado o el que tenga
      * disponibilidad (NUEVO → VIEJO), igual que ventas POS.
      */
@@ -2564,8 +2565,9 @@ public class KioscoInventoryService {
     }
 
     /**
-     * Boletas de cambio con diferencia de precio en este kiosko.
-     * El kardex usa Vtas. en el egreso de esas boletas; el egreso sin diferencia va a Sal.
+     * Boletas de cambio con diferencia a cobrar (a favor de la empresa) en este kiosko.
+     * El kardex usa Vtas. en el egreso de esas boletas.
+     * Egreso sin diferencia o con saldo a favor del cliente → Sal.
      * El ingreso de cualquier cambio siempre va a Comp.
      */
     private PricedExchangeIndex loadPricedExchangeIndex(Long locationId) {
@@ -2581,7 +2583,7 @@ public class KioscoInventoryService {
         Set<Long> slipIds = new HashSet<>();
         Set<String> slipNumbers = new HashSet<>();
         for (KioskExchangeSlipEntity slip : slips) {
-            if (slip == null) {
+            if (!isChargeableExchangeDifference(slip)) {
                 continue;
             }
             if (slip.getId() != null) {
@@ -2606,6 +2608,13 @@ public class KioscoInventoryService {
             }
         }
         return new PricedExchangeIndex(movementIds, slipIds, slipNumbers);
+    }
+
+    /** Solo diferencia a cobrar. Saldo a favor del cliente no es venta. */
+    private static boolean isChargeableExchangeDifference(KioskExchangeSlipEntity slip) {
+        return slip != null
+                && slip.getDifferenceAmount() != null
+                && slip.getDifferenceAmount().signum() > 0;
     }
 
     private record PricedExchangeIndex(Set<Long> movementIds, Set<Long> slipIds, Set<String> slipNumbers) {
