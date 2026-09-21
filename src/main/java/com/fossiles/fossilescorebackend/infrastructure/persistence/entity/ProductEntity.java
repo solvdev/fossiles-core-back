@@ -45,6 +45,22 @@ public class ProductEntity {
     @Column(name = "prd_time", columnDefinition = "NUMERIC(10,2)")
     private Double prdTime;
 
+    /** true = puede venderse en kioscos POS modalidad ENTRECUEROS. */
+    @Column(name = "entrecueros_enabled")
+    @Builder.Default
+    private Boolean entrecuerosEnabled = false;
+
+    @Column(name = "entrecueros_price_unit", precision = 12, scale = 2)
+    private BigDecimal entrecuerosPriceUnit;
+
+    @Column(name = "entrecueros_price_qty3", precision = 12, scale = 2)
+    private BigDecimal entrecuerosPriceQty3;
+
+    @Column(name = "entrecueros_price_qty6", precision = 12, scale = 2)
+    private BigDecimal entrecuerosPriceQty6;
+
+    @Column(name = "entrecueros_price_qty12", precision = 12, scale = 2)
+    private BigDecimal entrecuerosPriceQty12;
     /** Unidades de este producto que caben en una tarea. Null = usar 2. */
     @Column(name = "units_per_task")
     private Integer unitsPerTask;

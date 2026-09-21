@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CostCe
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OperationalUnitRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.CostCenterRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -103,6 +104,7 @@ public class LocationController {
                 .felMunicipio(entity.getFelMunicipio())
                 .felDepartamento(entity.getFelDepartamento())
                 .posTestMode(Boolean.TRUE.equals(entity.getPosTestMode()))
+                .posMode(KioskPosMode.normalize(entity.getPosMode()))
                 .posOpeningCashAmount(entity.getPosOpeningCashAmount())
                 .internalSeriesCode(entity.getInternalSeriesCode());
         
@@ -138,6 +140,7 @@ public class LocationController {
                 .felMunicipio(trimToNull(request.getFelMunicipio()))
                 .felDepartamento(trimToNull(request.getFelDepartamento()))
                 .posTestMode(Boolean.TRUE.equals(request.getPosTestMode()))
+                .posMode(KioskPosMode.normalize(request.getPosMode()))
                 .posOpeningCashAmount(normalizePosOpeningCashAmount(request.getPosOpeningCashAmount()))
                 .internalSeriesCode(trimToNull(request.getInternalSeriesCode()))
                 .build();
@@ -183,6 +186,9 @@ public class LocationController {
         }
         if (request.getPosTestMode() != null) {
             entity.setPosTestMode(request.getPosTestMode());
+        }
+        if (request.getPosMode() != null) {
+            entity.setPosMode(KioskPosMode.normalize(request.getPosMode()));
         }
         if (request.getPosOpeningCashAmount() != null) {
             entity.setPosOpeningCashAmount(normalizePosOpeningCashAmount(request.getPosOpeningCashAmount()));

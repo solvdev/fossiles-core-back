@@ -295,7 +295,8 @@ public class ProductionOrderController {
         // Generar código automáticamente si no se proporciona
         String orderCode = request.getCode();
         if (orderCode == null || orderCode.trim().isEmpty()) {
-            orderCode = productionOrderCodeService.generateNextCode(effectiveOrderType, request.getSellerName());
+            orderCode = productionOrderCodeService.generateNextCode(
+                    effectiveOrderType, request.getSellerName(), request.getKioskOrder());
         }
 
         if (productionOrderRepository.existsByCode(orderCode)) {
@@ -303,8 +304,8 @@ public class ProductionOrderController {
         }
 
         ProductionOrderEntity entity = toEntity(request);
-        applyCustomerMasterFromId(entity, request.getCustomerId());
         entity.setOrderType(effectiveOrderType);
+        applyCustomerFields(entity, request, effectiveOrderType);
         applyDefaultSchedulingPriority(entity, effectiveOrderType);
         entity.setCode(orderCode);
         boolean isInternaOpi = "INTERNA".equals(effectiveOrderType);
@@ -413,8 +414,7 @@ public class ProductionOrderController {
         updateEntity(entity, request);
         entity.setOrderType(effectiveOrderType);
         applyDefaultSchedulingPriority(entity, effectiveOrderType);
-        Long customerIdForSync = request.getCustomerId() != null ? request.getCustomerId() : entity.getCustomerId();
-        applyCustomerMasterFromId(entity, customerIdForSync);
+        applyCustomerFields(entity, request, effectiveOrderType);
         ProductionOrderEntity updated = productionOrderRepository.save(entity);
 
         if (isOpvVendorShipmentFlow(updated)) {
@@ -2019,6 +2019,23 @@ public class ProductionOrderController {
 
     private String normalizeItemBrandNameForStorage(String orderType, String brandName) {
         return "MARCAS".equals(orderType) ? normalizeItemBrandName(brandName) : null;
+    }
+
+    private void applyCustomerFields(
+            ProductionOrderEntity entity,
+            ProductionOrderRequest request,
+            String orderType
+    ) {
+        boolean kioskDest = Boolean.TRUE.equals(request.getKioskOrder())
+                && ("NORMAL".equals(orderType) || isCinchoOrderType(orderType));
+        if ("CLIENTE_KIOSKO".equals(orderType) || kioskDest) {
+            entity.setCustomerId(null);
+            String name = request.getCustomerName() == null ? "" : request.getCustomerName().trim();
+            entity.setCustomerName(name.isEmpty() ? null : name);
+            return;
+        }
+        Long customerId = request.getCustomerId() != null ? request.getCustomerId() : entity.getCustomerId();
+        applyCustomerMasterFromId(entity, customerId);
     }
 
     private void applyCustomerMasterFromId(ProductionOrderEntity entity, Long customerId) {

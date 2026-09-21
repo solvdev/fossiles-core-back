@@ -25,6 +25,8 @@ public class KioskPosContextResponse {
     private Boolean posTestMode;
     /** Fondo inicial de caja POS al abrir turno. */
     private BigDecimal posOpeningCashAmount;
+    /** STANDARD o ENTRECUEROS. */
+    private String posMode;
     private List<KioskOption> kiosks;
     private List<InventoryItem> inventory;
 
@@ -37,6 +39,7 @@ public class KioskPosContextResponse {
         private String kioskCode;
         private String kioskName;
         private BigDecimal posOpeningCashAmount;
+        private String posMode;
     }
 
     @Data
@@ -53,8 +56,14 @@ public class KioskPosContextResponse {
         private Long categoryId;
         private String categoryName;
         private String audienceCategory;
+        private String cinchoType;
         private BigDecimal quantity;
         private BigDecimal suggestedUnitPrice;
+        private Boolean entrecuerosEnabled;
+        private BigDecimal entrecuerosPriceUnit;
+        private BigDecimal entrecuerosPriceQty3;
+        private BigDecimal entrecuerosPriceQty6;
+        private BigDecimal entrecuerosPriceQty12;
         /** Cinchos y variantes por talla: talla → cantidad disponible en kiosko. */
         private Map<String, BigDecimal> sizes;
         /** NUEVO o VIEJO cuando el kiosko separa stock por herraje. */

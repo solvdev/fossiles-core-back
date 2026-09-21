@@ -19,6 +19,8 @@ public class KioskCashCloseReportResponse {
     private Long kioskLocationId;
     private String kioskCode;
     private String kioskName;
+    /** STANDARD o ENTRECUEROS. */
+    private String posMode;
     private String openedByName;
     private String closedByName;
     private String generatedByName;

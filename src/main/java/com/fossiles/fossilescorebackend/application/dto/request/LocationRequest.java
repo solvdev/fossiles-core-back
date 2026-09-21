@@ -52,6 +52,10 @@ public class LocationRequest {
     /** Kiosko en piloto POS: ventas no suman en dashboard de producción. */
     private Boolean posTestMode;
 
+    /** STANDARD o ENTRECUEROS. */
+    @Size(max = 30, message = "POS mode must not exceed 30 characters")
+    private String posMode;
+
     /** Fondo inicial de caja POS al abrir turno. */
     @DecimalMin(value = "0.01", message = "El fondo inicial POS debe ser mayor a cero")
     private BigDecimal posOpeningCashAmount;

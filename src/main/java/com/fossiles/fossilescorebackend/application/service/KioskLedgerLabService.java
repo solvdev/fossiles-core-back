@@ -1,15 +1,20 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMoveSizesRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMovementUpsertRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabReclassifyRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoMovementResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabMovementResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReclassifyResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllKiosksResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabSplitSizesResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabStockResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.KioskLedgerLabGuard;
+import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
@@ -41,11 +46,13 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -63,6 +70,7 @@ public class KioskLedgerLabService {
     private final ColorRepository colorRepository;
     private final KioskSaleRepository kioskSaleRepository;
     private final ProductShipmentRepository productShipmentRepository;
+    private final KioscoStockProvisioningService kioscoStockProvisioningService;
     private final EntityManager entityManager;
 
     @Transactional(readOnly = true)
@@ -445,7 +453,12 @@ public class KioskLedgerLabService {
             stock.setSizesData(request.getSizesData().isBlank() ? null : request.getSizesData().trim());
         }
         if (request.getHardwareCondition() != null && !request.getHardwareCondition().isBlank()) {
-            stock.setHardwareCondition(request.getHardwareCondition().trim().toUpperCase(Locale.ROOT));
+            String next = ProductHardwareCondition.normalizeStockDimension(request.getHardwareCondition());
+            String current = ProductHardwareCondition.normalizeStockDimension(stock.getHardwareCondition());
+            if (!next.equals(current)) {
+                return reclassifyHardware(stock, request.getHardwareCondition(), false);
+            }
+            stock.setHardwareCondition(next);
         }
         stock.setLastUpdatedAt(GuatemalaDateTime.now());
         stock.setUpdatedBy(securityUtil.getCurrentUserId());
@@ -453,6 +466,146 @@ public class KioskLedgerLabService {
         log.warn("LEDGER_LAB_STOCK_UPDATE actor={} stockId={} currentStock={}",
                 actor, stockId, stock.getCurrentStock());
         return toStockResponse(stock, resolveProduct(stock), resolveColor(stock), resolveLocation(stock), null);
+    }
+
+    @Transactional
+    public KioskLedgerLabReclassifyResponse reclassifyStocks(KioskLedgerLabReclassifyRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        String actor = guard.requireEramirezUsername();
+        if (request == null || request.getStockIds() == null || request.getStockIds().isEmpty()) {
+            throw new BusinessException("Indica al menos un stockId.");
+        }
+        if (request.getHardwareCondition() == null || request.getHardwareCondition().isBlank()) {
+            throw new BusinessException("Indica hardwareCondition (NINO o DAMA).");
+        }
+        boolean merge = Boolean.TRUE.equals(request.getMergeIfExists());
+        int updated = 0;
+        int merged = 0;
+        int skipped = 0;
+        List<String> conflicts = new ArrayList<>();
+        for (Long stockId : request.getStockIds()) {
+            if (stockId == null) {
+                skipped++;
+                continue;
+            }
+            KioscoStockEntity stock = kioscoStockRepository.findById(stockId).orElse(null);
+            if (stock == null) {
+                skipped++;
+                conflicts.add("stock #" + stockId + " no existe");
+                continue;
+            }
+            try {
+                String before = ProductHardwareCondition.normalizeStockDimension(stock.getHardwareCondition());
+                KioscoStockEntity after = applyHardwareDimension(stock, request.getHardwareCondition(), merge);
+                String next = ProductHardwareCondition.normalizeStockDimension(after.getHardwareCondition());
+                if (before.equals(next) && after.getId().equals(stockId)) {
+                    skipped++;
+                } else if (!after.getId().equals(stockId)) {
+                    merged++;
+                } else {
+                    updated++;
+                }
+            } catch (BusinessException ex) {
+                skipped++;
+                conflicts.add(conflictLabel(stock) + ": " + ex.getMessage());
+            }
+        }
+        log.warn("LEDGER_LAB_RECLASSIFY actor={} updated={} merged={} skipped={} target={}",
+                actor, updated, merged, skipped, request.getHardwareCondition());
+        return KioskLedgerLabReclassifyResponse.builder()
+                .updated(updated)
+                .merged(merged)
+                .skipped(skipped)
+                .conflicts(conflicts)
+                .build();
+    }
+
+    @Transactional
+    public void deleteStock(Long stockId) throws BusinessException, ResourceNotFoundException {
+        String actor = guard.requireEramirezUsername();
+        KioscoStockEntity stock = kioscoStockRepository.findById(stockId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioscoStock", stockId));
+        List<KioscoMovementEntity> movements =
+                kioscoMovementRepository.findByKioscoStockIdOrderByCreatedAtAscIdAsc(stockId);
+        kioscoMovementRepository.deleteAll(movements);
+        kioscoStockRepository.delete(stock);
+        entityManager.flush();
+        log.warn("LEDGER_LAB_STOCK_DELETE actor={} stockId={} movementsDeleted={}",
+                actor, stockId, movements.size());
+    }
+
+    private KioskLedgerLabStockResponse reclassifyHardware(
+            KioscoStockEntity stock,
+            String rawHardware,
+            boolean mergeIfExists
+    ) throws BusinessException, ResourceNotFoundException {
+        String actor = guard.requireEramirezUsername();
+        KioscoStockEntity saved = applyHardwareDimension(stock, rawHardware, mergeIfExists);
+        log.warn("LEDGER_LAB_STOCK_RECLASSIFY actor={} fromId={} toId={} hardware={}",
+                actor, stock.getId(), saved.getId(), saved.getHardwareCondition());
+        return toStockResponse(saved, resolveProduct(saved), resolveColor(saved), resolveLocation(saved), null);
+    }
+
+    private KioscoStockEntity applyHardwareDimension(
+            KioscoStockEntity stock,
+            String rawHardware,
+            boolean mergeIfExists
+    ) throws BusinessException {
+        String next = ProductHardwareCondition.normalizeStockDimension(rawHardware);
+        String current = ProductHardwareCondition.normalizeStockDimension(stock.getHardwareCondition());
+        if (next.equals(current)) {
+            return stock;
+        }
+        KioscoStockEntity existing = kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        stock.getLocationId(), stock.getProductId(), stock.getColorId(), next)
+                .orElse(null);
+        if (existing == null || existing.getId().equals(stock.getId())) {
+            stock.setHardwareCondition(next);
+            stock.setLastUpdatedAt(GuatemalaDateTime.now());
+            stock.setUpdatedBy(securityUtil.getCurrentUserId());
+            return kioscoStockRepository.save(stock);
+        }
+        if (!mergeIfExists) {
+            throw new BusinessException(
+                    "Ya existe " + next + " en este color. Elimina el duplicado o fusiona (suma cantidades).");
+        }
+        mergeStockInto(stock, existing);
+        try {
+            kioscoInventoryService.replayMovementStockChain(existing.getId());
+        } finally {
+            kioscoInventoryService.disableAdminMovementMutation();
+        }
+        return kioscoStockRepository.findById(existing.getId()).orElse(existing);
+    }
+
+    private void mergeStockInto(KioscoStockEntity source, KioscoStockEntity target) {
+        entityManager.flush();
+        kioscoMovementRepository.reassignKioscoStockId(source.getId(), target.getId());
+        Map<String, BigDecimal> merged = new LinkedHashMap<>(ProductInventorySizesJson.parse(target.getSizesData()));
+        Map<String, BigDecimal> extra = ProductInventorySizesJson.parse(source.getSizesData());
+        boolean anySizes = !merged.isEmpty() || !extra.isEmpty();
+        extra.forEach((key, value) -> merged.merge(key, value, BigDecimal::add));
+        if (anySizes) {
+            ProductInventorySizesJson.removeZeroEntries(merged);
+            target.setSizesData(ProductInventorySizesJson.serialize(merged));
+            target.setCurrentStock(
+                    ProductInventorySizesJson.sum(merged).setScale(0, RoundingMode.HALF_UP).intValue());
+        } else {
+            target.setCurrentStock(safeInt(target.getCurrentStock()) + safeInt(source.getCurrentStock()));
+        }
+        target.setMinimumStock(Math.max(safeInt(target.getMinimumStock()), safeInt(source.getMinimumStock())));
+        kioscoStockRepository.delete(source);
+        entityManager.flush();
+        kioscoStockRepository.save(target);
+    }
+
+    private String conflictLabel(KioscoStockEntity stock) {
+        ProductEntity product = resolveProduct(stock);
+        ColorEntity color = resolveColor(stock);
+        String code = product != null ? product.getCode() : ("#" + stock.getProductId());
+        String colorName = color != null ? color.getName() : "sin color";
+        return code + " " + colorName + " (" + stock.getHardwareCondition() + ")";
     }
 
     @Transactional
@@ -497,6 +650,41 @@ public class KioskLedgerLabService {
         return KioskLedgerLabReplayAllResponse.builder()
                 .locationId(locationId)
                 .stockCount(stockCount)
+                .build();
+    }
+
+    /** Recalcula stock_before/after y current_stock de todos los kiosco_stock de TODOS los kioskos. */
+    @Transactional
+    public KioskLedgerLabReplayAllKiosksResponse replayAllKiosks()
+            throws BusinessException {
+        String actor = guard.requireEramirezUsername();
+        List<LocationEntity> kiosks = locationRepository.findByCategoriaIgnoreCaseOrderByNameAsc("KIOSKO");
+        List<KioskLedgerLabReplayAllKiosksResponse.LocationResult> results = new ArrayList<>();
+        int totalStockCount = 0;
+        try {
+            for (LocationEntity kiosk : kiosks) {
+                List<KioscoStockEntity> stocks = kioscoStockRepository
+                        .findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(kiosk.getId());
+                int stockCount = 0;
+                for (KioscoStockEntity stock : stocks) {
+                    stockCount += kioscoInventoryService.replayMovementStockChain(stock.getId());
+                }
+                totalStockCount += stockCount;
+                results.add(KioskLedgerLabReplayAllKiosksResponse.LocationResult.builder()
+                        .locationId(kiosk.getId())
+                        .locationName(kiosk.getName())
+                        .stockCount(stockCount)
+                        .build());
+            }
+        } finally {
+            kioscoInventoryService.disableAdminMovementMutation();
+        }
+        log.warn("LEDGER_LAB_REPLAY_ALL_KIOSKS actor={} locationCount={} stockCount={}",
+                actor, kiosks.size(), totalStockCount);
+        return KioskLedgerLabReplayAllKiosksResponse.builder()
+                .locationCount(kiosks.size())
+                .stockCount(totalStockCount)
+                .locations(results)
                 .build();
     }
 
@@ -618,6 +806,86 @@ public class KioskLedgerLabService {
                 .sizeKeysCreated(createdKeys)
                 .stock(toStockResponse(stock, resolveProduct(stock), resolveColor(stock), resolveLocation(stock), null))
                 .build();
+    }
+
+    /**
+     * Mueve tallas concretas a otra dimensión PARA (NINO/DAMA) sin tocar el resto.
+     * Si el inventario inicial está agregado, primero lo desglosa por talla.
+     */
+    @Transactional
+    public KioskLedgerLabStockResponse moveSizesToPara(Long stockId, KioskLedgerLabMoveSizesRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        String actor = guard.requireEramirezUsername();
+        if (request == null || request.getSizeKeys() == null || request.getSizeKeys().isEmpty()) {
+            throw new BusinessException("Indica las tallas a mover.");
+        }
+        String next = ProductHardwareCondition.normalizeStockDimension(request.getHardwareCondition());
+        Set<String> keys = new HashSet<>();
+        for (String raw : request.getSizeKeys()) {
+            String key = ProductInventorySizesJson.normalizeKey(raw);
+            if (!key.isEmpty()) {
+                keys.add(key);
+            }
+        }
+        if (keys.isEmpty()) {
+            throw new BusinessException("Indica las tallas a mover.");
+        }
+
+        KioscoStockEntity source = kioscoStockRepository.findById(stockId)
+                .orElseThrow(() -> new ResourceNotFoundException("KioscoStock", stockId));
+        String current = ProductHardwareCondition.normalizeStockDimension(source.getHardwareCondition());
+        if (next.equals(current)) {
+            throw new BusinessException("Elige un PARA distinto al actual (" + current + ").");
+        }
+
+        List<KioscoMovementEntity> sourceMovements = kioscoMovementRepository
+                .findByKioscoStockIdOrderByCreatedAtAscIdAsc(stockId);
+        boolean hasAggregated = sourceMovements.stream().anyMatch(this::isAggregatedOpeningMovement);
+        if (hasAggregated) {
+            splitOpeningBySizes(stockId);
+            source = kioscoStockRepository.findById(stockId)
+                    .orElseThrow(() -> new ResourceNotFoundException("KioscoStock", stockId));
+            sourceMovements = kioscoMovementRepository
+                    .findByKioscoStockIdOrderByCreatedAtAscIdAsc(stockId);
+        }
+
+        List<KioscoMovementEntity> toMove = sourceMovements.stream()
+                .filter((movement) -> keys.contains(ProductInventorySizesJson.normalizeKey(movement.getSizeKey())))
+                .collect(Collectors.toList());
+        if (toMove.isEmpty()) {
+            throw new BusinessException(
+                    "No hay movimientos con esas tallas. Desglosa por tallas y vuelve a intentar.");
+        }
+
+        Long userId = securityUtil.getCurrentUserId();
+        KioscoStockEntity target = kioscoStockProvisioningService.ensureStockRow(
+                source.getLocationId(),
+                source.getProductId(),
+                source.getColorId(),
+                userId,
+                next);
+        if (target.getId().equals(source.getId())) {
+            throw new BusinessException("No se pudo crear la fila destino PARA " + next + ".");
+        }
+
+        entityManager.flush();
+        for (KioscoMovementEntity movement : toMove) {
+            movement.setKioscoStockId(target.getId());
+            kioscoMovementRepository.save(movement);
+        }
+        entityManager.flush();
+
+        try {
+            kioscoInventoryService.replayMovementStockChain(source.getId());
+            kioscoInventoryService.replayMovementStockChain(target.getId());
+        } finally {
+            kioscoInventoryService.disableAdminMovementMutation();
+        }
+
+        target = kioscoStockRepository.findById(target.getId()).orElse(target);
+        log.warn("LEDGER_LAB_MOVE_SIZES actor={} fromId={} toId={} para={} sizes={} moved={}",
+                actor, stockId, target.getId(), next, keys, toMove.size());
+        return toStockResponse(target, resolveProduct(target), resolveColor(target), resolveLocation(target), null);
     }
 
     private boolean isAggregatedOpeningMovement(KioscoMovementEntity movement) {

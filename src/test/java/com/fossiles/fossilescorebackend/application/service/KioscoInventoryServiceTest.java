@@ -13,6 +13,9 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Kiosco
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipGivenItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
@@ -65,6 +68,10 @@ class KioscoInventoryServiceTest {
     @Mock
     private KioscoMovementRepository kioscoMovementRepository;
     @Mock
+    private KioskExchangeSlipRepository kioskExchangeSlipRepository;
+    @Mock
+    private KioskExchangeSlipGivenItemRepository kioskExchangeSlipGivenItemRepository;
+    @Mock
     private LocationRepository locationRepository;
     @Mock
     private ProductRepository productRepository;
@@ -115,6 +122,8 @@ class KioscoInventoryServiceTest {
                 .categoria("KIOSKO")
                 .build()));
         when(kioskInventoryGuard.isKioskLocation(any(LocationEntity.class))).thenReturn(true);
+        when(kioskExchangeSlipRepository.findPricedExchangesByKioskLocationId(anyLong())).thenReturn(List.of());
+        when(kioskExchangeSlipGivenItemRepository.findByExchangeSlipIdIn(any())).thenReturn(List.of());
         when(productRepository.existsById(productId)).thenReturn(true);
         when(productRepository.findById(productId)).thenReturn(Optional.of(ProductEntity.builder()
                 .id(productId)
@@ -168,25 +177,57 @@ class KioscoInventoryServiceTest {
         KioscoStockResponse response = service.registrarEntrada(locationId, productId, colorId, 3, 123L, userId);
 
         assertThat(response.getCurrentStock()).isEqualTo(8);
-        verify(productInventoryService).incrementInventory(
-                eq(productId), eq(locationId), eq(colorId), eq(new BigDecimal("3")),
-                eq(null), eq("KIOSCO_INVENTORY"), eq(null), eq(null), any(), eq(null));
+        verify(productInventoryService, never()).incrementInventory(
+                anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
     void entradaDesdeIntegracion_conTalla_actualizaSizesData() throws Exception {
         KioscoStockEntity stock = stockEntity(0, 0);
         when(kioscoStockRepository.findForUpdate(locationId, productId, colorId)).thenReturn(Optional.of(stock));
+        when(kioscoMovementRepository.findByKioscoStockIdOrderByCreatedAtAscIdAsc(100L)).thenReturn(List.of());
 
         KioscoStockResponse response = service.registrarEntradaDesdeIntegracion(
                 locationId, productId, colorId, new BigDecimal("4"), 200L, userId, "32");
 
         assertThat(response.getCurrentStock()).isEqualTo(4);
-        // Sin sizes_data previo no se inventa desglose; la talla queda en el movimiento.
+        assertThat(response.getSizes().get("32")).isEqualByComparingTo("4");
         ArgumentCaptor<KioscoMovementEntity> movementCaptor = ArgumentCaptor.forClass(KioscoMovementEntity.class);
         verify(kioscoMovementRepository).save(movementCaptor.capture());
         assertThat(movementCaptor.getValue().getSizeKey()).isEqualTo("32");
         verify(productInventoryService, never()).incrementInventory(anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void entradaDesdeIntegracion_conTallaNueva_recuperaTallasPreviasDelKardex() throws Exception {
+        KioscoStockEntity stock = stockEntity(3, 0);
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId)).thenReturn(Optional.of(stock));
+        when(kioscoMovementRepository.findByKioscoStockIdOrderByCreatedAtAscIdAsc(100L))
+                .thenReturn(List.of(movementWithSize(KioscoMovementType.ENTRADA, 3, "32")));
+
+        KioscoStockResponse response = service.registrarEntradaDesdeIntegracion(
+                locationId, productId, colorId, new BigDecimal("2"), 201L, userId, "34");
+
+        assertThat(response.getCurrentStock()).isEqualTo(5);
+        assertThat(ProductInventorySizesJson.parse(stock.getSizesData()).get("32"))
+                .isEqualByComparingTo("3");
+        assertThat(ProductInventorySizesJson.parse(stock.getSizesData()).get("34"))
+                .isEqualByComparingTo("2");
+    }
+
+    @Test
+    void entradaDesdeIntegracion_conTalla_mergeSiYaHayDesglose() throws Exception {
+        KioscoStockEntity stock = stockEntity(3, 0);
+        stock.setSizesData("{\"32\":3}");
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId)).thenReturn(Optional.of(stock));
+
+        KioscoStockResponse response = service.registrarEntradaDesdeIntegracion(
+                locationId, productId, colorId, new BigDecimal("2"), 202L, userId, "34");
+
+        assertThat(response.getCurrentStock()).isEqualTo(5);
+        assertThat(response.getSizes().get("32")).isEqualByComparingTo("3");
+        assertThat(response.getSizes().get("34")).isEqualByComparingTo("2");
+        verify(kioscoMovementRepository, never()).findByKioscoStockIdOrderByCreatedAtAscIdAsc(any());
     }
 
     @Test
@@ -268,9 +309,8 @@ class KioscoInventoryServiceTest {
         KioscoStockResponse response = service.registrarVenta(locationId, productId, colorId, 3, 777L, userId);
 
         assertThat(response.getCurrentStock()).isEqualTo(7);
-        verify(productInventoryService).decrementInventory(
-                eq(productId), eq(locationId), eq(colorId), eq(new BigDecimal("3")),
-                eq("KIOSCO_INVENTORY"), eq(null), eq(null), any(), eq(null));
+        verify(productInventoryService, never()).decrementInventory(
+                anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -464,7 +504,7 @@ class KioscoInventoryServiceTest {
     @Test
     void trasladoBoleta_rechazaLineaDuplicadaEnMismaSolicitud() {
         when(kioscoMovementRepository.findByPhysicalSlipNumber("BT-DUP")).thenReturn(List.of());
-        when(kioscoMovementRepository.existsTrasladoBoletaDuplicateLine(any(), any(), any(), any(), any()))
+        when(kioscoMovementRepository.existsTrasladoBoletaDuplicateLine(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(false);
 
         KioscoInventoryTrasladoRequest request = KioscoInventoryTrasladoRequest.builder()
@@ -489,7 +529,7 @@ class KioscoInventoryServiceTest {
     void trasladoBoleta_rechazaLineaYaRegistradaEnBoleta() {
         when(kioscoMovementRepository.findByPhysicalSlipNumber("BT-EXIST")).thenReturn(List.of());
         when(kioscoMovementRepository.existsTrasladoBoletaDuplicateLine(
-                "BT-EXIST", productId, colorId, "32", 2))
+                "BT-EXIST", productId, colorId, "32", 2, "NUEVO", "NUEVO"))
                 .thenReturn(true);
 
         KioscoInventoryTrasladoRequest request = KioscoInventoryTrasladoRequest.builder()
@@ -727,6 +767,144 @@ class KioscoInventoryServiceTest {
         assertThat(row.getInventarioFinal()).isEqualTo(34);
 
         assertThat(report.getTotals().getInventarioFinal()).isEqualTo(34);
+    }
+
+    @Test
+    void kardex_boletaCambio_sinDiferencia_ingresoEnCompraYEgresoEnSalida() throws Exception {
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId))
+                .thenReturn(List.of(stockEntity(0, 0)));
+
+        LocalDate from = LocalDate.of(2026, 6, 1);
+        LocalDate to = LocalDate.of(2026, 6, 30);
+        LocalDateTime periodStart = from.atStartOfDay();
+
+        KioscoMovementEntity prePeriodEntrada = movement(KioscoMovementType.ENTRADA, 0, 10, 1900L);
+        List<KioscoMovementEntity> periodMoves = List.of(
+                movement(KioscoMovementType.CAMBIO, 10, 11, 1901L),
+                movement(KioscoMovementType.CAMBIO, 11, 10, 1902L)
+        );
+
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(eq(locationId), any(LocalDateTime.class)))
+                .thenAnswer(invocation -> {
+                    LocalDateTime cutoff = invocation.getArgument(1);
+                    if (!cutoff.isAfter(periodStart)) {
+                        return List.of(prePeriodEntrada);
+                    }
+                    java.util.ArrayList<KioscoMovementEntity> all = new java.util.ArrayList<>();
+                    all.add(prePeriodEntrada);
+                    all.addAll(periodMoves);
+                    return all;
+                });
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBetween(
+                eq(locationId), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(periodMoves);
+
+        KioscoKardexReportResponse report = service.getKardexReport(locationId, from, to);
+        KioscoKardexReportResponse.KioscoKardexRow row = report.getRows().get(0);
+        assertThat(row.getInventarioInicial()).isEqualTo(10);
+        assertThat(row.getComprasAjustes()).isEqualTo(1);
+        assertThat(row.getEntradas()).isEqualTo(0);
+        assertThat(row.getVentas()).isEqualTo(0);
+        assertThat(row.getSalida()).isEqualTo(1);
+        assertThat(row.getInventarioFinal()).isEqualTo(10);
+    }
+
+    @Test
+    void kardex_boletaCambio_conDiferencia_vaACompraYVenta() throws Exception {
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId))
+                .thenReturn(List.of(stockEntity(0, 0)));
+        when(kioskExchangeSlipRepository.findPricedExchangesByKioskLocationId(locationId)).thenReturn(List.of(
+                KioskExchangeSlipEntity.builder()
+                        .id(88L)
+                        .slipNumber("A15-100")
+                        .differenceAmount(new BigDecimal("50.00"))
+                        .returnMovementId(1901L)
+                        .givenMovementId(1902L)
+                        .build()
+        ));
+
+        LocalDate from = LocalDate.of(2026, 6, 1);
+        LocalDate to = LocalDate.of(2026, 6, 30);
+        LocalDateTime periodStart = from.atStartOfDay();
+
+        KioscoMovementEntity prePeriodEntrada = movement(KioscoMovementType.ENTRADA, 0, 10, 1900L);
+        List<KioscoMovementEntity> periodMoves = List.of(
+                movement(KioscoMovementType.CAMBIO, 10, 11, 1901L),
+                movement(KioscoMovementType.CAMBIO, 11, 10, 1902L)
+        );
+
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(eq(locationId), any(LocalDateTime.class)))
+                .thenAnswer(invocation -> {
+                    LocalDateTime cutoff = invocation.getArgument(1);
+                    if (!cutoff.isAfter(periodStart)) {
+                        return List.of(prePeriodEntrada);
+                    }
+                    java.util.ArrayList<KioscoMovementEntity> all = new java.util.ArrayList<>();
+                    all.add(prePeriodEntrada);
+                    all.addAll(periodMoves);
+                    return all;
+                });
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBetween(
+                eq(locationId), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(periodMoves);
+
+        KioscoKardexReportResponse report = service.getKardexReport(locationId, from, to);
+        KioscoKardexReportResponse.KioscoKardexRow row = report.getRows().get(0);
+        assertThat(row.getInventarioInicial()).isEqualTo(10);
+        assertThat(row.getComprasAjustes()).isEqualTo(1);
+        assertThat(row.getEntradas()).isEqualTo(0);
+        assertThat(row.getVentas()).isEqualTo(1);
+        assertThat(row.getSalida()).isEqualTo(0);
+        assertThat(row.getInventarioFinal()).isEqualTo(10);
+    }
+
+    @Test
+    void kardex_boletaCambio_conSaldoAFavor_vaACompraYSalida() throws Exception {
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId))
+                .thenReturn(List.of(stockEntity(0, 0)));
+        when(kioskExchangeSlipRepository.findPricedExchangesByKioskLocationId(locationId)).thenReturn(List.of(
+                KioskExchangeSlipEntity.builder()
+                        .id(89L)
+                        .slipNumber("A15-101")
+                        .differenceAmount(new BigDecimal("-50.00"))
+                        .returnMovementId(1901L)
+                        .givenMovementId(1902L)
+                        .build()
+        ));
+
+        LocalDate from = LocalDate.of(2026, 6, 1);
+        LocalDate to = LocalDate.of(2026, 6, 30);
+        LocalDateTime periodStart = from.atStartOfDay();
+
+        KioscoMovementEntity prePeriodEntrada = movement(KioscoMovementType.ENTRADA, 0, 10, 1900L);
+        List<KioscoMovementEntity> periodMoves = List.of(
+                movement(KioscoMovementType.CAMBIO, 10, 11, 1901L),
+                movement(KioscoMovementType.CAMBIO, 11, 10, 1902L)
+        );
+
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(eq(locationId), any(LocalDateTime.class)))
+                .thenAnswer(invocation -> {
+                    LocalDateTime cutoff = invocation.getArgument(1);
+                    if (!cutoff.isAfter(periodStart)) {
+                        return List.of(prePeriodEntrada);
+                    }
+                    java.util.ArrayList<KioscoMovementEntity> all = new java.util.ArrayList<>();
+                    all.add(prePeriodEntrada);
+                    all.addAll(periodMoves);
+                    return all;
+                });
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBetween(
+                eq(locationId), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(periodMoves);
+
+        KioscoKardexReportResponse report = service.getKardexReport(locationId, from, to);
+        KioscoKardexReportResponse.KioscoKardexRow row = report.getRows().get(0);
+        assertThat(row.getInventarioInicial()).isEqualTo(10);
+        assertThat(row.getComprasAjustes()).isEqualTo(1);
+        assertThat(row.getEntradas()).isEqualTo(0);
+        assertThat(row.getVentas()).isEqualTo(0);
+        assertThat(row.getSalida()).isEqualTo(1);
+        assertThat(row.getInventarioFinal()).isEqualTo(10);
     }
 
     @Test

@@ -64,6 +64,8 @@ class KioscoInventoryCountServiceTest {
     @Mock
     private KioscoInventoryService kioscoInventoryService;
     @Mock
+    private KioskExchangeService kioskExchangeService;
+    @Mock
     private KioscoStockRepository kioscoStockRepository;
     @Mock
     private KioskExchangeSlipRepository exchangeSlipRepository;
@@ -122,8 +124,7 @@ class KioscoInventoryCountServiceTest {
         when(kioscoInventoryService.computeSizeBalanceByStockAndSize(any(), any())).thenReturn(Map.of());
         when(kioscoInventoryService.computePrePeriodEntradasByStockId(any(), any(), any())).thenReturn(Map.of());
         when(kioscoInventoryService.computePrePeriodEntradasByStockAndSize(any(), any(), any())).thenReturn(Map.of());
-        when(kioscoInventoryService.buildKardexByStockAndSize(
-                any(), any(LocalDateTime.class), any(LocalDateTime.class), any())).thenReturn(Map.of());
+        when(kioscoInventoryService.buildKardexByStockAndSize(any(), any(LocalDateTime.class), any(LocalDateTime.class), any())).thenReturn(Map.of());
         when(exchangeSlipRepository.findByKioskLocationIdOrderByCreatedAtDesc(any())).thenReturn(List.of());
     }
 
@@ -211,7 +212,7 @@ class KioscoInventoryCountServiceTest {
         stubPrincipalKardex(List.of(kardexRow(10)));
 
         AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
-        when(itemRepository.findByCountIdAndProductIdAndColorId(countId, productId, colorId)).thenReturn(Optional.empty());
+        when(itemRepository.findByCountIdAndProductIdAndColorIdAndHardwareCondition(countId, productId, colorId, "NUEVO")).thenReturn(Optional.empty());
         when(itemRepository.save(any(KioscoPhysicalCountItemEntity.class))).thenAnswer(inv -> {
             KioscoPhysicalCountItemEntity item = inv.getArgument(0);
             if (item.getId() == null) {
@@ -253,7 +254,7 @@ class KioscoInventoryCountServiceTest {
         stubPrincipalKardex(List.of(kardexRow(10)));
 
         AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
-        when(itemRepository.findByCountIdAndProductIdAndColorId(countId, productId, colorId)).thenReturn(Optional.empty());
+        when(itemRepository.findByCountIdAndProductIdAndColorIdAndHardwareCondition(countId, productId, colorId, "NUEVO")).thenReturn(Optional.empty());
         when(itemRepository.save(any(KioscoPhysicalCountItemEntity.class))).thenAnswer(inv -> {
             KioscoPhysicalCountItemEntity item = inv.getArgument(0);
             if (item.getId() == null) {
@@ -297,7 +298,7 @@ class KioscoInventoryCountServiceTest {
         stubPrincipalKardex(List.of(kardexRow(10)));
 
         AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
-        when(itemRepository.findByCountIdAndProductIdAndColorId(countId, productId, colorId)).thenReturn(Optional.empty());
+        when(itemRepository.findByCountIdAndProductIdAndColorIdAndHardwareCondition(countId, productId, colorId, "NUEVO")).thenReturn(Optional.empty());
         when(itemRepository.save(any(KioscoPhysicalCountItemEntity.class))).thenAnswer(inv -> {
             KioscoPhysicalCountItemEntity item = inv.getArgument(0);
             if (item.getId() == null) {
@@ -806,7 +807,7 @@ class KioscoInventoryCountServiceTest {
                 .build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
 
-        assertThatThrownBy(() -> service.getSubcountReport(countId, LocalDate.of(2026, 7, 1).toString()))
+        assertThatThrownBy(() -> service.getSubcountReport(countId, "2026-07-01"))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("fecha de corte");
     }

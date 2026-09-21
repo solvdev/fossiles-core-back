@@ -1,8 +1,12 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMoveSizesRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabMovementUpsertRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabReclassifyRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskLedgerLabStockUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabMovementResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReclassifyResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllKiosksResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabReplayAllResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabSplitSizesResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLedgerLabStockResponse;
@@ -112,6 +116,22 @@ public class KioskLedgerLabController {
         return ResponseEntity.ok(ledgerLabService.updateStock(stockId, request));
     }
 
+    @PostMapping("/stocks/reclassify")
+    public ResponseEntity<KioskLedgerLabReclassifyResponse> reclassifyStocks(
+            @RequestBody KioskLedgerLabReclassifyRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        guard.requireEramirez();
+        return ResponseEntity.ok(ledgerLabService.reclassifyStocks(request));
+    }
+
+    @DeleteMapping("/stocks/{stockId}")
+    public ResponseEntity<Void> deleteStock(@PathVariable Long stockId)
+            throws BusinessException, ResourceNotFoundException {
+        guard.requireEramirez();
+        ledgerLabService.deleteStock(stockId);
+        return ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/stocks/{stockId}/replay")
     public ResponseEntity<KioskLedgerLabStockResponse> replayStock(@PathVariable Long stockId)
             throws BusinessException, ResourceNotFoundException {
@@ -126,10 +146,27 @@ public class KioskLedgerLabController {
         return ResponseEntity.ok(ledgerLabService.replayAllStocks(locationId));
     }
 
+    /** Replay de stock_before/after y current_stock de TODOS los kioscos (uno por uno). */
+    @PostMapping("/replay-all-kiosks")
+    public ResponseEntity<KioskLedgerLabReplayAllKiosksResponse> replayAllKiosks()
+            throws BusinessException {
+        guard.requireEramirez();
+        return ResponseEntity.ok(ledgerLabService.replayAllKiosks());
+    }
+
     @PostMapping("/stocks/{stockId}/split-opening-by-sizes")
     public ResponseEntity<KioskLedgerLabSplitSizesResponse> splitOpeningBySizes(@PathVariable Long stockId)
             throws BusinessException, ResourceNotFoundException {
         guard.requireEramirez();
         return ResponseEntity.ok(ledgerLabService.splitOpeningBySizes(stockId));
+    }
+
+    @PostMapping("/stocks/{stockId}/move-sizes")
+    public ResponseEntity<KioskLedgerLabStockResponse> moveSizesToPara(
+            @PathVariable Long stockId,
+            @RequestBody KioskLedgerLabMoveSizesRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        guard.requireEramirez();
+        return ResponseEntity.ok(ledgerLabService.moveSizesToPara(stockId, request));
     }
 }

@@ -7,6 +7,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySize
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -25,8 +26,8 @@ public final class KioscoInventoryInitRules {
     /** Niño: 16–30 por pares. */
     public static final List<String> KIDS_CINCHO_SIZES = List.of("16", "18", "20", "22", "24", "26", "28", "30");
 
-    /** Dama / caballero: 30–46 por pares. */
-    public static final List<String> ADULT_CINCHO_SIZES = List.of("30", "32", "34", "36", "38", "40", "42", "46");
+    /** Dama / caballero: 30–46 por pares (incluye 44). */
+    public static final List<String> ADULT_CINCHO_SIZES = List.of("30", "32", "34", "36", "38", "40", "42", "44", "46");
 
     private KioscoInventoryInitRules() {
     }
@@ -43,6 +44,33 @@ public final class KioscoInventoryInitRules {
             return true;
         }
         return CinchoProductUtils.isFossCinchoProduct(product);
+    }
+
+    public static boolean isKidsCinchoProduct(ProductEntity product) {
+        return isCinchoProduct(product)
+                && (Boolean.TRUE.equals(product.getCinchoForKids()) || hasJrCode(product));
+    }
+
+    /** Cinchos junior: el código trae el token JR (p.ej. N-113-JR). */
+    public static boolean hasJrCode(ProductEntity product) {
+        if (product == null || product.getCode() == null || product.getCode().isBlank()) {
+            return false;
+        }
+        String[] parts = product.getCode().toUpperCase(Locale.ROOT).split("[^A-Z0-9]+");
+        for (String part : parts) {
+            if ("JR".equals(part)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static boolean isWalletProduct(ProductEntity product) {
+        if (product == null || isPackagingProduct(product) || isCinchoProduct(product)) {
+            return false;
+        }
+        String name = product.getName();
+        return name != null && name.toUpperCase(Locale.ROOT).contains("BILLETERA");
     }
 
     public static List<Long> resolveColorIds(ProductEntity product, List<Long> catalogColorIds) {
@@ -79,10 +107,7 @@ public final class KioscoInventoryInitRules {
     }
 
     public static String stockInitKey(Long locationId, Long productId, Long colorId, String hardwareCondition) {
-        String hw = ProductHardwareCondition.normalize(hardwareCondition);
-        if (hw == null) {
-            hw = ProductHardwareCondition.NUEVO;
-        }
+        String hw = ProductHardwareCondition.normalizeStockDimension(hardwareCondition);
         return stockColorKey(locationId, productId, colorId) + "|" + hw;
     }
 

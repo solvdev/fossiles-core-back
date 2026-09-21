@@ -36,6 +36,10 @@ public class ProductShipmentResponse {
     private LocalDateTime createdAt;
     private Long createdBy;
     private String createdByName;
+    /** Solicitud ENVI interna ligada a este documento, si existe. */
+    private Long internalShipmentRequestId;
+    /** True si Contabilidad puede generar OPI de reposición para este ENVI. */
+    private Boolean canGenerateOpi;
     private LocalDateTime updatedAt;
     private Long updatedBy;
 

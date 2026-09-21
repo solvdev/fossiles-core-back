@@ -74,7 +74,8 @@ public class ProductInventoryController {
 
     @PutMapping
     public ResponseEntity<ProductInventoryLocationResponse> updateInventory(
-            @Valid @RequestBody ProductInventoryUpdateRequest request) throws ResourceNotFoundException {
+            @Valid @RequestBody ProductInventoryUpdateRequest request)
+            throws ResourceNotFoundException, BusinessException {
         ProductInventoryLocationResponse response = productInventoryService.updateInventory(request);
         return ResponseEntity.ok(response);
     }

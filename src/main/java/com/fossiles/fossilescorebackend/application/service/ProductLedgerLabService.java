@@ -61,7 +61,6 @@ public class ProductLedgerLabService {
 
     @Transactional(readOnly = true)
     public List<ProductLedgerLabLocationResponse> listAllowedLocations() throws BusinessException {
-        guard.requireEramirez();
         return productInventoryService.getDispatchSourceWarehouses().stream()
                 .map(loc -> ProductLedgerLabLocationResponse.builder()
                         .id(loc.getId())
@@ -79,7 +78,6 @@ public class ProductLedgerLabService {
             Long colorId,
             Long stockId
     ) throws BusinessException, ResourceNotFoundException {
-        guard.requireEramirez();
         if (locationId == null && stockId == null) {
             throw new BusinessException("Indica locationId o stockId.");
         }
@@ -125,6 +123,7 @@ public class ProductLedgerLabService {
             Long locationId,
             Long stockId,
             Long productId,
+            Long colorId,
             String type,
             LocalDate from,
             LocalDate to,
@@ -134,7 +133,6 @@ public class ProductLedgerLabService {
             String sizeLabel,
             Long movementId
     ) throws BusinessException, ResourceNotFoundException {
-        guard.requireEramirez();
         if (movementId != null) {
             ProductInventoryKardex one = kardexRepository.findById(movementId)
                     .orElseThrow(() -> new ResourceNotFoundException("ProductInventoryKardex", movementId));
@@ -171,6 +169,9 @@ public class ProductLedgerLabService {
         List<ProductLedgerLabMovementResponse> out = new ArrayList<>();
         for (ProductInventoryKardex m : raw) {
             if (productId != null && !Objects.equals(m.getProductId(), productId)) {
+                continue;
+            }
+            if (colorId != null && !Objects.equals(m.getColorId(), colorId)) {
                 continue;
             }
             if (typeNorm != null && !typeNorm.isEmpty()
@@ -557,7 +558,7 @@ public class ProductLedgerLabService {
         Set<Long> allowed = allowedLocationIds();
         if (!allowed.contains(locationId)) {
             throw new BusinessException(
-                    "Ubicación no permitida en Product Ledger Lab (solo Bodega PT y Devoluciones).");
+                    "Ubicación no permitida (solo Bodega PT y Devoluciones).");
         }
     }
 

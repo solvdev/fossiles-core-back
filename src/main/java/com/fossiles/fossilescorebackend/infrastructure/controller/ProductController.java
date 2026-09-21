@@ -58,6 +58,7 @@ public class ProductController {
         if (!ProductCinchoType.isValidCinchoType(request.getCinchoType())) {
             throw new BusinessException("Tipo de cincho inválido. Use CASUAL, REVERSIBLE o déjelo vacío.");
         }
+        validateEntrecuerosConfig(request);
         ProductEntity entity = toEntity(request);
         if (entity.getStatus() == null) {
             entity.setStatus("A");
@@ -86,6 +87,7 @@ public class ProductController {
         if (!ProductCinchoType.isValidCinchoType(request.getCinchoType())) {
             throw new BusinessException("Tipo de cincho inválido. Use CASUAL, REVERSIBLE o déjelo vacío.");
         }
+        validateEntrecuerosConfig(request);
         
         updateEntity(entity, request);
         ProductEntity updated = productRepository.save(entity);
@@ -233,6 +235,11 @@ public class ProductController {
                 .cinchoType(ProductCinchoType.normalizeCinchoType(entity.getCinchoType()))
                 .cinchoForKids(Boolean.TRUE.equals(entity.getCinchoForKids()))
                 .prdTime(entity.getPrdTime())
+                .entrecuerosEnabled(Boolean.TRUE.equals(entity.getEntrecuerosEnabled()))
+                .entrecuerosPriceUnit(entity.getEntrecuerosPriceUnit())
+                .entrecuerosPriceQty3(entity.getEntrecuerosPriceQty3())
+                .entrecuerosPriceQty6(entity.getEntrecuerosPriceQty6())
+                .entrecuerosPriceQty12(entity.getEntrecuerosPriceQty12())
                 .unitsPerTask(entity.getUnitsPerTask())
                 .salePrice(entity.getSalePrice())
                 .discountedPrice(entity.getDiscountedPrice())
@@ -264,6 +271,11 @@ public class ProductController {
                         ProductCinchoType.normalizeCinchoType(request.getCinchoType()) != null
                                 && Boolean.TRUE.equals(request.getCinchoForKids()))
                 .prdTime(roundedPrdTime)
+                .entrecuerosEnabled(Boolean.TRUE.equals(request.getEntrecuerosEnabled()))
+                .entrecuerosPriceUnit(request.getEntrecuerosPriceUnit())
+                .entrecuerosPriceQty3(request.getEntrecuerosPriceQty3())
+                .entrecuerosPriceQty6(request.getEntrecuerosPriceQty6())
+                .entrecuerosPriceQty12(request.getEntrecuerosPriceQty12())
                 .unitsPerTask(normalizeUnitsPerTask(request.getUnitsPerTask()))
                 .salePrice(request.getSalePrice())
                 .discountedPrice(request.getDiscountedPrice())
@@ -296,6 +308,13 @@ public class ProductController {
             double roundedTime = Math.round(request.getPrdTime() * 100.0) / 100.0;
             entity.setPrdTime(roundedTime);
         }
+        if (request.getEntrecuerosEnabled() != null) {
+            entity.setEntrecuerosEnabled(request.getEntrecuerosEnabled());
+        }
+        entity.setEntrecuerosPriceUnit(request.getEntrecuerosPriceUnit());
+        entity.setEntrecuerosPriceQty3(request.getEntrecuerosPriceQty3());
+        entity.setEntrecuerosPriceQty6(request.getEntrecuerosPriceQty6());
+        entity.setEntrecuerosPriceQty12(request.getEntrecuerosPriceQty12());
         if (request.getUnitsPerTask() != null) {
             entity.setUnitsPerTask(normalizeUnitsPerTask(request.getUnitsPerTask()));
         }
@@ -310,6 +329,16 @@ public class ProductController {
 
     private String normalizeProductAudience(String value) {
         return ProductAudienceCategory.normalizeProductAudience(value);
+    }
+
+    private void validateEntrecuerosConfig(ProductRequest request) throws BusinessException {
+        if (!Boolean.TRUE.equals(request.getEntrecuerosEnabled())) {
+            return;
+        }
+        if (request.getEntrecuerosPriceUnit() == null
+                || request.getEntrecuerosPriceUnit().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("Indique el precio unitario Entrecueros.");
+        }
     }
 
     private Integer normalizeUnitsPerTask(Integer value) {

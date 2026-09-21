@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -32,6 +33,18 @@ public class CustomerController {
         return ResponseEntity.ok(customers);
     }
 
+    @GetMapping("/by-nit")
+    public ResponseEntity<List<CustomerResponse>> getByNit(@RequestParam String nit) {
+        String normalized = normalizeNit(nit);
+        if (normalized == null) {
+            return ResponseEntity.ok(List.of());
+        }
+        List<CustomerResponse> customers = customerRepository.findByNormalizedNit(normalized).stream()
+                .map(this::toResponse)
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(customers);
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<CustomerResponse> getById(@PathVariable Long id) throws ResourceNotFoundException {
         CustomerEntity entity = customerRepository.findById(id)
@@ -45,6 +58,7 @@ public class CustomerController {
         validateLegacyCode(null, request.getLegacyCode());
         validateRouteLocationCode(request.getRouteLocationCode());
         CustomerEntity entity = toEntity(request);
+        entity.setNit(normalizeNit(request.getNit()));
         if (entity.getStatus() == null) {
             entity.setStatus("active");
         }
@@ -108,7 +122,7 @@ public class CustomerController {
 
     private void updateEntity(CustomerEntity entity, CustomerRequest request) {
         if (request.getName() != null) entity.setName(request.getName());
-        if (request.getNit() != null) entity.setNit(request.getNit());
+        if (request.getNit() != null) entity.setNit(normalizeNit(request.getNit()));
         if (request.getLegacyCode() != null) {
             entity.setLegacyCode(normalizeLegacyCode(request.getLegacyCode()));
         }
@@ -150,7 +164,18 @@ public class CustomerController {
         if (code == null || code.isBlank()) {
             return null;
         }
-        return code.trim().toUpperCase(java.util.Locale.ROOT);
+        return code.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private static String normalizeNit(String nit) {
+        if (nit == null || nit.isBlank()) {
+            return null;
+        }
+        String trimmed = nit.trim().toUpperCase(Locale.ROOT).replace(" ", "").replace("-", "");
+        if (trimmed.isEmpty() || "C/F".equals(trimmed)) {
+            return "CF";
+        }
+        return trimmed;
     }
 }
 

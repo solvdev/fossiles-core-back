@@ -75,8 +75,8 @@ public class KioskExchangeSlipEntity {
     @Column(name = "given_size", length = 20)
     private String givenSize;
 
-    /** Herraje del producto entregado (NUEVO/VIEJO); stock kiosco. */
-    @Column(name = "given_hardware_condition", length = 20)
+    /** Variante entregada: NUEVO/VIEJO, PARA o marca / SINTETICO:MARCA. */
+    @Column(name = "given_hardware_condition", length = 40)
     private String givenHardwareCondition;
 
     @Column(name = "given_quantity", precision = 12, scale = 3)
@@ -85,6 +85,7 @@ public class KioskExchangeSlipEntity {
     @Column(name = "given_amount", precision = 12, scale = 2)
     private BigDecimal givenAmount;
 
+    /** Positivo = a cobrar (Vtas.); negativo = saldo a favor del cliente (Sal.); cero = sin diferencia. */
     @Column(name = "difference_amount", precision = 12, scale = 2)
     private BigDecimal differenceAmount;
 

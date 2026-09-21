@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioscoOpeningIn
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
+import com.fossiles.fossilescorebackend.application.util.KioscoStockDimension;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
@@ -133,7 +134,7 @@ public class KioscoOpeningInventoryService {
                         KioscoInventoryInitRules.isCinchoProduct(product) ? targetSizes : null,
                         OPENING_INVENTORY_REASON,
                         userId,
-                        item.getHardwareCondition()
+                        ProductHardwareCondition.normalizeStockDimension(item.getHardwareCondition())
                 );
                 entradasApplied++;
             }
@@ -223,7 +224,7 @@ public class KioscoOpeningInventoryService {
         boolean foss = KioscoInventoryInitRules.isCinchoProduct(product);
 
         Long colorId = req.getColorId();
-        String hardware = resolveItemHardware(req.getHardwareCondition());
+        String hardware = resolveItemHardware(session, product, req.getHardwareCondition());
         if (packaging) {
             if (colorId != null) {
                 throw new BusinessException("Los empaques SUM- no usan color; omita colorId.");
@@ -294,8 +295,8 @@ public class KioscoOpeningInventoryService {
                 .filter(s -> Objects.equals(s.getProductId(), item.getProductId())
                         && Objects.equals(s.getColorId(), item.getColorId())
                         && Objects.equals(
-                                ProductHardwareCondition.normalize(s.getHardwareCondition()),
-                                ProductHardwareCondition.normalize(item.getHardwareCondition())))
+                                ProductHardwareCondition.normalizeStockDimension(s.getHardwareCondition()),
+                                ProductHardwareCondition.normalizeStockDimension(item.getHardwareCondition())))
                 .collect(Collectors.toList());
         int currentQty = stocks.stream().mapToInt(s -> safeInt(s.getCurrentStock())).sum();
         if (KioscoInventoryInitRules.isCinchoProduct(product)) {
@@ -332,10 +333,13 @@ public class KioscoOpeningInventoryService {
             ProductEntity product = productsById.get(item.getProductId());
             ColorEntity color = item.getColorId() != null ? colorsById.get(item.getColorId()) : null;
             Map<String, Integer> sizes = parseSizes(item.getSizesData());
+            String productName = product != null ? product.getName() : null;
+            productName = ProductHardwareCondition.appendMaterialToName(
+                    productName, item.getHardwareCondition());
             rows.add(KioscoOpeningInventoryReportResponse.ItemRow.builder()
                     .productId(item.getProductId())
                     .productCode(product != null ? product.getCode() : null)
-                    .productName(product != null ? product.getName() : null)
+                    .productName(productName)
                     .colorId(item.getColorId())
                     .colorName(color != null ? color.getName() : null)
                     .hardwareCondition(item.getHardwareCondition())
@@ -497,23 +501,17 @@ public class KioscoOpeningInventoryService {
                 .collect(Collectors.joining(", "));
     }
 
-    private String resolveItemHardware(String raw) throws BusinessException {
-        String hardware = ProductHardwareCondition.normalize(raw);
-        if (hardware == null) {
-            hardware = ProductHardwareCondition.NUEVO;
-        }
-        if (!ProductHardwareCondition.NUEVO.equals(hardware)
-                && !ProductHardwareCondition.VIEJO.equals(hardware)) {
-            throw new BusinessException("Herraje inválido: use NUEVO o VIEJO.");
-        }
-        return hardware;
+    private String resolveItemHardware(
+            KioscoOpeningInventoryEntity session,
+            ProductEntity product,
+            String raw
+    ) throws BusinessException {
+        LocationEntity location = locationRepository.findById(session.getLocationId()).orElse(null);
+        return KioscoStockDimension.resolve(location, product, raw, false);
     }
 
     private String resolveHardwareLabel(String hardware) {
-        if (ProductHardwareCondition.VIEJO.equals(ProductHardwareCondition.normalize(hardware))) {
-            return "Herraje viejo";
-        }
-        return "Herraje nuevo";
+        return ProductHardwareCondition.label(hardware);
     }
 
     private String resolveUsername(Long userId) {

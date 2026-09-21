@@ -37,7 +37,11 @@ import com.fossiles.fossilescorebackend.application.dto.response.TaxpayerLookupR
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
+import com.fossiles.fossilescorebackend.application.util.EntrecuerosPriceLists;
+import com.fossiles.fossilescorebackend.application.util.EntrecuerosShippingSheet;
+import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
+import com.fossiles.fossilescorebackend.application.util.KioskPosInventoryKey;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
@@ -76,6 +80,7 @@ import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionPropert
 import com.fossiles.fossilescorebackend.infrastructure.config.KioskPosDepositReportProperties;
 import com.fossiles.fossilescorebackend.infrastructure.config.KioskPosVoucherReportProperties;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -200,7 +205,7 @@ public class KioskPosService {
                     return KioskPosContextResponse.InventoryItem.builder()
                             .productId(row.getProductId())
                             .productCode(product != null ? product.getCode() : "")
-                            .productName(product != null ? product.getName() : "Producto")
+                            .productName(resolveInventoryProductName(product, ProductHardwareCondition.NUEVO))
                             .productImageUrl(product != null ? safeTrim(product.getImageUrl()) : "")
                             .colorId(row.getColorId())
                             .colorName(row.getColor() != null ? row.getColor().getName() : "")
@@ -209,8 +214,16 @@ public class KioskPosService {
                             .audienceCategory(product != null
                                     ? ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory())
                                     : ProductAudienceCategory.UNISEX)
+                            .cinchoType(product != null
+                                    ? ProductCinchoType.normalizeCinchoType(product.getCinchoType())
+                                    : null)
                             .quantity(row.getQuantity() != null ? row.getQuantity() : BigDecimal.ZERO)
-                            .suggestedUnitPrice(resolvePosUnitPrice(product))
+                            .suggestedUnitPrice(resolveCatalogUnitPrice(kiosk, product, ProductHardwareCondition.NUEVO))
+                            .entrecuerosEnabled(product != null && Boolean.TRUE.equals(product.getEntrecuerosEnabled()))
+                            .entrecuerosPriceUnit(product != null ? product.getEntrecuerosPriceUnit() : null)
+                            .entrecuerosPriceQty3(product != null ? product.getEntrecuerosPriceQty3() : null)
+                            .entrecuerosPriceQty6(product != null ? product.getEntrecuerosPriceQty6() : null)
+                            .entrecuerosPriceQty12(product != null ? product.getEntrecuerosPriceQty12() : null)
                             .sizes(positiveSizesMap(row.getSizesData()))
                             .hardwareCondition(ProductHardwareCondition.NUEVO)
                             .hardwareLabel(ProductHardwareCondition.label(ProductHardwareCondition.NUEVO))
@@ -224,10 +237,7 @@ public class KioskPosService {
                     ProductCategoryEntity category = product != null && product.getCategoryId() != null
                             ? categoriesById.get(product.getCategoryId())
                             : null;
-                    String hardware = ProductHardwareCondition.normalize(row.getHardwareCondition());
-                    if (hardware == null) {
-                        hardware = ProductHardwareCondition.NUEVO;
-                    }
+                    String hardware = ProductHardwareCondition.normalizeStockDimension(row.getHardwareCondition());
                     // Solo kiosco_stock: no mezclar tallas legacy (causaba "hay stock" en UI y 0 al cobrar).
                     Map<String, BigDecimal> sizes = resolveKioscoSizes(row);
                     BigDecimal quantity = sizes != null && !sizes.isEmpty()
@@ -236,7 +246,7 @@ public class KioskPosService {
                     return KioskPosContextResponse.InventoryItem.builder()
                             .productId(row.getProductId())
                             .productCode(product != null ? product.getCode() : "")
-                            .productName(product != null ? product.getName() : "Producto")
+                            .productName(resolveInventoryProductName(product, hardware))
                             .productImageUrl(product != null ? safeTrim(product.getImageUrl()) : "")
                             .colorId(row.getColorId())
                             .colorName(row.getColor() != null ? row.getColor().getName() : "")
@@ -245,8 +255,16 @@ public class KioskPosService {
                             .audienceCategory(product != null
                                     ? ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory())
                                     : ProductAudienceCategory.UNISEX)
+                            .cinchoType(product != null
+                                    ? ProductCinchoType.normalizeCinchoType(product.getCinchoType())
+                                    : null)
                             .quantity(quantity)
-                            .suggestedUnitPrice(resolvePosUnitPrice(product))
+                            .suggestedUnitPrice(resolveCatalogUnitPrice(kiosk, product, hardware))
+                            .entrecuerosEnabled(product != null && Boolean.TRUE.equals(product.getEntrecuerosEnabled()))
+                            .entrecuerosPriceUnit(product != null ? product.getEntrecuerosPriceUnit() : null)
+                            .entrecuerosPriceQty3(product != null ? product.getEntrecuerosPriceQty3() : null)
+                            .entrecuerosPriceQty6(product != null ? product.getEntrecuerosPriceQty6() : null)
+                            .entrecuerosPriceQty12(product != null ? product.getEntrecuerosPriceQty12() : null)
                             .sizes(sizes)
                             .hardwareCondition(hardware)
                             .hardwareLabel(ProductHardwareCondition.label(hardware))
@@ -255,7 +273,10 @@ public class KioskPosService {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
-        appendMissingPackagingCatalogItems(rawInventory, productsById, categoriesById);
+        appendMissingPackagingCatalogItems(rawInventory, productsById, categoriesById, kiosk);
+        if (KioskPosMode.isEntrecueros(kiosk)) {
+            rawInventory.removeIf(item -> !Boolean.TRUE.equals(item.getEntrecuerosEnabled()));
+        }
 
         List<KioskPosContextResponse.InventoryItem> inventory = rawInventory.stream()
                 .filter(item -> categoryId == null || Objects.equals(item.getCategoryId(), categoryId))
@@ -283,12 +304,14 @@ public class KioskPosService {
                 .kioskName(kiosk.getName())
                 .posTestMode(isPosTestSale(kiosk))
                 .posOpeningCashAmount(resolvePosOpeningCashAmount(kiosk))
+                .posMode(KioskPosMode.normalize(kiosk.getPosMode()))
                 .kiosks(availableKiosks.stream()
                         .map(item -> KioskPosContextResponse.KioskOption.builder()
                                 .kioskId(item.getId())
                                 .kioskCode(item.getCode())
                                 .kioskName(item.getName())
                                 .posOpeningCashAmount(resolvePosOpeningCashAmount(item))
+                                .posMode(KioskPosMode.normalize(item.getPosMode()))
                                 .build())
                         .collect(Collectors.toList()))
                 .inventory(inventory)
@@ -304,18 +327,21 @@ public class KioskPosService {
         boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
+        boolean entrecueros = KioskPosMode.isEntrecueros(kiosk);
         KioskCashSessionEntity openSession = requireOpenCashSession(kiosk.getId());
         LocalDate saleDate = request.getSaleDate() != null ? request.getSaleDate() : GuatemalaDateTime.today();
-        String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod());
-        validateCardFields(
-                normalizedPaymentMethod,
-                request.getCardAmount(),
-                request.getCardAuthNumber(),
-                request.getCardLast4(),
-                request.getCardBrand(),
-                request.getCardVoucherAmount(),
-                true
-        );
+        String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod(), entrecueros);
+        if (!entrecueros) {
+            validateCardFields(
+                    normalizedPaymentMethod,
+                    request.getCardAmount(),
+                    request.getCardAuthNumber(),
+                    request.getCardLast4(),
+                    request.getCardBrand(),
+                    request.getCardVoucherAmount(),
+                    true
+            );
+        }
 
         String normalizedTaxId = normalizeTaxId(request.getCustomerTaxId());
         if (normalizedTaxId != null && !"CF".equals(normalizedTaxId) && !isValidGuatemalaNit(normalizedTaxId)) {
@@ -325,7 +351,7 @@ public class KioskPosService {
         boolean exchangeSale = request.getExchangeCreditAmount() != null
                 && request.getExchangeCreditAmount().compareTo(BigDecimal.ZERO) > 0;
         KioskPromotionEntity promotion = null;
-        if (!exchangeSale
+        if (!entrecueros && !exchangeSale
                 && (request.getManualDiscountPercent() == null
                 || request.getManualDiscountPercent().compareTo(BigDecimal.ZERO) <= 0)
                 && request.getPromotionId() != null) {
@@ -333,7 +359,7 @@ public class KioskPosService {
         }
 
         Map<String, BigDecimal> aggregatedQty = aggregateItemQuantities(request.getItems());
-        // Cambio: no valida/descuenta stock aquí (lo mueven CAMBIO + / CAMBIO −; empaque solo factura).
+        // Cambio: no valida/descuenta stock aquí (lo mueve la boleta: CAMBIO + y CAMBIO −).
         if (!exchangeSale) {
             lockAndValidateStock(kiosk.getId(), aggregatedQty);
         }
@@ -341,6 +367,22 @@ public class KioskPosService {
         List<PreparedLine> preparedLines = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal totalItems = BigDecimal.ZERO;
+        Map<String, BigDecimal> qtyByPriceKey = new HashMap<>();
+        if (entrecueros) {
+            for (KioskPosSaleRequest.ItemRequest itemRequest : request.getItems()) {
+                if (itemRequest == null || itemRequest.getProductId() == null || itemRequest.getQuantity() == null) {
+                    continue;
+                }
+                ProductEntity volumeProduct = productRepository.findById(itemRequest.getProductId()).orElse(null);
+                addEntrecuerosVolumeQty(
+                        qtyByPriceKey,
+                        itemRequest.getProductId(),
+                        volumeProduct,
+                        resolveItemHardwareCondition(itemRequest.getHardwareCondition()),
+                        itemRequest.getQuantity());
+            }
+        }
+        boolean wholesaleUnlocked = entrecueros && EntrecuerosPriceLists.unlocksWholesale(qtyByPriceKey);
 
         for (KioskPosSaleRequest.ItemRequest itemRequest : request.getItems()) {
             if (itemRequest == null || itemRequest.getProductId() == null) {
@@ -353,6 +395,10 @@ public class KioskPosService {
 
             ProductEntity product = productRepository.findById(itemRequest.getProductId())
                     .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
+            if (entrecueros && !Boolean.TRUE.equals(product.getEntrecuerosEnabled())) {
+                throw new BusinessException(
+                        "El producto " + product.getCode() + " no está habilitado para venta Entrecueros.");
+            }
 
             ColorEntity color = null;
             if (itemRequest.getColorId() != null) {
@@ -388,10 +434,13 @@ public class KioskPosService {
                 throw new BusinessException("Debe seleccionar talla para " + product.getName() + ".");
             }
 
-            BigDecimal unitPrice = resolvePosUnitPrice(product, sizeLabel);
+            BigDecimal unitPrice = entrecueros
+                    ? resolveEntrecuerosLineUnitPrice(
+                            product, hardware, quantity, qtyByPriceKey, wholesaleUnlocked)
+                    : resolvePosUnitPrice(product, sizeLabel);
             // Línea con precio editado (Miraflores): monto final, sin descuento sobre esa línea.
             boolean finalUnitPrice = false;
-            if (itemRequest.getUnitPrice() != null
+            if (!entrecueros && itemRequest.getUnitPrice() != null
                     && itemRequest.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
                 if (!exchangeSale && !allowsPosUnitPriceEdit(kiosk)) {
                     throw new BusinessException(
@@ -417,7 +466,9 @@ public class KioskPosService {
             totalItems = totalItems.add(quantity);
         }
 
-        DiscountResolution discountResolution = resolveSaleDiscount(
+        DiscountResolution discountResolution = entrecueros
+                ? new DiscountResolution(BigDecimal.ZERO, null, null, false)
+                : resolveSaleDiscount(
                 subtotal,
                 preparedLines,
                 exchangeSale,
@@ -429,17 +480,25 @@ public class KioskPosService {
         BigDecimal discountAmount = discountResolution.discountAmount();
         BigDecimal totalAmount = subtotal.subtract(discountAmount).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
 
-        validateSplitCardPayment(
-                normalizedPaymentMethod,
-                totalAmount,
-                request.getCardAmount(),
-                request.getCard2Amount(),
-                request.getCard2AuthNumber(),
-                request.getCard2Last4(),
-                request.getCard2Brand(),
-                request.getCard2VoucherAmount(),
-                true
-        );
+        if (entrecueros) {
+            validateEntrecuerosTransfer(normalizedPaymentMethod, request);
+        } else {
+            validateSplitCardPayment(
+                    normalizedPaymentMethod,
+                    totalAmount,
+                    request.getCardAmount(),
+                    request.getCard2Amount(),
+                    request.getCard2AuthNumber(),
+                    request.getCard2Last4(),
+                    request.getCard2Brand(),
+                    request.getCard2VoucherAmount(),
+                    true
+            );
+        }
+
+        String shippingSheetNumber = entrecueros
+                ? requireEntrecuerosShippingSheet(request.getShippingSheetNumber())
+                : null;
 
         PaymentSnapshot payment = resolvePaymentSnapshot(
                 normalizedPaymentMethod,
@@ -531,6 +590,8 @@ public class KioskPosService {
                 .totalItems(totalItems)
                 .testSale(isPosTestSale(kiosk))
                 .cashSessionId(openSession.getId())
+                .felStatus(entrecueros && !Boolean.TRUE.equals(request.getRequestInvoice()) ? "SKIPPED" : null)
+                .shippingSheetNumber(shippingSheetNumber)
                 .createdBy(user.getId())
                 .items(new ArrayList<>())
                 .build();
@@ -559,7 +620,7 @@ public class KioskPosService {
         for (Map.Entry<String, BigDecimal> entry : aggregatedQty.entrySet()) {
             ParsedInventoryKey parsed = parseInventoryKey(entry.getKey());
             BigDecimal qty = entry.getValue();
-            // Cambio: el stock lo mueven CAMBIO + / CAMBIO −; la venta solo factura la diferencia.
+            // Cambio: POS no mueve stock. El entregado con diferencia queda VENTA al finalizar la boleta.
             if (exchangeSale) {
                 continue;
             }
@@ -919,6 +980,18 @@ public class KioskPosService {
             throw new BusinessException("No tienes acceso a esta venta.");
         }
         return toSaleResponse(sale, kiosk, user);
+    }
+
+    /** Respuesta de venta usando el kiosko emisor, sin exigir acceso a esa ubicación. */
+    public KioskPosSaleResponse toSaleResponseForAnyKiosk(KioskSaleEntity sale)
+            throws BusinessException, ResourceNotFoundException {
+        if (sale == null || sale.getKioskLocationId() == null) {
+            throw new ResourceNotFoundException("KioskSale no encontrada.");
+        }
+        UserEntity user = getCurrentUserOrThrow();
+        LocationEntity saleKiosk = locationRepository.findById(sale.getKioskLocationId())
+                .orElseThrow(() -> new ResourceNotFoundException("Location", sale.getKioskLocationId()));
+        return toSaleResponse(sale, saleKiosk, user);
     }
 
     public KioskPosSaleResponse updateSalePayment(
@@ -2173,10 +2246,22 @@ public class KioskPosService {
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
         LocalDate saleDate = GuatemalaDateTime.today();
 
-        List<PreparedLine> preparedLines = buildPreparedLinesForEstimate(kiosk.getId(), request.getItems());
+        List<PreparedLine> preparedLines = buildPreparedLinesForEstimate(kiosk, request.getItems());
         BigDecimal subtotal = preparedLines.stream()
                 .map(PreparedLine::lineTotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        if (KioskPosMode.isEntrecueros(kiosk)) {
+            return KioskPosPromotionEstimateResponse.builder()
+                    .subtotal(subtotal.setScale(2, RoundingMode.HALF_UP))
+                    .discountAmount(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
+                    .totalAmount(subtotal.setScale(2, RoundingMode.HALF_UP))
+                    .autoApplied(false)
+                    .promotionId(null)
+                    .promotionName(null)
+                    .manualDiscountPercent(null)
+                    .build();
+        }
 
         KioskPromotionEntity promotion = null;
         if ((request.getManualDiscountPercent() == null
@@ -2488,10 +2573,62 @@ public class KioskPosService {
         return product != null && !isPackagingProduct(product);
     }
 
+    private void addEntrecuerosVolumeQty(
+            Map<String, BigDecimal> qtyByPriceKey,
+            Long productId,
+            ProductEntity product,
+            String hardware,
+            BigDecimal quantity
+    ) {
+        if (product != null && KioscoInventoryInitRules.isPackagingProduct(product)) {
+            return;
+        }
+        qtyByPriceKey.merge(
+                EntrecuerosPriceLists.volumeKey(productId, product, hardware),
+                quantity,
+                BigDecimal::add);
+    }
+
+    private BigDecimal resolveEntrecuerosLineUnitPrice(
+            ProductEntity product,
+            String hardware,
+            BigDecimal lineQty,
+            Map<String, BigDecimal> qtyByPriceKey,
+            boolean wholesaleUnlocked
+    ) {
+        if (KioscoInventoryInitRules.isPackagingProduct(product)) {
+            return EntrecuerosPriceLists.resolveUnitPrice(product, hardware, lineQty);
+        }
+        BigDecimal ownQty = qtyByPriceKey.getOrDefault(
+                EntrecuerosPriceLists.volumeKey(product.getId(), product, hardware),
+                lineQty);
+        return EntrecuerosPriceLists.resolveUnitPrice(
+                product,
+                hardware,
+                EntrecuerosPriceLists.quantityForPrice(ownQty, wholesaleUnlocked));
+    }
+
     private List<PreparedLine> buildPreparedLinesForEstimate(
-            Long kioskId,
+            LocationEntity kiosk,
             List<KioskPosPromotionEstimateRequest.ItemRequest> items
     ) throws BusinessException, ResourceNotFoundException {
+        boolean entrecueros = KioskPosMode.isEntrecueros(kiosk);
+        Map<String, BigDecimal> qtyByPriceKey = new HashMap<>();
+        if (entrecueros) {
+            for (KioskPosPromotionEstimateRequest.ItemRequest itemRequest : items) {
+                if (itemRequest == null || itemRequest.getProductId() == null || itemRequest.getQuantity() == null) {
+                    continue;
+                }
+                ProductEntity volumeProduct = productRepository.findById(itemRequest.getProductId()).orElse(null);
+                addEntrecuerosVolumeQty(
+                        qtyByPriceKey,
+                        itemRequest.getProductId(),
+                        volumeProduct,
+                        resolveItemHardwareCondition(itemRequest.getHardwareCondition()),
+                        itemRequest.getQuantity());
+            }
+        }
+        boolean wholesaleUnlocked = entrecueros && EntrecuerosPriceLists.unlocksWholesale(qtyByPriceKey);
         List<PreparedLine> preparedLines = new ArrayList<>();
         for (KioskPosPromotionEstimateRequest.ItemRequest itemRequest : items) {
             if (itemRequest == null || itemRequest.getProductId() == null) {
@@ -2509,7 +2646,11 @@ public class KioskPosService {
                         .orElseThrow(() -> new ResourceNotFoundException("Color", itemRequest.getColorId()));
             }
             String sizeLabel = ProductInventorySizesJson.normalizeKey(itemRequest.getSize());
-            BigDecimal unitPrice = resolvePosUnitPrice(product, sizeLabel);
+            String hardware = resolveItemHardwareCondition(itemRequest.getHardwareCondition());
+            BigDecimal unitPrice = entrecueros
+                    ? resolveEntrecuerosLineUnitPrice(
+                            product, hardware, quantity, qtyByPriceKey, wholesaleUnlocked)
+                    : resolvePosUnitPrice(product, sizeLabel);
             BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
             preparedLines.add(new PreparedLine(
                     product,
@@ -2583,7 +2724,7 @@ public class KioskPosService {
             BigDecimal card = cardAmount != null ? cardAmount : BigDecimal.ZERO;
             BigDecimal sum = cash.add(card).setScale(2, RoundingMode.HALF_UP);
             if (sum.compareTo(safeTotal) != 0) {
-                throw new BusinessException("En pago mixto, efectivo + tarjeta debe igualar el total.");
+                throw new BusinessException("En pago mixto, efectivo + el segundo medio debe igualar el total.");
             }
             if (cash.compareTo(BigDecimal.ZERO) > 0 && amountReceived != null
                     && amountReceived.compareTo(cash) < 0) {
@@ -2596,6 +2737,9 @@ public class KioskPosService {
                     ? received.subtract(cash).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP)
                     : BigDecimal.ZERO;
             return new PaymentSnapshot(received, change, cash, card);
+        }
+        if ("TRANSFERENCIA".equals(paymentMethod)) {
+            return new PaymentSnapshot(null, null, null, safeTotal);
         }
         return new PaymentSnapshot(null, null, null, null);
     }
@@ -2937,6 +3081,17 @@ public class KioskPosService {
         return name.contains("MIRAFLORES");
     }
 
+    private BigDecimal resolveCatalogUnitPrice(LocationEntity kiosk, ProductEntity product) {
+        return resolveCatalogUnitPrice(kiosk, product, ProductHardwareCondition.NUEVO);
+    }
+
+    private BigDecimal resolveCatalogUnitPrice(LocationEntity kiosk, ProductEntity product, String hardware) {
+        if (KioskPosMode.isEntrecueros(kiosk)) {
+            return EntrecuerosPriceLists.resolveUnitPrice(product, hardware, BigDecimal.ONE);
+        }
+        return resolvePosUnitPrice(product);
+    }
+
     private BigDecimal resolvePosUnitPrice(ProductEntity product) {
         return resolvePosUnitPrice(product, null);
     }
@@ -2983,13 +3138,18 @@ public class KioskPosService {
     private void appendMissingPackagingCatalogItems(
             List<KioskPosContextResponse.InventoryItem> rawInventory,
             Map<Long, ProductEntity> productsById,
-            Map<Long, ProductCategoryEntity> categoriesById) {
+            Map<Long, ProductCategoryEntity> categoriesById,
+            LocationEntity kiosk) {
         Set<String> existingKeys = rawInventory.stream()
                 .map(item -> inventoryKey(item.getProductId(), item.getColorId()))
                 .collect(Collectors.toSet());
 
+        boolean entrecueros = KioskPosMode.isEntrecueros(kiosk);
         for (ProductEntity product : productRepository.findByCodeStartingWithIgnoreCaseOrderByCodeAsc("SUM")) {
             if (!isPackagingProduct(product) || isInactiveProduct(product)) {
+                continue;
+            }
+            if (entrecueros && !Boolean.TRUE.equals(product.getEntrecuerosEnabled())) {
                 continue;
             }
             String key = inventoryKey(product.getId(), null);
@@ -3013,8 +3173,14 @@ public class KioskPosService {
                     .categoryId(category != null ? category.getId() : null)
                     .categoryName(category != null ? category.getName() : "")
                     .audienceCategory(ProductAudienceCategory.normalizeProductAudience(product.getAudienceCategory()))
+                    .cinchoType(ProductCinchoType.normalizeCinchoType(product.getCinchoType()))
                     .quantity(BigDecimal.ZERO)
-                    .suggestedUnitPrice(resolvePosUnitPrice(product))
+                    .suggestedUnitPrice(resolveCatalogUnitPrice(kiosk, product))
+                    .entrecuerosEnabled(Boolean.TRUE.equals(product.getEntrecuerosEnabled()))
+                    .entrecuerosPriceUnit(product.getEntrecuerosPriceUnit())
+                    .entrecuerosPriceQty3(product.getEntrecuerosPriceQty3())
+                    .entrecuerosPriceQty6(product.getEntrecuerosPriceQty6())
+                    .entrecuerosPriceQty12(product.getEntrecuerosPriceQty12())
                     .sizes(null)
                     .build());
             existingKeys.add(key);
@@ -3022,21 +3188,16 @@ public class KioskPosService {
     }
 
     private String inventoryKey(Long productId, Long colorId, String hardwareCondition, String size) {
-        String hardware = ProductHardwareCondition.normalize(hardwareCondition);
-        if (hardware == null) {
-            hardware = ProductHardwareCondition.NUEVO;
-        }
-        String base = productId + ":" + (colorId != null ? colorId : "null") + ":" + hardware;
-        String normalized = ProductInventorySizesJson.normalizeKey(size);
-        if (!normalized.isEmpty()) {
-            return base + ":" + normalized;
-        }
-        return base;
+        return KioskPosInventoryKey.format(productId, colorId, hardwareCondition, size);
     }
 
     private String resolveItemHardwareCondition(String hardwareCondition) {
-        String hardware = ProductHardwareCondition.normalize(hardwareCondition);
-        return hardware != null ? hardware : ProductHardwareCondition.NUEVO;
+        return ProductHardwareCondition.normalizeStockDimension(hardwareCondition);
+    }
+
+    private String resolveInventoryProductName(ProductEntity product, String hardwareCondition) {
+        String name = product != null ? product.getName() : "Producto";
+        return ProductHardwareCondition.appendMaterialToName(name, hardwareCondition);
     }
 
     private String inventoryKey(Long productId, Long colorId, String size) {
@@ -3052,31 +3213,13 @@ public class KioskPosService {
     private record ParsedInventoryKey(Long productId, Long colorId, String size, String hardwareCondition) {}
 
     private ParsedInventoryKey parseInventoryKey(String key) {
-        String[] parts = key.split(":", -1);
-        if (parts.length < 2) {
-            throw new IllegalArgumentException("Clave de inventario inválida: " + key);
-        }
-        Long productId = Long.parseLong(parts[0]);
-        String colorPart = parts[1];
-        Long colorId = "null".equals(colorPart) ? null : Long.parseLong(colorPart);
-        String hardware = ProductHardwareCondition.NUEVO;
-        String size = null;
-        if (parts.length >= 3 && !parts[2].isBlank()) {
-            String third = parts[2];
-            String normalizedHardware = ProductHardwareCondition.normalize(third);
-            if (normalizedHardware != null) {
-                hardware = normalizedHardware;
-                if (parts.length >= 4 && !parts[3].isBlank()) {
-                    size = parts[3];
-                }
-            } else {
-                size = third;
-            }
-        }
-        if (size != null && size.isBlank()) {
-            size = null;
-        }
-        return new ParsedInventoryKey(productId, colorId, size, hardware);
+        KioskPosInventoryKey.Parsed parsed = KioskPosInventoryKey.parse(key);
+        return new ParsedInventoryKey(
+                parsed.productId(),
+                parsed.colorId(),
+                parsed.size(),
+                parsed.hardwareCondition()
+        );
     }
 
     private boolean isPromotionActiveOnDate(KioskPromotionEntity promotion, LocalDate date) {
@@ -3500,7 +3643,8 @@ public class KioskPosService {
                 .felNumero(sale.getFelNumero())
                 .felError(sale.getFelError())
                 .felCertifiedAt(sale.getFelCertifiedAt())
-                .internalNumber(invoiceInfo != null ? invoiceInfo.getInternalNumber() : null)
+                .internalNumber(composeSaleInternalNumber(sale, invoiceInfo))
+                .shippingSheetNumber(sale.getShippingSheetNumber())
                 .invoice(invoiceInfo)
                 .depositSlipNumber(sale.getDepositSlipNumber())
                 .depositBank(sale.getDepositBank())
@@ -3780,20 +3924,62 @@ public class KioskPosService {
     }
 
     private String normalizePaymentMethod(String value) throws BusinessException {
+        return normalizePaymentMethod(value, false);
+    }
+
+    private String normalizePaymentMethod(String value, boolean entrecueros) throws BusinessException {
         String normalized = normalizeText(value);
         if (normalized.isBlank() || normalized.contains("EFECTIVO") || "CASH".equals(normalized)) {
             return "EFECTIVO";
         }
-        if (normalized.contains("TARJETA") || normalized.contains("CARD")) {
-            return "TARJETA";
-        }
         if (normalized.contains("TRANSFER")) {
-            throw new BusinessException("Transferencia ya no está disponible en el POS. Use EFECTIVO, TARJETA o MIXTO.");
+            if (!entrecueros) {
+                throw new BusinessException("Transferencia solo está disponible en POS Entrecueros.");
+            }
+            return "TRANSFERENCIA";
+        }
+        if (normalized.contains("TARJETA") || normalized.contains("CARD")) {
+            if (entrecueros) {
+                throw new BusinessException("Entrecueros solo acepta efectivo y transferencia.");
+            }
+            return "TARJETA";
         }
         if (normalized.contains("MIXTO") || normalized.contains("MIXED")) {
             return "MIXTO";
         }
-        throw new BusinessException("Forma de pago no válida. Use EFECTIVO, TARJETA o MIXTO.");
+        throw new BusinessException(entrecueros
+                ? "Forma de pago no válida. Use EFECTIVO, TRANSFERENCIA o MIXTO."
+                : "Forma de pago no válida. Use EFECTIVO, TARJETA o MIXTO.");
+    }
+
+    private void validateEntrecuerosTransfer(String paymentMethod, KioskPosSaleRequest request)
+            throws BusinessException {
+        boolean needsReference = "TRANSFERENCIA".equals(paymentMethod)
+                || ("MIXTO".equals(paymentMethod)
+                && request.getCardAmount() != null
+                && request.getCardAmount().compareTo(BigDecimal.ZERO) > 0);
+        if (!needsReference) {
+            return;
+        }
+        if (safeTrim(request.getCardAuthNumber()).isBlank()) {
+            throw new BusinessException(
+                    "Debe indicar el número de referencia de la transferencia o depósito.");
+        }
+    }
+
+    private String requireEntrecuerosShippingSheet(String raw) throws BusinessException {
+        String value = EntrecuerosShippingSheet.normalize(raw);
+        if (value == null) {
+            throw new BusinessException("En Entre Cueros debe indicar el número de hoja de envío.");
+        }
+        return value;
+    }
+
+    private String composeSaleInternalNumber(
+            KioskSaleEntity sale, KioskPosSaleResponse.InvoiceInfo invoiceInfo) {
+        String invoiceInternal = invoiceInfo != null ? invoiceInfo.getInternalNumber() : null;
+        return EntrecuerosShippingSheet.composeInternalNumber(
+                invoiceInternal, sale != null ? sale.getShippingSheetNumber() : null);
     }
 
     private String normalizeTaxId(String value) {
@@ -4289,6 +4475,7 @@ public class KioskPosService {
                 .kioskLocationId(session.getKioskLocationId())
                 .kioskCode(kiosk != null ? kiosk.getCode() : null)
                 .kioskName(kiosk != null ? kiosk.getName() : null)
+                .posMode(KioskPosMode.normalize(kiosk != null ? kiosk.getPosMode() : null))
                 .openedByName(openedBy != null ? buildUserFullName(openedBy) : null)
                 .closedByName(closedBy != null ? buildUserFullName(closedBy) : null)
                 .generatedByName(generatedBy != null ? buildUserFullName(generatedBy) : null)
@@ -4439,11 +4626,19 @@ public class KioskPosService {
             return "EFECTIVO";
         }
         if ("MIXTO".equals(method)) {
-            String cardPart = buildCardPaymentLabel(sale);
+            String cardPart = safeTrim(sale.getCardLast4()).isBlank()
+                    ? (safeTrim(sale.getCardAuthNumber()).isBlank()
+                        ? "TRANSFERENCIA"
+                        : "TRANSFERENCIA · Ref. " + safeTrim(sale.getCardAuthNumber()))
+                    : buildCardPaymentLabel(sale);
             return "MIXTO · EFECTIVO " + formatMoneyPlain(sale.getCashAmount())
                     + " / " + cardPart;
         }
-        if ("TARJETA".equals(method) || "TRANSFERENCIA".equals(method)) {
+        if ("TRANSFERENCIA".equals(method)) {
+            String auth = safeTrim(sale.getCardAuthNumber());
+            return auth.isBlank() ? "TRANSFERENCIA" : "TRANSFERENCIA · Ref. " + auth;
+        }
+        if ("TARJETA".equals(method)) {
             return buildCardPaymentLabel(sale);
         }
         return method.isBlank() ? "—" : method;
@@ -4579,9 +4774,11 @@ public class KioskPosService {
             KioskSaleEntity linkedSale = kioskSaleRepository.findById(entity.getKioskSaleId()).orElse(null);
             if (linkedSale != null) {
                 saleNumber = linkedSale.getSaleNumber();
-                if (linkedSale.getInvoiceId() != null) {
-                    internalNumber = taxInvoiceService.getInternalNumber(linkedSale.getInvoiceId());
-                }
+                String invoiceInternal = linkedSale.getInvoiceId() != null
+                        ? taxInvoiceService.getInternalNumber(linkedSale.getInvoiceId())
+                        : null;
+                internalNumber = EntrecuerosShippingSheet.composeInternalNumber(
+                        invoiceInternal, linkedSale.getShippingSheetNumber());
             }
         }
         return KioskCashExpenseResponse.builder()
@@ -4749,15 +4946,20 @@ public class KioskPosService {
         if (sale.getInvoiceId() != null && invoicesById.containsKey(sale.getInvoiceId())) {
             String internal = safeTrim(invoicesById.get(sale.getInvoiceId()).getInternalNumber());
             if (!internal.isBlank()) {
-                return internal;
+                return EntrecuerosShippingSheet.composeInternalNumber(internal, sale.getShippingSheetNumber());
             }
         }
         String serie = safeTrim(sale.getFelSerie());
         String numero = safeTrim(sale.getFelNumero());
+        String felLabel = "";
         if (!serie.isBlank() && !numero.isBlank()) {
-            return serie + "-" + numero;
+            felLabel = serie + "-" + numero;
+        } else {
+            felLabel = (serie + " " + numero).trim();
         }
-        return (serie + " " + numero).trim();
+        return EntrecuerosShippingSheet.composeInternalNumber(
+                felLabel.isBlank() ? null : felLabel,
+                sale.getShippingSheetNumber());
     }
 
     static BigDecimal resolveCardAmountForReport(KioskSaleEntity sale) {

@@ -1436,6 +1436,41 @@ class KioskPosServiceTest {
         assertThat(sale42.getItems().get(0).getUnitPrice()).isEqualByComparingTo("250.00");
     }
 
+    @Test
+    void createSale_entrecuerosRequiresShippingSheetAndUsesItAsInternalNumber() throws Exception {
+        kioskA.setPosMode("ENTRECUEROS");
+        kioskA = locationRepository.save(kioskA);
+        wallet.setEntrecuerosEnabled(true);
+        wallet = productRepository.save(wallet);
+
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        assertThatThrownBy(() -> kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .requestInvoice(false)
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("hoja de envío");
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .requestInvoice(false)
+                .shippingSheetNumber(" 1842 ")
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getShippingSheetNumber()).isEqualTo("1842");
+        assertThat(sale.getInternalNumber()).isEqualTo("1842");
+        assertThat(sale.getFelStatus()).isEqualTo("SKIPPED");
+        assertThat(saleRepository.findById(sale.getId()).orElseThrow().getShippingSheetNumber())
+                .isEqualTo("1842");
+    }
+
     private static KioskPosSaleRequest.ItemRequest item(Long productId, Long colorId, BigDecimal qty) {
         return KioskPosSaleRequest.ItemRequest.builder()
                 .productId(productId)

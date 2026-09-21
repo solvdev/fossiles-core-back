@@ -30,6 +30,9 @@ public class ProductionOrderRequest {
     @Size(max = 200, message = "Customer name must not exceed 200 characters")
     private String customerName;
 
+    /** NORMAL: si es true se genera OPK y customerName es el destino/kiosco. */
+    private Boolean kioskOrder;
+
     @Size(max = 150, message = "Seller name must not exceed 150 characters")
     private String sellerName;
 

@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
@@ -15,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -153,6 +155,42 @@ class ProductShipmentCancelServiceTest {
         ProductionOrderEntity updated = productDistributionService.voidVendorShipmentDocument(po.getId());
         assertThat(updated.getVendorShipmentVoidedAt()).isNotNull();
         assertThat(updated.getVendorShipmentVoidedBy()).isEqualTo(userId);
+        assertThat(updated.getVendorShipmentNumber()).isNotEqualTo("ENVI-00001");
+        assertThat(updated.getVendorShipmentNumber()).startsWith("ENVI-");
+    }
+
+    @Test
+    void cancelShipment_assignsNewVendorNumberForReplacement() throws Exception {
+        ProductionOrderEntity po = productionOrderRepository.save(ProductionOrderEntity.builder()
+                .code("OP-CANCEL-NUM-01")
+                .orderType("INTERNA")
+                .status("IN_PROGRESS")
+                .sellerName("Interno")
+                .vendorShipmentNumber("ENVI-00088")
+                .startDate(LocalDate.now())
+                .build());
+        ProductShipmentEntity shipment = saveShipment("ENVI-00088", "CONFIRMED", po.getId());
+
+        productDistributionService.cancelShipment(shipment.getId());
+
+        ProductionOrderEntity afterCancel = productionOrderRepository.findById(po.getId()).orElseThrow();
+        assertThat(afterCancel.getVendorShipmentNumber()).isNotEqualTo("ENVI-00088");
+        assertThat(shipmentRepository.findById(shipment.getId()).orElseThrow().getShipmentNumber())
+                .isEqualTo("ENVI-00088");
+
+        var replacement = productDistributionService.createOrUpdateShipmentForProductionOrder(
+                po.getId(),
+                ProductShipmentRequest.builder()
+                        .notes("Corrección")
+                        .products(List.of(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
+                                .productId(product.getId())
+                                .colorId(color.getId())
+                                .quantity(BigDecimal.ONE)
+                                .build()))
+                        .build());
+
+        assertThat(replacement.getShipmentNumber()).isNotEqualTo("ENVI-00088");
+        assertThat(replacement.getShipmentNumber()).isEqualTo(afterCancel.getVendorShipmentNumber());
     }
 
     @Test

@@ -9,8 +9,10 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
@@ -87,6 +89,10 @@ public class GlobalExceptionHandler {
                     "Hay líneas duplicadas en el envío (mismo producto/color/talla). Revise los ítems de la orden de producción.");
         } else if (message != null && message.contains("product_shipment")) {
             errors.put("message", "No se pudo guardar el envío por un conflicto en la base de datos. Recargue e intente de nuevo.");
+        } else if (isCustomerNitUniqueViolation(message)) {
+            errors.put("message",
+                    "La base de datos todavía exige NIT único, pero varios clientes pueden facturar al mismo NIT. "
+                            + "Ejecute en PostgreSQL: scripts/migration-customer-nit-non-unique.sql");
         } else {
             errors.put("message", "No se puede realizar esta operación debido a restricciones de integridad de datos.");
         }
@@ -94,8 +100,27 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
     }
 
+    private static boolean isCustomerNitUniqueViolation(String message) {
+        String lower = message.toLowerCase();
+        return lower.contains("customer_nit")
+                || lower.contains("uq_customer_nit")
+                || (lower.contains("customer") && lower.contains("key (nit)="));
+    }
+
+    /**
+     * El cliente (móvil / pestaña cerrada) cortó la conexión. No hay respuesta que escribir.
+     */
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleDisconnectedAsync(AsyncRequestNotUsableException ex) {
+        log.debug("Cliente desconectado (SSE/async): {}", ex.getMessage());
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGenericException(Exception ex) {
+        if (isDisconnectedClient(ex)) {
+            log.debug("Cliente desconectado: {}", ex.getMessage());
+            return null;
+        }
         log.error("Error no controlado en API", ex);
         Map<String, Object> errors = new HashMap<>();
         errors.put("timestamp", LocalDateTime.now());
@@ -104,6 +129,24 @@ public class GlobalExceptionHandler {
         errors.put("error", ex.getClass().getSimpleName());
 
         return new ResponseEntity<>(errors, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    private static boolean isDisconnectedClient(Throwable ex) {
+        Throwable current = ex;
+        while (current != null) {
+            String name = current.getClass().getSimpleName();
+            String message = current.getMessage() != null ? current.getMessage().toLowerCase() : "";
+            if (current instanceof AsyncRequestNotUsableException
+                    || "ClientAbortException".equals(name)
+                    || (current instanceof IOException
+                    && (message.contains("broken pipe")
+                    || message.contains("connection reset")
+                    || message.contains("aborted")))) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 }
 

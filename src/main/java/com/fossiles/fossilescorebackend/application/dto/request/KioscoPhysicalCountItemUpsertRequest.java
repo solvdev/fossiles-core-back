@@ -14,6 +14,8 @@ import java.util.Map;
 public class KioscoPhysicalCountItemUpsertRequest {
     private Long productId;
     private Long colorId;
+    /** NUEVO | VIEJO, o marca en Entre Cueros. */
+    private String hardwareCondition;
     /** Conteo por ubicacion: claves fijas V1..V7, E, BO. */
     private Map<String, Integer> counts;
     /** Conteo fisico por talla (cinchos). */

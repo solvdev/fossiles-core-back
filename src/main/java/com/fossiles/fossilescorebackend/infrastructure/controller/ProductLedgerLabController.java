@@ -60,6 +60,7 @@ public class ProductLedgerLabController {
             @RequestParam(required = false) Long locationId,
             @RequestParam(required = false) Long stockId,
             @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) Long colorId,
             @RequestParam(required = false) String type,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
@@ -71,7 +72,7 @@ public class ProductLedgerLabController {
     ) throws BusinessException, ResourceNotFoundException {
         guard.requireEramirez();
         return ResponseEntity.ok(ledgerLabService.listMovements(
-                locationId, stockId, productId, type, from, to, referenceId, referenceTerm,
+                locationId, stockId, productId, colorId, type, from, to, referenceId, referenceTerm,
                 description, sizeLabel, movementId));
     }
 

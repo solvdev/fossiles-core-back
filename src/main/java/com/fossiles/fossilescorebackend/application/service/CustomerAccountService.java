@@ -1520,7 +1520,12 @@ public class CustomerAccountService {
 
         BigDecimal itemsSubtotal;
         if (details.isEmpty()) {
-            itemsSubtotal = estimateOrderItemsSubtotal(orderItems, preferSellerPrice);
+            Long releaseId = release != null ? release.getId() : shipment.getPartialReleaseId();
+            if (releaseId != null) {
+                itemsSubtotal = estimatePartialReleaseLinesSubtotal(releaseId, orderItems, preferSellerPrice);
+            } else {
+                itemsSubtotal = estimateOrderItemsSubtotal(orderItems, preferSellerPrice);
+            }
         } else {
             itemsSubtotal = BigDecimal.ZERO;
             for (ProductShipmentDetailEntity detail : details) {
@@ -1538,7 +1543,8 @@ public class CustomerAccountService {
                             releaseId, orderItems, preferSellerPrice);
                 }
             }
-            if (itemsSubtotal.compareTo(BigDecimal.ZERO) == 0) {
+            boolean partialDoc = release != null || shipment.getPartialReleaseId() != null;
+            if (itemsSubtotal.compareTo(BigDecimal.ZERO) == 0 && !partialDoc) {
                 itemsSubtotal = estimateOrderItemsSubtotal(orderItems, preferSellerPrice);
             }
         }

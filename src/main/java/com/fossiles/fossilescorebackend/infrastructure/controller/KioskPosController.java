@@ -36,6 +36,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskMainSheetR
 import com.fossiles.fossilescorebackend.application.dto.response.KioskVoucherReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskSalesByProductColorReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.request.KioscoPhysicalCountItemUpsertRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoInternalCountSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioscoPhysicalCountReportResponse;
@@ -46,6 +47,7 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.application.service.KioscoInternalCountService;
 import com.fossiles.fossilescorebackend.application.service.KioskExchangeService;
 import com.fossiles.fossilescorebackend.application.service.KioskPosService;
+import com.fossiles.fossilescorebackend.application.service.KioskSalesByProductColorReportService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -72,6 +74,7 @@ public class KioskPosController {
     private final KioskPosService kioskPosService;
     private final KioskExchangeService kioskExchangeService;
     private final KioscoInternalCountService kioscoInternalCountService;
+    private final KioskSalesByProductColorReportService kioskSalesByProductColorReportService;
 
     @GetMapping("/context")
     public ResponseEntity<KioskPosContextResponse> getContext(
@@ -244,6 +247,17 @@ public class KioskPosController {
             @RequestParam(required = false) String paymentKind
     ) throws BusinessException {
         return ResponseEntity.ok(kioskPosService.getGeneralSalesDetail(startDate, endDate, kioskLocationId, paymentKind));
+    }
+
+    @GetMapping("/reports/sales-by-product-color")
+    public ResponseEntity<KioskSalesByProductColorReportResponse> getSalesByProductColorReport(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false, defaultValue = "true") boolean includeZeroSales
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskSalesByProductColorReportService.getReport(
+                startDate, endDate, kioskLocationId, includeZeroSales));
     }
 
     @GetMapping("/reports/consolidated-sales")
@@ -453,9 +467,10 @@ public class KioskPosController {
     @GetMapping("/sales/lookup")
     public ResponseEntity<KioskPosSaleResponse> lookupSale(
             @RequestParam String query,
-            @RequestParam(required = false) Long kioskLocationId
+            @RequestParam(required = false) Long kioskLocationId,
+            @RequestParam(required = false, defaultValue = "false") boolean allKiosks
     ) throws BusinessException, ResourceNotFoundException {
-        return ResponseEntity.ok(kioskExchangeService.lookupSale(kioskLocationId, query));
+        return ResponseEntity.ok(kioskExchangeService.lookupSale(kioskLocationId, query, allKiosks));
     }
 
     @PostMapping("/{kioskLocationId}/conteo-interno")

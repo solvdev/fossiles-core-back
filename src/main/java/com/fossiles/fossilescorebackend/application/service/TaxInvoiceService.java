@@ -79,6 +79,10 @@ public class TaxInvoiceService {
     @Transactional
     public TaxInvoiceResponse issueFromKioskSale(KioskSaleEntity sale, boolean requestInvoice)
             throws BusinessException {
+        if (sale != null && sale.getFelStatus() != null
+                && "SKIPPED".equalsIgnoreCase(sale.getFelStatus().trim())) {
+            throw new BusinessException("Esta venta se registró sin factura FEL.");
+        }
         if (!KioskSaleInvoiceMapper.shouldEmitForPos(sale.getCustomerTaxId(), requestInvoice)) {
             return null;
         }

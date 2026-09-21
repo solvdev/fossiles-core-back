@@ -28,7 +28,12 @@ public class ProductionOrderCodeService {
     }
 
     public String generateNextCode(String orderType, String sellerName) throws BusinessException {
-        String prefix = getOrderCodePrefix(orderType, sellerName);
+        return generateNextCode(orderType, sellerName, null);
+    }
+
+    public String generateNextCode(String orderType, String sellerName, Boolean kioskOrder)
+            throws BusinessException {
+        String prefix = getOrderCodePrefix(orderType, sellerName, kioskOrder);
         if (prefix == null) {
             throw new BusinessException("No existe prefijo configurado para el tipo de orden: " + orderType);
         }
@@ -56,8 +61,15 @@ public class ProductionOrderCodeService {
     }
 
     public String getOrderCodePrefix(String orderType, String sellerName) {
+        return getOrderCodePrefix(orderType, sellerName, null);
+    }
+
+    public String getOrderCodePrefix(String orderType, String sellerName, Boolean kioskOrder) {
         String normalizedType = String.valueOf(orderType == null ? "" : orderType).trim().toUpperCase(Locale.ROOT);
         String normalizedSeller = normalizeForSellerMatch(sellerName);
+        if ("NORMAL".equals(normalizedType) && Boolean.TRUE.equals(kioskOrder)) {
+            return "OPK";
+        }
         if ("NORMAL".equals(normalizedType) && normalizedSeller.contains("LUIS FELIPE")) {
             return "OPV";
         }

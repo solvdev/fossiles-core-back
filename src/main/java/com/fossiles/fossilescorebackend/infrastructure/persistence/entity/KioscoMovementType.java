@@ -5,7 +5,7 @@ public enum KioscoMovementType {
     VENTA,
     DEVOLUCION_DEPOSITO,
     DEVOLUCION_CLIENTE,
-    /** Producto entregado al cliente (egreso manual) → Sal. El egreso de boleta de cambio usa {@link #CAMBIO}. */
+    /** Producto entregado al cliente (egreso manual) → Sal. El egreso de boleta con diferencia a cobrar se clasifica como venta en el kardex. */
     DEVOLUCION_A_CLIENTE,
     TRASLADO_SALIDA,
     TRASLADO_ENTRADA,

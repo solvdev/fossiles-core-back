@@ -21,7 +21,7 @@ public interface ProductShipmentDetailRepository extends JpaRepository<ProductSh
 
     Optional<ProductShipmentDetailEntity> findByShipmentIdAndProductId(Long shipmentId, Long productId);
     
-    @Modifying
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Transactional
     @Query("DELETE FROM ProductShipmentDetailEntity d WHERE d.shipmentId = :shipmentId")
     void deleteByShipmentId(@Param("shipmentId") Long shipmentId);

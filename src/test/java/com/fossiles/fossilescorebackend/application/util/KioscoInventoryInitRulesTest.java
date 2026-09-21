@@ -66,7 +66,33 @@ class KioscoInventoryInitRulesTest {
                 .build();
 
         assertThat(KioscoInventoryInitRules.resolveCinchoSizes(cincho))
-                .containsExactly("30", "32", "34", "36", "38", "40", "42", "46");
+                .containsExactly("30", "32", "34", "36", "38", "40", "42", "44", "46");
+        assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(cincho)).isFalse();
+    }
+
+    @Test
+    void kidsCinchoProduct_requiresCinchoAndKidsFlagOrJrCode() {
+        ProductEntity kids = ProductEntity.builder()
+                .code("FOSS-KIDS")
+                .cinchoType("CASUAL")
+                .cinchoForKids(true)
+                .build();
+        ProductEntity jr = ProductEntity.builder()
+                .code("N-113-JR")
+                .name("Cincho junior")
+                .cinchoType("CASUAL")
+                .cinchoForKids(false)
+                .build();
+        ProductEntity wallet = ProductEntity.builder()
+                .code("BILL-001")
+                .name("Billetera")
+                .cinchoForKids(true)
+                .build();
+
+        assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(kids)).isTrue();
+        assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(jr)).isTrue();
+        assertThat(KioscoInventoryInitRules.hasJrCode(jr)).isTrue();
+        assertThat(KioscoInventoryInitRules.isKidsCinchoProduct(wallet)).isFalse();
     }
 
     @Test
@@ -112,5 +138,13 @@ class KioscoInventoryInitRulesTest {
     void stockColorKey_treatsLegacyNullHardwareAsSameSlot() {
         assertThat(KioscoInventoryInitRules.stockInitKey(1L, 10L, 2L, null))
                 .isEqualTo(KioscoInventoryInitRules.stockInitKey(1L, 10L, 2L, "NUEVO"));
+    }
+
+    @Test
+    void stockInitKey_keepsBrandDistinctFromHardware() {
+        assertThat(KioscoInventoryInitRules.stockInitKey(42L, 10L, 2L, "LEVIS"))
+                .isNotEqualTo(KioscoInventoryInitRules.stockInitKey(42L, 10L, 2L, "NUEVO"));
+        assertThat(KioscoInventoryInitRules.stockInitKey(42L, 10L, 2L, "LEVIS"))
+                .isNotEqualTo(KioscoInventoryInitRules.stockInitKey(42L, 10L, 2L, "NAUTICA"));
     }
 }

@@ -192,7 +192,7 @@ public class ProductInventoryService {
             String description,
             String kardexMovementType) throws BusinessException {
         decrementFromDispatchWarehouses(productId, colorId, sizeLabel, quantity, referenceType,
-                referenceId, referenceNumber, description, kardexMovementType, null);
+                referenceId, referenceNumber, description, kardexMovementType, null, true);
     }
 
     /**
@@ -213,6 +213,22 @@ public class ProductInventoryService {
             String description,
             String kardexMovementType,
             Long referenceLineId) throws BusinessException {
+        decrementFromDispatchWarehouses(productId, colorId, sizeLabel, quantity, referenceType,
+                referenceId, referenceNumber, description, kardexMovementType, referenceLineId, true);
+    }
+
+    public void decrementFromDispatchWarehouses(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String kardexMovementType,
+            Long referenceLineId,
+            boolean requireSufficientStock) throws BusinessException {
         if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
@@ -261,7 +277,7 @@ public class ProductInventoryService {
             remaining = remaining.subtract(consumed);
         }
 
-        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+        if (remaining.compareTo(BigDecimal.ZERO) > 0 && requireSufficientStock) {
             throw new BusinessException(
                     "Stock insuficiente en Devoluciones / Bodega PT (faltan " + remaining + " unidades).");
         }
@@ -888,6 +904,10 @@ public class ProductInventoryService {
         }
 
         kioskInventoryGuard.assertSupervisorMayModifyKioskInventory(request.getLocationId());
+        if (isKioskLocationId(request.getLocationId())) {
+            throw new BusinessException(
+                    "El inventario de kiosko solo se guarda en kiosco_stock. No use product_inventory_location para kioskos.");
+        }
 
         // Buscar si ya existe - SIEMPRE considerar color_id (incluso si es null)
         // Esto es importante porque la restricción única incluye color_id
@@ -947,7 +967,12 @@ public class ProductInventoryService {
      * SIEMPRE considera colorId para soportar variantes de color
      */
     public ProductInventoryLocationResponse updateInventory(ProductInventoryUpdateRequest request) 
-            throws ResourceNotFoundException {
+            throws ResourceNotFoundException, BusinessException {
+        if (isKioskLocationId(request.getLocationId())) {
+            throw new BusinessException(
+                    "El inventario de kiosko solo se guarda en kiosco_stock. No use product_inventory_location para kioskos.");
+        }
+        // SIEMPRE usar el método que considera colorId (incluso si es null)
         // SIEMPRE usar el método que considera colorId (incluso si es null)
         ProductInventoryLocation entity = productInventoryLocationRepository
                 .findByProductIdAndLocationIdAndColorId(
@@ -1014,6 +1039,9 @@ public class ProductInventoryService {
             String description,
             String sizeKey) 
             throws ResourceNotFoundException, BusinessException {
+        if (isKioskLocationId(locationId)) {
+            return skipKioskProductInventoryWrite(productId, locationId, colorId);
+        }
         if (!productRepository.existsById(productId)) {
             throw new ResourceNotFoundException("Product", productId);
         }
@@ -1132,6 +1160,9 @@ public class ProductInventoryService {
             String kardexMovementType,
             Long referenceLineId)
             throws ResourceNotFoundException, BusinessException {
+        if (isKioskLocationId(locationId)) {
+            return skipKioskProductInventoryWrite(productId, locationId, colorId);
+        }
         applyDecrementToLocation(productId, locationId, colorId, quantity, referenceType, referenceId,
                 referenceNumber, description, sizeKey, kardexMovementType, referenceLineId);
         return toProductInventoryLocationResponse(productInventoryLocationRepository
@@ -1870,6 +1901,12 @@ public class ProductInventoryService {
         if (targetLocations.isEmpty()) {
             return 0; // No hay ubicaciones para procesar
         }
+        targetLocations = targetLocations.stream()
+                .filter(loc -> !kioskInventoryGuard.isKioskLocation(loc))
+                .collect(Collectors.toList());
+        if (targetLocations.isEmpty()) {
+            return 0;
+        }
         
         // OPTIMIZACIÓN: Obtener solo los registros existentes de las ubicaciones objetivo
         List<Long> targetLocationIds = targetLocations.stream()
@@ -2131,6 +2168,26 @@ public class ProductInventoryService {
     /**
      * Crea una respuesta de inventario vacía (cantidad 0) para un producto que no tiene registro
      */
+    private boolean isKioskLocationId(Long locationId) {
+        if (locationId == null) {
+            return false;
+        }
+        return kioskInventoryGuard.isKioskLocation(locationRepository.findById(locationId).orElse(null));
+    }
+
+    private ProductInventoryLocationResponse skipKioskProductInventoryWrite(
+            Long productId,
+            Long locationId,
+            Long colorId
+    ) {
+        ProductEntity product = productId == null ? null : productRepository.findById(productId).orElse(null);
+        LocationEntity location = locationRepository.findById(locationId).orElse(null);
+        ProductInventoryLocationResponse resp = createEmptyProductInventoryResponse(
+                productId, locationId, product, location);
+        resp.setColorId(colorId);
+        return resp;
+    }
+
     private ProductInventoryLocationResponse createEmptyProductInventoryResponse(
             Long productId, 
             Long locationId, 

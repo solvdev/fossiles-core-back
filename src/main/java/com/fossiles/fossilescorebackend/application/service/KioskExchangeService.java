@@ -43,6 +43,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,14 +52,17 @@ import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class KioskExchangeService {
 
     private static final String SLIP_TYPE_EXCHANGE = "EXCHANGE";
@@ -173,6 +177,88 @@ public class KioskExchangeService {
         return toSlipResponse(slip, ctx);
     }
 
+    /**
+     * Egresos de boletas de cambio que quedaron como VENTA se recategorizan a CAMBIO
+     * para que el conteo físico los muestre en Comp./Ent. (ingreso) y Vtas./Sal. (egreso).
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int reclassifyExchangeGivenAsCambio() {
+        kioscoInventoryService.enableAdminMovementMutation();
+        try {
+            List<KioskExchangeSlipEntity> slips = exchangeSlipRepository.findCompletedExchanges();
+            int updated = 0;
+            List<String> recategorized = new ArrayList<>();
+            for (KioskExchangeSlipEntity slip : slips) {
+                int n = reclassifyGivenMovementsOfSlip(slip);
+                if (n > 0) {
+                    updated += n;
+                    recategorized.add(slip.getSlipNumber() + "×" + n);
+                }
+            }
+            if (updated > 0) {
+                kioscoMovementRepository.flush();
+                log.info(
+                        "KIOSK_EXCHANGE_GIVEN_AS_CAMBIO updated={} slips={}",
+                        updated,
+                        recategorized);
+            }
+            return updated;
+        } finally {
+            kioscoInventoryService.disableAdminMovementMutation();
+        }
+    }
+
+    private int reclassifyGivenMovementsOfSlip(KioskExchangeSlipEntity slip) {
+        Set<Long> movementIds = new LinkedHashSet<>();
+        if (slip.getGivenMovementId() != null) {
+            movementIds.add(slip.getGivenMovementId());
+        }
+        if (slip.getId() != null) {
+            for (KioskExchangeSlipGivenItemEntity item :
+                    exchangeSlipGivenItemRepository.findByExchangeSlipIdOrderByLineNoAsc(slip.getId())) {
+                if (item != null && item.getGivenMovementId() != null) {
+                    movementIds.add(item.getGivenMovementId());
+                }
+            }
+        }
+        if (movementIds.isEmpty() && !safeTrim(slip.getSlipNumber()).isEmpty()) {
+            List<Long> locationIds = resolveLocationIdsForSeries(slip.getSeriesCode(), slip.getKioskLocationId());
+            for (KioscoMovementEntity movement : kioscoMovementRepository
+                    .findByPhysicalSlipNumberAndKioscoStock_LocationIdIn(slip.getSlipNumber(), locationIds)) {
+                if (isExchangeGivenOutflowToReclassify(movement)) {
+                    movementIds.add(movement.getId());
+                }
+            }
+        }
+        int updated = 0;
+        for (Long movementId : movementIds) {
+            if (movementId == null) {
+                continue;
+            }
+            KioscoMovementEntity movement = kioscoMovementRepository.findById(movementId).orElse(null);
+            if (!isExchangeGivenOutflowToReclassify(movement)) {
+                continue;
+            }
+            movement.setMovementType(KioscoMovementType.CAMBIO);
+            kioscoMovementRepository.save(movement);
+            updated++;
+        }
+        return updated;
+    }
+
+    private static boolean isExchangeGivenOutflowToReclassify(KioscoMovementEntity movement) {
+        if (movement == null || movement.getMovementType() == null) {
+            return false;
+        }
+        if (movement.getMovementType() != KioscoMovementType.VENTA
+                && movement.getMovementType() != KioscoMovementType.DEVOLUCION_A_CLIENTE) {
+            return false;
+        }
+        return movement.getStockAfter() != null
+                && movement.getStockBefore() != null
+                && movement.getStockAfter() < movement.getStockBefore();
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public KioskExchangeSlipResponse rejectExchange(Long slipId, Long kioskLocationId, KioskExchangeRejectRequest request)
             throws BusinessException, ResourceNotFoundException {
@@ -206,15 +292,15 @@ public class KioskExchangeService {
     }
 
     @Transactional(readOnly = true)
-    public KioskPosSaleResponse lookupSale(Long kioskLocationId, String query)
+    public KioskPosSaleResponse lookupSale(Long kioskLocationId, String query, boolean allKiosks)
             throws BusinessException, ResourceNotFoundException {
         if (query == null || query.isBlank()) {
             throw new BusinessException("Indica el número de venta a buscar.");
         }
         AccessContext ctx = resolveAccessContext(kioskLocationId);
-        KioskSaleEntity sale = findSaleByQuery(ctx.kiosk().getId(), query.trim());
+        KioskSaleEntity sale = findSaleByQuery(ctx.kiosk().getId(), query.trim(), allKiosks);
         validateOriginalSale(sale);
-        return kioskPosService.getSaleById(sale.getId(), ctx.kiosk().getId());
+        return kioskPosService.toSaleResponseForAnyKiosk(sale);
     }
 
     @Transactional(readOnly = true)
@@ -273,7 +359,7 @@ public class KioskExchangeService {
                 .items(saleItems)
                 .build();
 
-        // Factura/caja de la diferencia sin VENTA de stock; el egreso va como CAMBIO (−).
+        // Factura/caja de la diferencia; el stock del entregado se registra como VENTA al finalizar.
         KioskPosSaleResponse sale = kioskPosService.createExchangeSale(saleRequest, slipNumber);
 
         return finalizeExchangeWithStock(
@@ -447,7 +533,7 @@ public class KioskExchangeService {
                 slip.setReturnMovementId(movement.getId());
             } else if (movement.getMovementType() == KioscoMovementType.DEVOLUCION_A_CLIENTE
                     || movement.getMovementType() == KioscoMovementType.VENTA) {
-                // Legado: egresos de cambio previos a tipificar ambos como CAMBIO.
+                // Egreso del entregado: VENTA si hubo diferencia; DEVOLUCION_A_CLIENTE es legado.
                 slip.setGivenMovementId(movement.getId());
             }
         }
@@ -588,9 +674,6 @@ public class KioskExchangeService {
         if (hasOriginalSale) {
             sale = kioskSaleRepository.findById(request.getOriginalSaleId())
                     .orElseThrow(() -> new ResourceNotFoundException("KioskSale", request.getOriginalSaleId()));
-            if (!Objects.equals(sale.getKioskLocationId(), access.kiosk().getId())) {
-                throw new BusinessException("La venta no pertenece al kiosko seleccionado.");
-            }
             validateOriginalSale(sale);
             item = kioskSaleItemRepository.findByIdAndKioskSale_Id(
                             request.getOriginalSaleItemId(), sale.getId())
@@ -858,23 +941,60 @@ public class KioskExchangeService {
         return null;
     }
 
-    private KioskSaleEntity findSaleByQuery(Long kioskLocationId, String query) throws ResourceNotFoundException {
+    private KioskSaleEntity findSaleByQuery(Long kioskLocationId, String query, boolean allKiosks)
+            throws ResourceNotFoundException {
         String normalized = normalizeInternalNumberQuery(query);
         if (normalized.matches("\\d+")) {
             Long saleId = Long.parseLong(normalized);
-            return kioskSaleRepository.findById(saleId)
+            Optional<KioskSaleEntity> byId = kioskSaleRepository.findById(saleId);
+            if (allKiosks) {
+                return byId.orElseThrow(() -> new ResourceNotFoundException("KioskSale", saleId));
+            }
+            return byId
                     .filter(sale -> Objects.equals(sale.getKioskLocationId(), kioskLocationId))
                     .orElseThrow(() -> new ResourceNotFoundException("KioskSale", saleId));
         }
-        // Preferir serie-correlativo de establecimiento (A45-241).
+        if (allKiosks) {
+            List<KioskSaleEntity> byInternal = kioskSaleRepository.findByInvoiceInternalNumber(normalized);
+            if (!byInternal.isEmpty()) {
+                return pickPreferredSale(byInternal, kioskLocationId, query);
+            }
+            List<KioskSaleEntity> byNumber = kioskSaleRepository.findBySaleNumberIgnoreCase(query.trim());
+            if (byNumber.isEmpty() && !query.trim().equalsIgnoreCase(normalized)) {
+                byNumber = kioskSaleRepository.findBySaleNumberIgnoreCase(normalized);
+            }
+            return pickPreferredSale(byNumber, kioskLocationId, query);
+        }
         Optional<KioskSaleEntity> byInternal = kioskSaleRepository
                 .findByKioskLocationIdAndInvoiceInternalNumber(kioskLocationId, normalized);
         if (byInternal.isPresent()) {
             return byInternal.get();
         }
-        // Compatibilidad interna con saleNumber POS-… (no se muestra en UI).
         return kioskSaleRepository.findByKioskLocationIdAndSaleNumberIgnoreCase(kioskLocationId, query.trim())
                 .or(() -> kioskSaleRepository.findByKioskLocationIdAndSaleNumberIgnoreCase(kioskLocationId, normalized))
+                .orElseThrow(() -> new ResourceNotFoundException("KioskSale", query));
+    }
+
+    private KioskSaleEntity pickPreferredSale(
+            List<KioskSaleEntity> matches,
+            Long preferredKioskLocationId,
+            String query
+    ) throws ResourceNotFoundException {
+        if (matches == null || matches.isEmpty()) {
+            throw new ResourceNotFoundException("KioskSale", query);
+        }
+        if (preferredKioskLocationId != null) {
+            Optional<KioskSaleEntity> local = matches.stream()
+                    .filter(sale -> Objects.equals(sale.getKioskLocationId(), preferredKioskLocationId))
+                    .findFirst();
+            if (local.isPresent()) {
+                return local.get();
+            }
+        }
+        return matches.stream()
+                .max(Comparator
+                        .comparing(KioskSaleEntity::getSoldAt, Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(KioskSaleEntity::getId, Comparator.nullsLast(Comparator.naturalOrder())))
                 .orElseThrow(() -> new ResourceNotFoundException("KioskSale", query));
     }
 

@@ -24,8 +24,12 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
+import com.fossiles.fossilescorebackend.application.util.KioscoStockDimension;
+import com.fossiles.fossilescorebackend.application.util.ProductBrandNames;
+import com.fossiles.fossilescorebackend.application.util.ProductCinchoAudience;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.application.util.ProductHardwareCondition;
+import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
@@ -58,6 +62,12 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @Transactional
 public class ProductDistributionService {
+
+    /**
+     * Temporal: Preparar envíos marca SENT aunque falte stock en Devoluciones / Bodega PT.
+     * Descuenta lo disponible y no bloquea el envío por el faltante.
+     */
+    static final boolean SKIP_DISPATCH_STOCK_CHECK = true;
 
     private static final java.util.Set<String> TERMINAL_SHIPMENT_STATUSES =
             java.util.Set.of("SENT", "DELIVERED", "COMPLETED", "RECEIVED", "CANCELLED");
@@ -261,6 +271,10 @@ public class ProductDistributionService {
 
         List<ProductShipmentRequest.ProductShipmentDetailRequest> normalizedProducts =
                 normalizeShipmentProducts(request.getProducts());
+        Long partialReleaseId = request.getPartialReleaseId();
+        if (partialReleaseId != null && normalizedProducts.isEmpty()) {
+            throw new BusinessException("La liberación parcial no tiene productos con cantidad.");
+        }
         List<ProductShipmentEntity> allShipmentsForLocation = reqLocationId == null
                 ? shipmentRepository.findByProductionOrderIdAndLocationIdIsNullOrderByIdAsc(productionOrderId)
                 : shipmentRepository.findByProductionOrderIdAndLocationIdOrderByIdAsc(productionOrderId, reqLocationId);
@@ -293,7 +307,6 @@ public class ProductDistributionService {
             return toShipmentResponse(saved);
         }
 
-        Long partialReleaseId = request.getPartialReleaseId();
         List<ProductShipmentEntity> draftShipments = allShipmentsForLocation.stream()
                 .filter(s -> "DRAFT".equalsIgnoreCase(s.getStatus()))
                 .filter(s -> partialReleaseId == null
@@ -310,7 +323,7 @@ public class ProductDistributionService {
         } else if (isLuisFelipeVendorOrder(order)) {
             order = ensureOpvVendorShipmentNumberOnOrder(order);
             shipmentNumber = allocateLfCinchoPhysicalShipmentNumber(order);
-        } else if (isCincho) {
+        } else if (isCincho || isEntreCuerosCustomerOpv(order)) {
             shipmentNumber = generateOpcShipmentNumber(order);
         } else {
             shipmentNumber = generateShipmentNumberForOpiDocument(order);
@@ -372,7 +385,7 @@ public class ProductDistributionService {
         }
 
         List<ProductShipmentRequest.ProductShipmentDetailRequest> products =
-                buildShipmentProductsFromOrderItems(productionOrderId);
+                buildShipmentProductsFromOrderItems(productionOrderId, request.getLocationId());
         if (products.isEmpty()) {
             throw new BusinessException("La orden no tiene productos con cantidad para enviar.");
         }
@@ -898,9 +911,9 @@ public class ProductDistributionService {
                     "La orden INTERNA (OPI) está en borrador. Contabilidad debe autorizar la producción desde Autorizar envíos internos antes de generar envíos.");
         }
         if (!"INTERNA".equals(ot) && !"CLIENTE_KIOSKO".equals(ot) && !"NORMAL".equals(ot) && !isCinchoOrderType(ot)
-                && !isLuisFelipeVendorOrder(order)) {
+                && !isLuisFelipeVendorOrder(order) && !isEntreCuerosCustomerOpv(order)) {
             throw new BusinessException(
-                    "Solo órdenes INTERNA (OPI), CLIENTE_KIOSKO (OPCK), NORMAL (OPK), OPC (cinchos) u OPV Luis Felipe permiten envíos sin distribución.");
+                    "Solo órdenes INTERNA (OPI), CLIENTE_KIOSKO (OPCK), NORMAL (OPK), OPC (cinchos), OPV Luis Felipe u OPV Entre Cueros permiten envíos sin distribución.");
         }
     }
 
@@ -995,15 +1008,18 @@ public class ProductDistributionService {
     }
 
     private List<ProductShipmentRequest.ProductShipmentDetailRequest> buildShipmentProductsFromOrderItems(
-            Long productionOrderId) throws ResourceNotFoundException, BusinessException {
+            Long productionOrderId,
+            Long locationId) throws ResourceNotFoundException, BusinessException {
         ProductionOrderEntity order = productionOrderRepository.findById(productionOrderId).orElse(null);
         boolean preferSellerPrice = isLuisFelipeVendorOrder(order);
+        LocationEntity dest = locationId != null ? locationRepository.findById(locationId).orElse(null) : null;
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
         List<ProductShipmentRequest.ProductShipmentDetailRequest> lines = new ArrayList<>();
         for (ProductionOrderItemEntity item : items) {
             if (item.getProductId() == null) {
                 continue;
             }
+            ProductEntity product = productRepository.findById(item.getProductId()).orElse(null);
             boolean addedFromSizes = false;
             if (item.getSizesData() != null && !item.getSizesData().isBlank()) {
                 try {
@@ -1020,6 +1036,7 @@ public class ProductDistributionService {
                                 .productId(item.getProductId())
                                 .colorId(item.getColorId())
                                 .size(entry.getKey())
+                                .hardwareCondition(inferShipmentHardware(dest, product, item, entry.getKey()))
                                 .quantity(BigDecimal.valueOf(qty))
                                 .unitPrice(unitPrice)
                                 .build());
@@ -1035,6 +1052,7 @@ public class ProductDistributionService {
                         .productId(item.getProductId())
                         .colorId(item.getColorId())
                         .size("")
+                        .hardwareCondition(inferShipmentHardware(dest, product, item, null))
                         .quantity(BigDecimal.valueOf(item.getQuantity()))
                         .unitPrice(unitPrice)
                         .build());
@@ -1442,7 +1460,11 @@ public class ProductDistributionService {
                         .productId(line.getProductId())
                         .colorId(line.getColorId())
                         .sizeLabel(normalizeSize(line.getSize()))
-                        .hardwareCondition(normalizeHardwareCondition(line.getHardwareCondition()))
+                        .hardwareCondition(persistShipmentHardware(
+                                shipment.getLocationId(),
+                                line.getProductId(),
+                                line.getHardwareCondition(),
+                                line.getSize()))
                         .quantity(line.getQuantity())
                         .unitPrice(line.getUnitPrice())
                         .build();
@@ -1642,6 +1664,7 @@ public class ProductDistributionService {
                 }
             });
         }
+        rotateVendorNumberAfterCancellingShipment(saved);
         return toShipmentResponse(saved);
     }
 
@@ -1666,7 +1689,9 @@ public class ProductDistributionService {
         order.setVendorShipmentVoidedAt(LocalDateTime.now());
         order.setVendorShipmentVoidedBy(securityUtil.getCurrentUserId());
         order.setUpdatedBy(securityUtil.getCurrentUserId());
-        return productionOrderRepository.save(order);
+        productionOrderRepository.save(order);
+        assignNextVendorShipmentNumber(order);
+        return order;
     }
 
     private void clearVendorShipmentVoidFlag(ProductionOrderEntity order) {
@@ -1873,7 +1898,6 @@ public class ProductDistributionService {
             throw new BusinessException("El envío no tiene destino (kiosko); no se puede registrar salida de PT.");
         }
 
-        List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
         List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipmentId);
         boolean hasPacking = shipment.getPackingItems() != null && !shipment.getPackingItems().trim().isEmpty();
         if (details.isEmpty() && !hasPacking) {
@@ -1889,41 +1913,44 @@ public class ProductDistributionService {
         // salida las mismas unidades quedarían contadas en los dos lados.
         String destinationLabel = resolveDispatchDestinationLabel(shipment);
 
-        // Pre-validar stock: Devoluciones primero, luego Bodega PT (total combinado).
-        List<String> shortages = new java.util.ArrayList<>();
-        for (ProductShipmentDetailEntity detail : details) {
-            BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
-            if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
-            if (isPackagingProduct(detail.getProductId())) continue;
+        if (!SKIP_DISPATCH_STOCK_CHECK) {
+            // Pre-validar stock: Devoluciones primero, luego Bodega PT (total combinado).
+            List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
+            List<String> shortages = new java.util.ArrayList<>();
+            for (ProductShipmentDetailEntity detail : details) {
+                BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
+                if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
+                if (isPackagingProduct(detail.getProductId())) continue;
 
-            String sizeLabel = detail.getSizeLabel();
-            BigDecimal alreadyOut = productInventoryService.getNetConsumedForLine(
-                    "SHIPMENT", shipment.getId(), ProductInventoryService.MOVEMENT_SHIPMENT,
-                    detail.getProductId(), null, detail.getColorId(), detail.getId());
-            BigDecimal stillNeeded = qtyToSend.subtract(alreadyOut);
-            if (stillNeeded.compareTo(BigDecimal.ZERO) <= 0) {
-                continue;
-            }
-
-            BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
-                    detail.getProductId(), detail.getColorId(), sizeLabel);
-            if (availableTotal.compareTo(stillNeeded) < 0) {
-                ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
-                String productName = product != null ? product.getCode() + " - " + product.getName() : "Producto #" + detail.getProductId();
-                String colorName = "";
-                if (detail.getColorId() != null) {
-                    ColorEntity color = colorRepository.findById(detail.getColorId()).orElse(null);
-                    colorName = color != null ? " (" + color.getName() + ")" : " (Color #" + detail.getColorId() + ")";
+                String sizeLabel = detail.getSizeLabel();
+                BigDecimal alreadyOut = productInventoryService.getNetConsumedForLine(
+                        "SHIPMENT", shipment.getId(), ProductInventoryService.MOVEMENT_SHIPMENT,
+                        detail.getProductId(), null, detail.getColorId(), detail.getId());
+                BigDecimal stillNeeded = qtyToSend.subtract(alreadyOut);
+                if (stillNeeded.compareTo(BigDecimal.ZERO) <= 0) {
+                    continue;
                 }
-                String stockBreakdown = buildDispatchStockBreakdown(
-                        detail.getProductId(), detail.getColorId(), sizeLabel, dispatchWarehouses);
-                shortages.add(productName + colorName + ": disponible " + availableTotal
-                        + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido " + stillNeeded);
+
+                BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
+                        detail.getProductId(), detail.getColorId(), sizeLabel);
+                if (availableTotal.compareTo(stillNeeded) < 0) {
+                    ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
+                    String productName = product != null ? product.getCode() + " - " + product.getName() : "Producto #" + detail.getProductId();
+                    String colorName = "";
+                    if (detail.getColorId() != null) {
+                        ColorEntity color = colorRepository.findById(detail.getColorId()).orElse(null);
+                        colorName = color != null ? " (" + color.getName() + ")" : " (Color #" + detail.getColorId() + ")";
+                    }
+                    String stockBreakdown = buildDispatchStockBreakdown(
+                            detail.getProductId(), detail.getColorId(), sizeLabel, dispatchWarehouses);
+                    shortages.add(productName + colorName + ": disponible " + availableTotal
+                            + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido " + stillNeeded);
+                }
             }
-        }
-        if (!shortages.isEmpty()) {
-            throw new BusinessException("Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• "
-                    + String.join("\n• ", shortages));
+            if (!shortages.isEmpty()) {
+                throw new BusinessException("Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• "
+                        + String.join("\n• ", shortages));
+            }
         }
 
         for (ProductShipmentDetailEntity detail : details) {
@@ -1941,7 +1968,8 @@ public class ProductDistributionService {
                     shipment.getShipmentNumber(),
                     "Salida a envio en transito hacia " + destinationLabel,
                     ProductInventoryService.MOVEMENT_SHIPMENT,
-                    detail.getId());
+                    detail.getId(),
+                    !SKIP_DISPATCH_STOCK_CHECK);
         }
 
         return transitionConfirmedShipmentToSent(shipmentId, shipment);
@@ -3729,41 +3757,12 @@ public class ProductDistributionService {
             String lineRef) throws ResourceNotFoundException, BusinessException {
         boolean kioscoApplied = kioscoInventoryService.hasShipmentReceiptLineApplied(
                 shipment.getLocationId(), shipment.getId(), lineRef);
-        boolean kardexApplied = productInventoryService.hasProductKardexMovement(
-                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
-                detail.getProductId(), shipment.getLocationId(), detail.getColorId(), lineRef);
-
-        if (kioscoApplied && kardexApplied) {
-            return;
-        }
         if (kioscoApplied) {
-            // Kardex missing: backfill kardex only — never re-apply kiosco ENTRADA.
-            backfillReceiptKardexForDetail(shipment, detail, qtyReceived, lineRef);
-            return;
-        }
-        if (kardexApplied) {
-            applyKioscoReceiptLineOnly(shipment, detail, qtyReceived, lineRef);
             return;
         }
 
         String sizeKey = detail.getSizeLabel() != null ? detail.getSizeLabel().trim() : "";
         String sizeKeyForInventory = sizeKey.isEmpty() ? null : sizeKey;
-
-        BigDecimal before = productInventoryService
-                .getInventoryByProductAndLocationAndColor(
-                        detail.getProductId(), shipment.getLocationId(), detail.getColorId())
-                .getQuantity();
-        productInventoryService.incrementInventory(
-                detail.getProductId(),
-                shipment.getLocationId(),
-                detail.getColorId(),
-                qtyReceived,
-                null,
-                "SHIPMENT",
-                shipment.getId(),
-                shipment.getShipmentNumber(),
-                "Recepcion de envio en kiosko",
-                sizeKeyForInventory);
         kioscoInventoryService.registrarEntradaDesdeIntegracion(
                 shipment.getLocationId(),
                 detail.getProductId(),
@@ -3774,54 +3773,6 @@ public class ProductDistributionService {
                 sizeKeyForInventory,
                 lineRef,
                 detail.getHardwareCondition());
-        BigDecimal after = productInventoryService
-                .getInventoryByProductAndLocationAndColor(
-                        detail.getProductId(), shipment.getLocationId(), detail.getColorId())
-                .getQuantity();
-
-        productInventoryService.recordProductMovementIfAbsent(
-                detail.getProductId(),
-                shipment.getLocationId(),
-                detail.getColorId(),
-                "TRANSFER_IN",
-                qtyReceived,
-                before,
-                after,
-                null,
-                "SHIPMENT",
-                shipment.getId(),
-                lineRef,
-                "Recepcion de envio en kiosko"
-        );
-    }
-
-    private void backfillReceiptKardexForDetail(
-            ProductShipmentEntity shipment,
-            ProductShipmentDetailEntity detail,
-            BigDecimal qtyReceived,
-            String lineRef) throws ResourceNotFoundException {
-        BigDecimal current = productInventoryService
-                .getInventoryByProductAndLocationAndColor(
-                        detail.getProductId(), shipment.getLocationId(), detail.getColorId())
-                .getQuantity();
-        if (current == null) {
-            current = BigDecimal.ZERO;
-        }
-        // Inventory qty already reflects the kiosco ENTRADA sync; only record the missing kardex row.
-        productInventoryService.recordProductMovementIfAbsent(
-                detail.getProductId(),
-                shipment.getLocationId(),
-                detail.getColorId(),
-                "TRANSFER_IN",
-                qtyReceived,
-                current.subtract(qtyReceived),
-                current,
-                null,
-                "SHIPMENT",
-                shipment.getId(),
-                lineRef,
-                "Recepcion de envio en kiosko"
-        );
     }
 
     private void applyReceiptPackingItemsToKioskStock(
@@ -3960,67 +3911,10 @@ public class ProductDistributionService {
         String lineRef = shipmentPackingLineReference(shipment, materialId);
         boolean kioscoApplied = kioscoInventoryService.hasShipmentReceiptLineApplied(
                 shipment.getLocationId(), shipment.getId(), lineRef);
-        boolean kardexApplied = productInventoryService.hasProductKardexMovement(
-                "SHIPMENT", shipment.getId(), "TRANSFER_IN",
-                product.getId(), shipment.getLocationId(), null, lineRef);
-
-        if (kioscoApplied && kardexApplied) {
-            return;
-        }
         if (kioscoApplied) {
-            BigDecimal current = productInventoryService
-                    .getInventoryByProductAndLocationAndColor(
-                            product.getId(), shipment.getLocationId(), null)
-                    .getQuantity();
-            if (current == null) {
-                current = BigDecimal.ZERO;
-            }
-            productInventoryService.recordProductMovementIfAbsent(
-                    product.getId(),
-                    shipment.getLocationId(),
-                    null,
-                    "TRANSFER_IN",
-                    qtyReceived,
-                    current.subtract(qtyReceived),
-                    current,
-                    null,
-                    "SHIPMENT",
-                    shipment.getId(),
-                    lineRef,
-                    "Recepcion de empaque SUM- en kiosko");
-            return;
-        }
-        if (kardexApplied) {
-            if (!kioscoInventoryService.hasShipmentReceiptLineApplied(
-                    shipment.getLocationId(), shipment.getId(), lineRef)) {
-                kioscoInventoryService.registrarEntradaDesdeIntegracion(
-                        shipment.getLocationId(),
-                        product.getId(),
-                        null,
-                        qtyReceived,
-                        shipment.getId(),
-                        securityUtil.getCurrentUserId(),
-                        null,
-                        lineRef);
-            }
             return;
         }
 
-        BigDecimal before = productInventoryService
-                .getInventoryByProductAndLocationAndColor(
-                        product.getId(), shipment.getLocationId(), null)
-                .getQuantity();
-        productInventoryService.incrementInventory(
-                product.getId(),
-                shipment.getLocationId(),
-                null,
-                qtyReceived,
-                null,
-                "SHIPMENT",
-                shipment.getId(),
-                shipment.getShipmentNumber(),
-                "Recepcion de empaque SUM- en kiosko",
-                null);
         kioscoInventoryService.registrarEntradaDesdeIntegracion(
                 shipment.getLocationId(),
                 product.getId(),
@@ -4030,23 +3924,6 @@ public class ProductDistributionService {
                 securityUtil.getCurrentUserId(),
                 null,
                 lineRef);
-        BigDecimal after = productInventoryService
-                .getInventoryByProductAndLocationAndColor(
-                        product.getId(), shipment.getLocationId(), null)
-                .getQuantity();
-        productInventoryService.recordProductMovementIfAbsent(
-                product.getId(),
-                shipment.getLocationId(),
-                null,
-                "TRANSFER_IN",
-                qtyReceived,
-                before,
-                after,
-                null,
-                "SHIPMENT",
-                shipment.getId(),
-                lineRef,
-                "Recepcion de empaque SUM- en kiosko");
     }
 
     private Optional<ProductEntity> resolvePackagingProductFromMaterial(Long materialId) {
@@ -4248,13 +4125,17 @@ public class ProductDistributionService {
      * Número de envío para constancia OPI sin kiosko: ENVI-nnnnn (mismo correlativo que en la OP).
      */
     private String generateShipmentNumberForOpiDocument(ProductionOrderEntity order) {
+        rotateVendorShipmentNumberIfTaken(order);
         opiVendorShipmentNumberService.assignIfMissing(order);
         productionOrderRepository.save(order);
         String v = order.getVendorShipmentNumber();
-        if (v != null && !v.isBlank()) {
+        if (v != null && !v.isBlank() && !shipmentRepository.existsByShipmentNumber(v.trim())) {
             return v.trim();
         }
-        return opiVendorShipmentNumberService.nextNumber();
+        String next = opiVendorShipmentNumberService.nextNumber();
+        order.setVendorShipmentNumber(next);
+        productionOrderRepository.save(order);
+        return next;
     }
 
     /**
@@ -4456,9 +4337,48 @@ public class ProductDistributionService {
         return size == null ? "" : size.trim().toUpperCase();
     }
 
-    private String normalizeHardwareCondition(String value) {
-        String normalized = ProductHardwareCondition.normalize(value);
-        return normalized != null ? normalized : "";
+    private String persistShipmentHardware(Long locationId, Long productId, String raw, String size)
+            throws BusinessException, ResourceNotFoundException {
+        if (productId == null) {
+            return ProductHardwareCondition.normalizeStockDimension(raw);
+        }
+        LocationEntity location = locationId == null ? null : locationRepository.findById(locationId).orElse(null);
+        ProductEntity product = productRepository.findById(productId)
+                .orElseThrow(() -> new ResourceNotFoundException("Product", productId));
+        if (KioskPosMode.isEntrecueros(location)) {
+            return KioscoStockDimension.resolve(location, product, raw, false, size);
+        }
+        String hardware = ProductHardwareCondition.normalize(raw);
+        return hardware != null ? hardware : "";
+    }
+
+    private String inferShipmentHardware(
+            LocationEntity dest,
+            ProductEntity product,
+            ProductionOrderItemEntity item,
+            String size
+    ) {
+        if (dest == null || product == null || !KioskPosMode.isEntrecueros(dest)) {
+            return "";
+        }
+        KioscoStockDimension.Kind kind = KioscoStockDimension.kind(dest, product);
+        if (kind == KioscoStockDimension.Kind.NONE) {
+            return ProductHardwareCondition.NUEVO;
+        }
+        if (kind == KioscoStockDimension.Kind.PARA) {
+            String audience = ProductCinchoAudience.normalize(item.getBrandName());
+            if (audience != null) {
+                return audience;
+            }
+            return ProductCinchoAudience.fromSize(size);
+        }
+        if (kind == KioscoStockDimension.Kind.WALLET) {
+            return ProductHardwareCondition.resolveWalletDimension(item.getBrandName());
+        }
+        if (kind == KioscoStockDimension.Kind.MARCA) {
+            return ProductBrandNames.normalize(item.getBrandName());
+        }
+        return "";
     }
 
     private int extractTrailingSequence(String shipmentNumber) {
@@ -4479,6 +4399,7 @@ public class ProductDistributionService {
         Map<String, Long> keyToProductId = new HashMap<>();
         Map<String, Long> keyToColorId = new HashMap<>();
         Map<String, String> keyToSize = new HashMap<>();
+        Map<String, String> keyToHardware = new HashMap<>();
         Map<String, BigDecimal> keyToUnitPrice = new HashMap<>();
 
         if (products != null) {
@@ -4492,13 +4413,18 @@ public class ProductDistributionService {
                     throw new ResourceNotFoundException("Product", productRequest.getProductId());
                 }
                 String normalizedSize = normalizeSize(productRequest.getSize());
+                String hardware = productRequest.getHardwareCondition() == null
+                        || productRequest.getHardwareCondition().isBlank()
+                        ? ""
+                        : ProductHardwareCondition.normalizeStockDimension(productRequest.getHardwareCondition());
                 String key = productRequest.getProductId() + ":" +
                         (productRequest.getColorId() == null ? "null" : productRequest.getColorId()) + ":" +
-                        normalizedSize;
+                        normalizedSize + ":" + hardware;
                 groupedQuantities.merge(key, productRequest.getQuantity(), BigDecimal::add);
                 keyToProductId.put(key, productRequest.getProductId());
                 keyToColorId.put(key, productRequest.getColorId());
                 keyToSize.put(key, normalizedSize);
+                keyToHardware.put(key, hardware);
                 if (productRequest.getUnitPrice() != null && !keyToUnitPrice.containsKey(key)) {
                     keyToUnitPrice.put(key, productRequest.getUnitPrice());
                 }
@@ -4510,6 +4436,7 @@ public class ProductDistributionService {
                         .productId(keyToProductId.get(entry.getKey()))
                         .colorId(keyToColorId.get(entry.getKey()))
                         .size(keyToSize.getOrDefault(entry.getKey(), ""))
+                        .hardwareCondition(keyToHardware.getOrDefault(entry.getKey(), ""))
                         .quantity(entry.getValue())
                         .unitPrice(keyToUnitPrice.get(entry.getKey()))
                         .build())
@@ -4541,7 +4468,7 @@ public class ProductDistributionService {
         List<ProductShipmentEntity> existing = shipmentRepository.findByProductionOrderId(productionOrderId);
         Optional<ProductShipmentEntity> confirmed = existing.stream()
                 .filter(s -> java.util.Objects.equals(locationId, s.getLocationId()))
-                .filter(s -> !"DRAFT".equalsIgnoreCase(String.valueOf(s.getStatus())))
+                .filter(s -> isActivePreparedShipment(s.getStatus()))
                 .findFirst();
         if (confirmed.isPresent()) {
             throw new BusinessException(
@@ -4580,6 +4507,7 @@ public class ProductDistributionService {
     }
 
     private ProductionOrderEntity ensureOpvVendorShipmentNumberOnOrder(ProductionOrderEntity order) {
+        rotateVendorShipmentNumberIfTaken(order);
         String before = order.getVendorShipmentNumber();
         opvVendorShipmentNumberService.assignIfMissing(order);
         boolean reconciled = opvVendorShipmentNumberService.reconcileVendorNumberIfColliding(order);
@@ -4589,12 +4517,99 @@ public class ProductDistributionService {
         return order;
     }
 
+    /**
+     * El documento anulado conserva su número. El siguiente envío de esa OP usa correlativo nuevo.
+     */
+    private void rotateVendorNumberAfterCancellingShipment(ProductShipmentEntity cancelled) {
+        if (cancelled == null || cancelled.getProductionOrderId() == null) {
+            return;
+        }
+        ProductionOrderEntity order = productionOrderRepository.findById(cancelled.getProductionOrderId())
+                .orElse(null);
+        if (order == null || !vendorNumberAppliesToShipment(order, cancelled)) {
+            return;
+        }
+        boolean otherActive = shipmentRepository.findByProductionOrderId(order.getId()).stream()
+                .filter(s -> !Objects.equals(s.getId(), cancelled.getId()))
+                .anyMatch(s -> isActivePreparedShipment(s.getStatus()));
+        if (otherActive) {
+            return;
+        }
+        assignNextVendorShipmentNumber(order);
+    }
+
+    private void rotateVendorShipmentNumberIfTaken(ProductionOrderEntity order) {
+        if (order == null) {
+            return;
+        }
+        String vendor = safeTrim(order.getVendorShipmentNumber());
+        if (vendor.isEmpty()) {
+            return;
+        }
+        if (shipmentRepository.existsByShipmentNumber(vendor)) {
+            assignNextVendorShipmentNumber(order);
+        }
+    }
+
+    private void assignNextVendorShipmentNumber(ProductionOrderEntity order) {
+        if (order == null) {
+            return;
+        }
+        String next = isLuisFelipeVendorOrder(order)
+                ? opvVendorShipmentNumberService.nextNumber()
+                : opiVendorShipmentNumberService.nextNumber();
+        order.setVendorShipmentNumber(next);
+        order.setUpdatedBy(securityUtil.getCurrentUserId());
+        productionOrderRepository.save(order);
+    }
+
+    private boolean vendorNumberAppliesToShipment(ProductionOrderEntity order, ProductShipmentEntity shipment) {
+        String vendor = safeTrim(order.getVendorShipmentNumber());
+        String number = safeTrim(shipment.getShipmentNumber());
+        if (vendor.isEmpty() || number.isEmpty()) {
+            return false;
+        }
+        String vendorUp = vendor.toUpperCase(Locale.ROOT);
+        String numberUp = number.toUpperCase(Locale.ROOT);
+        return numberUp.equals(vendorUp) || numberUp.startsWith(vendorUp + "-");
+    }
+
+    private boolean isActivePreparedShipment(String status) {
+        String st = status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
+        return !st.isEmpty() && !"DRAFT".equals(st) && !"CANCELLED".equals(st);
+    }
+
     private boolean isLuisFelipeVendorOrder(ProductionOrderEntity order) {
         if (order == null) {
             return false;
         }
         String seller = String.valueOf(order.getSellerName() == null ? "" : order.getSellerName()).trim().toUpperCase();
         return seller.contains("LUIS FELIPE");
+    }
+
+    private static String normalizeEntreCuerosToken(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String nfd = java.text.Normalizer.normalize(value.trim(), java.text.Normalizer.Form.NFD);
+        String withoutMarks = nfd.replaceAll("\\p{M}+", "");
+        return withoutMarks.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
+    }
+
+    private boolean isEntreCuerosCustomerOpv(ProductionOrderEntity order) {
+        if (order == null) {
+            return false;
+        }
+        String orderType = order.getOrderType() == null ? "" : order.getOrderType().trim().toUpperCase(Locale.ROOT);
+        String code = order.getCode() == null ? "" : order.getCode().trim().toUpperCase(Locale.ROOT);
+        if ("INTERNA".equals(orderType) || "CLIENTE_KIOSKO".equals(orderType) || isCinchoOrderType(orderType)) {
+            return false;
+        }
+        boolean opvOrder = "MARCAS".equals(orderType) || "OPV".equals(orderType) || code.startsWith("OPV-");
+        if (!opvOrder) {
+            return false;
+        }
+        return normalizeEntreCuerosToken(order.getCustomerName()).contains("ENTRECUEROS");
     }
 
     private String resolveLfDefaultDestination(ProductionOrderEntity order) {

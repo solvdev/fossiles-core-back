@@ -70,8 +70,10 @@ public class KioskPosSaleResponse {
     private String felNumero;
     private String felError;
     private LocalDateTime felCertifiedAt;
-    /** Número de control interno de la tax invoice (ej. A45-241). */
+    /** Número de control interno de la tax invoice (ej. A45-241), o A45-241 - hoja en Entrecueros. */
     private String internalNumber;
+    /** Hoja de envío de Entrecueros. */
+    private String shippingSheetNumber;
     private InvoiceInfo invoice;
 
     private String depositSlipNumber;

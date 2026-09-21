@@ -36,8 +36,11 @@ public class KioscoInventoryTrasladoRequest {
     /** Talla FOSS / cincho con breakdown. */
     private String sizeKey;
 
-    /** Herraje: NUEVO o VIEJO (ítem único). */
+    /** Dimensión de origen: herraje, marca o PARA. */
     private String hardwareCondition;
+
+    /** Dimensión de destino cuando el kiosco receptor es Entrecueros. */
+    private String destinationHardwareCondition;
 
     /** Varias líneas producto+color+talla+cantidad en un solo traslado / boleta. */
     @Valid
@@ -55,7 +58,10 @@ public class KioscoInventoryTrasladoRequest {
         @Min(value = 1, message = "La cantidad debe ser mayor a cero.")
         private Integer quantity;
         private String sizeKey;
-        /** Herraje: NUEVO o VIEJO. */
+        /** Dimensión de origen: herraje, marca o PARA. */
         private String hardwareCondition;
+
+        /** Dimensión de destino cuando el kiosco receptor es Entrecueros. */
+        private String destinationHardwareCondition;
     }
 }
