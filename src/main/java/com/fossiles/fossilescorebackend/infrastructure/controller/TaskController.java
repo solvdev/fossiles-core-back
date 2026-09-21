@@ -25,6 +25,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionShift;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -724,9 +725,10 @@ public class TaskController {
         if ("COMPLETED".equals(effectiveStatus) && entity.getCompletedAt() == null) {
             LocalDateTime gtNow = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDateTime();
             entity.setCompletedAt(gtNow);
-            // Calculate duration
+            // Tiempo realmente trabajado: solo lo que cae dentro de la jornada.
             if (entity.getStartedAt() != null) {
-                long minutes = java.time.Duration.between(entity.getStartedAt(), entity.getCompletedAt()).toMinutes();
+                long minutes = ProductionShift.workingMinutesBetween(
+                        entity.getStartedAt(), entity.getCompletedAt());
                 entity.setActualDurationMinutes((int) minutes);
             }
 
@@ -2255,12 +2257,16 @@ public class TaskController {
                     .build());
         }
 
-        String deskSupervisorName = resolveDeskSupervisorName(task.getDesk(), task.getScheduledDate());
+        // Al completar una tarea se limpia `desk` y el numero queda en `worked_desk`.
+        // Sin este respaldo, la boleta de una tarea terminada saldria sin mesa ni
+        // encargado, que es justo lo que hace util reimprimirla.
+        Integer deskBoleta = task.getDesk() != null ? task.getDesk() : task.getWorkedDesk();
+        String deskSupervisorName = resolveDeskSupervisorName(deskBoleta, task.getScheduledDate());
 
         return TaskTicketResponse.builder()
                 .taskId(task.getId())
                 .taskCode(task.getCode())
-                .desk(task.getDesk())
+                .desk(deskBoleta)
                 .deskSupervisorName(deskSupervisorName)
                 .scheduledDate(task.getScheduledDate())
                 .startTime(task.getStartTime())
