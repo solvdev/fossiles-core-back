@@ -52,10 +52,6 @@ public class LeatherInventoryEntity {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "material_id", insertable = false, updatable = false)
-    private MaterialEntity material;
-
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
