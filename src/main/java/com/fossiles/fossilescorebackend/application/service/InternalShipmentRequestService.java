@@ -138,7 +138,6 @@ public class InternalShipmentRequestService {
                 Long productionOrderId = createOpiForShortages(entity, shortages);
                 entity.setProductionOrderId(productionOrderId);
                 requestRepository.save(entity);
-                return toResponse(entity);
                 String opiRef = productionOrderRepository.findById(productionOrderId)
                         .map(ProductionOrderEntity::getCode)
                         .orElse("OPI #" + productionOrderId);
