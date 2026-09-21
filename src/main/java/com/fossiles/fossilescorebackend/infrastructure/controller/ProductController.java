@@ -339,6 +339,8 @@ public class ProductController {
                 || request.getEntrecuerosPriceUnit().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("Indique el precio unitario Entrecueros.");
         }
+    }
+
     private Integer normalizeUnitsPerTask(Integer value) {
         if (value == null) {
             return null;
