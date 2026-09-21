@@ -36,9 +36,17 @@ jobs:
             echo "Crea BACK_HOST (main) o BACK_HOST_TEST (develop) en Settings → Secrets."
             exit 1
           fi
+          RDS_HOST="fossiles-gt.czaiugi22fpp.us-east-2.rds.amazonaws.com"
+          if [ "${{ github.ref_name }}" = "develop" ]; then
+            DB_NAME="fosstest"
+          else
+            DB_NAME="fossilesgt"
+          fi
+          DB_URL="jdbc:postgresql://${RDS_HOST}:5432/${DB_NAME}"
           echo "HOST=$HOST" >> "$GITHUB_ENV"
           echo "ENV_LABEL=$LABEL" >> "$GITHUB_ENV"
-          echo "Rama ${{ github.ref_name }} → $LABEL ($HOST)" | tee -a /tmp/deploy.log
+          echo "DB_URL=$DB_URL" >> "$GITHUB_ENV"
+          echo "Rama ${{ github.ref_name }} → $LABEL ($HOST) db=${DB_NAME}" | tee -a /tmp/deploy.log
 
       - name: Setup JDK 21
         uses: actions/setup-java@v4
@@ -85,6 +93,17 @@ jobs:
             ${{ secrets.SSH_USER }}@${{ env.HOST }}:/backs/fossiles-core-backend.jar \
             2>&1 | tee -a /tmp/deploy.log
 
+      - name: Fijar base de datos del ambiente
+        id: datasource
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ env.HOST }} \
+            "sudo mkdir -p /etc/systemd/system/fossiles-core-backend.service.d && \
+             printf '%s\n' '[Service]' 'Environment=SPRING_DATASOURCE_URL=${{ env.DB_URL }}' | \
+             sudo tee /etc/systemd/system/fossiles-core-backend.service.d/datasource.conf >/dev/null && \
+             sudo systemctl daemon-reload" 2>&1 | tee -a /tmp/deploy.log
+          echo "Datasource ${{ env.ENV_LABEL }} → ${{ env.DB_URL }}" | tee -a /tmp/deploy.log
+
       - name: Iniciar servicio
         id: start_service
         run: |
@@ -121,6 +140,7 @@ jobs:
           SSH_OUT="${{ steps.ssh_setup.outcome }}"
           STOP_OUT="${{ steps.stop_service.outcome }}"
           TRANSFER_OUT="${{ steps.transfer.outcome }}"
+          DS_OUT="${{ steps.datasource.outcome }}"
           START_OUT="${{ steps.start_service.outcome }}"
           VERIFY_OUT="${{ steps.verify.outcome }}"
 
@@ -131,6 +151,7 @@ jobs:
             "Setup SSH:$SSH_OUT" \
             "Detener servicio:$STOP_OUT" \
             "Transferir JAR:$TRANSFER_OUT" \
+            "Fijar datasource:$DS_OUT" \
             "Iniciar servicio:$START_OUT" \
             "Verificar servicio:$VERIFY_OUT"
           do
