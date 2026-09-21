@@ -8,7 +8,11 @@ spring.application.name=fossiles-core-backend
 # ============================================
 # DATABASE CONFIGURATION (AWS RDS)
 # ============================================
-spring.datasource.url=jdbc:postgresql://TU_RDS_ENDPOINT:5432/db
+# Default del JAR: prod (fossilesgt). No comentar/descomentar URLs en git.
+# El deploy escribe SPRING_DATASOURCE_URL en systemd:
+#   main    → .../fossilesgt
+#   develop → .../fosstest
+spring.datasource.url=${SPRING_DATASOURCE_URL:jdbc:postgresql://TU_RDS_ENDPOINT:5432/fossilesgt}
 spring.datasource.username=TU_USUARIO
 spring.datasource.password=TU_PASSWORD
 spring.datasource.driver-class-name=org.postgresql.Driver
