@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.dto.request.CreateManualTaskRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.OrganizerOrderPageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OrganizerProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -10,6 +11,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -44,18 +46,42 @@ public class TaskOrganizerService {
 
     // ==================== LISTADO PARA EL ORGANIZADOR ====================
 
+    /** Valores que acepta el filtro por tipo. ALL y REGULAR se conservan por compatibilidad. */
+    private static final Set<String> TIPOS_VALIDOS =
+            Set.of("ALL", "REGULAR", "OPL", "OPK", "OPV", "OPI", "OPCK", "OPD");
+
+    @Transactional(readOnly = true)
+    public List<OrganizerProductionOrderResponse> getOrganizerOrders(String type, String search)
+            throws BusinessException {
+        return getOrganizerOrders(type, search, 0, Integer.MAX_VALUE).getContent();
+    }
+
     /**
-     * OPs activas del filtro (OPL / regulares / todas), con todos sus ítems no-cincho.
-     * Incluye líneas ya totalmente asignadas (restante 0) para que OPL y demás se vean
-     * aunque ya tengan tareas (p. ej. sin mesa); "Agregar" solo aplica si restante &gt; 0.
+     * Listado de órdenes con trabajo pendiente, filtrable por familia y paginado.
      *
-     * @param type   OPL (solo venta en línea), REGULAR (todo lo demás) o ALL/null
-     * @param search filtro por código de OP o nombre de cliente (contains, case-insensitive)
+     * <p>La página se recorta <b>antes</b> de cargar ítems, productos y colores: antes se
+     * hacía una consulta por orden, otra por producto y otra por color sobre el catálogo
+     * entero, aunque en pantalla solo cupieran treinta filas.
      */
     @Transactional(readOnly = true)
-    public List<OrganizerProductionOrderResponse> getOrganizerOrders(String type, String search) {
+    public OrganizerOrderPageResponse getOrganizerOrders(String type, String search, int page, int size)
+            throws BusinessException {
         String normalizedType = type == null ? "ALL" : type.trim().toUpperCase(Locale.ROOT);
+        if (!TIPOS_VALIDOS.contains(normalizedType)) {
+            // Antes cualquier valor desconocido caía en `default -> true` y devolvía el
+            // catálogo completo: un error de tecleo se veía como "no hay filtro".
+            throw new BusinessException("Tipo de orden no válido: " + type
+                    + ". Valores aceptados: " + String.join(", ", TIPOS_VALIDOS));
+        }
         String normalizedSearch = search == null ? "" : search.trim().toLowerCase(Locale.ROOT);
+        int pageSize = Math.min(Math.max(size, 1), 200);
+        int pageIndex = Math.max(page, 0);
+
+        // El auxiliar teclea el código de su boleta, que es el de la TAREA. Se resuelven
+        // aquí, de una sola consulta, las OP que tienen alguna tarea con ese código.
+        Set<Long> ordersMatchingTaskCode = normalizedSearch.isEmpty()
+                ? Set.of()
+                : new HashSet<>(taskRepository.findProductionOrderIdsByTaskCodeLike(normalizedSearch));
 
         List<ProductionOrderEntity> orders = productionOrderRepository.findActiveOrders().stream()
                 .filter(po -> !"COMPLETED".equals(po.getStatus())
@@ -63,36 +89,64 @@ public class TaskOrganizerService {
                         && !"DRAFT".equalsIgnoreCase(String.valueOf(po.getStatus()).trim()))
                 .filter(po -> !isCinchoOrderType(po.getOrderType()))
                 .filter(po -> switch (normalizedType) {
+                    case "ALL" -> true;
                     case "OPL" -> isOnlineSaleOrder(po);
                     case "REGULAR" -> !isOnlineSaleOrder(po);
-                    default -> true;
+                    // Las familias reales salen del mismo sitio que la etiqueta que se le
+                    // pinta a la fila, para que filtro y badge no puedan desincronizarse.
+                    default -> normalizedType.equals(familyLabel(po.getOrderType(), po.getCode()));
                 })
                 .filter(po -> normalizedSearch.isEmpty()
                         || String.valueOf(po.getCode()).toLowerCase(Locale.ROOT).contains(normalizedSearch)
-                        || String.valueOf(po.getCustomerName()).toLowerCase(Locale.ROOT).contains(normalizedSearch))
-                .sorted(Comparator
-                        .comparing(ProductionOrderEntity::getDeliveryDate, Comparator.nullsLast(Comparator.naturalOrder()))
-                        .thenComparing(ProductionOrderEntity::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder()))
-                        .thenComparing(ProductionOrderEntity::getId))
+                        || String.valueOf(po.getCustomerName()).toLowerCase(Locale.ROOT).contains(normalizedSearch)
+                        || ordersMatchingTaskCode.contains(po.getId()))
+                // Mismo orden que aplica el planificador: prioridad, luego FIFO. Mostrar
+                // otro orden aquí, que es donde el auxiliar arma la cola, haría que lo que
+                // ve no fuera lo que se va a ejecutar.
+                .sorted(ProductionOrderPlanPriority.comparator())
                 .toList();
 
-        if (orders.isEmpty()) {
-            return List.of();
+        long totalElements = orders.size();
+        int totalPages = (int) Math.ceil(totalElements / (double) pageSize);
+        int desde = Math.min(pageIndex * pageSize, orders.size());
+        int hasta = Math.min(desde + pageSize, orders.size());
+        List<ProductionOrderEntity> pagina = orders.subList(desde, hasta);
+
+        if (pagina.isEmpty()) {
+            return OrganizerOrderPageResponse.of(List.of(), totalElements, totalPages, pageSize, pageIndex);
         }
 
-        Map<Long, List<ProductionOrderItemEntity>> itemsByOrder = new LinkedHashMap<>();
-        List<Long> allItemIds = new ArrayList<>();
-        for (ProductionOrderEntity po : orders) {
-            List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(po.getId());
-            itemsByOrder.put(po.getId(), items);
-            items.forEach(i -> allItemIds.add(i.getId()));
-        }
+        // Los tres N+1 a lote, y solo sobre la página: antes eran una consulta por orden,
+        // otra por producto y otra por color, sobre el catálogo entero.
+        List<Long> pageOrderIds = pagina.stream().map(ProductionOrderEntity::getId).toList();
+        Map<Long, List<ProductionOrderItemEntity>> itemsByOrder =
+                productionOrderItemRepository.findByProductionOrderIdIn(pageOrderIds).stream()
+                        .collect(Collectors.groupingBy(ProductionOrderItemEntity::getProductionOrderId));
+
+        List<Long> allItemIds = itemsByOrder.values().stream()
+                .flatMap(List::stream)
+                .map(ProductionOrderItemEntity::getId)
+                .toList();
+
+        Set<Long> productIds = itemsByOrder.values().stream().flatMap(List::stream)
+                .map(ProductionOrderItemEntity::getProductId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, ProductEntity> productsById = productIds.isEmpty() ? Map.of()
+                : productRepository.findAllById(productIds).stream()
+                        .collect(Collectors.toMap(ProductEntity::getId, p -> p));
+
+        Set<Long> colorIds = itemsByOrder.values().stream().flatMap(List::stream)
+                .map(ProductionOrderItemEntity::getColorId).filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, String> colorNameById = colorIds.isEmpty() ? Map.of()
+                : colorRepository.findAllById(colorIds).stream()
+                        .collect(Collectors.toMap(ColorEntity::getId, ColorEntity::getName));
 
         Map<Long, Integer> assignedByItemId = taskItemRepository.assignedQuantityMap(allItemIds);
         Map<Long, List<Object[]>> assignmentRowsByItemId = taskItemRepository.assignmentRowsByItemId(allItemIds);
 
         List<OrganizerProductionOrderResponse> out = new ArrayList<>();
-        for (ProductionOrderEntity po : orders) {
+        for (ProductionOrderEntity po : pagina) {
             List<OrganizerProductionOrderResponse.OrganizerItemResponse> itemRows = new ArrayList<>();
             for (ProductionOrderItemEntity item : itemsByOrder.getOrDefault(po.getId(), List.of())) {
                 int total = ProductionOrderItemQuantityHelper.effectiveQuantityForBom(item);
@@ -103,7 +157,7 @@ public class TaskOrganizerService {
                 int remaining = Math.max(0, total - assigned);
 
                 ProductEntity product = item.getProductId() != null
-                        ? productRepository.findById(item.getProductId()).orElse(null)
+                        ? productsById.get(item.getProductId())
                         : null;
                 // Cinchos (cinchoType explícito o nombre) van a la mesa cinchos, no al centro de
                 // producción. El prefijo de código FOSS por sí solo NO cuenta (ver isCinchoLineForProduction).
@@ -113,7 +167,7 @@ public class TaskOrganizerService {
 
                 String colorName = null;
                 if (item.getColorId() != null) {
-                    colorName = colorRepository.findById(item.getColorId()).map(ColorEntity::getName).orElse(null);
+                    colorName = colorNameById.get(item.getColorId());
                 }
 
                 List<OrganizerProductionOrderResponse.OrganizerItemAssignment> assignments = new ArrayList<>();
@@ -171,7 +225,7 @@ public class TaskOrganizerService {
                     .items(itemRows)
                     .build());
         }
-        return out;
+        return OrganizerOrderPageResponse.of(out, totalElements, totalPages, pageSize, pageIndex);
     }
 
     // ==================== CREACIÓN MANUAL ====================
@@ -181,9 +235,30 @@ public class TaskOrganizerService {
      * ids ordenados) y revalida la cantidad restante dentro de la transacción para
      * evitar sobre-asignación concurrente.
      */
+    public enum CreateMode { MANUAL, AUTO_CENTRO, AUTO_CINCHO }
+
     @Transactional
     public TaskEntity createManualTask(CreateManualTaskRequest request)
             throws ResourceNotFoundException, BusinessException {
+        return createTask(request, CreateMode.MANUAL);
+    }
+
+    @Transactional
+    public TaskEntity createAutoCentroTask(CreateManualTaskRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return createTask(request, CreateMode.AUTO_CENTRO);
+    }
+
+    @Transactional
+    public TaskEntity createAutoCinchoTask(CreateManualTaskRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return createTask(request, CreateMode.AUTO_CINCHO);
+    }
+
+    @Transactional
+    public TaskEntity createTask(CreateManualTaskRequest request, CreateMode mode)
+            throws ResourceNotFoundException, BusinessException {
+        CreateMode createMode = mode == null ? CreateMode.MANUAL : mode;
 
         if (request == null || request.getProductionOrderId() == null) {
             throw new BusinessException("Debe indicar la orden de producción base de la tarea.");
@@ -200,7 +275,11 @@ public class TaskOrganizerService {
 
         ProductionOrderEntity headerOrder = productionOrderRepository.findById(request.getProductionOrderId())
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", request.getProductionOrderId()));
-        assertOrderReadyForTasks(headerOrder);
+        if (createMode == CreateMode.AUTO_CINCHO) {
+            assertNotDraft(headerOrder);
+        } else {
+            assertOrderReadyForTasks(headerOrder);
+        }
 
         List<Long> requestedItemIds = new ArrayList<>();
         for (CreateManualTaskRequest.ManualTaskItemRequest line : lines) {
@@ -259,12 +338,20 @@ public class TaskOrganizerService {
                         + itemOrder.getCode() + ", distinta a la orden base de la tarea. "
                         + "Solo los extras OPL pueden mezclar órdenes.");
             }
-            assertOrderReadyForTasks(itemOrder);
+            if (createMode == CreateMode.AUTO_CINCHO) {
+                assertNotDraft(itemOrder);
+            } else {
+                assertOrderReadyForTasks(itemOrder);
+            }
 
             ProductEntity product = item.getProductId() != null
                     ? productRepository.findById(item.getProductId()).orElse(null)
                     : null;
-            if (CinchoProductUtils.isCinchoLineForProduction(product)) {
+            boolean cinchoLine = CinchoProductUtils.isCinchoLineForProduction(product);
+            if (createMode == CreateMode.AUTO_CINCHO && !cinchoLine) {
+                throw new BusinessException("La tarea de cinchos solo admite líneas cincho.");
+            }
+            if (createMode != CreateMode.AUTO_CINCHO && cinchoLine) {
                 throw new BusinessException("Los productos cincho se gestionan en la vista de Cinchos.");
             }
 
@@ -292,6 +379,7 @@ public class TaskOrganizerService {
                 colorName = colorRepository.findById(item.getColorId()).map(ColorEntity::getName).orElse(null);
             }
             boolean requiresMaterials = product == null || !Boolean.FALSE.equals(product.getRequiresMaterials());
+            boolean cinchoReady = createMode == CreateMode.AUTO_CINCHO;
 
             itemsToSave.add(TaskItemEntity.builder()
                     .productionOrderItemId(item.getId())
@@ -303,8 +391,8 @@ public class TaskOrganizerService {
                     .quantity(qty)
                     .estimatedHours(lineHours)
                     .observations(buildItemObservations(item, qty, total))
-                    .leatherDelivered(false)
-                    .leatherDeliveredAt(null)
+                    .leatherDelivered(cinchoReady)
+                    .leatherDeliveredAt(cinchoReady ? LocalDateTime.now() : null)
                     .materialsDelivered(!requiresMaterials)
                     .materialsDeliveredAt(!requiresMaterials ? LocalDateTime.now() : null)
                     .daySaleExtra(extra)
@@ -315,13 +403,15 @@ public class TaskOrganizerService {
         if (isOnlineSaleOrder(headerOrder)) {
             baseHours = 0.0;
         }
-        if (baseHours > ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP + EPSILON) {
+        if (createMode == CreateMode.MANUAL
+                && baseHours > ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP + EPSILON) {
             throw new BusinessException(String.format(Locale.ROOT,
                     "La carga base de la tarea (%.2f h) excede el máximo de %.1f horas. "
                             + "Divida los productos en otra tarea (las OPL no cuentan contra el cupo).",
                     baseHours, ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP));
         }
 
+        boolean cinchoReady = createMode == CreateMode.AUTO_CINCHO;
         TaskItemEntity primary = itemsToSave.get(0);
         TaskEntity task = taskRepository.save(TaskEntity.builder()
                 .code(taskCodeGenerator.generateTaskCode())
@@ -336,10 +426,13 @@ public class TaskOrganizerService {
                 .quantity(totalQuantity)
                 .estimatedHours(roundHours(totalHours))
                 .deliveryDate(headerOrder.getDeliveryDate())
-                .desk(request.getDesk())
+                .desk(cinchoReady ? null : request.getDesk())
                 .scheduledDate(request.getScheduledDate())
                 .priority(5)
                 .status("PENDING")
+                .dieCutReady(cinchoReady)
+                .leatherDelivered(cinchoReady)
+                .leatherDeliveredAt(cinchoReady ? LocalDateTime.now() : null)
                 .observations(request.getObservations())
                 .build());
 
@@ -438,7 +531,7 @@ public class TaskOrganizerService {
         return "CINCHOS".equals(t) || "CINCHOS_FOSSILES".equals(t) || "CINCHOS_MARCAS".equals(t);
     }
 
-    private static void assertOrderReadyForTasks(ProductionOrderEntity po) throws BusinessException {
+    private static void assertNotDraft(ProductionOrderEntity po) throws BusinessException {
         if (po == null) {
             return;
         }
@@ -448,27 +541,27 @@ public class TaskOrganizerService {
                     "La orden " + code + " está en borrador. Contabilidad debe autorizar la producción "
                             + "antes de crear tareas.");
         }
-        if (isCinchoOrderType(po.getOrderType())) {
+    }
+
+    private static void assertOrderReadyForTasks(ProductionOrderEntity po) throws BusinessException {
+        assertNotDraft(po);
+        if (po != null && isCinchoOrderType(po.getOrderType())) {
             throw new BusinessException(
                     "Las órdenes de tipo cinchos se gestionan en la vista de Cinchos, no en el centro de producción.");
         }
     }
 
-    /** OPL | OPV | OPK | OPI | OPCK | OPD, o prefijo del código como fallback. */
+    /**
+     * OPL | OPV | OPK | OPI | OPCK | OPD | OPC, o prefijo del código como fallback.
+     *
+     * <p>Delega en {@link ProductionPlanningConstants#orderFamilyLabel}, que pasa a ser la
+     * única implementación. Único cambio de comportamiento respecto a la copia que vivía
+     * aquí: los tres tipos de cincho se resuelven por tipo y no solo por prefijo del código.
+     * Al Organizador no le afecta —su listado ya excluye cinchos antes de llegar aquí— pero
+     * deja de haber dos respuestas posibles para la misma orden.
+     */
     private static String familyLabel(String orderType, String code) {
-        String ot = orderType == null ? "" : orderType.trim().toUpperCase(Locale.ROOT);
-        switch (ot) {
-            case "VENTA_EN_LINEA": return "OPL";
-            case "NORMAL": return "OPK";
-            case "MARCAS", "OPV": return "OPV";
-            case "INTERNA": return "OPI";
-            case "CLIENTE_KIOSKO": return "OPCK";
-            case "DISTRIBUTION": return "OPD";
-            default:
-                String c = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
-                int dash = c.indexOf('-');
-                return dash > 0 ? c.substring(0, dash) : (c.isEmpty() ? null : c);
-        }
+        return ProductionPlanningConstants.orderFamilyLabel(orderType, code);
     }
 
     private static double roundHours(double value) {

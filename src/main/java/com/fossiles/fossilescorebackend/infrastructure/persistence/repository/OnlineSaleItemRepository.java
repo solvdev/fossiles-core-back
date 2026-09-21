@@ -15,6 +15,8 @@ public interface OnlineSaleItemRepository extends JpaRepository<OnlineSaleItemEn
 
     List<OnlineSaleItemEntity> findByOnlineSaleIdOrderByIdAsc(Long onlineSaleId);
 
+    List<OnlineSaleItemEntity> findByOnlineSaleIdInOrderByIdAsc(java.util.Collection<Long> onlineSaleIds);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM OnlineSaleItemEntity e WHERE e.onlineSaleId = :saleId")

@@ -26,6 +26,7 @@ public class ProductResponse {
     private BigDecimal entrecuerosPriceQty3;
     private BigDecimal entrecuerosPriceQty6;
     private BigDecimal entrecuerosPriceQty12;
+    private Integer unitsPerTask;
     private BigDecimal salePrice;
     private BigDecimal discountedPrice;
     private BigDecimal sellerPrice;

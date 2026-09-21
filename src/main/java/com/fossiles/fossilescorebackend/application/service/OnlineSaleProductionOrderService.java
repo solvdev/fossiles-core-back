@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -42,6 +43,7 @@ public class OnlineSaleProductionOrderService {
     private final InventoryLocationRepository inventoryLocationRepository;
     private final InventoryService inventoryService;
     private final OnlineSaleReturnsWarehouseLocator returnsWarehouseLocator;
+    private final ProductionAutoPlannerService productionAutoPlannerService;
 
     public record CreateResult(long productionOrderId, String productionOrderCode, int salesCount, String customerName) {}
 
@@ -1036,6 +1038,7 @@ public class OnlineSaleProductionOrderService {
                                 + " (lineas PRODUCE). Cliente: " + customer + ".",
                         List.of(sale)))
                 .status("PENDING")
+                .schedulingPriority(ProductionOrderPlanPriority.OPL)
                 .build();
         ProductionOrderEntity savedPO = productionOrderRepository.save(po);
 
@@ -1055,6 +1058,7 @@ public class OnlineSaleProductionOrderService {
         }
 
         saleService.linkToProductionOrder(List.of(sale.getId()), savedPO.getId());
+        productionAutoPlannerService.planQuietly(savedPO.getId());
         return new OplCreationResult(List.of(new CreateResult(savedPO.getId(), orderCode, 1, customer)), kioskOutflows);
     }
 
@@ -1125,6 +1129,7 @@ public class OnlineSaleProductionOrderService {
                                     customerSales.stream().map(s -> "#" + s.getSaleNumber()).reduce((a, b) -> a + ", " + b).orElse(""),
                             customerSales))
                     .status("PENDING")
+                    .schedulingPriority(ProductionOrderPlanPriority.OPL)
                     .build();
             ProductionOrderEntity savedPO = productionOrderRepository.save(po);
 
@@ -1135,6 +1140,7 @@ public class OnlineSaleProductionOrderService {
             }
 
             saleService.linkToProductionOrder(customerSaleIds, savedPO.getId());
+            productionAutoPlannerService.planQuietly(savedPO.getId());
             results.add(new CreateResult(savedPO.getId(), orderCode, customerSales.size(), customer));
             offset++;
         }
