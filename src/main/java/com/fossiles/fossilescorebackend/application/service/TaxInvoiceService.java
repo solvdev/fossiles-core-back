@@ -320,6 +320,31 @@ public class TaxInvoiceService {
         return voidInvoiceCore(invoiceId, reason);
     }
 
+    /**
+     * Si la factura ya está anulada o no está certificada, no toca INFILE.
+     * Así el POS puede devolver inventario aunque FEL ya se haya anulado en Contabilidad.
+     */
+    @Transactional
+    public void voidInvoiceFromPosIfCertified(Long invoiceId, String reason)
+            throws BusinessException, ResourceNotFoundException {
+        if (invoiceId == null) {
+            return;
+        }
+        TaxInvoiceEntity invoice = taxInvoiceRepository.findById(invoiceId).orElse(null);
+        if (invoice == null) {
+            return;
+        }
+        if ("VOID".equalsIgnoreCase(safe(invoice.getStatus()))) {
+            return;
+        }
+        if (!"CERTIFIED".equalsIgnoreCase(safe(invoice.getStatus()))
+                || invoice.getFelUuid() == null
+                || invoice.getFelUuid().isBlank()) {
+            return;
+        }
+        voidInvoiceCore(invoiceId, reason);
+    }
+
     private TaxInvoiceResponse voidInvoiceCore(Long invoiceId, String reason)
             throws BusinessException, ResourceNotFoundException {
         if (reason == null || reason.trim().isEmpty()) {

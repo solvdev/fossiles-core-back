@@ -1148,22 +1148,16 @@ public class KioskPosService {
             throw new BusinessException("La venta ya está anulada.");
         }
 
-        if (sale.getCashSessionId() != null) {
-            KioskCashSessionEntity openSession = kioskCashSessionRepository
-                    .findFirstByKioskLocationIdAndStatusOrderByOpenedAtDesc(kiosk.getId(), CASH_SESSION_OPEN)
-                    .orElse(null);
-            if (openSession == null) {
-                throw new BusinessException("Debes tener caja abierta para anular ventas.");
-            }
-            if (!Objects.equals(sale.getCashSessionId(), openSession.getId())) {
-                throw new BusinessException("Solo puedes anular ventas registradas en la caja abierta actual.");
-            }
+        boolean hasOpenCash = kioskCashSessionRepository
+                .findFirstByKioskLocationIdAndStatusOrderByOpenedAtDesc(kiosk.getId(), CASH_SESSION_OPEN)
+                .isPresent();
+        if (!hasOpenCash) {
+            throw new BusinessException("Debes tener caja abierta para anular ventas.");
         }
 
-        if ("CERTIFIED".equalsIgnoreCase(safeTrim(sale.getFelStatus())) && sale.getInvoiceId() != null) {
+        if (sale.getInvoiceId() != null) {
             try {
-                // Encargadas de kiosko: anulan FEL vía POS (sin permiso Contabilidad).
-                taxInvoiceService.voidInvoiceFromPos(sale.getInvoiceId(), request.getReason().trim());
+                taxInvoiceService.voidInvoiceFromPosIfCertified(sale.getInvoiceId(), request.getReason().trim());
             } catch (BusinessException ex) {
                 throw ex;
             } catch (ResourceNotFoundException ex) {
