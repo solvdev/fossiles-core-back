@@ -45,6 +45,8 @@ public class ProductRequest {
     private BigDecimal entrecuerosPriceQty6;
 
     private BigDecimal entrecuerosPriceQty12;
+    
+    private Integer unitsPerTask;
 
     private BigDecimal salePrice;
 

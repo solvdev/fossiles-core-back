@@ -61,6 +61,9 @@ public class ProductEntity {
 
     @Column(name = "entrecueros_price_qty12", precision = 12, scale = 2)
     private BigDecimal entrecuerosPriceQty12;
+    /** Unidades de este producto que caben en una tarea. Null = usar 2. */
+    @Column(name = "units_per_task")
+    private Integer unitsPerTask;
 
     @Column(name = "sale_price", precision = 12, scale = 2)
     private BigDecimal salePrice;

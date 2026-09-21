@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderR
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.application.dto.response.*;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -24,6 +25,7 @@ import com.fossiles.fossilescorebackend.application.service.ProductDistributionS
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderPartialReleaseService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderCodeService;
 import com.fossiles.fossilescorebackend.application.service.SmartMaterialRequestService;
+import com.fossiles.fossilescorebackend.application.service.ProductionAutoPlannerService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderWarehouseUnitService;
 import com.fossiles.fossilescorebackend.application.service.WarehouseOrderViewAssembler;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -38,6 +40,11 @@ import java.math.BigDecimal;
 import java.net.URI;
 import java.util.*;
 import java.util.stream.Collectors;
+import com.fossiles.fossilescorebackend.application.dto.response.PageResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ProductionOrderListItemResponse;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderListService;
+import org.springframework.format.annotation.DateTimeFormat;
+import java.time.LocalDate;
 
 @RestController
 @RequestMapping("/api/production-orders")
@@ -54,12 +61,14 @@ public class ProductionOrderController {
     );
 
     private final ProductionOrderRepository productionOrderRepository;
+    private final ProductionOrderListService productionOrderListService;
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
     private final CustomerRepository customerRepository;
     private final DocumentSeriesRepository documentSeriesRepository;
     private final SmartMaterialRequestService smartMaterialRequestService;
+    private final ProductionAutoPlannerService productionAutoPlannerService;
     private final ProductionOrderCodeService productionOrderCodeService;
     private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
@@ -84,14 +93,59 @@ public class ProductionOrderController {
     private final InternalShipmentRequestService internalShipmentRequestService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /**
+     * Listado completo sin paginar. Lo consumen diez pantallas que esperan un arreglo, por
+     * eso su forma no se toca; quien quiera paginado usa {@link #getPage}.
+     *
+     * <p><b>Ya no escribe.</b> Antes asignaba correlativos ENVP mientras respondia, asi que
+     * abrir cualquiera de esas diez pantallas insertaba numeros en la base: una peticion de
+     * lectura escribiendo, sin tomar ningun bloqueo —dos personas abriendo el listado a la
+     * vez podian colisionar— y con un calculo que cargaba en memoria los correlativos de dos
+     * tablas por cada fila sin numero.
+     *
+     * <p>La asignacion vive donde corresponde, al crear y al actualizar la orden. Para las
+     * que quedaron sin numero de antes esta {@code scripts/backfill-opv-vendor-shipment-number.sql},
+     * que hay que correr ANTES de desplegar este cambio. {@link #getById} la conserva como
+     * ultima red mientras ese relleno no haya corrido en produccion.
+     */
     @GetMapping
-    @Transactional
+    @Transactional(readOnly = true)
     public ResponseEntity<List<ProductionOrderResponse>> getAll() {
         List<ProductionOrderResponse> orders = productionOrderRepository.findAll().stream()
-                .map(this::ensureOpvVendorShipmentNumber)
                 .map(this::toResponse)
                 .collect(Collectors.toList());
         return ResponseEntity.ok(orders);
+    }
+
+    /**
+     * Listado paginado de órdenes: filtra, ordena y recorta en la base de datos.
+     *
+     * <p>Endpoint aparte a propósito. {@code GET /api/production-orders} lo consumen once
+     * pantallas y diez tratan la respuesta como un arreglo sin ninguna guarda: cambiarle la
+     * forma para paginarlo rompería Bodega, Preparar Envíos, Trazabilidad, Reportes, Cuero,
+     * el Dashboard y el Centro de Producción por una mejora pedida en una sola pantalla.
+     *
+     * <p>A diferencia del antiguo, este no escribe: no asigna correlativos de envío al leer.
+     *
+     * @param family  OPL | OPK | OPV | OPI | OPCK | OPD | OPC, o ALL
+     * @param status  estado exacto de la orden, o ALL
+     * @param process ALL | ACTIVE | PRODUCTION | BODEGA | READY | CANCELLED
+     * @param from    primer día incluido, por fecha de creación (yyyy-MM-dd)
+     * @param to      último día incluido, completo (yyyy-MM-dd)
+     */
+    @GetMapping("/page")
+    public ResponseEntity<PageResponse<ProductionOrderListItemResponse>> getPage(
+            @RequestParam(required = false) String family,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String process,
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "30") int size
+    ) throws BusinessException {
+        return ResponseEntity.ok(productionOrderListService.list(
+                family, status, process, search, from, to, page, size));
     }
 
     /**
@@ -329,6 +383,8 @@ public class ProductionOrderController {
             List<ProductionOrderItemEntity> savedItems =
                     productionOrderItemRepository.findByProductionOrderId(saved.getId());
             internalShipmentRequestService.createRequestForManualOpi(saved, savedItems);
+        } else {
+            productionAutoPlannerService.planQuietly(saved.getId());
         }
 
         return ResponseEntity.created(URI.create("/api/production-orders/" + saved.getId()))
@@ -1934,9 +1990,7 @@ public class ProductionOrderController {
     }
 
     private void applyDefaultSchedulingPriority(ProductionOrderEntity entity, String orderType) {
-        if ("CLIENTE_KIOSKO".equals(orderType)) {
-            entity.setSchedulingPriority(1);
-        }
+        ProductionOrderPlanPriority.applyDefault(entity, orderType);
     }
 
     private void validateProductionOrderItemRequest(ProductionOrderItemRequest itemRequest, String orderType)

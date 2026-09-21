@@ -240,6 +240,7 @@ public class ProductController {
                 .entrecuerosPriceQty3(entity.getEntrecuerosPriceQty3())
                 .entrecuerosPriceQty6(entity.getEntrecuerosPriceQty6())
                 .entrecuerosPriceQty12(entity.getEntrecuerosPriceQty12())
+                .unitsPerTask(entity.getUnitsPerTask())
                 .salePrice(entity.getSalePrice())
                 .discountedPrice(entity.getDiscountedPrice())
                 .sellerPrice(entity.getSellerPrice())
@@ -275,6 +276,7 @@ public class ProductController {
                 .entrecuerosPriceQty3(request.getEntrecuerosPriceQty3())
                 .entrecuerosPriceQty6(request.getEntrecuerosPriceQty6())
                 .entrecuerosPriceQty12(request.getEntrecuerosPriceQty12())
+                .unitsPerTask(normalizeUnitsPerTask(request.getUnitsPerTask()))
                 .salePrice(request.getSalePrice())
                 .discountedPrice(request.getDiscountedPrice())
                 .sellerPrice(request.getSellerPrice())
@@ -313,6 +315,9 @@ public class ProductController {
         entity.setEntrecuerosPriceQty3(request.getEntrecuerosPriceQty3());
         entity.setEntrecuerosPriceQty6(request.getEntrecuerosPriceQty6());
         entity.setEntrecuerosPriceQty12(request.getEntrecuerosPriceQty12());
+        if (request.getUnitsPerTask() != null) {
+            entity.setUnitsPerTask(normalizeUnitsPerTask(request.getUnitsPerTask()));
+        }
         if (request.getSalePrice() != null) entity.setSalePrice(request.getSalePrice());
         if (request.getDiscountedPrice() != null) entity.setDiscountedPrice(request.getDiscountedPrice());
         if (request.getSellerPrice() != null) entity.setSellerPrice(request.getSellerPrice());
@@ -334,6 +339,11 @@ public class ProductController {
                 || request.getEntrecuerosPriceUnit().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("Indique el precio unitario Entrecueros.");
         }
+    private Integer normalizeUnitsPerTask(Integer value) {
+        if (value == null) {
+            return null;
+        }
+        return Math.max(1, value);
     }
 }
 

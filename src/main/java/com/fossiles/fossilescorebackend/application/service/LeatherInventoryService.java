@@ -29,6 +29,7 @@ public class LeatherInventoryService {
     private final ProductRepository productRepository;
     private final TaskRepository taskRepository;
     private final SecurityUtil securityUtil;
+    private final ProductionAutoPlannerService productionAutoPlannerService;
 
     // ─── Inventario ──────────────────────────────────────────────────
 
@@ -197,6 +198,7 @@ public class LeatherInventoryService {
 
         // Sync workflow gate: once leather is delivered for the PO, mark all pending tasks as leather delivered.
         markLeatherDeliveredForProductionOrder(req.getProductionOrderId());
+        productionAutoPlannerService.planAllQuietly();
 
         return toMovementResponse(savedMovement);
     }

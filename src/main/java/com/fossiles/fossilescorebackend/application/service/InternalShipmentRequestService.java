@@ -60,6 +60,7 @@ public class InternalShipmentRequestService {
     private final OpiVendorShipmentNumberService opiVendorShipmentNumberService;
     private final InternalShipmentRequestSlipService slipService;
     private final SmartMaterialRequestService smartMaterialRequestService;
+    private final ProductionAutoPlannerService productionAutoPlannerService;
     private final ObjectMapper objectMapper;
     private final SecurityUtil securityUtil;
     private final InternalShipmentRequestAccessGuard accessGuard;
@@ -138,6 +139,13 @@ public class InternalShipmentRequestService {
                 entity.setProductionOrderId(productionOrderId);
                 requestRepository.save(entity);
                 return toResponse(entity);
+                String opiRef = productionOrderRepository.findById(productionOrderId)
+                        .map(ProductionOrderEntity::getCode)
+                        .orElse("OPI #" + productionOrderId);
+                throw new BusinessException(
+                        "No hay stock suficiente en Devoluciones / Bodega PT. Se generó la orden " + opiRef
+                                + " por el faltante. Autorice su producción y reciba el producto terminado en "
+                                + "Bodega PT antes de autorizar este envío.");
             }
         } else {
             assertLinkedOpiProductionAuthorized(entity);
@@ -226,6 +234,7 @@ public class InternalShipmentRequestService {
         opiVendorShipmentNumberService.assignIfMissing(order);
         productionOrderRepository.save(order);
         generateMaterialsForProductionOrder(order.getId());
+        productionAutoPlannerService.planQuietly(order.getId());
 
         entity.setOpiAuthorizedBy(securityUtil.getCurrentUserId());
         entity.setOpiAuthorizedAt(LocalDateTime.now());
