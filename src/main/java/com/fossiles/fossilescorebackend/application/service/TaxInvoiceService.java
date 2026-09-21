@@ -348,7 +348,6 @@ public class TaxInvoiceService {
         FelCredentials credentials = properties.resolveCredentials(resolveSandboxMode(invoice));
         validateEmitterConfig(credentials);
         String originalEmission = FelEmissionDateResolver.resolveAnnulmentEmissionDateTime(invoice);
-        FelSatReceptorRules.assertDirectAnnulmentAllowed(invoice, GuatemalaDateTime.today());
 
         String transactionId = "VOID-" + invoice.getId() + "-" + System.currentTimeMillis();
         String unsignedXml = anulacionXmlBuilder.buildUnsignedAnulacionXml(
@@ -1602,11 +1601,7 @@ public class TaxInvoiceService {
                 .collect(Collectors.toList());
 
         boolean consumidorFinal = FelSatReceptorRules.isConsumidorFinal(invoice.getCustomerTaxId());
-        LocalDate emissionDate = FelSatReceptorRules.resolveEmissionDateGt(invoice);
-        LocalDate deadline = consumidorFinal && FelSatReceptorRules.isFacturaType(invoice.getDocumentType())
-                ? FelSatReceptorRules.directAnnulmentDeadlineDate(emissionDate)
-                : null;
-        boolean directVoidAllowed = FelSatReceptorRules.isDirectFelVoidAllowed(invoice, GuatemalaDateTime.today());
+        boolean directVoidAllowed = FelSatReceptorRules.isDirectFelVoidAllowed(invoice);
 
         return TaxInvoiceResponse.builder()
                 .id(invoice.getId())
@@ -1636,7 +1631,7 @@ public class TaxInvoiceService {
                 .hasCertifiedXml(hasCertifiedXml(invoice))
                 .consumidorFinal(consumidorFinal)
                 .felDirectVoidAllowed(directVoidAllowed)
-                .felDirectVoidDeadlineDate(deadline)
+                .felDirectVoidDeadlineDate(null)
                 .notes(invoice.getNotes())
                 .createdAt(invoice.getCreatedAt())
                 .createdBy(invoice.getCreatedBy())

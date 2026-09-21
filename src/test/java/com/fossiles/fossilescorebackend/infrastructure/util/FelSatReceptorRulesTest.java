@@ -25,49 +25,15 @@ class FelSatReceptorRulesTest {
     }
 
     @Test
-    void directAnnulmentWindow_sameDayAndNextDayAllowed_dayPlusTwoRejected() {
-        assertThat(FelSatReceptorRules.isWithinDirectAnnulmentWindow(EMISSION, EMISSION)).isTrue();
-        assertThat(FelSatReceptorRules.isWithinDirectAnnulmentWindow(EMISSION, EMISSION.plusDays(1))).isTrue();
-        assertThat(FelSatReceptorRules.isWithinDirectAnnulmentWindow(EMISSION, EMISSION.plusDays(2))).isFalse();
-        assertThat(FelSatReceptorRules.isWithinDirectAnnulmentWindow(EMISSION, EMISSION.minusDays(1))).isFalse();
-    }
-
-    @Test
-    void assertDirectAnnulmentAllowed_cfSameDay_ok() {
+    void isDirectFelVoidAllowed_cfDaysLater_ok() {
         TaxInvoiceEntity invoice = certifiedFact("CF", EMISSION.atTime(10, 0));
-        assertThatCode(() -> FelSatReceptorRules.assertDirectAnnulmentAllowed(invoice, EMISSION))
-                .doesNotThrowAnyException();
+        assertThat(FelSatReceptorRules.isDirectFelVoidAllowed(invoice)).isTrue();
     }
 
     @Test
-    void assertDirectAnnulmentAllowed_cfNextDay_ok() {
-        TaxInvoiceEntity invoice = certifiedFact("CF", EMISSION.atTime(10, 0));
-        assertThatCode(() -> FelSatReceptorRules.assertDirectAnnulmentAllowed(invoice, EMISSION.plusDays(1)))
-                .doesNotThrowAnyException();
-    }
-
-    @Test
-    void assertDirectAnnulmentAllowed_cfDayPlusTwo_throws() {
-        TaxInvoiceEntity invoice = certifiedFact("CF", EMISSION.atTime(10, 0));
-        assertThatThrownBy(() -> FelSatReceptorRules.assertDirectAnnulmentAllowed(invoice, EMISSION.plusDays(2)))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("Consumidor Final")
-                .hasMessageContaining("2026-08-09");
-    }
-
-    @Test
-    void assertDirectAnnulmentAllowed_nitLate_ok() {
+    void isDirectFelVoidAllowed_nitLate_ok() {
         TaxInvoiceEntity invoice = certifiedFact("11700874K", EMISSION.atTime(10, 0));
-        assertThatCode(() -> FelSatReceptorRules.assertDirectAnnulmentAllowed(invoice, EMISSION.plusDays(10)))
-                .doesNotThrowAnyException();
-        assertThat(FelSatReceptorRules.isDirectFelVoidAllowed(invoice, EMISSION.plusDays(10))).isTrue();
-    }
-
-    @Test
-    void isDirectFelVoidAllowed_cfOutsideWindow_false() {
-        TaxInvoiceEntity invoice = certifiedFact("CF", EMISSION.atTime(10, 0));
-        assertThat(FelSatReceptorRules.isDirectFelVoidAllowed(invoice, EMISSION.plusDays(2))).isFalse();
-        assertThat(FelSatReceptorRules.directAnnulmentDeadlineDate(EMISSION)).isEqualTo(LocalDate.of(2026, 8, 9));
+        assertThat(FelSatReceptorRules.isDirectFelVoidAllowed(invoice)).isTrue();
     }
 
     @Test
