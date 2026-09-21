@@ -228,7 +228,7 @@ public class KioscoInternalCountService {
                             .physicalSizesByLocation(physicalSizesByLocation)
                             .systemSizes(parseCounts(primary.getSizesData()))
                             .total(total)
-                            .diferencia(KioscoInventoryCountService.computeDiferenciaConteo(total, inventarioFinal, 0))
+                            .diferencia(KioscoInventoryCountService.computeDiferenciaConteo(total, inventarioFinal))
                             .build();
             rowsByCategory.computeIfAbsent(categoryKey, k -> new ArrayList<>()).add(row);
             allRows.add(row);

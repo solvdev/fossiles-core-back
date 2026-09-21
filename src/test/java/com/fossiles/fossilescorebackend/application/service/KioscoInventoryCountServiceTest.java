@@ -517,18 +517,18 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
-    void salidaDevolucionForDiff_empaqueNoRestaDevolucionEnDiferencia() {
-        assertThat(KioscoInventoryCountService.salidaDevolucionForDiff(true, 15)).isZero();
-        assertThat(KioscoInventoryCountService.salidaDevolucionForDiff(false, 15)).isEqualTo(15);
+    void computeDiferenciaConteo_esFisicoMenosFin() {
+        assertThat(KioscoInventoryCountService.computeDiferenciaConteo(1, 0)).isEqualTo(1);
+        assertThat(KioscoInventoryCountService.computeDiferenciaConteo(1, 1)).isZero();
+        assertThat(KioscoInventoryCountService.computeDiferenciaConteo(0, 1)).isEqualTo(-1);
     }
 
     @Test
-    void computeDiferenciaConteo_empaqueIgnoraSalidaDevolucion() {
-        int total = 25;
-        int inventarioFinal = 10;
-        int salidaDevolucion = KioscoInventoryCountService.salidaDevolucionForDiff(true, 15);
-        assertThat(KioscoInventoryCountService.computeDiferenciaConteo(total, inventarioFinal, salidaDevolucion))
-                .isEqualTo(15);
+    void computeDiferenciaConteo_noOcultaSobrantePorDevolucionABodega() {
+        int fisico = 1;
+        int inventarioFinal = 0;
+        assertThat(KioscoInventoryCountService.computeDiferenciaConteo(fisico, inventarioFinal))
+                .isEqualTo(1);
     }
 
     @Test

@@ -709,12 +709,7 @@ public class KioscoInventoryCountService {
                     .inventarioFinal(inventarioFinal)
                     .counts(counts)
                     .total(total)
-                    .diferencia(computeDiferenciaConteo(
-                            total,
-                            inventarioFinal,
-                            salidaDevolucionForDiff(
-                                    ProductCinchoType.isPackagingProductCode(kardexRow.getProductCode()),
-                                    kardexRow.getSalidaDevolucion())))
+                    .diferencia(computeDiferenciaConteo(total, inventarioFinal))
                     .build();
             Map<String, Integer> openingBalanceBySize = resolveOpeningBalanceBySize(
                     productColorKey, previousClosing, stocksForRow, openingBalanceByStockAndSize);
@@ -802,9 +797,9 @@ public class KioscoInventoryCountService {
                 .inventarioFinal(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getInventarioFinal))
                 .counts(totalCounts)
                 .total(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getTotal))
-                // No recalcular con Σ salidaDevolucion: computeDiferenciaConteo no es lineal
-                // (solo descuenta devoluciones cuando hay sobrante). Sumar diffs de fila.
-                .diferencia(sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getDiferencia))
+                .diferencia(computeDiferenciaConteo(
+                        sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getTotal),
+                        sumField(rows, KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow::getInventarioFinal)))
                 .build();
     }
 
@@ -1444,20 +1439,11 @@ public class KioscoInventoryCountService {
     }
 
     /**
-     * Físico − Fin., descontando devoluciones a bodega que siguen en piso al contar
-     * (registradas en Sal. pero aún no retiradas de vitrina/bodega kiosko).
+     * Físico − Fin. (+ sobrante, − faltante).
+     * Una devolución a bodega ya bajó Fin.; si el producto sigue en vitrina, es sobrante real.
      */
-    static int computeDiferenciaConteo(int total, int inventarioFinal, int salidaDevolucion) {
-        int raw = total - inventarioFinal;
-        if (raw <= 0) {
-            return raw;
-        }
-        return Math.max(0, raw - Math.max(0, salidaDevolucion));
-    }
-
-    /** Empaques SUM-: diferencia simple físico − Fin. (sin ajuste por devolución a bodega). */
-    static int salidaDevolucionForDiff(boolean packaging, int salidaDevolucion) {
-        return packaging ? 0 : salidaDevolucion;
+    static int computeDiferenciaConteo(int total, int inventarioFinal) {
+        return total - inventarioFinal;
     }
 
     private static String firstNonNullDimension(String hardwareCondition) {
@@ -1854,10 +1840,7 @@ public class KioscoInventoryCountService {
                 .inventarioFinal(inventarioFinal)
                 .counts(counts)
                 .total(total)
-                .diferencia(computeDiferenciaConteo(
-                        total,
-                        inventarioFinal,
-                        salidaDevolucionForDiff(base.isPackaging(), bucket.salidaDevolucion)))
+                .diferencia(computeDiferenciaConteo(total, inventarioFinal))
                 .build(),
                 null,
                 sizeObservations != null ? sizeObservations.get(size) : null
