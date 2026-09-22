@@ -20,6 +20,8 @@ public class ProductionOrderItemResponse {
     private Long productId;
     private String productName;
     private String productCode;
+    /** Horas de producción por unidad (prd_time del producto). */
+    private Double prdTime;
     private Long colorId;
     private String colorName;
     private String brandName;
