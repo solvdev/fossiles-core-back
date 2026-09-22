@@ -327,51 +327,31 @@ public class ProductionOrderController {
             }
 
             final Long savedProductionOrderId = saved.getId();
-            List<ProductionOrderItemEntity> items = request.getItems().stream()
-                    .map(itemRequest -> {
-                        ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                                .productionOrderId(savedProductionOrderId)
-                                .productId(itemRequest.getProductId())
-                                .colorId(itemRequest.getColorId())
-                                .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, itemRequest.getBrandName()))
-                                .quantity(itemRequest.getQuantity())
-                                .warehouseReceivedQty(0)
-                                .sizesData(itemRequest.getSizes() != null ? 
-                                        convertSizesToJson(itemRequest.getSizes()) : null)
-                                .observations(itemRequest.getObservations())
-                                .unitPrice(itemRequest.getUnitPrice())
-                                .unitPricesJson(convertUnitPricesToJson(itemRequest.getUnitPrices()))
-                                .build();
-                        return productionOrderItemRepository.save(item);
-                    })
-                    .collect(Collectors.toList());
+            List<ProductionOrderItemEntity> items = new ArrayList<>();
+            for (ProductionOrderItemRequest itemRequest : request.getItems()) {
+                items.add(ProductionOrderItemEntity.builder()
+                        .productionOrderId(savedProductionOrderId)
+                        .productId(itemRequest.getProductId())
+                        .colorId(itemRequest.getColorId())
+                        .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, itemRequest.getBrandName()))
+                        .quantity(itemRequest.getQuantity())
+                        .warehouseReceivedQty(0)
+                        .sizesData(itemRequest.getSizes() != null ?
+                                convertSizesToJson(itemRequest.getSizes()) : null)
+                        .observations(itemRequest.getObservations())
+                        .unitPrice(itemRequest.getUnitPrice())
+                        .unitPricesJson(convertUnitPricesToJson(itemRequest.getUnitPrices()))
+                        .build());
+            }
+            productionOrderItemRepository.saveAll(items);
         }
 
-        // Generar solicitudes de materiales automáticamente si falta stock (no en OPI borrador)
+        // Generar solicitudes de materiales automáticamente si falta stock (no en OPI borrador).
+        // Una sola pasada: la primera línea con receta crea la solicitud; el resto no se vuelve a consultar.
         try {
             if (!isInternaOpi && request.getItems() != null && !request.getItems().isEmpty()) {
-                for (ProductionOrderItemRequest item : request.getItems()) {
-                    if (item.getProductId() != null) {
-                        // Calcular cantidad total (tallas O quantity; no sumar ambos)
-                        int totalQuantity = 0;
-                        if (item.getSizes() != null && !item.getSizes().isEmpty()) {
-                            totalQuantity = item.getSizes().values().stream()
-                                    .mapToInt(v -> v != null ? Math.max(v, 0) : 0)
-                                    .sum();
-                        }
-                        if (totalQuantity <= 0) {
-                            totalQuantity = item.getQuantity() != null ? item.getQuantity() : 0;
-                        }
-                        
-                        if (totalQuantity > 0) {
-                            smartMaterialRequestService.checkAndGenerateRequestsForProductionOrder(
-                                    saved.getId(),
-                                    item.getProductId(),
-                                    java.math.BigDecimal.valueOf(totalQuantity)
-                            );
-                        }
-                    }
-                }
+                smartMaterialRequestService.checkAndGenerateFirstRequestForProductionOrder(
+                        saved.getId(), request.getItems());
             }
         } catch (Exception e) {
             // Log error pero no fallar la creación de la orden
@@ -433,24 +413,23 @@ public class ProductionOrderController {
                 }
 
                 final Long updatedProductionOrderId = updated.getId();
-                List<ProductionOrderItemEntity> items = request.getItems().stream()
-                        .map(itemRequest -> {
-                            ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                                    .productionOrderId(updatedProductionOrderId)
-                                    .productId(itemRequest.getProductId())
-                                    .colorId(itemRequest.getColorId())
-                                    .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, itemRequest.getBrandName()))
-                                    .quantity(itemRequest.getQuantity())
-                                    .warehouseReceivedQty(0)
-                                .sizesData(itemRequest.getSizes() != null ?
-                                        convertSizesToJson(itemRequest.getSizes()) : null)
-                                .observations(itemRequest.getObservations())
-                                .unitPrice(itemRequest.getUnitPrice())
-                                .unitPricesJson(convertUnitPricesToJson(itemRequest.getUnitPrices()))
-                                .build();
-                            return productionOrderItemRepository.save(item);
-                        })
-                        .collect(Collectors.toList());
+                List<ProductionOrderItemEntity> items = new ArrayList<>();
+                for (ProductionOrderItemRequest itemRequest : request.getItems()) {
+                    items.add(ProductionOrderItemEntity.builder()
+                            .productionOrderId(updatedProductionOrderId)
+                            .productId(itemRequest.getProductId())
+                            .colorId(itemRequest.getColorId())
+                            .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, itemRequest.getBrandName()))
+                            .quantity(itemRequest.getQuantity())
+                            .warehouseReceivedQty(0)
+                            .sizesData(itemRequest.getSizes() != null ?
+                                    convertSizesToJson(itemRequest.getSizes()) : null)
+                            .observations(itemRequest.getObservations())
+                            .unitPrice(itemRequest.getUnitPrice())
+                            .unitPricesJson(convertUnitPricesToJson(itemRequest.getUnitPrices()))
+                            .build());
+                }
+                productionOrderItemRepository.saveAll(items);
             }
         }
 

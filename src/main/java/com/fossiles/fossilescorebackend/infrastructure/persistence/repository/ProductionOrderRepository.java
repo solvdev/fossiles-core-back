@@ -45,6 +45,14 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
     @Query("SELECT po FROM ProductionOrderEntity po WHERE po.status NOT IN ('CANCELLED') ORDER BY po.createdAt DESC")
     List<ProductionOrderEntity> findActiveOrders();
 
+    @Query("""
+            SELECT po FROM ProductionOrderEntity po
+            WHERE UPPER(COALESCE(po.orderType, '')) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              AND UPPER(COALESCE(po.status, '')) NOT IN ('CANCELLED', 'COMPLETED')
+            ORDER BY po.deliveryDate ASC NULLS LAST, po.id DESC
+            """)
+    List<ProductionOrderEntity> findOpenCinchoOrders();
+
     @Query("SELECT po.vendorShipmentNumber FROM ProductionOrderEntity po WHERE po.vendorShipmentNumber IS NOT NULL")
     List<String> findAllVendorShipmentNumbers();
 

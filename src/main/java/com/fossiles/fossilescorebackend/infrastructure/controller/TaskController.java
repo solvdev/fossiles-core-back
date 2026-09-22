@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 import com.fossiles.fossilescorebackend.application.dto.request.CreateManualTaskRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.PlanWindowRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DistributionQueueProductionOrderResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.MaterialsCinchoOrderResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialsTaskViewResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OrganizerOrderPageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OrganizerProductionOrderResponse;
@@ -18,6 +19,7 @@ import com.fossiles.fossilescorebackend.application.service.OplDispatchSummarySe
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.MaterialConsumptionService;
+import com.fossiles.fossilescorebackend.application.service.MaterialsTaskViewService;
 import com.fossiles.fossilescorebackend.application.service.ProductionTaskGenerationService;
 import com.fossiles.fossilescorebackend.application.service.ProductionTaskLifecycleService;
 import com.fossiles.fossilescorebackend.application.service.TaskCodeGenerator;
@@ -87,6 +89,7 @@ public class TaskController {
     private final ProductionDeskCountService productionDeskCountService;
     private final TaskDeskHoursService taskDeskHoursService;
     private final SecurityUtil securityUtil;
+    private final MaterialsTaskViewService materialsTaskViewService;
 
     // ==================== CRUD ====================
 
@@ -1577,8 +1580,7 @@ public class TaskController {
      * Vista materiales: “qué produce / despachar” por día (zona Guatemala).
      * <ul>
      *   <li>Default ({@code scheduleDay=false}, {@code includeDelivered=false}):
-     *       tareas del día programado + backlog de hoy, solo pendientes de materiales
-     *       ({@link #isPendingMaterialsViewTask}).</li>
+     *       tareas del día programado + backlog de hoy, solo pendientes de materiales.</li>
      *   <li>{@code includeDelivered=true}: tareas con entrega de materiales registrada en {@code date}
      *       (por timestamp del día).</li>
      *   <li>{@code scheduleDay=true}: todas las tareas del día de trabajo (programadas + backlog si es hoy),
@@ -1596,37 +1598,23 @@ public class TaskController {
 
         if (scheduleDay) {
             LocalDate day = date != null ? date : LocalDate.now(GUATEMALA_ZONE);
-            List<TaskEntity> tasks = collectTasksScheduledForMaterialsDay(day);
-            List<MaterialsTaskViewResponse> responses = tasks.stream()
+            List<TaskEntity> tasks = collectTasksScheduledForMaterialsDay(day).stream()
                     .filter(t -> !"CANCELLED".equals(t.getStatus()))
-                    .map(this::toMaterialsView)
-                    .filter(this::hasMaterialsDeliveryLines)
-                    .collect(Collectors.toList());
-            return ResponseEntity.ok(responses);
+                    .toList();
+            return ResponseEntity.ok(materialsTaskViewService.build(tasks, false));
         }
 
         if (includeDelivered) {
             LocalDateTime start = targetDate.atStartOfDay();
             LocalDateTime end = targetDate.plusDays(1).atStartOfDay();
             List<TaskEntity> delivered = taskRepository.findTasksWithMaterialsDeliveredBetween(start, end);
-            List<MaterialsTaskViewResponse> responses = delivered.stream()
-                    .map(this::toMaterialsView)
-                    .filter(this::hasMaterialsDeliveryLines)
-                    .collect(Collectors.toList());
-            return ResponseEntity.ok(responses);
+            return ResponseEntity.ok(materialsTaskViewService.build(delivered, false));
         }
 
         // Pendientes del día: scheduledDate = date (+ backlog activo si date es hoy) y aún sin materiales.
         List<TaskEntity> tasks = mergeActiveMaterialsBacklogForToday(
                 targetDate, taskRepository.findByScheduledDate(targetDate));
-
-        List<MaterialsTaskViewResponse> responses = tasks.stream()
-                .filter(this::isPendingMaterialsViewTask)
-                .map(this::toMaterialsView)
-                .filter(this::hasMaterialsDeliveryLines)
-                .collect(Collectors.toList());
-
-        return ResponseEntity.ok(responses);
+        return ResponseEntity.ok(materialsTaskViewService.build(tasks, true));
     }
 
     /**
@@ -1638,21 +1626,17 @@ public class TaskController {
             @PathVariable Long productionOrderId,
             @RequestParam(name = "includeDelivered", defaultValue = "false") boolean includeDelivered) {
 
-        List<TaskEntity> tasks = findTasksLinkedToProductionOrder(productionOrderId);
-        List<MaterialsTaskViewResponse> responses = tasks.stream()
+        List<TaskEntity> tasks = findTasksLinkedToProductionOrder(productionOrderId).stream()
                 .filter(t -> !"CANCELLED".equals(t.getStatus()))
-                .filter(t -> includeDelivered || isPendingMaterialsViewTask(t))
-                .map(this::toMaterialsView)
-                .filter(this::hasMaterialsDeliveryLines)
-                .collect(Collectors.toList());
-
-        return ResponseEntity.ok(responses);
+                .toList();
+        return ResponseEntity.ok(materialsTaskViewService.build(tasks, !includeDelivered));
     }
 
-    private boolean hasMaterialsDeliveryLines(MaterialsTaskViewResponse view) {
-        return view != null
-                && view.getProducts() != null
-                && !view.getProducts().isEmpty();
+    /** Órdenes cincho abiertas que todavía tienen materiales por entregar. Una sola pasada, sin el listado completo de OPs. */
+    @GetMapping("/materials-view/cincho-orders")
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<MaterialsCinchoOrderResponse>> getCinchoOrdersWithPendingMaterials() {
+        return ResponseEntity.ok(materialsTaskViewService.listCinchoOrdersWithPendingMaterials());
     }
 
     /**
@@ -1719,145 +1703,6 @@ public class TaskController {
                 .anyMatch(bi -> materialId.equals(bi.getMaterialId()));
     }
 
-    private MaterialsTaskViewResponse toMaterialsView(TaskEntity task) {
-        ProductionOrderEntity po = task.getProductionOrderId() != null
-                ? productionOrderRepository.findById(task.getProductionOrderId()).orElse(null)
-                : null;
-
-        List<TaskItemEntity> taskItems = taskItemRepository.findByTaskId(task.getId());
-
-        List<MaterialsTaskViewResponse.TaskProductWithRecipe> products;
-        if (!taskItems.isEmpty()) {
-            products = taskItems.stream()
-                    .map(item -> buildProductWithRecipe(task, item))
-                    .filter(p -> !Boolean.FALSE.equals(p.getRequiresMaterials()))
-                    .collect(Collectors.toList());
-        } else if (task.getProductId() != null) {
-            TaskItemEntity legacyItem = TaskItemEntity.builder()
-                    .taskId(task.getId())
-                    .productId(task.getProductId())
-                    .productCode(task.getProductCode())
-                    .productName(task.getProductName())
-                    .colorId(task.getColorId())
-                    .colorName(task.getColorName())
-                    .quantity(task.getQuantity())
-                    .leatherDelivered(task.getLeatherDelivered())
-                    .leatherDeliveredAt(task.getLeatherDeliveredAt())
-                    .materialsDelivered(task.getMaterialsDelivered())
-                    .materialsDeliveredAt(task.getMaterialsDeliveredAt())
-                    .build();
-            products = isTaskItemRequiresMaterials(legacyItem)
-                    ? List.of(buildProductWithRecipe(task, legacyItem))
-                    : List.of();
-        } else {
-            products = List.of();
-        }
-
-        return MaterialsTaskViewResponse.builder()
-                .taskId(task.getId())
-                .taskCode(task.getCode())
-                .productionOrderCode(task.getProductionOrderCode())
-                .productionOrderId(task.getProductionOrderId())
-                .customerName(po != null ? po.getCustomerName() : null)
-                .orderType(po != null ? po.getOrderType() : null)
-                .desk(task.getDesk())
-                .scheduledDate(task.getScheduledDate())
-                .startTime(task.getStartTime())
-                .estimatedHours(task.getEstimatedHours())
-                .status(task.getStatus())
-                .leatherDelivered(task.getLeatherDelivered())
-                .leatherDeliveredAt(task.getLeatherDeliveredAt())
-                .dieCutReady(task.getDieCutReady())
-                .dieCutDate(task.getDieCutDate())
-                .materialsDelivered(areRequiredTaskItemsDelivered(task))
-                .materialsDeliveredAt(task.getMaterialsDeliveredAt())
-                .requiresMaterials(taskRequiresMaterials(task))
-                .workflowStatus(getWorkflowStatus(task))
-                .canDeliverMaterials(canDeliverMaterials(task))
-                .completedAt(task.getCompletedAt())
-                .products(products)
-                .build();
-    }
-
-    private MaterialsTaskViewResponse.TaskProductWithRecipe buildProductWithRecipe(
-            TaskEntity task,
-            TaskItemEntity item) {
-
-        List<MaterialsTaskViewResponse.RecipeMaterial> recipe = new ArrayList<>();
-        Long productId = item.getProductId();
-        String productCode = item.getProductCode();
-        String productName = item.getProductName();
-        Long colorId = item.getColorId();
-        String colorName = item.getColorName();
-        Integer quantity = resolveTaskItemRecipeQuantity(item);
-
-        Map<Long, TaskItemMaterialPickEntity> picksByMaterial = new HashMap<>();
-        if (item.getId() != null) {
-            for (TaskItemMaterialPickEntity p : taskItemMaterialPickRepository.findByTaskItemId(item.getId())) {
-                picksByMaterial.put(p.getMaterialId(), p);
-            }
-        }
-
-        if (productId != null) {
-            // Find active BOM for this product (and optionally color)
-            // BOM status is stored as "A" (active)
-            List<BomEntity> boms = bomRepository.findByProductIdAndStatus(productId, "A");
-
-            // Prefer BOM matching the specific color, fallback to generic
-            BomEntity matchedBom = boms.stream()
-                    .filter(b -> colorId != null && colorId.equals(b.getColorId()))
-                    .findFirst()
-                    .orElse(boms.isEmpty() ? null : boms.get(0));
-
-            if (matchedBom != null) {
-                int qty = quantity != null ? quantity : 1;
-                List<BomItemEntity> bomItems = bomItemRepository.findByBomId(matchedBom.getId());
-                recipe = bomItems.stream()
-                        .map(bomItem -> {
-                            MaterialEntity material = materialRepository.findById(bomItem.getMaterialId()).orElse(null);
-                            BigDecimal totalQty = bomItem.getQuantity() != null
-                                    ? bomItem.getQuantity().multiply(BigDecimal.valueOf(qty))
-                                    : BigDecimal.ZERO;
-                            BigDecimal availableStock = material != null && material.getQuantity() != null
-                                    ? material.getQuantity()
-                                    : BigDecimal.ZERO;
-                            boolean sufficientStock = availableStock.compareTo(totalQty) >= 0;
-                            TaskItemMaterialPickEntity pick = picksByMaterial.get(bomItem.getMaterialId());
-
-                            return MaterialsTaskViewResponse.RecipeMaterial.builder()
-                                    .materialId(bomItem.getMaterialId())
-                                    .materialName(material != null ? material.getName() : null)
-                                    .materialSku(material != null ? material.getSku() : null)
-                                    .quantityPerUnit(bomItem.getQuantity())
-                                    .totalQuantity(totalQty)
-                                    .availableStock(availableStock)
-                                    .sufficientStock(sufficientStock)
-                                    .measurementUnit(bomItem.getMeasurementUnit())
-                                    .picked(pick != null && Boolean.TRUE.equals(pick.getPicked()))
-                                    .pickedAt(pick != null ? pick.getPickedAt() : null)
-                                    .build();
-                        })
-                        .collect(Collectors.toList());
-            }
-        }
-
-        return MaterialsTaskViewResponse.TaskProductWithRecipe.builder()
-                .taskItemId(item.getId())
-                .productId(productId)
-                .productCode(productCode)
-                .productName(productName)
-                .colorId(colorId)
-                .colorName(colorName)
-                .quantity(quantity)
-                .requiresMaterials(isTaskItemRequiresMaterials(item))
-                .leatherDelivered(Boolean.TRUE.equals(item.getLeatherDelivered()) || Boolean.TRUE.equals(task.getLeatherDelivered()))
-                .leatherDeliveredAt(item.getLeatherDeliveredAt() != null ? item.getLeatherDeliveredAt() : task.getLeatherDeliveredAt())
-                .materialsDelivered(Boolean.TRUE.equals(item.getMaterialsDelivered()) || !isTaskItemRequiresMaterials(item))
-                .materialsDeliveredAt(item.getMaterialsDeliveredAt())
-                .canDeliverMaterials(canDeliverMaterialsForTaskItem(task, item))
-                .recipe(recipe)
-                .build();
-    }
 
     // ==================== GENERATE TASKS ====================
 
@@ -1893,16 +1738,6 @@ public class TaskController {
 
         List<TaskEntity> generated = productionTaskGenerationService.generateCinchoMaterialsTasks(productionOrderId);
         return ResponseEntity.ok(generated.stream().map(this::toResponse).collect(Collectors.toList()));
-    }
-
-    private int resolveTaskItemRecipeQuantity(TaskItemEntity item) {
-        if (item.getProductionOrderItemId() != null) {
-            return productionOrderItemRepository.findById(item.getProductionOrderItemId())
-                    .map(ProductionOrderItemQuantityHelper::effectiveQuantityForBom)
-                    .orElse(item.getQuantity() != null ? item.getQuantity() : 1);
-        }
-        int qty = item.getQuantity() != null ? item.getQuantity() : 0;
-        return qty > 0 ? qty : 1;
     }
 
     /**
@@ -2154,23 +1989,6 @@ public class TaskController {
             return true;
         }
         return sd == null || sd.isBefore(targetDate);
-    }
-
-    /**
-     * Pendiente de materiales: tarea/OP activas, requiere MP, y aún faltan ítems requeridos por entregar.
-     * Usado por materials-view default (“Pendientes hoy”) y materials-view por OP.
-     */
-    private boolean isPendingMaterialsViewTask(TaskEntity entity) {
-        if (entity == null || "CANCELLED".equals(entity.getStatus()) || "COMPLETED".equals(entity.getStatus())) {
-            return false;
-        }
-        if (entity.getProductionOrderId() != null) {
-            ProductionOrderEntity order = productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null);
-            if (order != null && ("COMPLETED".equals(order.getStatus()) || "CANCELLED".equals(order.getStatus()))) {
-                return false;
-            }
-        }
-        return taskRequiresMaterials(entity) && !areRequiredTaskItemsDelivered(entity);
     }
 
     private boolean canDeliverMaterialsForTaskItem(TaskEntity entity, TaskItemEntity item) {
