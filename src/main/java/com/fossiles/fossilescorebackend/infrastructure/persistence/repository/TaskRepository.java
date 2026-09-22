@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -18,6 +19,7 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     Optional<TaskEntity> findByCode(String code);
     boolean existsByCode(String code);
     List<TaskEntity> findByProductionOrderId(Long productionOrderId);
+    List<TaskEntity> findByProductionOrderIdIn(Collection<Long> productionOrderIds);
     List<TaskEntity> findByDesk(Integer desk);
     @Query("SELECT t FROM TaskEntity t WHERE t.scheduledDate = :scheduledDate ORDER BY COALESCE(t.priority, 9999), t.deliveryDate, t.desk, t.id")
     List<TaskEntity> findByScheduledDate(@Param("scheduledDate") LocalDate scheduledDate);

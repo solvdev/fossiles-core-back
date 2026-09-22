@@ -11,6 +11,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
@@ -48,6 +49,7 @@ public class ProductionAutoPlannerService {
     private final ProductionOrderRepository productionOrderRepository;
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final ProductRepository productRepository;
+    private final ColorRepository colorRepository;
     private final TaskItemRepository taskItemRepository;
     private final TaskRepository taskRepository;
     private final TaskOrganizerService taskOrganizerService;
@@ -183,10 +185,16 @@ public class ProductionAutoPlannerService {
             List<Long> itemIds = items.stream().map(ProductionOrderItemEntity::getId).toList();
             Map<Long, Integer> assigned = taskItemRepository.assignedQuantityMap(itemIds);
             boolean online = ProductionPlanningConstants.isOnlineSaleOrder(po.getOrderType(), po.getCode());
+            Map<Long, ProductEntity> productsById = loadProducts(items);
+            // Deja colores en la sesión para que cada tarea no los vuelva a pedir.
+            colorRepository.findAllById(items.stream()
+                    .map(ProductionOrderItemEntity::getColorId)
+                    .filter(id -> id != null && id > 0)
+                    .collect(java.util.stream.Collectors.toSet()));
 
             for (ProductionOrderItemEntity item : items) {
                 ProductEntity product = item.getProductId() != null
-                        ? productRepository.findById(item.getProductId()).orElse(null)
+                        ? productsById.get(item.getProductId())
                         : null;
                 if (product == null || ProductCinchoType.isPackagingProductCode(product.getCode())) {
                     continue;
@@ -274,6 +282,18 @@ public class ProductionAutoPlannerService {
             requestMaterials(poId);
         }
         return result;
+    }
+
+    private Map<Long, ProductEntity> loadProducts(List<ProductionOrderItemEntity> items) {
+        Set<Long> productIds = items.stream()
+                .map(ProductionOrderItemEntity::getProductId)
+                .filter(id -> id != null && id > 0)
+                .collect(java.util.stream.Collectors.toSet());
+        if (productIds.isEmpty()) {
+            return Map.of();
+        }
+        return productRepository.findAllById(productIds).stream()
+                .collect(java.util.stream.Collectors.toMap(ProductEntity::getId, p -> p, (a, b) -> a));
     }
 
     private List<ProductionAutoPlanResult.BlockedLeatherLine> collectBlocked(List<ProductionOrderEntity> orders) {
