@@ -11,6 +11,18 @@ class ProductHardwareConditionTest {
         assertThat(ProductHardwareCondition.normalize("nuevo")).isEqualTo("NUEVO");
         assertThat(ProductHardwareCondition.normalize("VIEJO")).isEqualTo("VIEJO");
         assertThat(ProductHardwareCondition.normalize("LEVIS")).isNull();
+        assertThat(ProductHardwareCondition.normalize("NINO")).isNull();
+        assertThat(ProductHardwareCondition.normalize("DAMA")).isNull();
+        assertThat(ProductHardwareCondition.normalize("SINTETICO:LEVIS")).isNull();
+    }
+
+    @Test
+    void normalizeStockDimension_keepsEntreCuerosVariants() {
+        assertThat(ProductHardwareCondition.normalizeStockDimension("NINO")).isEqualTo("NINO");
+        assertThat(ProductHardwareCondition.normalizeStockDimension("DAMA")).isEqualTo("DAMA");
+        assertThat(ProductHardwareCondition.normalizeStockDimension("SINTETICO:LEVIS"))
+                .isEqualTo("SINTETICO:LEVIS");
+        assertThat(ProductHardwareCondition.normalizeStockDimension("VIEJO")).isEqualTo("VIEJO");
     }
 
     @Test

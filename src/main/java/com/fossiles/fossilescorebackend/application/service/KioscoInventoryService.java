@@ -2013,10 +2013,19 @@ public class KioscoInventoryService {
             String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
-        String hardware = ProductHardwareCondition.normalize(hardwareCondition);
-        if (hardware != null) {
+        // POS EntreCueros manda NINO/DAMA/SINTETICO:MARCA, no solo NUEVO/VIEJO.
+        // normalize() los descarta y descuenta la fila NUEVO (stock 0) aunque el catálogo sí tenía unidades.
+        if (hardwareCondition != null && !hardwareCondition.isBlank()) {
             return registrarVentaInternal(
-                    locationId, productId, colorId, qty, invoiceId, userId, false, sizeKey, hardware);
+                    locationId,
+                    productId,
+                    colorId,
+                    qty,
+                    invoiceId,
+                    userId,
+                    false,
+                    sizeKey,
+                    ProductHardwareCondition.normalizeStockDimension(hardwareCondition));
         }
         if (shouldSplitVentaByHardware(productId, null)) {
             return registrarVentaFifoByHardware(
