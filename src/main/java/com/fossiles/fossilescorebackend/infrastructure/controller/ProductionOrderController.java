@@ -43,6 +43,7 @@ import java.util.stream.Collectors;
 import com.fossiles.fossilescorebackend.application.dto.response.PageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductionOrderListItemResponse;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderListService;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderTimeEstimateService;
 import org.springframework.format.annotation.DateTimeFormat;
 import java.time.LocalDate;
 
@@ -91,6 +92,7 @@ public class ProductionOrderController {
     private final ProductionOrderPartialReleaseService productionOrderPartialReleaseService;
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final InternalShipmentRequestService internalShipmentRequestService;
+    private final ProductionOrderTimeEstimateService productionOrderTimeEstimateService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
@@ -191,6 +193,19 @@ public class ProductionOrderController {
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
         ProductionOrderEntity resolved = ensureOpvVendorShipmentNumber(entity);
         return ResponseEntity.ok(toResponse(resolved));
+    }
+
+    /**
+     * Estima tiempo de producción de una OP en días hábiles (prd_time × qty,
+     * mesas actuales, eficiencia del dashboard desde efficiencyFrom).
+     */
+    @GetMapping("/{id}/production-time-estimate")
+    @Transactional(readOnly = true)
+    public ResponseEntity<ProductionOrderTimeEstimateResponse> getProductionTimeEstimate(
+            @PathVariable Long id,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate efficiencyFrom)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(productionOrderTimeEstimateService.estimate(id, efficiencyFrom));
     }
 
     /**
