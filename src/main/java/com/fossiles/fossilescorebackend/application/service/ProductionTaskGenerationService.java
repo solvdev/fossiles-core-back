@@ -115,7 +115,10 @@ public class ProductionTaskGenerationService {
                         totalHours);
                 schedulingContext.scheduleMap.computeIfAbsent(slot.date, k -> new HashMap<>());
                 schedulingContext.scheduleMap.get(slot.date).merge(slot.desk, totalHours, Double::sum);
-                builder.desk(slot.desk).scheduledDate(slot.date);
+                // Sin mesa: nacen sin troquelar y a mesa solo baja lo cortado. Se conserva el
+                // dia del hueco, y el hueco se carga arriba para repartir los dias de la
+                // orden; la mesa la pone el reparto cuando se marque el corte.
+                builder.scheduledDate(slot.date);
             }
 
             TaskEntity task = taskRepository.save(builder.build());
@@ -326,7 +329,10 @@ public class ProductionTaskGenerationService {
                         totalHours);
                 schedulingContext.scheduleMap.computeIfAbsent(slot.date, k -> new HashMap<>());
                 schedulingContext.scheduleMap.get(slot.date).merge(slot.desk, totalHours, Double::sum);
-                builder.desk(slot.desk).scheduledDate(slot.date);
+                // Sin mesa: nacen sin troquelar y a mesa solo baja lo cortado. Se conserva el
+                // dia del hueco, y el hueco se carga arriba para repartir los dias de la
+                // orden; la mesa la pone el reparto cuando se marque el corte.
+                builder.scheduledDate(slot.date);
             }
 
             TaskEntity task = taskRepository.save(builder.build());

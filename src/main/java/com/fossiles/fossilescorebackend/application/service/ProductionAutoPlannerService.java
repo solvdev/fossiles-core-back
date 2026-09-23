@@ -236,10 +236,13 @@ public class ProductionAutoPlannerService {
                     }
                     double baseHours = online ? 0.0 : roundHours(qty * prd);
                     DeskSlotFinder.Slot slot = DeskSlotFinder.findEarliest(schedule, numDesks, today, baseHours);
+                    // Sin mesa: nace sin troquelar y a mesa solo baja lo cortado. Se conserva
+                    // el dia del hueco, que es de donde sale la proyeccion de entrega; la mesa
+                    // la pone el reparto cuando se marque el corte.
                     TaskEntity created = taskOrganizerService.createAutoCentroTask(
                             CreateManualTaskRequest.builder()
                                     .productionOrderId(po.getId())
-                                    .desk(slot.desk())
+                                    .desk(null)
                                     .scheduledDate(slot.date())
                                     .observations("Auto-plan")
                                     .items(List.of(CreateManualTaskRequest.ManualTaskItemRequest.builder()
@@ -248,6 +251,9 @@ public class ProductionAutoPlannerService {
                                             .daySaleExtra(online)
                                             .build()))
                                     .build());
+                    // El hueco se carga igual: es lo que reparte los dias dentro de la corrida.
+                    // Entre corridas no se ve, porque loadSchedule() solo cuenta tareas con
+                    // mesa, asi que el dia calculado es optimista.
                     DeskSlotFinder.addLoad(schedule, slot, baseHours);
                     if (!need.noneRequired()) {
                         reserved.merge(need.materialId(), need.qtyFt2(), BigDecimal::add);
