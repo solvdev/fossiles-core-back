@@ -932,12 +932,6 @@ public class ProductionOrderController {
                 .filter(item -> item.getProductionOrderId() != null)
                 .collect(Collectors.groupingBy(ProductionOrderItemEntity::getProductionOrderId));
 
-        Set<Long> opcOrderIds = scopedOrders.stream()
-                .filter(order -> isOpcOrder(order.getOrderType(), order.getCode()))
-                .map(ProductionOrderEntity::getId)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toSet());
-
         int activeDeskCount = 9;
         try {
             activeDeskCount = Math.max(1, productionDeskCountService.getDay(referenceDay).getNumDesks());
@@ -956,7 +950,7 @@ public class ProductionOrderController {
                 .summary(summary)
                 .production(production)
                 .tasks(taskSummary)
-                .desks(buildDeskSummaries(scopedTasks, referenceDay, opcOrderIds, activeDeskCount))
+                .desks(buildDeskSummaries(scopedTasks, referenceDay, activeDeskCount))
                 .criticalOrders(buildCriticalOrders(scopedOrders, tasksByOrder, itemsByOrder, referenceDay))
                 .productStages(buildProductStages(scopedTasks))
                 .build();
@@ -1715,7 +1709,6 @@ public class ProductionOrderController {
     private List<ProductionDashboardV2Response.DeskSummary> buildDeskSummaries(
             List<TaskEntity> tasks,
             java.time.LocalDate referenceDay,
-            Set<Long> opcOrderIds,
             int activeDeskCount) {
         Map<Integer, List<TaskEntity>> byDesk = new HashMap<>();
         tasks.stream()
@@ -1723,7 +1716,7 @@ public class ProductionOrderController {
                 .forEach(task -> byDesk.computeIfAbsent(task.getDesk(), ignored -> new ArrayList<>()).add(task));
 
         return byDesk.entrySet().stream()
-                .map(entry -> buildDeskSummary(entry.getKey(), entry.getValue(), referenceDay, opcOrderIds, activeDeskCount))
+                .map(entry -> buildDeskSummary(entry.getKey(), entry.getValue(), referenceDay, activeDeskCount))
                 .sorted(Comparator
                         .comparing((ProductionDashboardV2Response.DeskSummary desk) -> desk.getDesk() == null)
                         .thenComparing(desk -> desk.getDesk() == null ? Integer.MAX_VALUE : desk.getDesk()))
@@ -1734,7 +1727,6 @@ public class ProductionOrderController {
             Integer desk,
             List<TaskEntity> tasks,
             java.time.LocalDate referenceDay,
-            Set<Long> opcOrderIds,
             int activeDeskCount) {
         long pending = tasks.stream().filter(task -> isStatus(task.getStatus(), "PENDING")).count();
         long inProgress = tasks.stream().filter(task -> isInProcessTask(task.getStatus())).count();
@@ -1744,12 +1736,11 @@ public class ProductionOrderController {
                 .filter(task -> isStatus(task.getStatus(), "COMPLETED"))
                 .mapToInt(this::safeTaskQuantity)
                 .sum();
-        // Eficiencia: solo mesas activas 1..N del centro (sin OPC/cinchos, sin "sin mesa").
+        // Eficiencia: mesas activas 1..N (incluye OPC/cinchos si cayeron en mesa del centro).
         boolean productionDesk = desk != null && desk >= 1 && desk <= activeDeskCount;
         List<TaskEntity> completedWithTime = productionDesk
                 ? tasks.stream()
                 .filter(task -> isStatus(task.getStatus(), "COMPLETED"))
-                .filter(task -> !isOpcTask(task, opcOrderIds))
                 .filter(task -> task.getEstimatedHours() != null && task.getEstimatedHours() > 0)
                 .filter(task -> task.getActualDurationMinutes() != null && task.getActualDurationMinutes() > 0)
                 .toList()
@@ -1983,32 +1974,6 @@ public class ProductionOrderController {
     }
 
     /** OPC / cinchos: por orderType o prefijo de código (OPC-, OPCF-, OPCM-). */
-    private boolean isOpcOrder(String orderType, String code) {
-        if (isCinchoOrderType(orderType)) {
-            return true;
-        }
-        return isOpcCode(code);
-    }
-
-    private boolean isOpcCode(String code) {
-        if (code == null || code.isBlank()) {
-            return false;
-        }
-        String u = code.trim().toUpperCase(Locale.ROOT);
-        return u.startsWith("OPC-") || u.startsWith("OPCF-") || u.startsWith("OPCM-");
-    }
-
-    private boolean isOpcTask(TaskEntity task, Set<Long> opcOrderIds) {
-        if (task == null) {
-            return false;
-        }
-        if (task.getProductionOrderId() != null && opcOrderIds != null
-                && opcOrderIds.contains(task.getProductionOrderId())) {
-            return true;
-        }
-        return isOpcCode(task.getProductionOrderCode());
-    }
-
     /** Cinchos con flujo dedicado fuera del centro de producción estándar (por orderType, no por prefijo de código). */
     private boolean isManagedCinchoOrderType(String orderType) {
         return "CINCHOS_FOSSILES".equals(orderType) || "CINCHOS_MARCAS".equals(orderType);

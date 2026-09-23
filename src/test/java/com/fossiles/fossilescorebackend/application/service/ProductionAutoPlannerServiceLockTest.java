@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Co
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemMaterialPickRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,6 +47,7 @@ class ProductionAutoPlannerServiceLockTest {
     @Mock private TaskDeskHoursService taskDeskHoursService;
     @Mock private ObjectProvider<ProductionAutoPlannerService> selfProvider;
     @Mock private ProductionTaskLifecycleService productionTaskLifecycleService;
+    @Mock private TaskItemMaterialPickRepository taskItemMaterialPickRepository;
     @Mock private ProductionAutoPlannerService proxy;
 
     private ProductionAutoPlannerService service;
@@ -66,7 +68,8 @@ class ProductionAutoPlannerServiceLockTest {
                 productionPlanningLock,
                 taskDeskHoursService,
                 selfProvider,
-                productionTaskLifecycleService);
+                productionTaskLifecycleService,
+                taskItemMaterialPickRepository);
     }
 
     @Test
