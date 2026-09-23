@@ -15,8 +15,11 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Co
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemMaterialPickRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.DeskSlotFinder;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
@@ -59,21 +62,12 @@ public class ProductionAutoPlannerService {
     private final SmartMaterialRequestService smartMaterialRequestService;
     private final ProductionPlanningLock productionPlanningLock;
     private final TaskDeskHoursService taskDeskHoursService;
-
-    /**
-     * Este mismo bean, pero visto a través del proxy de Spring.
-     *
-     * <p>Llamar a {@code planPending()} con {@code this} se salta el proxy y con él
-     * la anotación {@code @Transactional}: el auto-plan del cron llevaba corriendo
-     * sin transacción propia, cada tarea confirmándose por su cuenta. Sin
-     * transacción no hay a qué amarrar el candado de {@link ProductionPlanningLock},
-     * así que el turno hay que pedirlo desde dentro de una.
-     *
-     * <p>{@code ObjectProvider} resuelve el bean al usarlo, no al construirlo, que es
-     * lo que evita la dependencia circular de inyectarse a sí mismo.
-     */
     private final ObjectProvider<ProductionAutoPlannerService> selfProvider;
     private final ProductionTaskLifecycleService productionTaskLifecycleService;
+    private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
+
+    @PersistenceContext
+    private EntityManager entityManager;
 
     private ProductionAutoPlannerService self() {
         return selfProvider.getObject();
@@ -131,7 +125,15 @@ public class ProductionAutoPlannerService {
     public ProductionAutoPlanResult regenerate(Long productionOrderId, LocalDate planDate)
             throws BusinessException, ResourceNotFoundException {
         LocalDate from = resolvePlanStart(planDate);
-        int cleared = clearPendingAutoPlanTasks(productionOrderId, from);
+        int cleared;
+        try {
+            cleared = clearPendingAutoPlanTasks(productionOrderId, from);
+        } catch (RuntimeException ex) {
+            log.error("No se pudieron liberar tareas auto-plan del {}: {}", from, ex.getMessage(), ex);
+            throw new BusinessException(
+                    "No se pudieron liberar las tareas auto-plan pendientes del " + from
+                            + ". Detalle: " + rootMessage(ex));
+        }
         ProductionAutoPlanResult result = productionOrderId != null
                 ? planOrder(productionOrderId, from)
                 : planPending(from);
@@ -164,16 +166,35 @@ public class ProductionAutoPlannerService {
             if (task.getId() == null) {
                 continue;
             }
+            // Picks de materiales antes de task_item (FK).
+            for (var item : taskItemRepository.findByTaskId(task.getId())) {
+                if (item.getId() != null) {
+                    taskItemMaterialPickRepository.deleteByTaskItemId(item.getId());
+                }
+            }
             taskItemRepository.deleteByTaskId(task.getId());
             taskRepository.deleteById(task.getId());
             if (task.getProductionOrderId() != null) {
                 orderIds.add(task.getProductionOrderId());
             }
         }
+        if (entityManager != null) {
+            entityManager.flush();
+            entityManager.clear();
+        }
         for (Long poId : orderIds) {
             productionTaskLifecycleService.syncProductionOrderStatusFromTasks(poId);
         }
         return candidates.size();
+    }
+
+    private static String rootMessage(Throwable ex) {
+        Throwable cur = ex;
+        while (cur.getCause() != null && cur.getCause() != cur) {
+            cur = cur.getCause();
+        }
+        String msg = cur.getMessage();
+        return msg != null && !msg.isBlank() ? msg : ex.getClass().getSimpleName();
     }
 
     private static boolean isAutoPlanObservation(String observations) {

@@ -89,7 +89,7 @@ public class ProductionOrderTimeEstimateService {
         }
         theoreticalHours = round2(theoreticalHours);
 
-        // Misma base que "Eficiencia mesas" del dashboard (sin OPC/cinchos).
+        // Misma base que "Eficiencia mesas" del dashboard (mesas 1..N con tiempo real).
         EfficiencyStats efficiency = computeEfficiency(from);
         double adjustedHours = theoreticalHours;
         if (efficiency.percent() != null && efficiency.percent() > 0) {

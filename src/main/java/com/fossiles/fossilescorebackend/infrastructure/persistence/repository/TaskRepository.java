@@ -131,38 +131,16 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
               AND t.actualDurationMinutes IS NOT NULL AND t.actualDurationMinutes > 0
               AND t.completedAt IS NOT NULL
               AND t.completedAt >= :fromDateTime
-              AND (t.productionOrderId IS NULL OR t.productionOrderId NOT IN (
-                    SELECT po.id FROM ProductionOrderEntity po
-                    WHERE UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
-                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPC-%'
-                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPCF-%'
-                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPCM-%'
-                  ))
-              AND (t.productionOrderCode IS NULL
-                   OR (UPPER(t.productionOrderCode) NOT LIKE 'OPC-%'
-                       AND UPPER(t.productionOrderCode) NOT LIKE 'OPCF-%'
-                       AND UPPER(t.productionOrderCode) NOT LIKE 'OPCM-%'))
             """)
     List<TaskEntity> findCompletedWithTimingSince(@Param("fromDateTime") LocalDateTime fromDateTime);
 
-    /** Misma base de eficiencia que el dashboard sin filtro de fechas (sin OPC/cinchos). */
+    /** Misma base de eficiencia que el dashboard sin filtro de fechas (incluye OPC/cinchos). */
     @Query("""
             SELECT t FROM TaskEntity t
             WHERE t.status = 'COMPLETED'
               AND t.estimatedHours IS NOT NULL AND t.estimatedHours > 0
               AND t.actualDurationMinutes IS NOT NULL AND t.actualDurationMinutes > 0
               AND t.completedAt IS NOT NULL
-              AND (t.productionOrderId IS NULL OR t.productionOrderId NOT IN (
-                    SELECT po.id FROM ProductionOrderEntity po
-                    WHERE UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
-                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPC-%'
-                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPCF-%'
-                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPCM-%'
-                  ))
-              AND (t.productionOrderCode IS NULL
-                   OR (UPPER(t.productionOrderCode) NOT LIKE 'OPC-%'
-                       AND UPPER(t.productionOrderCode) NOT LIKE 'OPCF-%'
-                       AND UPPER(t.productionOrderCode) NOT LIKE 'OPCM-%'))
             """)
     List<TaskEntity> findCompletedWithTiming();
 
