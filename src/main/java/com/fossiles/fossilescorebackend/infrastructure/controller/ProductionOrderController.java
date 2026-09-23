@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitRec
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.application.dto.response.*;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -95,6 +96,7 @@ public class ProductionOrderController {
     private final InternalShipmentRequestService internalShipmentRequestService;
     private final ProductionOrderTimeEstimateService productionOrderTimeEstimateService;
     private final ProductionOrderLeatherEstimateService productionOrderLeatherEstimateService;
+    private final com.fossiles.fossilescorebackend.application.service.ProductionDeskCountService productionDeskCountService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
@@ -899,33 +901,29 @@ public class ProductionOrderController {
     // ==================== DASHBOARD & REPORTS ====================
 
     @GetMapping("/dashboard-v2")
+    @Transactional(readOnly = true)
     public ResponseEntity<ProductionDashboardV2Response> getDashboardV2(
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate to) {
-        List<ProductionOrderEntity> allOrders = productionOrderRepository.findAll();
-        List<TaskEntity> allTasks = taskRepository.findAll();
-        List<ProductionOrderItemEntity> allOrderItems = productionOrderItemRepository.findAll();
-
         // Sin "from": arranca en el corte post-saneamiento KPI (misma base de eficiencia).
         java.time.LocalDate rangeFrom = from != null
                 ? from
                 : com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants.KPI_EFFICIENCY_FROM;
-        java.time.LocalDate rangeTo = to != null ? to : java.time.LocalDate.MAX;
-        java.time.LocalDate referenceDay = to != null ? to : java.time.LocalDate.now();
+        java.time.LocalDate rangeTo = to != null ? to : java.time.LocalDate.of(2099, 12, 31);
+        java.time.LocalDate referenceDay = to != null ? to : GuatemalaDateTime.today();
 
-        List<ProductionOrderEntity> scopedOrders = allOrders.stream()
-                .filter(order -> isDateInRange(resolveOrderDate(order), rangeFrom, rangeTo))
-                .toList();
-        List<TaskEntity> scopedTasks = allTasks.stream()
-                .filter(task -> isDateInRange(resolveTaskDate(task), rangeFrom, rangeTo))
-                .toList();
-        Set<Long> scopedOrderIds = scopedOrders.stream()
+        // Filtro en DB (evita findAll de OP / tareas / ítems).
+        List<ProductionOrderEntity> scopedOrders = productionOrderRepository.findForDashboardDateRange(rangeFrom, rangeTo);
+        List<TaskEntity> scopedTasks = taskRepository.findForDashboardDateRange(rangeFrom, rangeTo);
+
+        Set<Long> activeOrderIds = scopedOrders.stream()
+                .filter(order -> isActiveOrder(order.getStatus()))
                 .map(ProductionOrderEntity::getId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
-        List<ProductionOrderItemEntity> scopedItems = allOrderItems.stream()
-                .filter(item -> scopedOrderIds.contains(item.getProductionOrderId()))
-                .toList();
+        List<ProductionOrderItemEntity> scopedItems = activeOrderIds.isEmpty()
+                ? List.of()
+                : productionOrderItemRepository.findByProductionOrderIdIn(activeOrderIds);
 
         Map<Long, List<TaskEntity>> tasksByOrder = scopedTasks.stream()
                 .filter(task -> task.getProductionOrderId() != null)
@@ -933,6 +931,19 @@ public class ProductionOrderController {
         Map<Long, List<ProductionOrderItemEntity>> itemsByOrder = scopedItems.stream()
                 .filter(item -> item.getProductionOrderId() != null)
                 .collect(Collectors.groupingBy(ProductionOrderItemEntity::getProductionOrderId));
+
+        Set<Long> opcOrderIds = scopedOrders.stream()
+                .filter(order -> isOpcOrder(order.getOrderType(), order.getCode()))
+                .map(ProductionOrderEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        int activeDeskCount = 9;
+        try {
+            activeDeskCount = Math.max(1, productionDeskCountService.getDay(referenceDay).getNumDesks());
+        } catch (BusinessException ignored) {
+            // fallback 9 mesas de producción
+        }
 
         ProductionDashboardV2Response.ExecutiveSummary summary = buildExecutiveSummary(scopedOrders, referenceDay);
         ProductionDashboardV2Response.TaskSummary taskSummary = buildTaskSummary(scopedTasks, referenceDay);
@@ -945,7 +956,7 @@ public class ProductionOrderController {
                 .summary(summary)
                 .production(production)
                 .tasks(taskSummary)
-                .desks(buildDeskSummaries(scopedTasks, referenceDay))
+                .desks(buildDeskSummaries(scopedTasks, referenceDay, opcOrderIds, activeDeskCount))
                 .criticalOrders(buildCriticalOrders(scopedOrders, tasksByOrder, itemsByOrder, referenceDay))
                 .productStages(buildProductStages(scopedTasks))
                 .build();
@@ -954,37 +965,16 @@ public class ProductionOrderController {
     }
 
     @GetMapping("/dashboard-stats")
+    @Transactional(readOnly = true)
     public ResponseEntity<Map<String, Object>> getDashboardStats(
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate to) {
-        List<ProductionOrderEntity> allOrders = productionOrderRepository.findAll();
-        List<TaskEntity> allTasks = taskRepository.findAll();
+        java.time.LocalDate rangeFrom = from != null ? from : java.time.LocalDate.of(2000, 1, 1);
+        java.time.LocalDate rangeTo = to != null ? to : java.time.LocalDate.of(2099, 12, 31);
+        java.time.LocalDate referenceDay = to != null ? to : GuatemalaDateTime.today();
 
-        java.time.LocalDate rangeFrom = from != null ? from : java.time.LocalDate.MIN;
-        java.time.LocalDate rangeTo = to != null ? to : java.time.LocalDate.MAX;
-        java.time.LocalDate referenceDay = to != null ? to : java.time.LocalDate.now();
-
-        List<ProductionOrderEntity> scopedOrders = allOrders.stream()
-                .filter(order -> {
-                    java.time.LocalDate candidate = order.getStartDate();
-                    if (candidate == null && order.getCreatedAt() != null) {
-                        candidate = order.getCreatedAt().toLocalDate();
-                    }
-                    if (candidate == null) return true;
-                    return !candidate.isBefore(rangeFrom) && !candidate.isAfter(rangeTo);
-                })
-                .toList();
-
-        List<TaskEntity> scopedTasks = allTasks.stream()
-                .filter(task -> {
-                    java.time.LocalDate candidate = task.getScheduledDate();
-                    if (candidate == null && task.getCreatedAt() != null) {
-                        candidate = task.getCreatedAt().toLocalDate();
-                    }
-                    if (candidate == null) return true;
-                    return !candidate.isBefore(rangeFrom) && !candidate.isAfter(rangeTo);
-                })
-                .toList();
+        List<ProductionOrderEntity> scopedOrders = productionOrderRepository.findForDashboardDateRange(rangeFrom, rangeTo);
+        List<TaskEntity> scopedTasks = taskRepository.findForDashboardDateRange(rangeFrom, rangeTo);
 
         long totalOrders = scopedOrders.size();
         long pendingOrders = scopedOrders.stream().filter(o -> "PENDING".equals(o.getStatus())).count();
@@ -1102,8 +1092,8 @@ public class ProductionOrderController {
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate to) {
 
-        if (from == null) from = java.time.LocalDate.now().minusMonths(1);
-        if (to == null) to = java.time.LocalDate.now();
+        if (from == null) from = GuatemalaDateTime.today().minusMonths(1);
+        if (to == null) to = GuatemalaDateTime.today();
         if (type == null) type = "daily";
 
         List<TaskEntity> allTasks = taskRepository.findAll();
@@ -1724,14 +1714,16 @@ public class ProductionOrderController {
 
     private List<ProductionDashboardV2Response.DeskSummary> buildDeskSummaries(
             List<TaskEntity> tasks,
-            java.time.LocalDate referenceDay) {
+            java.time.LocalDate referenceDay,
+            Set<Long> opcOrderIds,
+            int activeDeskCount) {
         Map<Integer, List<TaskEntity>> byDesk = new HashMap<>();
         tasks.stream()
                 .filter(task -> !isStatus(task.getStatus(), "CANCELLED"))
                 .forEach(task -> byDesk.computeIfAbsent(task.getDesk(), ignored -> new ArrayList<>()).add(task));
 
         return byDesk.entrySet().stream()
-                .map(entry -> buildDeskSummary(entry.getKey(), entry.getValue(), referenceDay))
+                .map(entry -> buildDeskSummary(entry.getKey(), entry.getValue(), referenceDay, opcOrderIds, activeDeskCount))
                 .sorted(Comparator
                         .comparing((ProductionDashboardV2Response.DeskSummary desk) -> desk.getDesk() == null)
                         .thenComparing(desk -> desk.getDesk() == null ? Integer.MAX_VALUE : desk.getDesk()))
@@ -1741,7 +1733,9 @@ public class ProductionOrderController {
     private ProductionDashboardV2Response.DeskSummary buildDeskSummary(
             Integer desk,
             List<TaskEntity> tasks,
-            java.time.LocalDate referenceDay) {
+            java.time.LocalDate referenceDay,
+            Set<Long> opcOrderIds,
+            int activeDeskCount) {
         long pending = tasks.stream().filter(task -> isStatus(task.getStatus(), "PENDING")).count();
         long inProgress = tasks.stream().filter(task -> isInProcessTask(task.getStatus())).count();
         long completed = tasks.stream().filter(task -> isStatus(task.getStatus(), "COMPLETED")).count();
@@ -1750,11 +1744,16 @@ public class ProductionOrderController {
                 .filter(task -> isStatus(task.getStatus(), "COMPLETED"))
                 .mapToInt(this::safeTaskQuantity)
                 .sum();
-        List<TaskEntity> completedWithTime = tasks.stream()
+        // Eficiencia: solo mesas activas 1..N del centro (sin OPC/cinchos, sin "sin mesa").
+        boolean productionDesk = desk != null && desk >= 1 && desk <= activeDeskCount;
+        List<TaskEntity> completedWithTime = productionDesk
+                ? tasks.stream()
                 .filter(task -> isStatus(task.getStatus(), "COMPLETED"))
+                .filter(task -> !isOpcTask(task, opcOrderIds))
                 .filter(task -> task.getEstimatedHours() != null && task.getEstimatedHours() > 0)
                 .filter(task -> task.getActualDurationMinutes() != null && task.getActualDurationMinutes() > 0)
-                .toList();
+                .toList()
+                : List.of();
         double avgEstimated = completedWithTime.stream()
                 .mapToDouble(task -> task.getEstimatedHours() * 60)
                 .average()
@@ -1981,6 +1980,33 @@ public class ProductionOrderController {
 
     private boolean isCinchoOrderType(String orderType) {
         return "CINCHOS".equals(orderType) || "CINCHOS_FOSSILES".equals(orderType) || "CINCHOS_MARCAS".equals(orderType);
+    }
+
+    /** OPC / cinchos: por orderType o prefijo de código (OPC-, OPCF-, OPCM-). */
+    private boolean isOpcOrder(String orderType, String code) {
+        if (isCinchoOrderType(orderType)) {
+            return true;
+        }
+        return isOpcCode(code);
+    }
+
+    private boolean isOpcCode(String code) {
+        if (code == null || code.isBlank()) {
+            return false;
+        }
+        String u = code.trim().toUpperCase(Locale.ROOT);
+        return u.startsWith("OPC-") || u.startsWith("OPCF-") || u.startsWith("OPCM-");
+    }
+
+    private boolean isOpcTask(TaskEntity task, Set<Long> opcOrderIds) {
+        if (task == null) {
+            return false;
+        }
+        if (task.getProductionOrderId() != null && opcOrderIds != null
+                && opcOrderIds.contains(task.getProductionOrderId())) {
+            return true;
+        }
+        return isOpcCode(task.getProductionOrderCode());
     }
 
     /** Cinchos con flujo dedicado fuera del centro de producción estándar (por orderType, no por prefijo de código). */
@@ -2212,7 +2238,7 @@ public class ProductionOrderController {
                 .leatherDelivered(false)
                 .leatherDeliveredAt(null)
                 .materialsDelivered(!requiresMaterials)
-                .materialsDeliveredAt(!requiresMaterials ? java.time.LocalDateTime.now() : null)
+                .materialsDeliveredAt(!requiresMaterials ? GuatemalaDateTime.now() : null)
                 .build());
     }
 

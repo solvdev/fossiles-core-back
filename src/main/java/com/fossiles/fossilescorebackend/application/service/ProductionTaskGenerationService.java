@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
@@ -139,7 +140,7 @@ public class ProductionTaskGenerationService {
                         .leatherDelivered(false)
                         .leatherDeliveredAt(null)
                         .materialsDelivered(!requiresMaterials)
-                        .materialsDeliveredAt(!requiresMaterials ? LocalDateTime.now() : null)
+                        .materialsDeliveredAt(!requiresMaterials ? GuatemalaDateTime.now() : null)
                         .build());
             }
 
@@ -195,8 +196,8 @@ public class ProductionTaskGenerationService {
             throw new BusinessException("La orden no tiene líneas para registrar entrega de materiales.");
         }
 
-        LocalDate scheduledDate = po.getStartDate() != null ? po.getStartDate() : LocalDate.now();
-        LocalDate today = LocalDate.now();
+        LocalDate scheduledDate = po.getStartDate() != null ? po.getStartDate() : GuatemalaDateTime.today();
+        LocalDate today = GuatemalaDateTime.today();
         if (scheduledDate.isBefore(today)) {
             scheduledDate = today;
         }
@@ -215,7 +216,7 @@ public class ProductionTaskGenerationService {
                 .status("PENDING")
                 .observations("Materiales cincho (bodega)")
                 .leatherDelivered(true)
-                .leatherDeliveredAt(LocalDateTime.now())
+                .leatherDeliveredAt(GuatemalaDateTime.now())
                 .dieCutReady(true)
                 .build());
 
@@ -242,9 +243,9 @@ public class ProductionTaskGenerationService {
                     .estimatedHours(0.1)
                     .observations(item.getObservations())
                     .leatherDelivered(true)
-                    .leatherDeliveredAt(LocalDateTime.now())
+                    .leatherDeliveredAt(GuatemalaDateTime.now())
                     .materialsDelivered(!requiresMaterials)
-                    .materialsDeliveredAt(!requiresMaterials ? LocalDateTime.now() : null)
+                    .materialsDeliveredAt(!requiresMaterials ? GuatemalaDateTime.now() : null)
                     .build());
         }
 
@@ -350,7 +351,7 @@ public class ProductionTaskGenerationService {
                         .leatherDelivered(false)
                         .leatherDeliveredAt(null)
                         .materialsDelivered(!requiresMaterials)
-                        .materialsDeliveredAt(!requiresMaterials ? LocalDateTime.now() : null)
+                        .materialsDeliveredAt(!requiresMaterials ? GuatemalaDateTime.now() : null)
                         .build());
             }
 

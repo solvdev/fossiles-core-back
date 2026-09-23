@@ -13,6 +13,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -55,7 +56,7 @@ public class ProductionOrderTimeEstimateService {
         LocalDate from = efficiencyFrom != null
                 ? efficiencyFrom
                 : ProductionPlanningConstants.KPI_EFFICIENCY_FROM;
-        LocalDate start = LocalDate.now();
+        LocalDate start = GuatemalaDateTime.today();
         int deskCount = Math.max(1, productionDeskCountService.getDay(start).getNumDesks());
 
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(order.getId());
@@ -88,7 +89,7 @@ public class ProductionOrderTimeEstimateService {
         }
         theoreticalHours = round2(theoreticalHours);
 
-        // Misma base que "Eficiencia mesas" del dashboard (corte post-saneamiento).
+        // Misma base que "Eficiencia mesas" del dashboard (sin OPC/cinchos).
         EfficiencyStats efficiency = computeEfficiency(from);
         double adjustedHours = theoreticalHours;
         if (efficiency.percent() != null && efficiency.percent() > 0) {
@@ -129,9 +130,13 @@ public class ProductionOrderTimeEstimateService {
             return new EfficiencyStats(null, 0);
         }
 
+        int deskCount = Math.max(1, productionDeskCountService.getDay(GuatemalaDateTime.today()).getNumDesks());
         Map<Integer, List<TaskEntity>> byDesk = new HashMap<>();
         for (TaskEntity task : timed) {
-            Integer desk = task.getDesk() != null && task.getDesk() > 0 ? task.getDesk() : 0;
+            Integer desk = task.getDesk();
+            if (desk == null || desk < 1 || desk > deskCount) {
+                continue;
+            }
             byDesk.computeIfAbsent(desk, k -> new ArrayList<>()).add(task);
         }
 

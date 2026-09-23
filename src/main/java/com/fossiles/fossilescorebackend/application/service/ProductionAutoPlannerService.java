@@ -39,6 +39,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 @Slf4j
@@ -72,41 +73,115 @@ public class ProductionAutoPlannerService {
      * lo que evita la dependencia circular de inyectarse a sí mismo.
      */
     private final ObjectProvider<ProductionAutoPlannerService> selfProvider;
+    private final ProductionTaskLifecycleService productionTaskLifecycleService;
 
     private ProductionAutoPlannerService self() {
         return selfProvider.getObject();
     }
 
+    /**
+     * Desactivado: el plan solo corre por botón explícito en Centro
+     * ({@code POST /tasks/auto-plan}). Los callers históricos siguen seguros.
+     */
     public void planQuietly(Long productionOrderId) {
-        if (productionOrderId == null) {
-            return;
-        }
-        try {
-            self().planOrder(productionOrderId);
-        } catch (Exception e) {
-            log.warn("Auto-plan OP {}: {}", productionOrderId, e.getMessage());
-        }
+        // no-op
     }
 
+    /** Desactivado: ver {@link #planQuietly(Long)}. */
     public void planAllQuietly() {
-        try {
-            self().planPending();
-        } catch (Exception e) {
-            log.warn("Auto-plan global: {}", e.getMessage());
-        }
+        // no-op
     }
 
     @Transactional
     public ProductionAutoPlanResult planPending() throws BusinessException, ResourceNotFoundException {
-        return planOrders(eligibleOrders(null));
+        return planPending(null);
+    }
+
+    @Transactional
+    public ProductionAutoPlanResult planPending(LocalDate planDate)
+            throws BusinessException, ResourceNotFoundException {
+        return planOrders(eligibleOrders(null), planDate);
     }
 
     @Transactional
     public ProductionAutoPlanResult planOrder(Long productionOrderId)
             throws BusinessException, ResourceNotFoundException {
+        return planOrder(productionOrderId, null);
+    }
+
+    @Transactional
+    public ProductionAutoPlanResult planOrder(Long productionOrderId, LocalDate planDate)
+            throws BusinessException, ResourceNotFoundException {
         ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
-        return planOrders(List.of(po));
+        return planOrders(List.of(po), planDate);
+    }
+
+    /**
+     * Borra tareas PENDING de auto-plan (sin arrancar) del día elegido y vuelve a planificar
+     * desde esa fecha para reagrupar productos bajo el cupo de horas.
+     */
+    @Transactional
+    public ProductionAutoPlanResult regenerate(Long productionOrderId)
+            throws BusinessException, ResourceNotFoundException {
+        return regenerate(productionOrderId, null);
+    }
+
+    @Transactional
+    public ProductionAutoPlanResult regenerate(Long productionOrderId, LocalDate planDate)
+            throws BusinessException, ResourceNotFoundException {
+        LocalDate from = resolvePlanStart(planDate);
+        int cleared = clearPendingAutoPlanTasks(productionOrderId, from);
+        ProductionAutoPlanResult result = productionOrderId != null
+                ? planOrder(productionOrderId, from)
+                : planPending(from);
+        result.setClearedAutoPlanTasks(cleared);
+        result.setPlanDate(from);
+        if (cleared > 0) {
+            result.getNotes().add("Se liberaron " + cleared
+                    + " tarea(s) auto-plan pendientes del " + from + " para reagrupar productos.");
+        }
+        return result;
+    }
+
+    private static LocalDate resolvePlanStart(LocalDate planDate) {
+        LocalDate base = planDate != null ? planDate : GuatemalaDateTime.today();
+        return DeskSlotFinder.nextWorkday(base);
+    }
+
+    private int clearPendingAutoPlanTasks(Long productionOrderId, LocalDate planDate) {
+        List<TaskEntity> candidates = taskRepository.findByStatus("PENDING").stream()
+                .filter(t -> t.getStartedAt() == null && t.getCompletedAt() == null)
+                .filter(t -> isAutoPlanObservation(t.getObservations()))
+                .filter(t -> productionOrderId == null
+                        || Objects.equals(productionOrderId, t.getProductionOrderId()))
+                .filter(t -> planDate == null
+                        || planDate.equals(t.getScheduledDate())
+                        || t.getScheduledDate() == null)
+                .toList();
+        Set<Long> orderIds = new HashSet<>();
+        for (TaskEntity task : candidates) {
+            if (task.getId() == null) {
+                continue;
+            }
+            taskItemRepository.deleteByTaskId(task.getId());
+            taskRepository.deleteById(task.getId());
+            if (task.getProductionOrderId() != null) {
+                orderIds.add(task.getProductionOrderId());
+            }
+        }
+        for (Long poId : orderIds) {
+            productionTaskLifecycleService.syncProductionOrderStatusFromTasks(poId);
+        }
+        return candidates.size();
+    }
+
+    private static boolean isAutoPlanObservation(String observations) {
+        if (observations == null || observations.isBlank()) {
+            return false;
+        }
+        String o = observations.trim();
+        return o.equals("Auto-plan") || o.equals("Auto-plan cinchos") || o.startsWith("Auto-plan");
     }
 
     @Transactional(readOnly = true)
@@ -153,7 +228,7 @@ public class ProductionAutoPlannerService {
         return out;
     }
 
-    private ProductionAutoPlanResult planOrders(List<ProductionOrderEntity> orders)
+    private ProductionAutoPlanResult planOrders(List<ProductionOrderEntity> orders, LocalDate planDate)
             throws BusinessException, ResourceNotFoundException {
         ProductionAutoPlanResult result = ProductionAutoPlanResult.builder().build();
         if (orders == null || orders.isEmpty()) {
@@ -163,8 +238,9 @@ public class ProductionAutoPlannerService {
         // mesas y las tareas que se creen a partir de ella son de este hilo solo.
         productionPlanningLock.acquire();
 
-        LocalDate today = DeskSlotFinder.nextWorkday(GuatemalaDateTime.today());
-        int numDesks = productionDeskCountService.getDay(today).getNumDesks();
+        LocalDate startDay = resolvePlanStart(planDate);
+        result.setPlanDate(startDay);
+        int numDesks = productionDeskCountService.getDay(startDay).getNumDesks();
         Map<LocalDate, Map<Integer, Double>> schedule = loadSchedule();
         Map<Long, BigDecimal> reserved = new HashMap<>(leatherRequirementService.committedFt2ByMaterial());
         Set<Long> materialRequestOrders = new HashSet<>();
@@ -192,6 +268,13 @@ public class ProductionAutoPlannerService {
                     .filter(id -> id != null && id > 0)
                     .collect(java.util.stream.Collectors.toSet()));
 
+            // Cinchos: una tarea por chunk (mesa cinchos, flujo aparte).
+            // Centro: juntar chunks de varios productos en una misma tarea hasta 4 h.
+            List<CentroPackChunk> centroChunks = new ArrayList<>();
+            Map<Long, Integer> leatherLeftoverQty = new HashMap<>();
+            Map<Long, String> leatherLeftoverReason = new HashMap<>();
+            Map<Long, ProductEntity> leftoverProductByItemId = new HashMap<>();
+
             for (ProductionOrderItemEntity item : items) {
                 ProductEntity product = item.getProductId() != null
                         ? productsById.get(item.getProductId())
@@ -205,7 +288,14 @@ public class ProductionAutoPlannerService {
                     continue;
                 }
                 boolean cincho = CinchoProductUtils.isCinchoLineForProduction(product);
-                int units = TaskQuantityChunker.resolveUnitsPerTask(product.getUnitsPerTask());
+                double prd = product.getPrdTime() != null && product.getPrdTime() > 0
+                        ? product.getPrdTime()
+                        : ProductionPlanningConstants.DEFAULT_PRD_TIME_PER_UNIT;
+                int unitsConfigured = TaskQuantityChunker.resolveUnitsPerTask(product.getUnitsPerTask());
+                // No generar chunks mayores al cupo de mesa (salvo 1 ud si prd > 4 h).
+                int maxByHours = Math.max(1, (int) Math.floor(
+                        ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY / prd));
+                int units = Math.min(unitsConfigured, maxByHours);
                 List<Integer> chunks = TaskQuantityChunker.splitQuantity(remaining, units);
 
                 if (cincho) {
@@ -213,7 +303,7 @@ public class ProductionAutoPlannerService {
                         TaskEntity created = taskOrganizerService.createAutoCinchoTask(
                                 CreateManualTaskRequest.builder()
                                         .productionOrderId(po.getId())
-                                        .scheduledDate(today)
+                                        .scheduledDate(startDay)
                                         .observations("Auto-plan cinchos")
                                         .items(List.of(CreateManualTaskRequest.ManualTaskItemRequest.builder()
                                                 .productionOrderItemId(item.getId())
@@ -228,53 +318,74 @@ public class ProductionAutoPlannerService {
                     continue;
                 }
 
-                double prd = product.getPrdTime() != null && product.getPrdTime() > 0
-                        ? product.getPrdTime()
-                        : ProductionPlanningConstants.DEFAULT_PRD_TIME_PER_UNIT;
-
-                int leftover = 0;
-                String leftoverReason = null;
                 for (int qty : chunks) {
                     LeatherRequirementService.LeatherNeed need =
                             leatherRequirementService.resolveNeed(product, item.getColorId(), qty);
                     if (need.blocked() || !leatherRequirementService.canCover(need, reserved)) {
-                        leftover += qty;
-                        leftoverReason = leatherRequirementService.shortageMessage(need, reserved);
+                        leatherLeftoverQty.merge(item.getId(), qty, Integer::sum);
+                        leatherLeftoverReason.putIfAbsent(item.getId(),
+                                leatherRequirementService.shortageMessage(need, reserved));
+                        leftoverProductByItemId.put(item.getId(), product);
                         continue;
                     }
-                    double baseHours = online ? 0.0 : roundHours(qty * prd);
-                    DeskSlotFinder.Slot slot = DeskSlotFinder.findEarliest(schedule, numDesks, today, baseHours);
-                    TaskEntity created = taskOrganizerService.createAutoCentroTask(
-                            CreateManualTaskRequest.builder()
-                                    .productionOrderId(po.getId())
-                                    .desk(slot.desk())
-                                    .scheduledDate(slot.date())
-                                    .observations("Auto-plan")
-                                    .items(List.of(CreateManualTaskRequest.ManualTaskItemRequest.builder()
-                                            .productionOrderItemId(item.getId())
-                                            .quantity(qty)
-                                            .daySaleExtra(online)
-                                            .build()))
-                                    .build());
-                    DeskSlotFinder.addLoad(schedule, slot, baseHours);
+                    // Reserva tentativa ya: al empaquetar varios chunks no se debe
+                    // revalidar contra el mismo cupo libre.
                     if (!need.noneRequired()) {
                         reserved.merge(need.materialId(), need.qtyFt2(), BigDecimal::add);
                     }
-                    result.setCentroTasksCreated(result.getCentroTasksCreated() + 1);
-                    result.getCreatedTaskIds().add(created.getId());
-                    materialRequestOrders.add(po.getId());
+                    double hours = online ? 0.0 : roundHours(qty * prd);
+                    centroChunks.add(new CentroPackChunk(item, product, qty, hours, need, online));
                 }
-                if (leftover > 0) {
-                    result.getBlockedNoLeather().add(ProductionAutoPlanResult.BlockedLeatherLine.builder()
-                            .productionOrderId(po.getId())
-                            .productionOrderCode(po.getCode())
-                            .productionOrderItemId(item.getId())
-                            .productCode(product.getCode())
-                            .productName(product.getName())
-                            .remainingQuantity(leftover)
-                            .reason(leftoverReason)
-                            .build());
+            }
+
+            for (List<CentroPackChunk> group : packCentroChunks(centroChunks)) {
+                double groupHours = group.stream().mapToDouble(CentroPackChunk::hours).sum();
+                DeskSlotFinder.Slot slot = DeskSlotFinder.findEarliest(
+                        schedule, numDesks, startDay, online ? 0.0 : groupHours);
+
+                Map<Long, CreateManualTaskRequest.ManualTaskItemRequest> linesByItemId = new HashMap<>();
+                for (CentroPackChunk chunk : group) {
+                    linesByItemId.merge(
+                            chunk.item().getId(),
+                            CreateManualTaskRequest.ManualTaskItemRequest.builder()
+                                    .productionOrderItemId(chunk.item().getId())
+                                    .quantity(chunk.qty())
+                                    .daySaleExtra(chunk.online())
+                                    .build(),
+                            (a, b) -> CreateManualTaskRequest.ManualTaskItemRequest.builder()
+                                    .productionOrderItemId(a.getProductionOrderItemId())
+                                    .quantity(a.getQuantity() + b.getQuantity())
+                                    .daySaleExtra(Boolean.TRUE.equals(a.getDaySaleExtra())
+                                            || Boolean.TRUE.equals(b.getDaySaleExtra()))
+                                    .build());
                 }
+
+                TaskEntity created = taskOrganizerService.createAutoCentroTask(
+                        CreateManualTaskRequest.builder()
+                                .productionOrderId(po.getId())
+                                .desk(slot.desk())
+                                .scheduledDate(slot.date())
+                                .observations("Auto-plan")
+                                .items(new ArrayList<>(linesByItemId.values()))
+                                .build());
+                DeskSlotFinder.addLoad(schedule, slot, online ? 0.0 : groupHours);
+                result.setCentroTasksCreated(result.getCentroTasksCreated() + 1);
+                result.getCreatedTaskIds().add(created.getId());
+                materialRequestOrders.add(po.getId());
+            }
+
+            for (Map.Entry<Long, Integer> entry : leatherLeftoverQty.entrySet()) {
+                Long itemId = entry.getKey();
+                ProductEntity product = leftoverProductByItemId.get(itemId);
+                result.getBlockedNoLeather().add(ProductionAutoPlanResult.BlockedLeatherLine.builder()
+                        .productionOrderId(po.getId())
+                        .productionOrderCode(po.getCode())
+                        .productionOrderItemId(itemId)
+                        .productCode(product != null ? product.getCode() : null)
+                        .productName(product != null ? product.getName() : null)
+                        .remainingQuantity(entry.getValue())
+                        .reason(leatherLeftoverReason.get(itemId))
+                        .build());
             }
         }
 
@@ -282,6 +393,43 @@ public class ProductionAutoPlannerService {
             requestMaterials(poId);
         }
         return result;
+    }
+
+    /**
+     * Empaqueta chunks de centro en grupos ≤ {@link ProductionPlanningConstants#MAX_HOURS_PER_DESK_PER_DAY},
+     * permitiendo varios productos en la misma tarea (misma lógica que generación clásica).
+     */
+    private static List<List<CentroPackChunk>> packCentroChunks(List<CentroPackChunk> chunks) {
+        List<List<CentroPackChunk>> groups = new ArrayList<>();
+        if (chunks == null || chunks.isEmpty()) {
+            return groups;
+        }
+        List<CentroPackChunk> current = new ArrayList<>();
+        double currentHours = 0;
+        for (CentroPackChunk chunk : chunks) {
+            if (!current.isEmpty()
+                    && currentHours + chunk.hours()
+                    > ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY + 1e-9) {
+                groups.add(current);
+                current = new ArrayList<>();
+                currentHours = 0;
+            }
+            current.add(chunk);
+            currentHours += chunk.hours();
+        }
+        if (!current.isEmpty()) {
+            groups.add(current);
+        }
+        return groups;
+    }
+
+    private record CentroPackChunk(
+            ProductionOrderItemEntity item,
+            ProductEntity product,
+            int qty,
+            double hours,
+            LeatherRequirementService.LeatherNeed need,
+            boolean online) {
     }
 
     private Map<Long, ProductEntity> loadProducts(List<ProductionOrderItemEntity> items) {
