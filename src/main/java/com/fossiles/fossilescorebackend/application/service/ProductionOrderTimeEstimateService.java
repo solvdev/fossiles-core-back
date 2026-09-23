@@ -124,7 +124,7 @@ public class ProductionOrderTimeEstimateService {
         return ProductionPlanningConstants.DEFAULT_PRD_TIME_PER_UNIT;
     }
 
-    private EfficiencyStats computeEfficiency(LocalDate from) {
+    private EfficiencyStats computeEfficiency(LocalDate from) throws BusinessException {
         List<TaskEntity> timed = taskRepository.findCompletedWithTimingSince(from.atStartOfDay());
         if (timed.isEmpty()) {
             return new EfficiencyStats(null, 0);
