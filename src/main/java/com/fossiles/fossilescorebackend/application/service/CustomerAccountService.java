@@ -1552,11 +1552,15 @@ public class CustomerAccountService {
         OrderMeta meta = parseOrderMeta(order.getObservations());
         BigDecimal packingSubtotal = BigDecimal.ZERO;
         BigDecimal shippingCost = BigDecimal.ZERO;
+        if (shipment != null && shipment.getShippingCost() != null) {
+            shippingCost = shipment.getShippingCost();
+        } else if (includeFirstReleaseExtras(release)) {
+            shippingCost = meta.shippingCost != null ? meta.shippingCost : BigDecimal.ZERO;
+        }
         if (includeFirstReleaseExtras(release)) {
             packingSubtotal = meta.packingItems.stream()
                     .map(p -> p.unitPrice.multiply(p.quantity))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
-            shippingCost = meta.shippingCost != null ? meta.shippingCost : BigDecimal.ZERO;
         }
         return itemsSubtotal.add(packingSubtotal).add(shippingCost).setScale(2, RoundingMode.HALF_UP);
     }

@@ -269,6 +269,7 @@ public class ProductionOrderPartialReleaseService {
                     .documentDate(request != null ? request.getDocumentDate() : null)
                     .locationId(request != null ? request.getLocationId() : null)
                     .packingItems(request != null ? request.getPackingItems() : null)
+                    .shippingCost(request != null ? request.getShippingCost() : null)
                     .products(products)
                     .build();
             ProductShipmentResponse draft = productDistributionService.createOrUpdateShipmentForPartialRelease(
