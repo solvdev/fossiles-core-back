@@ -104,6 +104,33 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     @Query("SELECT t FROM TaskEntity t WHERE t.status NOT IN ('COMPLETED', 'CANCELLED') ORDER BY t.scheduledDate, t.desk, t.priority")
     List<TaskEntity> findPendingAndInProgressOrdered();
 
+    /**
+     * Tareas pendientes con al menos un producto SIN troquelar.
+     *
+     * <p>Es la fuente de la lista por troquelar del Organizador: lo que falta cortar antes de
+     * que pueda bajar a mesa.
+     *
+     * <p>Excluye cinchos porque el Organizador tambien los excluye -se gestionan en su propia
+     * vista-, y son la inmensa mayoria de las tareas pendientes del sistema: sin este filtro
+     * la lista saldria ahogada en trabajo que no le corresponde.
+     */
+    @Query("""
+            SELECT t FROM TaskEntity t
+            WHERE t.status = 'PENDING'
+              AND EXISTS (
+                SELECT 1 FROM TaskItemEntity ti
+                WHERE ti.taskId = t.id
+                  AND (ti.dieCutReady IS NULL OR ti.dieCutReady = FALSE)
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM ProductionOrderEntity po
+                WHERE po.id = t.productionOrderId
+                  AND UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              )
+            ORDER BY t.deliveryDate ASC NULLS LAST, t.id ASC
+            """)
+    List<TaskEntity> findPendingWithUncutItems();
+
     @Query("SELECT DISTINCT t.scheduledDate FROM TaskEntity t WHERE t.status NOT IN ('COMPLETED', 'CANCELLED') ORDER BY t.scheduledDate")
     List<LocalDate> findDistinctScheduledDates();
 

@@ -80,5 +80,12 @@ public class TaskResponse {
         private Boolean materialsDelivered;
         private LocalDateTime materialsDeliveredAt;
         private Boolean daySaleExtra;
+
+        /** Si este producto ya se troquelo. El flag de la tarea es el Y-logico de estos. */
+        private Boolean dieCutReady;
+        /** Cuando se marco el troquelado de este producto. */
+        private LocalDate dieCutDate;
+        /** Para que dia esta previsto troquelarlo. Distinta de dieCutDate. */
+        private LocalDate dieCutPlannedDate;
     }
 }

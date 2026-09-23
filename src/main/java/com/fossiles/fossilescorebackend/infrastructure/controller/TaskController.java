@@ -201,6 +201,24 @@ public class TaskController {
      * una tarea que alguien empezó y no cerró no salía en ninguna pantalla: es la que el
      * auxiliar no encuentra. Conservan mesa y, por tanto, encargado del día.
      */
+    /**
+     * La lista por troquelar: tareas pendientes con algun producto sin cortar.
+     *
+     * <p>Es el paso que va entre el borrador y la cola del dia. Devuelve tareas completas
+     * -con sus productos y el estado de troquel de cada uno- porque la pantalla marca por
+     * producto, no por tarea.
+     *
+     * <p>Se apoya en {@code TaskResponse}, que ya lleva {@code dieCutReady} en cada item, asi
+     * que el front no necesita un formato nuevo.
+     */
+    @GetMapping("/organizer/die-cut-pending")
+    public ResponseEntity<List<TaskResponse>> getDieCutPending() {
+        List<TaskResponse> tasks = taskRepository.findPendingWithUncutItems().stream()
+                .map(this::toResponse)
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(tasks);
+    }
+
     @GetMapping("/organizer/unfinished")
     public ResponseEntity<List<TaskResponse>> getUnfinishedCarryOver() {
         LocalDate today = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDate();
@@ -422,25 +440,50 @@ public class TaskController {
         int maxConfiguredDesks = getNumDesks();
         int activeDesks = desksCount == null ? maxConfiguredDesks : Math.max(1, Math.min(desksCount, maxConfiguredDesks));
 
-        List<TaskEntity> candidates = taskRepository.findByScheduledDate(date).stream()
+        List<TaskEntity> pendientes = taskRepository.findByScheduledDate(date).stream()
                 .filter(t -> !"CANCELLED".equals(t.getStatus()))
                 .filter(t -> !"COMPLETED".equals(t.getStatus()))
                 .filter(t -> "PENDING".equals(t.getStatus()))
                 .collect(Collectors.toList());
 
+        // Compuerta del troquelado, igual que en plan-window y en el relleno de mesa
+        // liberada: redistribuir es repartir mesa, asi que lo que no tiene el corte hecho no
+        // entra. Se quedan como estan -si ya tenian mesa, la conservan: esto redistribuye,
+        // no desasigna- pero no se les elige mesa nueva.
+        List<TaskEntity> candidates = pendientes.stream()
+                .filter(t -> Boolean.TRUE.equals(t.getDieCutReady()))
+                .collect(Collectors.toList());
+        List<TaskEntity> frenadas = pendientes.stream()
+                .filter(t -> !Boolean.TRUE.equals(t.getDieCutReady()))
+                .collect(Collectors.toList());
+
+        if (pendientes.isEmpty()) {
+            return ResponseEntity.ok(Map.of(
+                    "date", date,
+                    "activeDesks", activeDesks,
+                    "updatedTasks", 0,
+                    "dieCutBlockedTasks", 0,
+                    "message", "No hay tareas pendientes para redistribuir en la fecha indicada."));
+        }
         if (candidates.isEmpty()) {
             return ResponseEntity.ok(Map.of(
                     "date", date,
                     "activeDesks", activeDesks,
                     "updatedTasks", 0,
-                    "message", "No hay tareas pendientes para redistribuir en la fecha indicada."));
+                    "dieCutBlockedTasks", frenadas.size(),
+                    "message", "No se redistribuyó nada: las " + frenadas.size()
+                            + " tarea(s) del día esperan troquelado. Marque el corte en «Por troquelar»."));
         }
 
         // Las horas de venta del día de una sola consulta: el comparador de abajo pregunta
         // por cada tarea y varias veces, así que resolverlo tarea a tarea multiplica los
         // viajes a la base dentro de la transacción.
+        //
+        // Se piden las de TODAS las pendientes, no solo las repartibles: las horas de las
+        // frenadas que ya ocupan mesa tienen que contarse en la carga de esa mesa, o el
+        // reparto la veria vacia y le encimaria trabajo hasta pasarse del cupo.
         Map<Long, Double> extraByTaskId = taskDeskHoursService.daySaleExtraByTaskId(
-                candidates.stream().map(TaskEntity::getId).filter(Objects::nonNull).toList());
+                pendientes.stream().map(TaskEntity::getId).filter(Objects::nonNull).toList());
 
         Comparator<TaskEntity> byPriorityThenWorkload = Comparator
                 .comparing((TaskEntity t) -> -taskDeskHoursService.baseHours(t, extraByTaskId))
@@ -455,6 +498,16 @@ public class TaskController {
         Map<Integer, Double> deskLoads = new HashMap<>();
         for (int desk = 1; desk <= activeDesks; desk++) {
             deskLoads.put(desk, 0.0);
+        }
+
+        // Las frenadas por troquel que YA ocupan mesa siguen ocupandola: esto redistribuye,
+        // no desasigna. Si no se sembrara aqui su carga, el reparto veria esas mesas vacias y
+        // les encimaria trabajo encima del que ya tienen, pasandose del cupo del dia.
+        for (TaskEntity frenada : frenadas) {
+            Integer mesa = frenada.getDesk();
+            if (mesa != null && deskLoads.containsKey(mesa)) {
+                deskLoads.merge(mesa, taskDeskHoursService.baseHours(frenada, extraByTaskId), Double::sum);
+            }
         }
 
         int updated = 0;
@@ -475,7 +528,11 @@ public class TaskController {
                 "activeDesks", activeDesks,
                 "updatedTasks", updated,
                 "totalTasks", sorted.size(),
-                "message", "Redistribucion completada: " + sorted.size() + " tareas repartidas en " + activeDesks + " mesa(s)."));
+                "dieCutBlockedTasks", frenadas.size(),
+                "message", "Redistribucion completada: " + sorted.size() + " tareas repartidas en "
+                        + activeDesks + " mesa(s)."
+                        + (frenadas.isEmpty() ? ""
+                           : " " + frenadas.size() + " tarea(s) quedaron fuera por troquelado pendiente.")));
     }
 
     /**
@@ -553,6 +610,7 @@ public class TaskController {
             @RequestParam(required = false) Integer desksCount,
             @RequestParam(required = false) Integer horizonDays,
             @RequestParam(required = false) Long productionOrderId,
+            @RequestParam(required = false, defaultValue = "false") boolean requireDieCut,
             @RequestBody(required = false) PlanWindowRequest planBody) throws BusinessException {
 
         // Mismo turno que el auto-plan y que el relleno de mesa liberada: los tres
@@ -575,19 +633,48 @@ public class TaskController {
         List<TaskEntity> pool = taskRepository.findPendingAndInProgressOrdered();
 
         // Distribuir mesas: incluir TODAS las PENDING, sin filtrar por scheduledDate (pasado/hoy/futuro/null).
-        List<TaskEntity> candidates = pool.stream()
+        List<TaskEntity> elegibles = pool.stream()
                 .filter(t -> "PENDING".equals(t.getStatus()))
                 .filter(t -> productionOrderId == null || Objects.equals(t.getProductionOrderId(), productionOrderId))
                 .collect(Collectors.toList());
+
+        List<TaskEntity> candidates = elegibles.stream()
+                // Compuerta del troquelado. Solo baja a mesa lo que ya tiene el corte hecho.
+                //
+                // No cuesta ninguna consulta: die_cut_ready de la tarea es el Y-logico de sus
+                // productos, asi que el dato ya viene en la entidad que se acaba de cargar.
+                // Comprobarlo por producto aqui habria reintroducido dentro del candado el
+                // mismo N+1 que obligo a meter la carga en lote unas lineas mas abajo.
+                //
+                // El Organizador lo manda encendido (DayQueuePanel -> planTasksWindow). Llega
+                // apagado por defecto para no cambiarle el reparto, en silencio, a ningun otro
+                // cliente de esta API.
+                //
+                // Las demas vias que dan mesa aplican la regla sin parametro: rebalance-day y
+                // TaskDeskBackfillService filtran por die_cut_ready, los generadores crean las
+                // tareas de centro sin mesa, y fijar mesa o mover un producto a mesa la
+                // rechazan. Los cinchos nacen marcados y pasan por todas igual.
+                .filter(t -> !requireDieCut || Boolean.TRUE.equals(t.getDieCutReady()))
+                .collect(Collectors.toList());
+
+        // Cuantas dejo fuera la compuerta. Sin este numero, una tarea que no se reparte por
+        // falta de troquel se ve igual que una que no existe: el usuario la busca en el
+        // tablero, no la encuentra, y no hay nada que le diga que esta esperando corte.
+        int frenadasPorTroquel = elegibles.size() - candidates.size();
 
         if (candidates.isEmpty()) {
             return ResponseEntity.ok(Map.of(
                     "startDate", startDate,
                     "activeDesks", activeDesks,
                     "horizonDays", days,
+                    "requireDieCut", requireDieCut,
+                    "dieCutBlockedTasks", frenadasPorTroquel,
                     "selectedTasks", 0,
                     "updatedTasks", 0,
-                    "message", "No hay tareas PENDIENTES para distribuir a mesas."));
+                    "message", frenadasPorTroquel > 0
+                            ? "No se distribuyó nada: las " + frenadasPorTroquel
+                              + " tarea(s) pendientes esperan troquelado. Marque el corte en «Por troquelar»."
+                            : "No hay tareas PENDIENTES para distribuir a mesas."));
         }
 
         Set<Long> poIds = candidates.stream()
@@ -822,18 +909,30 @@ public class TaskController {
             notPlaced.add(fila);
         }
 
-        String message = notPlaced.isEmpty()
+        // Las frenadas por troquel no son "no cupieron": no llegaron a competir por mesa. Si
+        // no se dicen aparte, el usuario las cuenta como un problema de capacidad y agrega
+        // mesas que no hacen falta, cuando lo que falta es cortar.
+        String avisoTroquel = frenadasPorTroquel > 0
+                ? " " + frenadasPorTroquel + " tarea(s) quedaron fuera por troquelado pendiente."
+                : "";
+
+        String message = (notPlaced.isEmpty()
                 ? "Distribución por OP completada: " + placed + " de " + selected
                   + " tarea(s) colocada(s) desde " + startDate
                   + " (horizonte " + days + " día(s))."
                 : "Distribución por OP parcial: " + placed + " de " + selected
                   + " tarea(s) colocada(s). " + notPlaced.size()
-                  + " no cupo/cupieron en el horizonte de " + days + " día(s).";
+                  + " no cupo/cupieron en el horizonte de " + days + " día(s).")
+                + avisoTroquel;
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("startDate", startDate);
         body.put("activeDesks", activeDesks);
         body.put("horizonDays", days);
+        // Que el cliente sepa si la corrida aplico la compuerta: sin esto, un reparto que
+        // dejo fuera media orden por falta de troquel se ve igual que uno que no la aplico.
+        body.put("requireDieCut", requireDieCut);
+        body.put("dieCutBlockedTasks", frenadasPorTroquel);
         body.put("selectedTasks", selected);
         body.put("placedTasks", placed);
         body.put("updatedTasks", updated);
@@ -943,7 +1042,8 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(updated));
     }
 
-    private record MoveTaskItemRequest(Long taskItemId, Integer targetDesk, String targetDate) {}
+    /** Visible en el paquete (no private) para que la prueba de la compuerta pueda construirlo. */
+    record MoveTaskItemRequest(Long taskItemId, Integer targetDesk, String targetDate) {}
 
     private record MoveTaskItemResult(
             Long taskItemId,
@@ -986,6 +1086,17 @@ public class TaskController {
         }
 
         Integer targetDesk = req.targetDesk();
+        // Compuerta del troquelado. Mover un producto a una mesa es bajarlo a mesa, y aqui se
+        // mira el PRODUCTO y no la tarea: es justo el caso que el troquelado por producto vino
+        // a resolver -de cinco productos hay tres cortados- y lo que se mueve es uno solo.
+        //
+        // Mover a la bandeja sin mesa (targetDesk null) se permite: eso es sacar de mesa, u
+        // ordenar por dia, y no mete trabajo sin cortar en el tablero.
+        if (targetDesk != null && !Boolean.TRUE.equals(item.getDieCutReady())) {
+            throw new BusinessException(
+                    "No se puede mover " + descripcionItem(item) + " a la mesa " + targetDesk
+                    + " sin troquelar. Marque el corte en «Por troquelar».");
+        }
         TaskEntity targetTask = resolveOrCreateTargetTask(sourceTask, targetDesk, targetDate);
 
         Long sourceTaskId = sourceTask.getId();
@@ -1032,6 +1143,97 @@ public class TaskController {
                 sourceDeletedId,
                 targetResponse
         ));
+    }
+
+    /**
+     * Saca de la tarea los productos que AUN NO se troquelaron, a una tarea hermana.
+     *
+     * <p>Es lo que permite que una orden baje a mesa a medias: los cortados se quedan y la
+     * tarea queda troquelada entera, los que faltan se van a una hermana que espera su corte.
+     *
+     * <p><b>La hermana nace sin dia y sin mesa.</b> Ademas de ser lo correcto, evita una
+     * trampa de {@link #resolveOrCreateTargetTask}: con fecha, ese metodo REUTILIZA una tarea
+     * PENDING de la misma orden en esa mesa y dia, y si esa ya estuviera troquelada le
+     * entrarian productos sin cortar. Con la fecha en null nunca busca, siempre crea.
+     *
+     * <p>Se fuerza {@code dieCutReady = false} aunque hoy el heredado ya seria falso, porque
+     * ese metodo copia los flags del origen y depender del orden de las operaciones es fragil.
+     *
+     * <p>No hace nada si estan todos cortados o ninguno lo esta: la tarea ya es homogenea.
+     */
+    @PostMapping("/{id:\\d+}/die-cut/split-uncut")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> splitUncutDieCutItems(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        TaskEntity sourceTask = taskRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Task", id));
+
+        // Mismas guardas que move-item: una tarea que ya arranco no se reparte en dos.
+        if ("CANCELLED".equals(sourceTask.getStatus()) || "COMPLETED".equals(sourceTask.getStatus())) {
+            throw new BusinessException("No se puede separar productos de una tarea cancelada o completada.");
+        }
+        if ("IN_PROGRESS".equals(sourceTask.getStatus())) {
+            throw new BusinessException("No se puede separar productos de una tarea en progreso.");
+        }
+
+        List<TaskItemEntity> items = taskItemRepository.findByTaskId(sourceTask.getId());
+        List<TaskItemEntity> sinCortar = items.stream()
+                .filter(it -> !Boolean.TRUE.equals(it.getDieCutReady()))
+                .toList();
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("taskId", sourceTask.getId());
+        body.put("taskCode", sourceTask.getCode());
+
+        if (sinCortar.isEmpty() || sinCortar.size() == items.size()) {
+            body.put("split", false);
+            body.put("movedItems", 0);
+            body.put("siblingTaskId", null);
+            body.put("message", sinCortar.isEmpty()
+                    ? "Todos los productos estan troquelados: no hay nada que separar."
+                    : "Ningun producto esta troquelado todavia: la tarea se queda entera.");
+            return ResponseEntity.ok(body);
+        }
+
+        TaskEntity hermana = resolveOrCreateTargetTask(sourceTask, null, null);
+        hermana.setDieCutReady(false);
+        hermana.setDieCutDate(null);
+        hermana.setObservations("Separada de " + sourceTask.getCode() + " por troquelado pendiente");
+        hermana = taskRepository.save(hermana);
+
+        for (TaskItemEntity it : sinCortar) {
+            it.setTaskId(hermana.getId());
+            taskItemRepository.save(it);
+        }
+
+        // Misma contabilidad que move-item: recalcular totales y consolidar los flags de fase
+        // en las dos tareas. Sin esto, la de origen se queda con las horas de los productos
+        // que ya no lleva y el reparto le reservaria mesa de mas.
+        List<TaskItemEntity> itemsOrigen = taskItemRepository.findByTaskId(sourceTask.getId());
+        recalculateTaskTotals(sourceTask, itemsOrigen);
+        sourceTask.setDieCutReady(areTaskItemsDieCut(sourceTask));
+        sourceTask.setDieCutDate(Boolean.TRUE.equals(sourceTask.getDieCutReady()) ? LocalDate.now() : null);
+        sourceTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(sourceTask));
+        sourceTask.setMaterialsDeliveredAt(
+                Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+        taskRepository.save(sourceTask);
+
+        List<TaskItemEntity> itemsHermana = taskItemRepository.findByTaskId(hermana.getId());
+        recalculateTaskTotals(hermana, itemsHermana);
+        hermana.setDieCutReady(areTaskItemsDieCut(hermana));
+        hermana.setMaterialsDelivered(areRequiredTaskItemsDelivered(hermana));
+        hermana.setMaterialsDeliveredAt(
+                Boolean.TRUE.equals(hermana.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+        taskRepository.save(hermana);
+
+        body.put("split", true);
+        body.put("movedItems", sinCortar.size());
+        body.put("siblingTaskId", hermana.getId());
+        body.put("siblingTaskCode", hermana.getCode());
+        body.put("message", sinCortar.size() + " producto(s) sin troquelar pasaron a "
+                + hermana.getCode() + "; " + itemsOrigen.size() + " quedaron en "
+                + sourceTask.getCode() + " listos para mesa.");
+        return ResponseEntity.ok(body);
     }
 
     private TaskEntity resolveOrCreateTargetTask(TaskEntity sourceTask, Integer targetDesk, LocalDate targetDate) throws BusinessException {
@@ -1159,6 +1361,97 @@ public class TaskController {
         entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? LocalDateTime.now() : null);
         TaskEntity updated = taskRepository.save(entity);
         return ResponseEntity.ok(toResponse(updated));
+    }
+
+    /**
+     * Marca o desmarca el troquelado de UN producto de la tarea.
+     *
+     * <p>Clon de {@link #setTaskItemLeatherDelivery}, con una diferencia que importa: la
+     * compuerta del cuero se comprueba con un O y no con el flag del item a secas.
+     *
+     * <p><b>Por que el O.</b> El cuero se entrega por orden: cuando bodega lo registra,
+     * {@code LeatherInventoryService.markLeatherDeliveredForProductionOrder} marca la TAREA y
+     * no baja a sus productos. Exigir el flag del item dejaria sin poder troquelarse a toda
+     * tarea con el cuero ya entregado, que son la mayoria, asi que se acepta el de la tarea,
+     * igual que hace el DTO al pintarlo.
+     *
+     * <p>El flag de la tarea pasa a ser el Y-logico de sus productos, igual que el cuero.
+     */
+    @PutMapping("/{id:\\d+}/die-cut/item/{taskItemId}")
+    public ResponseEntity<TaskResponse> setTaskItemDieCut(
+            @PathVariable Long id,
+            @PathVariable Long taskItemId,
+            @RequestBody Map<String, Object> body)
+            throws ResourceNotFoundException, BusinessException {
+        TaskEntity entity = taskRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Task", id));
+        TaskItemEntity item = taskItemRepository.findById(taskItemId)
+                .orElseThrow(() -> new ResourceNotFoundException("Task Item", taskItemId));
+
+        if (!Objects.equals(item.getTaskId(), entity.getId())) {
+            throw new BusinessException("El item no pertenece a la tarea indicada.");
+        }
+
+        boolean ready = body.get("dieCutReady") != null && Boolean.parseBoolean(body.get("dieCutReady").toString());
+
+        if (ready && !hasLeatherForItem(entity, item)) {
+            throw new BusinessException(
+                    "No se puede troquelar " + descripcionItem(item) + " sin entrega de cuero.");
+        }
+        if (!ready && (Boolean.TRUE.equals(entity.getMaterialsDelivered())
+                || "IN_PROGRESS".equals(entity.getStatus())
+                || "COMPLETED".equals(entity.getStatus()))) {
+            throw new BusinessException("No se puede desmarcar troquelado porque la tarea ya avanzó de fase.");
+        }
+
+        item.setDieCutReady(ready);
+        item.setDieCutDate(ready ? LocalDate.now() : null);
+        taskItemRepository.save(item);
+
+        entity.setDieCutReady(areTaskItemsDieCut(entity));
+        entity.setDieCutDate(Boolean.TRUE.equals(entity.getDieCutReady()) ? LocalDate.now() : null);
+        TaskEntity updated = taskRepository.save(entity);
+        return ResponseEntity.ok(toResponse(updated));
+    }
+
+    /**
+     * Fija para que dia esta previsto troquelar un producto.
+     *
+     * <p>No toca {@code dieCutDate}, que dice cuando se marco. Esta dice cuando toca, y es la
+     * que agrupa el listado de pendientes por troquelar.
+     */
+    @PutMapping("/{id:\\d+}/die-cut/item/{taskItemId}/planned-date")
+    public ResponseEntity<TaskResponse> setTaskItemDieCutPlannedDate(
+            @PathVariable Long id,
+            @PathVariable Long taskItemId,
+            @RequestBody Map<String, Object> body)
+            throws ResourceNotFoundException, BusinessException {
+        TaskEntity entity = taskRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Task", id));
+        TaskItemEntity item = taskItemRepository.findById(taskItemId)
+                .orElseThrow(() -> new ResourceNotFoundException("Task Item", taskItemId));
+
+        if (!Objects.equals(item.getTaskId(), entity.getId())) {
+            throw new BusinessException("El item no pertenece a la tarea indicada.");
+        }
+
+        Object raw = body.get("plannedDate");
+        LocalDate planned = null;
+        if (raw != null && !raw.toString().isBlank()) {
+            try {
+                planned = LocalDate.parse(raw.toString());
+            } catch (Exception e) {
+                throw new BusinessException("plannedDate inválida (use yyyy-MM-dd).");
+            }
+            if (!ProductionPlanningConstants.isWorkday(planned)) {
+                throw new BusinessException(
+                        "Solo se troquela de lunes a viernes: " + planned + " es fin de semana.");
+            }
+        }
+
+        item.setDieCutPlannedDate(planned);
+        taskItemRepository.save(item);
+        return ResponseEntity.ok(toResponse(entity));
     }
 
     @PutMapping("/{id:\\d+}/materials-delivery")
@@ -1307,7 +1600,18 @@ public class TaskController {
         }
         if (body.containsKey("desk")) {
             Object deskVal = body.get("desk");
-            entity.setDesk(deskVal != null ? Integer.parseInt(deskVal.toString()) : null);
+            Integer nuevaMesa = deskVal != null ? Integer.parseInt(deskVal.toString()) : null;
+            // Compuerta del troquelado, tambien a mano. Los repartos automaticos ya no dan
+            // mesa sin corte; si esta puerta quedara abierta, la regla seria un consejo y no
+            // una regla, y bastaria arrastrar la tarea en el tablero para saltarsela.
+            //
+            // Quitar la mesa (null) se permite siempre: sacar del tablero nunca es el problema.
+            if (nuevaMesa != null && !Boolean.TRUE.equals(entity.getDieCutReady())) {
+                throw new BusinessException(
+                        "No se puede poner en mesa " + nuevaMesa + " la tarea " + entity.getCode()
+                        + " porque tiene producto sin troquelar. Marque el corte en «Por troquelar».");
+            }
+            entity.setDesk(nuevaMesa);
         }
         if (body.containsKey("deliveryDate")) {
             String dateStr = (String) body.get("deliveryDate");
@@ -2242,6 +2546,43 @@ public class TaskController {
         return items.stream().allMatch(item -> Boolean.TRUE.equals(item.getLeatherDelivered()));
     }
 
+    /**
+     * El troquelado de la tarea es el Y-logico del de sus productos.
+     *
+     * <p>Mismo criterio que {@link #areTaskItemsLeatherDelivered}: una tarea esta troquelada
+     * cuando TODOS sus productos lo estan. Si no tiene productos, se respeta el flag que ya
+     * tuviera la tarea, porque no hay nada desde donde calcularlo.
+     */
+    private boolean areTaskItemsDieCut(TaskEntity entity) {
+        List<TaskItemEntity> items = taskItemRepository.findByTaskId(entity.getId());
+        if (items.isEmpty()) {
+            return Boolean.TRUE.equals(entity.getDieCutReady());
+        }
+        return items.stream().allMatch(item -> Boolean.TRUE.equals(item.getDieCutReady()));
+    }
+
+    /**
+     * Si este producto tiene cuero para poder troquelarse.
+     *
+     * <p>Acepta el cuero del producto O el de la tarea. La entrega de cuero se registra por
+     * orden y marca la tarea sin bajar a los productos, asi que mirar solo el producto
+     * dejaria fuera a casi todo. Es el mismo criterio con el que el DTO lo pinta.
+     */
+    private static boolean hasLeatherForItem(TaskEntity task, TaskItemEntity item) {
+        return Boolean.TRUE.equals(item.getLeatherDelivered())
+                || Boolean.TRUE.equals(task.getLeatherDelivered());
+    }
+
+    /** Nombre legible del producto, para que el error diga cual es y no solo que fallo. */
+    private static String descripcionItem(TaskItemEntity item) {
+        String code = item.getProductCode() == null ? "" : item.getProductCode().trim();
+        String name = item.getProductName() == null ? "" : item.getProductName().trim();
+        if (!code.isEmpty() && !name.isEmpty()) return code + " - " + name;
+        if (!code.isEmpty()) return code;
+        if (!name.isEmpty()) return name;
+        return "el producto";
+    }
+
     private boolean areRequiredTaskItemsDelivered(TaskEntity entity) {
         return areRequiredTaskItemsDelivered(entity, taskItemRepository.findByTaskId(entity.getId()));
     }
@@ -2492,6 +2833,9 @@ public class TaskController {
                         .observations(item.getObservations())
                         .requiresMaterials(isTaskItemRequiresMaterials(item))
                         .leatherDelivered(Boolean.TRUE.equals(item.getLeatherDelivered()) || Boolean.TRUE.equals(entity.getLeatherDelivered()))
+                        .dieCutReady(Boolean.TRUE.equals(item.getDieCutReady()))
+                        .dieCutDate(item.getDieCutDate())
+                        .dieCutPlannedDate(item.getDieCutPlannedDate())
                         .leatherDeliveredAt(item.getLeatherDeliveredAt() != null ? item.getLeatherDeliveredAt() : entity.getLeatherDeliveredAt())
                         .materialsDelivered(Boolean.TRUE.equals(item.getMaterialsDelivered()) || !isTaskItemRequiresMaterials(item))
                         .materialsDeliveredAt(item.getMaterialsDeliveredAt())
