@@ -30,6 +30,24 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     List<TaskEntity> findByDeskIsNullAndScheduledDate(LocalDate scheduledDate);
 
     /**
+     * Tareas del dashboard: COALESCE(scheduled_date, completed_at::date, created_at::date) en rango.
+     * Incluye sin fecha (mismo criterio que isDateInRange del controller).
+     */
+    @Query(value = """
+            SELECT * FROM task t
+            WHERE (
+              COALESCE(t.scheduled_date, t.completed_at::date, t.created_at::date) IS NULL
+              OR (
+                COALESCE(t.scheduled_date, t.completed_at::date, t.created_at::date) >= :fromDate
+                AND COALESCE(t.scheduled_date, t.completed_at::date, t.created_at::date) <= :toDate
+              )
+            )
+            """, nativeQuery = true)
+    List<TaskEntity> findForDashboardDateRange(
+            @Param("fromDate") LocalDate fromDate,
+            @Param("toDate") LocalDate toDate);
+
+    /**
      * OPs que tienen alguna tarea cuyo código contiene el texto buscado.
      *
      * El auxiliar busca por el número de su boleta, que es el código de la TAREA.
@@ -113,16 +131,38 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
               AND t.actualDurationMinutes IS NOT NULL AND t.actualDurationMinutes > 0
               AND t.completedAt IS NOT NULL
               AND t.completedAt >= :fromDateTime
+              AND (t.productionOrderId IS NULL OR t.productionOrderId NOT IN (
+                    SELECT po.id FROM ProductionOrderEntity po
+                    WHERE UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPC-%'
+                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPCF-%'
+                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPCM-%'
+                  ))
+              AND (t.productionOrderCode IS NULL
+                   OR (UPPER(t.productionOrderCode) NOT LIKE 'OPC-%'
+                       AND UPPER(t.productionOrderCode) NOT LIKE 'OPCF-%'
+                       AND UPPER(t.productionOrderCode) NOT LIKE 'OPCM-%'))
             """)
     List<TaskEntity> findCompletedWithTimingSince(@Param("fromDateTime") LocalDateTime fromDateTime);
 
-    /** Misma base de eficiencia que el dashboard sin filtro de fechas. */
+    /** Misma base de eficiencia que el dashboard sin filtro de fechas (sin OPC/cinchos). */
     @Query("""
             SELECT t FROM TaskEntity t
             WHERE t.status = 'COMPLETED'
               AND t.estimatedHours IS NOT NULL AND t.estimatedHours > 0
               AND t.actualDurationMinutes IS NOT NULL AND t.actualDurationMinutes > 0
               AND t.completedAt IS NOT NULL
+              AND (t.productionOrderId IS NULL OR t.productionOrderId NOT IN (
+                    SELECT po.id FROM ProductionOrderEntity po
+                    WHERE UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPC-%'
+                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPCF-%'
+                       OR UPPER(COALESCE(po.code, '')) LIKE 'OPCM-%'
+                  ))
+              AND (t.productionOrderCode IS NULL
+                   OR (UPPER(t.productionOrderCode) NOT LIKE 'OPC-%'
+                       AND UPPER(t.productionOrderCode) NOT LIKE 'OPCF-%'
+                       AND UPPER(t.productionOrderCode) NOT LIKE 'OPCM-%'))
             """)
     List<TaskEntity> findCompletedWithTiming();
 

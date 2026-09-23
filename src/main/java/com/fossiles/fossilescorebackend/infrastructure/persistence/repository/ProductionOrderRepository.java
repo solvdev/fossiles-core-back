@@ -21,6 +21,24 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
     List<ProductionOrderEntity> findByStatus(String status);
     List<ProductionOrderEntity> findByCustomerId(Long customerId);
 
+    /**
+     * OP del dashboard: COALESCE(start_date, created_at::date) en rango.
+     * Incluye filas sin fecha (mismo criterio que isDateInRange del controller).
+     */
+    @Query(value = """
+            SELECT * FROM production_order po
+            WHERE (
+              COALESCE(po.start_date, po.created_at::date) IS NULL
+              OR (
+                COALESCE(po.start_date, po.created_at::date) >= :fromDate
+                AND COALESCE(po.start_date, po.created_at::date) <= :toDate
+              )
+            )
+            """, nativeQuery = true)
+    List<ProductionOrderEntity> findForDashboardDateRange(
+            @Param("fromDate") java.time.LocalDate fromDate,
+            @Param("toDate") java.time.LocalDate toDate);
+
     @Query("""
             SELECT po FROM ProductionOrderEntity po
             WHERE UPPER(COALESCE(po.sellerName, '')) LIKE '%LUIS FELIPE%'

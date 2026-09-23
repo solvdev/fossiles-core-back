@@ -29,6 +29,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPla
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
@@ -41,8 +42,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
@@ -60,7 +59,6 @@ public class TaskController {
     private static final double DEFAULT_PRD_TIME_PER_UNIT = ProductionPlanningConstants.DEFAULT_PRD_TIME_PER_UNIT;
     private static final int MAX_DESKS = ProductionPlanningConstants.MAX_DESKS;
     private static final List<String> DESKS_COUNT_CONFIG_KEYS = ProductionPlanningConstants.DESKS_COUNT_CONFIG_KEYS;
-    private static final ZoneId GUATEMALA_ZONE = ZoneId.of("America/Guatemala");
     private static final DateTimeFormatter HOUR_MINUTE_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
 
     private final TaskRepository taskRepository;
@@ -155,12 +153,17 @@ public class TaskController {
 
     @PostMapping("/auto-plan")
     public ResponseEntity<ProductionAutoPlanResult> autoPlan(
-            @RequestParam(required = false) Long productionOrderId)
+            @RequestParam(required = false) Long productionOrderId,
+            @RequestParam(defaultValue = "false") boolean regenerate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date)
             throws ResourceNotFoundException, BusinessException {
-        if (productionOrderId != null) {
-            return ResponseEntity.ok(productionAutoPlannerService.planOrder(productionOrderId));
+        if (regenerate) {
+            return ResponseEntity.ok(productionAutoPlannerService.regenerate(productionOrderId, date));
         }
-        return ResponseEntity.ok(productionAutoPlannerService.planPending());
+        if (productionOrderId != null) {
+            return ResponseEntity.ok(productionAutoPlannerService.planOrder(productionOrderId, date));
+        }
+        return ResponseEntity.ok(productionAutoPlannerService.planPending(date));
     }
 
     @GetMapping("/blocked-leather")
@@ -190,7 +193,7 @@ public class TaskController {
      */
     @GetMapping("/organizer/backlog")
     public ResponseEntity<List<TaskResponse>> getPendingBacklog() {
-        LocalDate today = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDate();
+        LocalDate today = GuatemalaDateTime.today();
         List<TaskResponse> tasks = taskRepository.findPendingBacklog(today).stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
@@ -206,7 +209,7 @@ public class TaskController {
      */
     @GetMapping("/organizer/unfinished")
     public ResponseEntity<List<TaskResponse>> getUnfinishedCarryOver() {
-        LocalDate today = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDate();
+        LocalDate today = GuatemalaDateTime.today();
         List<TaskResponse> tasks = taskRepository.findUnfinishedCarryOver(today).stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
@@ -664,7 +667,7 @@ public class TaskController {
         }
         // Momento de referencia único para toda la corrida: si cada tarea leyera su propio
         // reloj, dos tareas de la misma mesa se descontarían con instantes distintos.
-        LocalDateTime ahora = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDateTime();
+        LocalDateTime ahora = GuatemalaDateTime.now();
         LocalDate primerDiaHabil = siguienteDiaHabil(startDate);
         LocalDate ultimoDiaHorizonte = startDate.plusDays(days - 1L);
 
@@ -891,7 +894,7 @@ public class TaskController {
             deskToFreeAfterComplete = entity.getDesk();
             backfillAnchorDate = entity.getScheduledDate() != null
                     ? entity.getScheduledDate()
-                    : ZonedDateTime.now(GUATEMALA_ZONE).toLocalDate();
+                    : GuatemalaDateTime.today();
         }
 
         if ("IN_PROGRESS".equals(effectiveStatus)) {
@@ -902,12 +905,12 @@ public class TaskController {
 
         // Time tracking
         if ("IN_PROGRESS".equals(effectiveStatus) && entity.getStartedAt() == null) {
-            LocalDateTime gtNow = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDateTime();
+            LocalDateTime gtNow = GuatemalaDateTime.now();
             entity.setStartedAt(gtNow);
             entity.setStartTime(gtNow.toLocalTime().format(HOUR_MINUTE_FORMATTER));
         }
         if ("COMPLETED".equals(effectiveStatus) && entity.getCompletedAt() == null) {
-            LocalDateTime gtNow = ZonedDateTime.now(GUATEMALA_ZONE).toLocalDateTime();
+            LocalDateTime gtNow = GuatemalaDateTime.now();
             entity.setCompletedAt(gtNow);
             // Tiempo realmente trabajado: solo lo que cae dentro de la jornada.
             if (entity.getStartedAt() != null) {
@@ -1007,7 +1010,7 @@ public class TaskController {
         if (!sourceItems.isEmpty()) {
             recalculateTaskTotals(sourceTask, sourceItems);
             sourceTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(sourceTask));
-            sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+            sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? GuatemalaDateTime.now() : null);
             sourceResponse = toResponse(taskRepository.save(sourceTask));
         } else {
             boolean safeToDelete = "PENDING".equals(sourceTask.getStatus())
@@ -1026,7 +1029,7 @@ public class TaskController {
         List<TaskItemEntity> targetItems = taskItemRepository.findByTaskId(targetTaskId);
         recalculateTaskTotals(targetTask, targetItems);
         targetTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(targetTask));
-        targetTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(targetTask.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+        targetTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(targetTask.getMaterialsDelivered()) ? GuatemalaDateTime.now() : null);
         TaskResponse targetResponse = toResponse(taskRepository.save(targetTask));
 
         return ResponseEntity.ok(new MoveTaskItemResult(
@@ -1118,14 +1121,14 @@ public class TaskController {
         if (!taskItems.isEmpty()) {
             for (TaskItemEntity item : taskItems) {
                 item.setLeatherDelivered(delivered);
-                item.setLeatherDeliveredAt(delivered ? LocalDateTime.now() : null);
+                item.setLeatherDeliveredAt(delivered ? GuatemalaDateTime.now() : null);
                 taskItemRepository.save(item);
             }
             entity.setLeatherDelivered(areTaskItemsLeatherDelivered(entity));
-            entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? LocalDateTime.now() : null);
+            entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? GuatemalaDateTime.now() : null);
         } else {
             entity.setLeatherDelivered(delivered);
-            entity.setLeatherDeliveredAt(delivered ? LocalDateTime.now() : null);
+            entity.setLeatherDeliveredAt(delivered ? GuatemalaDateTime.now() : null);
         }
         TaskEntity updated = taskRepository.save(entity);
         return ResponseEntity.ok(toResponse(updated));
@@ -1155,11 +1158,11 @@ public class TaskController {
         }
 
         item.setLeatherDelivered(delivered);
-        item.setLeatherDeliveredAt(delivered ? LocalDateTime.now() : null);
+        item.setLeatherDeliveredAt(delivered ? GuatemalaDateTime.now() : null);
         taskItemRepository.save(item);
 
         entity.setLeatherDelivered(areTaskItemsLeatherDelivered(entity));
-        entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? LocalDateTime.now() : null);
+        entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? GuatemalaDateTime.now() : null);
         TaskEntity updated = taskRepository.save(entity);
         return ResponseEntity.ok(toResponse(updated));
     }
@@ -1188,7 +1191,7 @@ public class TaskController {
                     if (!isTaskItemRequiresMaterials(item)) {
                         if (!Boolean.TRUE.equals(item.getMaterialsDelivered())) {
                             item.setMaterialsDelivered(true);
-                            item.setMaterialsDeliveredAt(LocalDateTime.now());
+                            item.setMaterialsDeliveredAt(GuatemalaDateTime.now());
                             taskItemRepository.save(item);
                         }
                         continue;
@@ -1199,7 +1202,7 @@ public class TaskController {
                             materialConsumptionService.consumeMaterialsForTaskItem(entity.getId(), item.getId(), force);
                         }
                         item.setMaterialsDelivered(true);
-                        item.setMaterialsDeliveredAt(LocalDateTime.now());
+                        item.setMaterialsDeliveredAt(GuatemalaDateTime.now());
                         taskItemRepository.save(item);
                     }
                 }
@@ -1217,7 +1220,7 @@ public class TaskController {
                 }
             }
             entity.setMaterialsDelivered(areRequiredTaskItemsDelivered(entity));
-            entity.setMaterialsDeliveredAt(Boolean.TRUE.equals(entity.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+            entity.setMaterialsDeliveredAt(Boolean.TRUE.equals(entity.getMaterialsDelivered()) ? GuatemalaDateTime.now() : null);
         } else {
             if (delivered && !Boolean.TRUE.equals(entity.getMaterialsDelivered())) {
                 ProductionOrderEntity order = entity.getProductionOrderId() != null
@@ -1229,7 +1232,7 @@ public class TaskController {
                 }
             }
             entity.setMaterialsDelivered(delivered);
-            entity.setMaterialsDeliveredAt(delivered ? LocalDateTime.now() : null);
+            entity.setMaterialsDeliveredAt(delivered ? GuatemalaDateTime.now() : null);
         }
         TaskEntity updated = taskRepository.save(entity);
         return ResponseEntity.ok(toResponse(updated));
@@ -1255,7 +1258,7 @@ public class TaskController {
         int consumedLines = 0;
         if (!isTaskItemRequiresMaterials(item)) {
             item.setMaterialsDelivered(true);
-            item.setMaterialsDeliveredAt(item.getMaterialsDeliveredAt() != null ? item.getMaterialsDeliveredAt() : LocalDateTime.now());
+            item.setMaterialsDeliveredAt(item.getMaterialsDeliveredAt() != null ? item.getMaterialsDeliveredAt() : GuatemalaDateTime.now());
         } else if (delivered) {
             if (!Boolean.TRUE.equals(item.getMaterialsDelivered())) {
                 ProductionOrderEntity order = entity.getProductionOrderId() != null
@@ -1274,7 +1277,7 @@ public class TaskController {
                 }
             }
             item.setMaterialsDelivered(true);
-            item.setMaterialsDeliveredAt(LocalDateTime.now());
+            item.setMaterialsDeliveredAt(GuatemalaDateTime.now());
         } else {
             if ("IN_PROGRESS".equals(entity.getStatus()) || "COMPLETED".equals(entity.getStatus())) {
                 throw new BusinessException("No se puede desmarcar materiales cuando la tarea ya está en proceso o completada.");
@@ -1287,7 +1290,7 @@ public class TaskController {
 
         taskItemRepository.save(item);
         entity.setMaterialsDelivered(areRequiredTaskItemsDelivered(entity));
-        entity.setMaterialsDeliveredAt(Boolean.TRUE.equals(entity.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+        entity.setMaterialsDeliveredAt(Boolean.TRUE.equals(entity.getMaterialsDelivered()) ? GuatemalaDateTime.now() : null);
         TaskEntity updated = taskRepository.save(entity);
         TaskResponse response = toResponse(updated);
         response.setLastItemMaterialsConsumed(consumedLines);
@@ -1488,9 +1491,9 @@ public class TaskController {
                     .estimatedHours(itemHours)
                     .observations(selected.getObservations())
                     .leatherDelivered(Boolean.TRUE.equals(task.getLeatherDelivered()))
-                    .leatherDeliveredAt(Boolean.TRUE.equals(task.getLeatherDelivered()) ? LocalDateTime.now() : null)
+                    .leatherDeliveredAt(Boolean.TRUE.equals(task.getLeatherDelivered()) ? GuatemalaDateTime.now() : null)
                     .materialsDelivered(!requiresMaterials)
-                    .materialsDeliveredAt(!requiresMaterials ? LocalDateTime.now() : null)
+                    .materialsDeliveredAt(!requiresMaterials ? GuatemalaDateTime.now() : null)
                     .daySaleExtra(true)
                     .build());
         }
@@ -1498,7 +1501,7 @@ public class TaskController {
         List<TaskItemEntity> currentItems = taskItemRepository.findByTaskId(task.getId());
         recalculateTaskTotals(task, currentItems);
         task.setMaterialsDelivered(areRequiredTaskItemsDelivered(task));
-        task.setMaterialsDeliveredAt(Boolean.TRUE.equals(task.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+        task.setMaterialsDeliveredAt(Boolean.TRUE.equals(task.getMaterialsDelivered()) ? GuatemalaDateTime.now() : null);
         TaskEntity updated = taskRepository.save(task);
         return ResponseEntity.ok(toResponse(updated));
     }
@@ -1517,7 +1520,7 @@ public class TaskController {
             if (hasActiveLeatherDelivery(entity.getProductionOrderId())) {
                 entity.setLeatherDelivered(true);
                 if (entity.getLeatherDeliveredAt() == null) {
-                    entity.setLeatherDeliveredAt(LocalDateTime.now());
+                    entity.setLeatherDeliveredAt(GuatemalaDateTime.now());
                 }
             } else {
                 throw new BusinessException("No se puede troquelar sin entrega de cuero.");
@@ -1528,7 +1531,7 @@ public class TaskController {
             throw new BusinessException("No se puede desmarcar troquelado porque la tarea ya avanzó de fase.");
         }
         entity.setDieCutReady(ready);
-        entity.setDieCutDate(ready ? LocalDate.now() : null);
+        entity.setDieCutDate(ready ? GuatemalaDateTime.today() : null);
 
         TaskEntity updated = taskRepository.save(entity);
         return ResponseEntity.ok(toResponse(updated));
@@ -1544,7 +1547,7 @@ public class TaskController {
         }
 
         boolean ready = body.get("dieCutReady") != null && Boolean.parseBoolean(body.get("dieCutReady").toString());
-        LocalDate dieCutDate = ready ? LocalDate.now() : null;
+        LocalDate dieCutDate = ready ? GuatemalaDateTime.today() : null;
 
         List<TaskResponse> responses = new ArrayList<>();
         for (TaskEntity task : tasks) {
@@ -1594,10 +1597,10 @@ public class TaskController {
             @RequestParam(name = "includeDelivered", defaultValue = "false") boolean includeDelivered,
             @RequestParam(name = "scheduleDay", defaultValue = "false") boolean scheduleDay) {
 
-        LocalDate targetDate = date != null ? date : LocalDate.now(GUATEMALA_ZONE);
+        LocalDate targetDate = date != null ? date : GuatemalaDateTime.today();
 
         if (scheduleDay) {
-            LocalDate day = date != null ? date : LocalDate.now(GUATEMALA_ZONE);
+            LocalDate day = date != null ? date : GuatemalaDateTime.today();
             List<TaskEntity> tasks = collectTasksScheduledForMaterialsDay(day).stream()
                     .filter(t -> !"CANCELLED".equals(t.getStatus()))
                     .toList();
@@ -1677,7 +1680,7 @@ public class TaskController {
                     .picked(false)
                     .build());
             pick.setPicked(true);
-            pick.setPickedAt(LocalDateTime.now());
+            pick.setPickedAt(GuatemalaDateTime.now());
             pick.setPickedBy(userId);
             taskItemMaterialPickRepository.save(pick);
         } else {
@@ -1969,7 +1972,7 @@ public class TaskController {
         for (TaskEntity t : base) {
             byId.put(t.getId(), t);
         }
-        if (!targetDate.equals(LocalDate.now(GUATEMALA_ZONE))) {
+        if (!targetDate.equals(GuatemalaDateTime.today())) {
             return new ArrayList<>(byId.values());
         }
         for (TaskEntity t : taskRepository.findPendingAndInProgressOrdered()) {
@@ -2101,14 +2104,14 @@ public class TaskController {
         if (blockedItems.isEmpty()) {
             recalculateTaskTotals(sourceTask, readyItems);
             sourceTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(sourceTask));
-            sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+            sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? GuatemalaDateTime.now() : null);
             return;
         }
 
         if (readyItems.isEmpty()) {
             recalculateTaskTotals(sourceTask, sourceItems);
             sourceTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(sourceTask));
-            sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+            sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? GuatemalaDateTime.now() : null);
             return;
         }
 
@@ -2148,7 +2151,7 @@ public class TaskController {
 
         recalculateTaskTotals(sourceTask, readyItems);
         sourceTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(sourceTask));
-        sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? LocalDateTime.now() : null);
+        sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? GuatemalaDateTime.now() : null);
 
         recalculateTaskTotals(savedPendingTask, blockedItems);
         savedPendingTask.setMaterialsDelivered(false);
@@ -2192,7 +2195,7 @@ public class TaskController {
         if (desk == null) {
             return null;
         }
-        LocalDate asOf = scheduledDate != null ? scheduledDate : LocalDate.now(GUATEMALA_ZONE);
+        LocalDate asOf = scheduledDate != null ? scheduledDate : GuatemalaDateTime.today();
         String name = productionDeskSupervisorRepository
                 .findTopByDeskAndEffectiveDateLessThanEqualOrderByEffectiveDateDesc(desk, asOf)
                 .map(ProductionDeskSupervisorEntity::getSupervisorName)

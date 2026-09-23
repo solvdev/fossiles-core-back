@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
@@ -392,9 +393,9 @@ public class TaskOrganizerService {
                     .estimatedHours(lineHours)
                     .observations(buildItemObservations(item, qty, total))
                     .leatherDelivered(cinchoReady)
-                    .leatherDeliveredAt(cinchoReady ? LocalDateTime.now() : null)
+                    .leatherDeliveredAt(cinchoReady ? GuatemalaDateTime.now() : null)
                     .materialsDelivered(!requiresMaterials)
-                    .materialsDeliveredAt(!requiresMaterials ? LocalDateTime.now() : null)
+                    .materialsDeliveredAt(!requiresMaterials ? GuatemalaDateTime.now() : null)
                     .daySaleExtra(extra)
                     .build());
         }
@@ -432,7 +433,7 @@ public class TaskOrganizerService {
                 .status("PENDING")
                 .dieCutReady(cinchoReady)
                 .leatherDelivered(cinchoReady)
-                .leatherDeliveredAt(cinchoReady ? LocalDateTime.now() : null)
+                .leatherDeliveredAt(cinchoReady ? GuatemalaDateTime.now() : null)
                 .observations(request.getObservations())
                 .build());
 

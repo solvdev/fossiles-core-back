@@ -3,27 +3,18 @@ package com.fossiles.fossilescorebackend.application.job;
 import com.fossiles.fossilescorebackend.application.service.ProductionAutoPlannerService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+/**
+ * Cron de auto-plan desactivado: el plan solo corre por botón en Centro
+ * ({@code POST /api/tasks/auto-plan?regenerate=true}).
+ * Se deja el bean por si se quiere reactivar el schedule más adelante.
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class ProductionAutoPlanJob {
 
+    @SuppressWarnings("unused")
     private final ProductionAutoPlannerService productionAutoPlannerService;
-
-    /** Arranque del día laboral GT: parte OPs pendientes y asigna mesas. */
-    @Scheduled(cron = "0 5 0 * * *", zone = "America/Guatemala")
-    public void runAtStartOfDay() {
-        log.info("Auto-plan de producción (inicio del día GT)");
-        productionAutoPlannerService.planAllQuietly();
-    }
-
-    /** Durante el día: OPL, cuero nuevo y OPs que lleguen después de las 00:05. */
-    @Scheduled(cron = "0 */15 5-21 * * *", zone = "America/Guatemala")
-    public void runDuringDay() {
-        log.debug("Auto-plan de producción (cada 15 min, horario laboral GT)");
-        productionAutoPlannerService.planAllQuietly();
-    }
 }
