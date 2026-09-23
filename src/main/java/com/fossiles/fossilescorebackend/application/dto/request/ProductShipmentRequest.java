@@ -28,6 +28,9 @@ public class ProductShipmentRequest {
 
     /** Liberación parcial LF que origina este envío. */
     private Long partialReleaseId;
+
+    /** Costo de envío de este documento (Q). */
+    private java.math.BigDecimal shippingCost;
     
     private List<ProductShipmentDetailRequest> products;
     private List<PackingItemRequest> packingItems;

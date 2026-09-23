@@ -6,6 +6,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
@@ -47,6 +48,10 @@ public class ProductShipmentEntity {
 
     @Column(name = "packing_items", columnDefinition = "TEXT")
     private String packingItems;
+
+    /** Costo de envío de este documento (parciales / OPV / OPC). Null = heredar de la OP. */
+    @Column(name = "shipping_cost", precision = 12, scale = 2)
+    private BigDecimal shippingCost;
 
     @Column(name = "sent_at")
     private LocalDateTime sentAt;

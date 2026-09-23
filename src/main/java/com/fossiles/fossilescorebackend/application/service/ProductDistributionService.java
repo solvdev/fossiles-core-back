@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductDistribut
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentDestinationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentObservationsRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentShippingCostRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockPreviewResponse;
@@ -303,6 +304,9 @@ public class ProductDistributionService {
             }
             targetShipment.setNotes(persistedNotes);
             targetShipment.setPackingItems(serializePackingItems(request.getPackingItems()));
+            if (request.getShippingCost() != null) {
+                targetShipment.setShippingCost(normalizeShippingCost(request.getShippingCost()));
+            }
             ProductShipmentEntity saved = shipmentRepository.save(targetShipment);
             return toShipmentResponse(saved);
         }
@@ -337,6 +341,7 @@ public class ProductDistributionService {
                 .status("DRAFT")
                 .notes(persistedNotes)
                 .packingItems(serializePackingItems(request.getPackingItems()))
+                .shippingCost(normalizeShippingCost(request.getShippingCost()))
                 .createdBy(securityUtil.getCurrentUserId())
                 .updatedBy(securityUtil.getCurrentUserId())
                 .build();
@@ -402,6 +407,7 @@ public class ProductDistributionService {
                 .documentDate(request.getDocumentDate())
                 .products(products)
                 .packingItems(packingItems)
+                .shippingCost(request.getShippingCost())
                 .build();
 
         ProductShipmentResponse draft = createOrUpdateShipmentForProductionOrder(productionOrderId, createRequest);
@@ -450,6 +456,7 @@ public class ProductDistributionService {
                 .products(products)
                 .packingItems(packingItems)
                 .partialReleaseId(partialReleaseId)
+                .shippingCost(request.getShippingCost())
                 .build();
 
         ProductShipmentResponse draft = createOrUpdateShipmentForProductionOrder(productionOrderId, createRequest);
@@ -1318,6 +1325,25 @@ public class ProductDistributionService {
         ProductShipmentEntity shipment = shipmentRepository.findById(shipmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
         shipment.setPackingItems(serializePackingItems(packingItems));
+        return toShipmentResponse(shipmentRepository.save(shipment));
+    }
+
+    /**
+     * Asigna o limpia el costo de envío del documento (Preparar envíos / parciales).
+     */
+    public ProductShipmentResponse updateShipmentShippingCost(
+            Long shipmentId,
+            ProductShipmentShippingCostRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        ProductShipmentEntity shipment = shipmentRepository.findById(shipmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
+        assertShipmentProductsEditable(shipment);
+        if (request == null || request.getShippingCost() == null) {
+            shipment.setShippingCost(null);
+        } else {
+            shipment.setShippingCost(normalizeShippingCost(request.getShippingCost()));
+        }
+        shipment.setUpdatedBy(securityUtil.getCurrentUserId());
         return toShipmentResponse(shipmentRepository.save(shipment));
     }
 
@@ -4233,6 +4259,7 @@ public class ProductDistributionService {
                 .status(entity.getStatus())
                 .notes(entity.getNotes())
                 .packingItems(parsePackingItems(entity.getPackingItems()))
+                .shippingCost(entity.getShippingCost())
                 .sentAt(entity.getSentAt())
                 .sentBy(entity.getSentBy())
                 .receivedAt(entity.getReceivedAt())
@@ -4441,6 +4468,16 @@ public class ProductDistributionService {
                         .unitPrice(keyToUnitPrice.get(entry.getKey()))
                         .build())
                 .collect(Collectors.toList());
+    }
+
+    private BigDecimal normalizeShippingCost(BigDecimal raw) throws BusinessException {
+        if (raw == null) {
+            return null;
+        }
+        if (raw.compareTo(BigDecimal.ZERO) < 0) {
+            throw new BusinessException("El costo de envío no puede ser negativo.");
+        }
+        return raw.setScale(2, java.math.RoundingMode.HALF_UP);
     }
 
     private String serializePackingItems(List<ProductShipmentRequest.PackingItemRequest> packingItems) {
