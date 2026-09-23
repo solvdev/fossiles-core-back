@@ -29,13 +29,13 @@ import java.util.stream.Collectors;
 
 /**
  * Estima días hábiles de una OP: Σ(prd_time × qty), ajustado por eficiencia del
- * dashboard y capacidad de mesas (lun–jue 9 h, vie 8 h, sáb/dom 0).
+ * dashboard (desde {@link ProductionPlanningConstants#KPI_EFFICIENCY_FROM}) y
+ * capacidad (lun–jue 9 h, vie 8 h, sáb/dom 0).
  */
 @Service
 @RequiredArgsConstructor
 public class ProductionOrderTimeEstimateService {
 
-    private static final LocalDate DEFAULT_EFFICIENCY_FROM = LocalDate.of(2026, 9, 14);
     private static final double HOURS_MON_THU = 9.0;
     private static final double HOURS_FRIDAY = 8.0;
     private static final int MAX_DAYS = 400;
@@ -52,7 +52,9 @@ public class ProductionOrderTimeEstimateService {
         ProductionOrderEntity order = productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
 
-        LocalDate from = efficiencyFrom != null ? efficiencyFrom : DEFAULT_EFFICIENCY_FROM;
+        LocalDate from = efficiencyFrom != null
+                ? efficiencyFrom
+                : ProductionPlanningConstants.KPI_EFFICIENCY_FROM;
         LocalDate start = LocalDate.now();
         int deskCount = Math.max(1, productionDeskCountService.getDay(start).getNumDesks());
 
@@ -86,6 +88,7 @@ public class ProductionOrderTimeEstimateService {
         }
         theoreticalHours = round2(theoreticalHours);
 
+        // Misma base que "Eficiencia mesas" del dashboard (corte post-saneamiento).
         EfficiencyStats efficiency = computeEfficiency(from);
         double adjustedHours = theoreticalHours;
         if (efficiency.percent() != null && efficiency.percent() > 0) {

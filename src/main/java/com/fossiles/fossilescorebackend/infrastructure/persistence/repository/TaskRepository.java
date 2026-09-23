@@ -116,6 +116,16 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
             """)
     List<TaskEntity> findCompletedWithTimingSince(@Param("fromDateTime") LocalDateTime fromDateTime);
 
+    /** Misma base de eficiencia que el dashboard sin filtro de fechas. */
+    @Query("""
+            SELECT t FROM TaskEntity t
+            WHERE t.status = 'COMPLETED'
+              AND t.estimatedHours IS NOT NULL AND t.estimatedHours > 0
+              AND t.actualDurationMinutes IS NOT NULL AND t.actualDurationMinutes > 0
+              AND t.completedAt IS NOT NULL
+            """)
+    List<TaskEntity> findCompletedWithTiming();
+
     @Query("SELECT DISTINCT t.scheduledDate FROM TaskEntity t WHERE t.status NOT IN ('COMPLETED', 'CANCELLED') ORDER BY t.scheduledDate")
     List<LocalDate> findDistinctScheduledDates();
 

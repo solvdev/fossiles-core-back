@@ -43,6 +43,7 @@ import java.util.stream.Collectors;
 import com.fossiles.fossilescorebackend.application.dto.response.PageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductionOrderListItemResponse;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderListService;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderLeatherEstimateService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderTimeEstimateService;
 import org.springframework.format.annotation.DateTimeFormat;
 import java.time.LocalDate;
@@ -93,6 +94,7 @@ public class ProductionOrderController {
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final InternalShipmentRequestService internalShipmentRequestService;
     private final ProductionOrderTimeEstimateService productionOrderTimeEstimateService;
+    private final ProductionOrderLeatherEstimateService productionOrderLeatherEstimateService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
@@ -197,7 +199,8 @@ public class ProductionOrderController {
 
     /**
      * Estima tiempo de producción de una OP en días hábiles (prd_time × qty,
-     * mesas actuales, eficiencia del dashboard desde efficiencyFrom).
+     * mesas actuales, eficiencia de mesas del dashboard desde el corte KPI).
+     * efficiencyFrom es opcional; por defecto usa el corte post-saneamiento.
      */
     @GetMapping("/{id}/production-time-estimate")
     @Transactional(readOnly = true)
@@ -206,6 +209,16 @@ public class ProductionOrderController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate efficiencyFrom)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(productionOrderTimeEstimateService.estimate(id, efficiencyFrom));
+    }
+
+    /**
+     * Cuero requerido por OP: ft² por línea según color (product_variant_leather).
+     */
+    @GetMapping("/{id}/leather-estimate")
+    @Transactional(readOnly = true)
+    public ResponseEntity<ProductionOrderLeatherEstimateResponse> getLeatherEstimate(@PathVariable Long id)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(productionOrderLeatherEstimateService.estimate(id));
     }
 
     /**
@@ -893,7 +906,10 @@ public class ProductionOrderController {
         List<TaskEntity> allTasks = taskRepository.findAll();
         List<ProductionOrderItemEntity> allOrderItems = productionOrderItemRepository.findAll();
 
-        java.time.LocalDate rangeFrom = from != null ? from : java.time.LocalDate.MIN;
+        // Sin "from": arranca en el corte post-saneamiento KPI (misma base de eficiencia).
+        java.time.LocalDate rangeFrom = from != null
+                ? from
+                : com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants.KPI_EFFICIENCY_FROM;
         java.time.LocalDate rangeTo = to != null ? to : java.time.LocalDate.MAX;
         java.time.LocalDate referenceDay = to != null ? to : java.time.LocalDate.now();
 
@@ -923,7 +939,7 @@ public class ProductionOrderController {
         ProductionDashboardV2Response.ProductionSummary production = buildProductionSummary(scopedTasks);
 
         ProductionDashboardV2Response response = ProductionDashboardV2Response.builder()
-                .from(from)
+                .from(from != null ? from : rangeFrom)
                 .to(to)
                 .referenceDate(referenceDay)
                 .summary(summary)
