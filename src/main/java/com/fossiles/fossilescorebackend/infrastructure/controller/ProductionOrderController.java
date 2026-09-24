@@ -45,6 +45,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.PageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductionOrderListItemResponse;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderListService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderLeatherEstimateService;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderMaterialsEstimateService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderTimeEstimateService;
 import org.springframework.format.annotation.DateTimeFormat;
 import java.time.LocalDate;
@@ -96,6 +97,7 @@ public class ProductionOrderController {
     private final InternalShipmentRequestService internalShipmentRequestService;
     private final ProductionOrderTimeEstimateService productionOrderTimeEstimateService;
     private final ProductionOrderLeatherEstimateService productionOrderLeatherEstimateService;
+    private final ProductionOrderMaterialsEstimateService productionOrderMaterialsEstimateService;
     private final com.fossiles.fossilescorebackend.application.service.ProductionDeskCountService productionDeskCountService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -221,6 +223,17 @@ public class ProductionOrderController {
     public ResponseEntity<ProductionOrderLeatherEstimateResponse> getLeatherEstimate(@PathVariable Long id)
             throws ResourceNotFoundException {
         return ResponseEntity.ok(productionOrderLeatherEstimateService.estimate(id));
+    }
+
+    /**
+     * Materiales requeridos por OP según receta (BOM × cantidad de piezas).
+     * Incluye disponible y faltante a pedir.
+     */
+    @GetMapping("/{id}/materials-estimate")
+    @Transactional(readOnly = true)
+    public ResponseEntity<ProductionOrderMaterialsEstimateResponse> getMaterialsEstimate(@PathVariable Long id)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(productionOrderMaterialsEstimateService.estimate(id));
     }
 
     /**
