@@ -1784,11 +1784,17 @@ public class KioskPosService {
             }
         }
 
+        // TARJETAS = monto de factura + (voucher − factura). Si cobraron de más/menos en terminal, entra en DIFERENCIA.
+        cardsTotal = cardsTotal.add(sumCardVoucherDifferences(sales));
+
         List<KioskCashExpenseEntity> expenses = kioskCashExpenseRepository.findForReport(
                 startAt, endAtExclusive, kiosk.getId());
         BigDecimal expensesTotal = expenses.stream()
                 .map(expense -> safeAmount(expense.getAmount()))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // Sobrante/faltante de efectivo de todos los cierres del periodo (cualquier día del corte).
+        BigDecimal cashCloseVarianceTotal = sumCashCloseVariancesForPeriod(kiosk.getId(), startAt, endAtExclusive);
 
         totalSold = totalSold.setScale(2, RoundingMode.HALF_UP);
         cardsTotal = cardsTotal.setScale(2, RoundingMode.HALF_UP);
@@ -1796,7 +1802,9 @@ public class KioskPosService {
         expensesTotal = expensesTotal.setScale(2, RoundingMode.HALF_UP);
         BigDecimal reconciledTotal = cardsTotal.add(depositsTotal).add(expensesTotal)
                 .setScale(2, RoundingMode.HALF_UP);
-        BigDecimal difference = reconciledTotal.subtract(totalSold).setScale(2, RoundingMode.HALF_UP);
+        // DIFERENCIA = descuadre canales + diffs voucher (en TARJETAS) + variances de cierres del periodo.
+        BigDecimal difference = reconciledTotal.subtract(totalSold).add(cashCloseVarianceTotal)
+                .setScale(2, RoundingMode.HALF_UP);
 
         List<KioskMainSheetReportResponse.DailySaleRow> dailySales = dailyTotals.entrySet().stream()
                 .map(entry -> KioskMainSheetReportResponse.DailySaleRow.builder()
@@ -4578,6 +4586,26 @@ public class KioskPosService {
                 if (card2Diff != null) {
                     total = total.add(card2Diff);
                 }
+            }
+        }
+        return total.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /** Suma variance (contado − esperado) de cierres CLOSED del kiosko en la ventana del corte. */
+    private BigDecimal sumCashCloseVariancesForPeriod(
+            Long kioskLocationId,
+            LocalDateTime startAt,
+            LocalDateTime endAtExclusive
+    ) {
+        if (kioskLocationId == null || startAt == null || endAtExclusive == null) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        List<KioskCashSessionEntity> sessions = kioskCashSessionRepository.findClosedSessionsForHistory(
+                CASH_SESSION_CLOSED, startAt, endAtExclusive, List.of(kioskLocationId));
+        BigDecimal total = BigDecimal.ZERO;
+        for (KioskCashSessionEntity session : sessions) {
+            if (session.getVariance() != null) {
+                total = total.add(session.getVariance());
             }
         }
         return total.setScale(2, RoundingMode.HALF_UP);
