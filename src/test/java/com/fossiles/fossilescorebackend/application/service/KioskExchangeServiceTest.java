@@ -156,6 +156,80 @@ class KioskExchangeServiceTest {
     }
 
     @Test
+    void previewExchange_sameUnitPrice_differentStyle_zeroDifference() throws Exception {
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0);
+
+        KioskExchangePreviewResponse preview = kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(originalSale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(newProduct.getId())
+                        .givenColorId(negro.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .pricingMode("SAME_UNIT_PRICE")
+                        .build());
+
+        assertThat(preview.getReturned().getUnitPrice()).isEqualByComparingTo("180.00");
+        assertThat(preview.getGiven().getUnitPrice()).isEqualByComparingTo("180.00");
+        assertThat(preview.getReturnedAmount()).isEqualByComparingTo("180.00");
+        assertThat(preview.getGivenAmount()).isEqualByComparingTo("180.00");
+        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    void previewExchange_catalogGiven_forcesCatalogEvenForSameProduct() throws Exception {
+        KioskPosSaleResponse discountedSale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kiosk.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("90.00"))
+                .manualDiscountPercent(new BigDecimal("50"))
+                .items(List.of(item(originalProduct.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(discountedSale.getId()).get(0);
+
+        KioskExchangePreviewResponse preview = kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(discountedSale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(originalProduct.getId())
+                        .givenColorId(negro.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .pricingMode("CATALOG_GIVEN")
+                        .returnedSoldWithDiscount(true)
+                        .returnedDiscountPercent(new BigDecimal("50"))
+                        .build());
+
+        assertThat(preview.getReturned().getUnitPrice()).isEqualByComparingTo("90.00");
+        assertThat(preview.getGiven().getUnitPrice()).isEqualByComparingTo("180.00");
+        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("90.00");
+    }
+
+    @Test
+    void completeExchange_sameUnitPrice_rejectsWhenDifferenceAppears() {
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0);
+
+        assertThatThrownBy(() -> kioskExchangeService.completeExchange(
+                KioskExchangeCompleteRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(originalSale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(newProduct.getId())
+                        .givenColorId(negro.getId())
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(new BigDecimal("2"))
+                        .pricingMode("SAME_UNIT_PRICE")
+                        .physicalSlipNumber("BC-SAME-REJECT")
+                        .reason("Cambio estilo")
+                        .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("sin diferencia");
+    }
+
+    @Test
     void previewExchange_usesOriginalPriceForIngresoAndCatalogForEgreso() throws Exception {
         KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0);
 
