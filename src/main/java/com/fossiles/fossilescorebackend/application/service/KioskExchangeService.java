@@ -315,6 +315,7 @@ public class KioskExchangeService {
             throws BusinessException, ResourceNotFoundException {
         ExchangeContext exchange = buildExchangeContext(request, true);
         KioskExchangePreviewResponse preview = exchange.preview();
+        assertSameUnitPriceHasNoProductDifference(request, preview);
         LocationEntity kioskForSlip = exchange.access().kiosk();
         String slipNumber = requireAvailablePhysicalSlipNumber(request.getPhysicalSlipNumber(), kioskForSlip);
 
@@ -724,8 +725,42 @@ public class KioskExchangeService {
                 returnedQty,
                 givenLines,
                 returnedUnitOverride,
-                packaging
+                packaging,
+                normalizePricingMode(request.getPricingMode())
         );
+    }
+
+    private static String normalizePricingMode(String pricingMode) {
+        if (pricingMode == null || pricingMode.isBlank()) {
+            return null;
+        }
+        String normalized = pricingMode.trim().toUpperCase(Locale.ROOT);
+        if ("SAME_UNIT_PRICE".equals(normalized) || "CATALOG_GIVEN".equals(normalized)) {
+            return normalized;
+        }
+        return null;
+    }
+
+    private static boolean isSameUnitPriceMode(String pricingMode) {
+        return "SAME_UNIT_PRICE".equals(pricingMode);
+    }
+
+    private static void assertSameUnitPriceHasNoProductDifference(
+            KioskExchangePreviewRequest request,
+            KioskExchangePreviewResponse preview
+    ) throws BusinessException {
+        if (!isSameUnitPriceMode(normalizePricingMode(request != null ? request.getPricingMode() : null))) {
+            return;
+        }
+        BigDecimal difference = preview != null && preview.getDifferenceAmount() != null
+                ? preview.getDifferenceAmount()
+                : BigDecimal.ZERO;
+        if (difference.abs().compareTo(new BigDecimal("0.01")) >= 0) {
+            throw new BusinessException(
+                    "Marcaste cambio sin diferencia, pero hay diferencia de "
+                            + difference.setScale(2, RoundingMode.HALF_UP)
+                            + ". Revisa cantidades o elige \"Con diferencia\".");
+        }
     }
 
     private List<ResolvedGivenLine> resolveGivenLines(
@@ -1405,7 +1440,8 @@ public class KioskExchangeService {
             BigDecimal returnedQty,
             List<ResolvedGivenLine> givenLines,
             BigDecimal returnedUnitPriceOverride,
-            PackagingAllocation packaging
+            PackagingAllocation packaging,
+            String pricingMode
     ) {
         KioskExchangePreviewResponse preview() throws BusinessException {
             return buildPreview();
@@ -1428,12 +1464,16 @@ public class KioskExchangeService {
 
             List<KioskExchangePreviewResponse.ProductLine> givenProductLines = new ArrayList<>();
             BigDecimal productGivenAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+            boolean forceSameUnitPrice = isSameUnitPriceMode(pricingMode);
+            boolean forceCatalogGiven = "CATALOG_GIVEN".equals(pricingMode);
 
             for (ResolvedGivenLine given : givenLines) {
                 BigDecimal givenUnitPrice;
                 if (given.unitPriceOverride() != null) {
                     givenUnitPrice = given.unitPriceOverride();
-                } else if (shouldPreservePaidPriceOnExchange(item, returnedProduct, given.product())) {
+                } else if (forceSameUnitPrice
+                        || (!forceCatalogGiven
+                        && shouldPreservePaidPriceOnExchange(item, returnedProduct, given.product()))) {
                     givenUnitPrice = returnedUnitPaid;
                 } else {
                     givenUnitPrice = resolveFullSaleUnitPrice(given.product(), given.size());
