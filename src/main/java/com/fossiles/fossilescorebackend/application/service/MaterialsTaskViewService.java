@@ -116,18 +116,34 @@ public class MaterialsTaskViewService {
                 tasksById.put(task.getId(), task);
             }
         }
-        if (tasksById.isEmpty()) {
-            return List.of();
+
+        // OPC sin ninguna tarea todavía: deben listarse para que se les generen las tareas de materiales
+        // (si no, nunca aparecen y no hay forma de entregarles materiales).
+        Set<Long> ordersWithTasks = new HashSet<>();
+        for (TaskEntity task : tasksById.values()) {
+            if (task.getProductionOrderId() != null) {
+                ordersWithTasks.add(task.getProductionOrderId());
+            }
+        }
+        for (Set<Long> linked : orderIdsByTaskId.values()) {
+            ordersWithTasks.addAll(linked);
         }
 
         Set<Long> ordersWithPending = new HashSet<>();
-        for (MaterialsTaskViewResponse view : build(new ArrayList<>(tasksById.values()), true)) {
-            if (view.getProductionOrderId() != null) {
-                ordersWithPending.add(view.getProductionOrderId());
+        for (Long orderId : orderIds) {
+            if (!ordersWithTasks.contains(orderId)) {
+                ordersWithPending.add(orderId);
             }
-            Set<Long> linked = orderIdsByTaskId.get(view.getTaskId());
-            if (linked != null) {
-                ordersWithPending.addAll(linked);
+        }
+        if (!tasksById.isEmpty()) {
+            for (MaterialsTaskViewResponse view : build(new ArrayList<>(tasksById.values()), true)) {
+                if (view.getProductionOrderId() != null) {
+                    ordersWithPending.add(view.getProductionOrderId());
+                }
+                Set<Long> linked = orderIdsByTaskId.get(view.getTaskId());
+                if (linked != null) {
+                    ordersWithPending.addAll(linked);
+                }
             }
         }
 
@@ -425,6 +441,10 @@ public class MaterialsTaskViewService {
         }
 
         private int recipeQuantity(TaskItemEntity item) {
+            // Solo la parte de la línea de OP que cubre esta tarea, no el total de la línea.
+            if (item.getQuantity() != null && item.getQuantity() > 0) {
+                return item.getQuantity();
+            }
             if (item.getProductionOrderItemId() != null) {
                 ProductionOrderItemEntity orderItem = orderItemsById.get(item.getProductionOrderItemId());
                 if (orderItem != null) {
