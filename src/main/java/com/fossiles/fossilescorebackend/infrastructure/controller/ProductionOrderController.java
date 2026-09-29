@@ -61,7 +61,8 @@ public class ProductionOrderController {
             "NAUTICA",
             "TOMMY HILFIGER",
             "LACOSTE",
-            "ABERCROMBIE"
+            "ABERCROMBIE",
+            "TIMBERLAND"
     );
 
     private final ProductionOrderRepository productionOrderRepository;
@@ -2021,7 +2022,7 @@ public class ProductionOrderController {
                 throw new BusinessException("Brand name is required for each item in MARCAS production orders");
             }
             if (!ALLOWED_BRANDS.contains(normalizedBrand)) {
-                throw new BusinessException("Invalid brand name. Must be one of: LEVIS, NAUTICA, TOMMY HILFIGER, LACOSTE, ABERCROMBIE");
+                throw new BusinessException("Invalid brand name. Must be one of: LEVIS, NAUTICA, TOMMY HILFIGER, LACOSTE, ABERCROMBIE, TIMBERLAND");
             }
         }
     }
