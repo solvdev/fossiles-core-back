@@ -72,6 +72,13 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             LocalDate endDate
     );
 
+    /** Ventas de varios kioskos en un rango de fechas (panel agregado de supervisora). */
+    List<KioskSaleEntity> findByKioskLocationIdInAndSaleDateBetween(
+            List<Long> kioskLocationIds,
+            LocalDate startDate,
+            LocalDate endDate
+    );
+
     /** Ventas del kiosko en [fromInclusive, toExclusive) por soldAt (wall-clock Guatemala). */
     @Query("""
             SELECT s FROM KioskSaleEntity s
