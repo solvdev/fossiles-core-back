@@ -15,6 +15,35 @@ class KioskExcelParserSyntheticTest {
 
     private final KioskExcelParser parser = new KioskExcelParser();
 
+    /** El Excel que exporta Finanzas rotula "Total costos variables/fijos" (antes "Total CI"): debe seguir importándose igual. */
+    @Test
+    void exportedTotalLabelsAreEquivalentToTotalCi() throws Exception {
+        byte[] original = KioskExcelTestFixtures.februaryWorkbook(null, false, null);
+        byte[] renamed;
+        try (org.apache.poi.xssf.usermodel.XSSFWorkbook wb = new org.apache.poi.xssf.usermodel.XSSFWorkbook(
+                new java.io.ByteArrayInputStream(original));
+             java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            int seen = 0;
+            for (org.apache.poi.ss.usermodel.Row row : wb.getSheetAt(0)) {
+                org.apache.poi.ss.usermodel.Cell cell = row.getCell(1);
+                if (cell != null && cell.getCellType() == org.apache.poi.ss.usermodel.CellType.STRING
+                        && "Total CI".equals(cell.getStringCellValue())) {
+                    cell.setCellValue(seen++ == 0 ? "Total costos variables" : "Total costos fijos");
+                }
+            }
+            assertThat(seen).isEqualTo(2);
+            wb.write(out);
+            renamed = out.toByteArray();
+        }
+
+        KioskExcelParser.ParseResult before = parser.parse("VENTAS FEBRERO 2025.xlsx", original);
+        KioskExcelParser.ParseResult after = parser.parse("VENTAS FEBRERO 2025.xlsx", renamed);
+
+        assertThat(after.getData().getCosts()).isEqualTo(before.getData().getCosts());
+        assertThat(after.getData().getCosts().get("MIRAFLORES").get("BONO_14")).isNotNull();
+        assertThat(after.getData().getRates()).isEqualTo(before.getData().getRates());
+    }
+
     @Test
     void parsesLayoutWithBlankColumnSpillRowsAndCorruptLabels() throws Exception {
         KioskExcelParser.ParseResult r = parser.parse("VENTAS FEBRERO 2025.xlsx",

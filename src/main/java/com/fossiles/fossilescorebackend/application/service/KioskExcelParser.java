@@ -397,7 +397,8 @@ public class KioskExcelParser {
                     rateRows.put("TAX", r);
                 }
             } else if (fixedSection && !fixedDone) {
-                if (label.equals("TOTAL CI")) {
+                // "Total costos fijos" es el rótulo del Excel que exporta Finanzas (antes "Total CI")
+                if (label.equals("TOTAL CI") || label.equals("TOTAL COSTOS FIJOS")) {
                     fixedDone = true;
                     continue;
                 }
@@ -887,12 +888,12 @@ public class KioskExcelParser {
                 goalsRow = r;
             } else if (label.equals("COSTOS VARIABLES")) {
                 variable = true;
-            } else if (label.equals("TOTAL CV")) {
+            } else if (label.equals("TOTAL CV") || label.equals("TOTAL COSTOS VARIABLES")) {
                 variable = false;
             } else if (label.equals("COSTOS FIJOS")) {
                 fixed = true;
                 variable = false;
-            } else if (label.equals("TOTAL CF")) {
+            } else if (label.equals("TOTAL CF") || label.equals("TOTAL COSTOS FIJOS")) {
                 fixed = false;
                 fixedDone = true;
             } else if (variable) {
