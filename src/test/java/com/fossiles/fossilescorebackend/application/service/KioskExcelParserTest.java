@@ -61,6 +61,9 @@ class KioskExcelParserTest {
         }
         for (Path p : files) {
             String upper = p.getFileName().toString().toUpperCase(Locale.ROOT);
+            if (!upper.contains("2025")) {
+                continue; // los reportes de 2026 (formatos nuevos) se prueban en KioskExcelParserSheetYearTest
+            }
             for (int i = 0; i < MONTH_NAMES.length; i++) {
                 if (upper.contains(MONTH_NAMES[i])) {
                     RESULTS.put(i + 1, PARSER.parse(p.getFileName().toString(), Files.readAllBytes(p)));

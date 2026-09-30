@@ -67,8 +67,10 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskCashSessionRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionTierRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSiteEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleSequenceRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSiteRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
@@ -155,6 +157,8 @@ public class KioskPosService {
     private final TaxInvoiceRepository taxInvoiceRepository;
     private final KioscoPhysicalCountRepository kioscoPhysicalCountRepository;
     private final KioscoInventoryService kioscoInventoryService;
+    private final KioskSiteRepository kioskSiteRepository;
+    private final KioskSalesSourceResolver kioskSalesSourceResolver;
 
     @Transactional(readOnly = true)
     public KioskPosContextResponse getCurrentContext(
@@ -1277,41 +1281,71 @@ public class KioskPosService {
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
         LocalDate today = GuatemalaDateTime.today();
+        // Java ya lleva 29-feb a 28-feb al restar un año.
         LocalDate todayLastYear = today.minusYears(1);
         LocalDate lastMonthStart = today.minusMonths(1).withDayOfMonth(1);
         LocalDate lastMonthEnd = today.withDayOfMonth(1).minusDays(1);
         LocalDate monthToDateStart = today.withDayOfMonth(1);
-        LocalDate rangeStart = todayLastYear.isBefore(lastMonthStart)
-                ? todayLastYear
-                : lastMonthStart;
+        LocalDate monthToDateStartLastYear = monthToDateStart.minusYears(1);
+
+        // El año anterior vive en kiosk_daily_sales_hist (no en kiosk_sale): se lee con el resolver de
+        // Finanzas por el sitio ligado al kiosco. Sin sitio se conserva el calculo solo con ventas POS.
+        Optional<KioskSiteEntity> site = kioskSiteRepository.findByLocationId(kiosk.getId());
+        LocalDate rangeStart = site.isPresent()
+                ? lastMonthStart
+                : (monthToDateStartLastYear.isBefore(lastMonthStart) ? monthToDateStartLastYear : lastMonthStart);
 
         List<KioskSaleEntity> sales = findSalesByDateRangeForKiosk(kiosk.getId(), rangeStart, today).stream()
                 .filter(KioskPosService::countsForManagerDashboard)
                 .toList();
 
         KioskPosManagerDashboardResponse.Metric todayMetric = buildDashboardMetric(sales, today, today);
-        KioskPosManagerDashboardResponse.Metric todayLastYearMetric = buildDashboardMetric(
+        KioskPosManagerDashboardResponse.Metric monthToDateMetric = buildDashboardMetric(
                 sales,
-                todayLastYear,
-                todayLastYear
+                monthToDateStart,
+                today
         );
         KioskPosManagerDashboardResponse.Metric lastMonthMetric = buildDashboardMetric(
                 sales,
                 lastMonthStart,
                 lastMonthEnd
         );
-        KioskPosManagerDashboardResponse.Metric monthToDateMetric = buildDashboardMetric(
-                sales,
-                monthToDateStart,
-                today
-        );
+
+        KioskPosManagerDashboardResponse.Metric todayLastYearMetric;
+        KioskPosManagerDashboardResponse.Metric monthToDateLastYearMetric;
+        if (site.isPresent()) {
+            KioskSalesSourceResolver.SiteSales lastYear = kioskSalesSourceResolver
+                    .resolve(List.of(site.get()), monthToDateStartLastYear, todayLastYear)
+                    .get(site.get().getId());
+            todayLastYearMetric = historicMetric(lastYear, todayLastYear, todayLastYear);
+            monthToDateLastYearMetric = historicMetric(lastYear, monthToDateStartLastYear, todayLastYear);
+        } else {
+            todayLastYearMetric = buildDashboardMetric(sales, todayLastYear, todayLastYear);
+            monthToDateLastYearMetric = buildDashboardMetric(sales, monthToDateStartLastYear, todayLastYear);
+        }
 
         return KioskPosManagerDashboardResponse.builder()
                 .today(todayMetric)
                 .todayLastYear(todayLastYearMetric)
                 .lastMonth(lastMonthMetric)
                 .monthToDate(monthToDateMetric)
+                .monthToDateLastYear(monthToDateLastYearMetric)
                 .growthVsLastYearPercent(growthPercent(todayMetric.getAmount(), todayLastYearMetric.getAmount()))
+                .growthMonthToDateVsLastYearPercent(
+                        growthPercent(monthToDateMetric.getAmount(), monthToDateLastYearMetric.getAmount()))
+                .build();
+    }
+
+    /** Metrica de un rango del año anterior: monto en Q (0.00 si no hubo operacion), sin cantidad de ventas. */
+    private KioskPosManagerDashboardResponse.Metric historicMetric(
+            KioskSalesSourceResolver.SiteSales sales,
+            LocalDate startDate,
+            LocalDate endDate
+    ) {
+        BigDecimal amount = sales == null ? BigDecimal.ZERO : sales.totalBetween(startDate, endDate);
+        return KioskPosManagerDashboardResponse.Metric.builder()
+                .amount(amount.setScale(2, RoundingMode.HALF_UP))
+                .count(null)
                 .build();
     }
 
@@ -3380,7 +3414,7 @@ public class KioskPosService {
     }
 
     static boolean countsForManagerDashboard(KioskSaleEntity sale) {
-        if (sale == null || isVoidSale(sale)) {
+        if (sale == null || isVoidSale(sale) || Boolean.TRUE.equals(sale.getTestSale())) {
             return false;
         }
         String status = safeTrimStatic(sale.getStatus());

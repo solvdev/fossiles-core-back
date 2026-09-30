@@ -359,12 +359,13 @@ public class KioskExcelCommitValidator {
             if (costs != null) {
                 Map<String, BigDecimal> clean = new LinkedHashMap<>();
                 for (Map.Entry<String, BigDecimal> e : costs.entrySet()) {
-                    if (e.getKey() == null || !knownCostCodes.contains(e.getKey())) {
-                        problems.add(label + ": categoría de costo desconocida '" + e.getKey() + "' en '" + col + "'.");
-                        continue;
-                    }
                     BigDecimal amount = e.getValue();
                     if (amount == null) {
+                        continue; // sin dato: no se escribe, aunque la categoría aún no exista en la BD
+                    }
+                    if (e.getKey() == null || !knownCostCodes.contains(e.getKey())) {
+                        problems.add(label + ": categoría de costo desconocida '" + e.getKey() + "' en '" + col
+                                + "'. Si es 'SUPERVISION', ejecute scripts/migration-kiosk-financials-supervision.sql.");
                         continue;
                     }
                     if (amount.signum() < 0 || amount.compareTo(MAX_AMOUNT) >= 0) {

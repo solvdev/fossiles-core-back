@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -33,9 +34,10 @@ public class KioskExcelImportController {
     private final KioskExcelImportService importService;
 
     @PostMapping(value = "/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<KioskExcelPreviewResponse> preview(@RequestPart("files") List<MultipartFile> files)
-            throws BusinessException {
-        return ResponseEntity.ok(importService.preview(files));
+    public ResponseEntity<KioskExcelPreviewResponse> preview(
+            @RequestPart("files") List<MultipartFile> files,
+            @RequestParam(value = "periods", required = false) String periods) throws BusinessException {
+        return ResponseEntity.ok(importService.preview(files, periods));
     }
 
     @PostMapping("/commit")

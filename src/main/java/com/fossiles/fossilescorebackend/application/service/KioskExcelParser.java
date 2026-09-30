@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskExcelDataDto;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskExcelIssueDto;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.application.util.KioskSupervisionCost;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -30,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -55,9 +57,26 @@ public class KioskExcelParser {
         FIXED_COST_PREFIXES.put("BONO 14", "BONO_14");
         FIXED_COST_PREFIXES.put("AGUINALDO", "AGUINALDO");
         FIXED_COST_PREFIXES.put("SALARIOS MO DIRECTA", "SALARIOS_MO_DIRECTA");
+        // Formato 2026 (hojas "ventas 20XX"): mismas categorías con otra etiqueta. "Salarios encargadas" ocupa el
+        // lugar de "Salarios MO indirecta" y "Salarios suplentes" el de "Salarios MO directa" (mismos montos que
+        // en los Excel anteriores: 4002.28 y 500), aunque sus etiquetas digan MOD/MOI.
+        FIXED_COST_PREFIXES.put("SALARIOS ENCARGADAS", "SALARIOS_MO_INDIRECTA");
+        FIXED_COST_PREFIXES.put("SALARIOS SUPLENTES", "SALARIOS_MO_DIRECTA");
+        FIXED_COST_PREFIXES.put("SUPERVISION", "SUPERVISION");
     }
 
-    public static final List<String> COST_CODES = List.copyOf(FIXED_COST_PREFIXES.values());
+    /** Código de la categoría de supervisión (sólo existe en el formato 2026; se calcula con {@link KioskSupervisionCost}). */
+    public static final String SUPERVISION = "SUPERVISION";
+    /** Categorías que no se exigen para considerar un mes completo (los Excel anteriores a 2026 no la traen). */
+    public static final Set<String> OPTIONAL_COST_CODES = Set.of(SUPERVISION);
+
+    public static final List<String> COST_CODES = FIXED_COST_PREFIXES.values().stream().distinct().toList();
+
+    public static final String FORMAT_LEGACY = "LEGACY";
+    public static final String FORMAT_SHEET_YEAR = "SHEET_YEAR";
+    public static final String PERIOD_FROM_DATES = "DATES";
+    public static final String PERIOD_FROM_FILE_NAME = "FILE_NAME";
+    public static final String PERIOD_OVERRIDE = "OVERRIDE";
 
     public static final BigDecimal TOTAL_TOLERANCE = new BigDecimal("0.01");
     public static final BigDecimal OUTLIER_MIN_AMOUNT = new BigDecimal("3000");
@@ -75,6 +94,11 @@ public class KioskExcelParser {
         }
         MONTHS.put("SETIEMBRE", 9);
     }
+    private static final Pattern MONTH_ONLY = Pattern.compile(
+            "\\b(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|SETIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\\b");
+    private static final Pattern YEAR_ONLY = Pattern.compile("\\b(20\\d{2})\\b");
+    private static final Pattern SHEET_YEAR_NAME = Pattern.compile("^VENTAS\\b.*?(20\\d{2})$");
+    private static final Pattern PERCENT_IN_LABEL = Pattern.compile("\\((\\d+(?:[.,]\\d+)?)\\s*%\\)");
     private static final Pattern MONTH_YEAR = Pattern.compile(
             "(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|SETIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\\D{0,10}?(20\\d{2})");
 
@@ -111,20 +135,42 @@ public class KioskExcelParser {
         private Map<String, BigDecimal> recomputedTotals;
         /** Fila "Total" de la hoja por kiosco (sólo si la celda tiene valor). */
         private Map<String, BigDecimal> sheetTotals;
+        /** {@link #FORMAT_LEGACY} (hoja "Reporte de Vtas  orig.") o {@link #FORMAT_SHEET_YEAR} (hojas "ventas 20XX"). */
+        private String format;
+        /** De dónde salió el mes: DATES | FILE_NAME | OVERRIDE. */
+        private String periodSource;
+        /** true si el mes/año puede corregirse desde el asistente (formato 2026: las fechas de la hoja no son fiables). */
+        private boolean periodEditable;
     }
 
     // ------------------------------------------------------------------ API
 
     public ParseResult parse(String fileName, byte[] content) throws BusinessException {
+        return parse(fileName, content, null);
+    }
+
+    /**
+     * @param periodOverride mes/año indicado por el usuario; sólo se aplica al formato 2026, donde las fechas de la
+     *                       hoja pueden venir con el mes o el año equivocado. El formato anterior lo ignora.
+     */
+    public ParseResult parse(String fileName, byte[] content, YearMonth periodOverride) throws BusinessException {
         if (content == null || content.length == 0) {
             throw new BusinessException("El archivo '" + fileName + "' está vacío.");
         }
         try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet legacy = findLegacySheet(workbook);
+            if (legacy != null) {
+                return parseSheet(fileName, legacy);
+            }
+            YearSheet yearSheet = findYearSheet(workbook);
+            if (yearSheet != null) {
+                return parseYearSheet(fileName, yearSheet, periodOverride);
+            }
             Sheet sheet = pickSheet(workbook);
             if (sheet == null) {
                 throw new BusinessException("El archivo '" + fileName + "' no contiene hojas.");
             }
-            return parseSheet(fileName, sheet);
+            return parseSheet(fileName, sheet); // lanza el aviso de encabezado no encontrado
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
@@ -214,21 +260,9 @@ public class KioskExcelParser {
         List<KioskExcelIssueDto> issues = new ArrayList<>();
 
         // 1) Encabezado: fila con "Fecha" (col A..C) y una celda "Total por d..." a su derecha
-        int headerRow = -1;
-        int labelCol = -1;
-        for (int r = 0; r <= HEADER_SEARCH_ROWS && headerRow < 0; r++) {
-            Row row = sheet.getRow(r);
-            if (row == null) {
-                continue;
-            }
-            for (int c = 0; c <= 2; c++) {
-                if ("FECHA".equals(normalizeAlias(textOf(row.getCell(c)))) && hasTotalPorDia(row, c)) {
-                    headerRow = r;
-                    labelCol = c;
-                    break;
-                }
-            }
-        }
+        int[] located = findLegacyHeader(sheet);
+        int headerRow = located == null ? -1 : located[0];
+        int labelCol = located == null ? -1 : located[1];
         if (headerRow < 0) {
             throw new BusinessException("No se encontró la fila de encabezado (\"Fecha\" ... \"Total por día\") en la hoja '"
                     + sheet.getSheetName() + "' de '" + fileName + "'.");
@@ -387,12 +421,65 @@ public class KioskExcelParser {
         if (costRows.size() < COST_CODES.size()) {
             List<String> missing = new ArrayList<>(COST_CODES);
             missing.removeAll(costRows.keySet());
-            addIssue(issues, KioskExcelIssueDto.INFO, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
-                    "No se encontraron filas de costo fijo para: " + String.join(", ", missing) + ".",
-                    null, null, null, null, null);
+            missing.removeAll(OPTIONAL_COST_CODES);
+            if (!missing.isEmpty()) {
+                addIssue(issues, KioskExcelIssueDto.INFO, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
+                        "No se encontraron filas de costo fijo para: " + String.join(", ", missing) + ".",
+                        null, null, null, null, null);
+            }
         }
 
-        // 6) Lectura por kiosco
+        // 6) y 7) Lectura por kiosco y validaciones (compartidas con el formato 2026)
+        final int goalsRow = goalsRowIdx;
+        ConfigReader reader = new ConfigReader() {
+            @Override
+            public BigDecimal goal(int c, String name) {
+                return goalsRow >= 0 ? configNumber(issues, sheet, goalsRow, c, name, 2, "meta") : null;
+            }
+
+            @Override
+            public KioskExcelDataDto.Rates rates(int c, String name, BigDecimal monthSales) {
+                // sólo la fila de tasa; la de abajo es calculada
+                return KioskExcelDataDto.Rates.builder()
+                        .productCostPct(rateRow(issues, sheet, rateRows, "PRODUCT", c, name, "costo del producto"))
+                        .salesCommissionPct(rateRow(issues, sheet, rateRows, "SALES", c, name, "comisión de venta"))
+                        .cardCommissionPct(rateRow(issues, sheet, rateRows, "CARD", c, name, "comisión de tarjeta"))
+                        .taxPct(rateRow(issues, sheet, rateRows, "TAX", c, name, "IVA"))
+                        .build();
+            }
+
+            @Override
+            public Map<String, BigDecimal> costs(int c, String name) {
+                Map<String, BigDecimal> kioskCosts = new LinkedHashMap<>();
+                for (String code : COST_CODES) {
+                    Integer r = costRows.get(code);
+                    kioskCosts.put(code, r == null ? null : configNumber(issues, sheet, r, c, name, 2, code));
+                }
+                return kioskCosts;
+            }
+        };
+        ParseResult result = collect(sheet, ym, columns, rowDates, totalsRowIdx, issues, reader);
+        result.setFileName(fileName);
+        result.setFormat(FORMAT_LEGACY);
+        result.setPeriodSource(PERIOD_FROM_DATES);
+        result.setPeriodEditable(false);
+        return result;
+    }
+
+    /** Acceso a meta, tasas y costos de una columna de kiosco; cambia según el formato del Excel. */
+    private interface ConfigReader {
+        BigDecimal goal(int col, String name);
+
+        /** @param monthSales ventas del mes del kiosco (fila Total de la hoja o suma recalculada). */
+        KioskExcelDataDto.Rates rates(int col, String name, BigDecimal monthSales);
+
+        Map<String, BigDecimal> costs(int col, String name);
+    }
+
+    /** Lee ventas por día, meta, tasas y costos de cada kiosco y valida (común a ambos formatos). */
+    private ParseResult collect(Sheet sheet, YearMonth ym, List<ParsedColumn> columns, Map<Integer, LocalDate> rowDates,
+                                int totalsRowIdx, List<KioskExcelIssueDto> issues, ConfigReader reader) {
+        // Lectura por kiosco
         List<KioskExcelDataDto.Day> days = new ArrayList<>();
         List<Integer> inMonthRows = new ArrayList<>();
         for (Map.Entry<Integer, LocalDate> e : rowDates.entrySet()) {
@@ -494,30 +581,16 @@ public class KioskExcelParser {
             }
 
             // Meta
-            BigDecimal goal = null;
-            if (goalsRowIdx >= 0) {
-                goal = configNumber(issues, sheet, goalsRowIdx, c, name, 2, "meta");
-            }
-            goals.put(name, goal);
+            goals.put(name, reader.goal(c, name));
 
-            // Tasas (sólo la fila de tasa; la de abajo es calculada)
-            rates.put(name, KioskExcelDataDto.Rates.builder()
-                    .productCostPct(rateRow(issues, sheet, rateRows, "PRODUCT", c, name, "costo del producto"))
-                    .salesCommissionPct(rateRow(issues, sheet, rateRows, "SALES", c, name, "comisión de venta"))
-                    .cardCommissionPct(rateRow(issues, sheet, rateRows, "CARD", c, name, "comisión de tarjeta"))
-                    .taxPct(rateRow(issues, sheet, rateRows, "TAX", c, name, "IVA"))
-                    .build());
+            // Tasas
+            rates.put(name, reader.rates(c, name, sheetTotals.getOrDefault(name, recomputed.get(name))));
 
             // Costos fijos
-            Map<String, BigDecimal> kioskCosts = new LinkedHashMap<>();
-            for (String code : COST_CODES) {
-                Integer r = costRows.get(code);
-                kioskCosts.put(code, r == null ? null : configNumber(issues, sheet, r, c, name, 2, code));
-            }
-            costs.put(name, kioskCosts);
+            costs.put(name, reader.costs(c, name));
         }
 
-        // 7) Validaciones por kiosco: total de la hoja, costos y meta incompletos
+        // Validaciones por kiosco: total de la hoja, costos y meta incompletos
         BigDecimal sheetTotalSum = BigDecimal.ZERO;
         BigDecimal recomputedSum = BigDecimal.ZERO;
         for (ParsedColumn col : columns) {
@@ -544,7 +617,7 @@ public class KioskExcelParser {
                 List<String> missing = new ArrayList<>();
                 Map<String, BigDecimal> kc = costs.get(name);
                 for (String code : COST_CODES) {
-                    if (kc.get(code) == null) {
+                    if (kc.get(code) == null && !OPTIONAL_COST_CODES.contains(code)) {
                         missing.add(code);
                     }
                 }
@@ -578,7 +651,6 @@ public class KioskExcelParser {
         KioskExcelDataDto data = KioskExcelDataDto.builder()
                 .days(days).goals(goals).rates(rates).costs(costs).blockedCells(blocked).build();
         return ParseResult.builder()
-                .fileName(fileName)
                 .sheetName(sheet.getSheetName())
                 .year(ym.getYear())
                 .month(ym.getMonthValue())
@@ -590,6 +662,398 @@ public class KioskExcelParser {
                 .recomputedTotals(recomputed)
                 .sheetTotals(sheetTotals)
                 .build();
+    }
+
+    // ------------------------------------------------------------------ formato 2026 (hojas "ventas 20XX")
+
+    /** Hoja elegida del formato 2026 y las hojas que se omiten (año anterior y comparativos). */
+    private record YearSheet(Sheet sheet, Integer year, int headerRow, List<String> ignored) {
+    }
+
+    /** @return {fila, columna de etiquetas} del encabezado "Fecha ... Total por día" o null. */
+    private int[] findLegacyHeader(Sheet sheet) {
+        for (int r = 0; r <= HEADER_SEARCH_ROWS; r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) {
+                continue;
+            }
+            for (int c = 0; c <= 2; c++) {
+                if ("FECHA".equals(normalizeAlias(textOf(row.getCell(c)))) && hasTotalPorDia(row, c)) {
+                    return new int[]{r, c};
+                }
+            }
+        }
+        return null;
+    }
+
+    private Sheet findLegacySheet(Workbook workbook) {
+        for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
+            Sheet s = workbook.getSheetAt(i);
+            if (!"HOJA1".equals(normalizeAlias(s.getSheetName())) && findLegacyHeader(s) != null) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    /** Fila (0-based) cuya columna A dice "kiosco" en las primeras filas, o -1. */
+    private static int findKioscoHeaderRow(Sheet sheet) {
+        for (int r = 0; r <= 4; r++) {
+            if ("KIOSCO".equals(normalizeAlias(textOf(cellAt(sheet, r, 0))))) {
+                return r;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Formato 2026: un libro con hojas "ventas 2025" / "ventas 2026" (+ "anita", "gabriela", "ANALISIS DE COSTO FIJO").
+     * Se toma la hoja de ventas del año más reciente; el resto se omite.
+     */
+    private YearSheet findYearSheet(Workbook workbook) {
+        Sheet best = null;
+        Integer bestYear = null;
+        int bestHeader = -1;
+        for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
+            Sheet s = workbook.getSheetAt(i);
+            Matcher m = SHEET_YEAR_NAME.matcher(normalizeAlias(s.getSheetName()));
+            int headerRow = findKioscoHeaderRow(s);
+            if (m.matches() && headerRow >= 0) {
+                int year = Integer.parseInt(m.group(1));
+                if (bestYear == null || year > bestYear) {
+                    best = s;
+                    bestYear = year;
+                    bestHeader = headerRow;
+                }
+            }
+        }
+        if (best == null) {
+            return null;
+        }
+        List<String> ignored = new ArrayList<>();
+        for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
+            Sheet s = workbook.getSheetAt(i);
+            if (s != best && !"HOJA1".equals(normalizeAlias(s.getSheetName()))) {
+                ignored.add(s.getSheetName().trim());
+            }
+        }
+        return new YearSheet(best, bestYear, bestHeader, ignored);
+    }
+
+    private ParseResult parseYearSheet(String fileName, YearSheet ys, YearMonth override) throws BusinessException {
+        Sheet sheet = ys.sheet();
+        int headerRow = ys.headerRow();
+        final int labelCol = 0;
+        List<KioskExcelIssueDto> issues = new ArrayList<>();
+        if (!ys.ignored().isEmpty()) {
+            addIssue(issues, KioskExcelIssueDto.INFO, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
+                    "Se lee la hoja '" + sheet.getSheetName().trim() + "'. Hojas omitidas: " + String.join(", ", ys.ignored())
+                            + " (año anterior, que ya se importa con su propio archivo, y comparativos).",
+                    null, null, null, null, null);
+        }
+
+        // 1) Columnas de kiosco: desde B hasta "venta del día" / "acumulado" / columna con el año / "diferencia"
+        Row header = sheet.getRow(headerRow);
+        List<ParsedColumn> columns = new ArrayList<>();
+        Map<String, String> seenNormalized = new HashMap<>();
+        for (int c = labelCol + 1; c < header.getLastCellNum(); c++) {
+            Raw cellValue = read(header.getCell(c));
+            if (cellValue.isBlank()) {
+                continue;
+            }
+            if (cellValue.number != null) {
+                break; // columna con el año (p. ej. 2025): ya son comparativos
+            }
+            String raw = headerName(header.getCell(c));
+            String norm = normalizeAlias(raw);
+            if (norm.startsWith("VENTA DEL DIA") || norm.startsWith("ACUMULADO") || norm.startsWith("DIFERENCIA")
+                    || norm.startsWith("TOTAL")) {
+                break;
+            }
+            if (seenNormalized.containsKey(norm)) {
+                addIssue(issues, KioskExcelIssueDto.BLOCKING, KioskExcelIssueDto.DUPLICATE_COLUMN,
+                        "La columna '" + raw + "' está repetida en el encabezado (ya existe '" + seenNormalized.get(norm)
+                                + "'); sólo se lee la primera.", raw, null, ref(headerRow, c), raw, null);
+                continue;
+            }
+            seenNormalized.put(norm, raw);
+            columns.add(ParsedColumn.builder().excelName(raw).normalized(norm).columnIndex(c).build());
+        }
+        if (columns.isEmpty()) {
+            throw new BusinessException("No se encontraron columnas de kioscos en '" + fileName + "'.");
+        }
+
+        // 2) Filas de fecha: entre el encabezado y la fila "TOTAL"
+        int totalRow = -1;
+        for (int r = headerRow + 1; r <= headerRow + MAX_DAY_ROWS + 3; r++) {
+            if ("TOTAL".equals(normalizeAlias(textOf(cellAt(sheet, r, labelCol))))) {
+                totalRow = r;
+                break;
+            }
+        }
+        int lastDayRow;
+        if (totalRow < 0) {
+            lastDayRow = headerRow + MAX_DAY_ROWS;
+            addIssue(issues, KioskExcelIssueDto.INFO, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
+                    "No se encontró la fila 'TOTAL'; se asumen " + MAX_DAY_ROWS + " filas de fecha tras el encabezado.",
+                    null, null, null, null, null);
+        } else {
+            lastDayRow = totalRow - 1;
+        }
+
+        // 3) Mes y año. Las fechas de la hoja no son fiables (la hoja se reutiliza de un mes a otro y arrastra el
+        //    mes/año anterior): el año sale del nombre de la hoja, el mes del nombre del archivo, y el usuario puede
+        //    corregirlos. De la columna de fechas sólo se usa el número de día.
+        Map<YearMonth, Integer> dateVotes = new HashMap<>();
+        for (int r = headerRow + 1; r <= lastDayRow; r++) {
+            LocalDate d = dateOf(cellAt(sheet, r, labelCol));
+            if (d != null) {
+                dateVotes.merge(YearMonth.from(d), 1, Integer::sum);
+            }
+        }
+        YearMonth dateMajority = null;
+        int best = 0;
+        for (Map.Entry<YearMonth, Integer> e : dateVotes.entrySet()) {
+            if (e.getValue() > best) {
+                best = e.getValue();
+                dateMajority = e.getKey();
+            }
+        }
+        Integer nameMonth = monthOnly(fileName);
+        Integer nameYear = yearOnly(fileName);
+        YearMonth ym;
+        String periodSource;
+        if (override != null) {
+            ym = override;
+            periodSource = PERIOD_OVERRIDE;
+        } else {
+            Integer year = ys.year() != null ? ys.year() : (nameYear != null ? nameYear
+                    : (dateMajority != null ? dateMajority.getYear() : null));
+            Integer month = nameMonth != null ? nameMonth : (dateMajority != null ? dateMajority.getMonthValue() : null);
+            if (year == null || month == null) {
+                throw new BusinessException("No se pudo determinar el mes de '" + fileName
+                        + "': ponga el mes en el nombre del archivo (p. ej. \"reporte de ventas abril.xlsx\").");
+            }
+            ym = YearMonth.of(year, month);
+            periodSource = nameMonth != null ? PERIOD_FROM_FILE_NAME : PERIOD_FROM_DATES;
+        }
+        if (override == null && dateMajority != null && !dateMajority.equals(ym)) {
+            addIssue(issues, KioskExcelIssueDto.WARNING, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
+                    "Las fechas de la hoja indican " + dateMajority + " pero se usa " + ym + " (año de la hoja '"
+                            + sheet.getSheetName().trim() + "' y mes " + (nameMonth != null ? "del nombre del archivo" : "de las fechas")
+                            + "). Verifique el período; puede corregirlo en el asistente.",
+                    null, null, null, null, null);
+        }
+
+        Map<Integer, LocalDate> rowDates = new TreeMap<>();
+        Integer previousDay = null;
+        boolean inferredDays = false;
+        for (int r = headerRow + 1; r <= lastDayRow; r++) {
+            LocalDate d = dateOf(cellAt(sheet, r, labelCol));
+            int day;
+            if (d != null) {
+                day = d.getDayOfMonth();
+            } else {
+                day = previousDay != null ? previousDay + 1 : r - headerRow;
+                inferredDays = true;
+            }
+            previousDay = day;
+            // Filas de relleno (p. ej. 31 en un mes de 30 días) caen en el mes siguiente y se ignoran.
+            rowDates.put(r, day <= ym.lengthOfMonth() ? ym.atDay(day)
+                    : ym.atEndOfMonth().plusDays(day - ym.lengthOfMonth()));
+        }
+        if (inferredDays) {
+            addIssue(issues, KioskExcelIssueDto.INFO, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
+                    "Alguna celda de fecha no se pudo leer; se infirió como el día siguiente al anterior.",
+                    null, null, null, null, null);
+        }
+
+        // 4) Filas etiquetadas debajo de las fechas: meta, costos variables (monto; la tasa va en la etiqueta) y fijos
+        int goalsRow = -1;
+        Map<String, Integer> rateRows = new HashMap<>();
+        Map<String, BigDecimal> declaredRates = new HashMap<>();
+        Map<String, Integer> costRows = new LinkedHashMap<>();
+        boolean variable = false;
+        boolean fixed = false;
+        boolean fixedDone = false;
+        int lastRow = Math.max(sheet.getLastRowNum(), lastDayRow);
+        for (int r = lastDayRow + 1; r <= lastRow; r++) {
+            String rawLabel = textOf(cellAt(sheet, r, labelCol));
+            String label = normalizeAlias(rawLabel);
+            if (label.isEmpty()) {
+                continue;
+            }
+            if (label.equals("META") && goalsRow < 0) {
+                goalsRow = r;
+            } else if (label.equals("COSTOS VARIABLES")) {
+                variable = true;
+            } else if (label.equals("TOTAL CV")) {
+                variable = false;
+            } else if (label.equals("COSTOS FIJOS")) {
+                fixed = true;
+                variable = false;
+            } else if (label.equals("TOTAL CF")) {
+                fixed = false;
+                fixedDone = true;
+            } else if (variable) {
+                String key = null;
+                if (label.startsWith("COSTO DEL")) {
+                    key = "PRODUCT";
+                } else if (label.startsWith("COMISION DE VENTA")) {
+                    key = "SALES";
+                } else if (label.startsWith("COMISION TARJETA")) {
+                    key = "CARD";
+                } else if (label.startsWith("IVA")) {
+                    key = "TAX";
+                }
+                if (key != null && !rateRows.containsKey(key)) {
+                    rateRows.put(key, r);
+                    BigDecimal pct = percentInLabel(rawLabel);
+                    if (pct != null) {
+                        declaredRates.put(key, pct);
+                    }
+                }
+            } else if (fixed && !fixedDone) {
+                for (Map.Entry<String, String> p : FIXED_COST_PREFIXES.entrySet()) {
+                    if (label.startsWith(p.getKey()) && !costRows.containsKey(p.getValue())) {
+                        costRows.put(p.getValue(), r);
+                        break;
+                    }
+                }
+            }
+        }
+        if (goalsRow < 0) {
+            addIssue(issues, KioskExcelIssueDto.INFO, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
+                    "No se encontró la fila 'META'; las metas quedan sin valor.", null, null, null, null, null);
+        }
+        if (rateRows.size() < 4) {
+            addIssue(issues, KioskExcelIssueDto.INFO, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
+                    "No se encontraron todas las filas de costos variables (costo del producto, comisión de venta, tarjeta, "
+                            + "IVA); las tasas faltantes quedan sin valor.", null, null, null, null, null);
+        }
+        List<String> missingRows = new ArrayList<>(COST_CODES);
+        missingRows.removeAll(costRows.keySet());
+        missingRows.removeAll(OPTIONAL_COST_CODES);
+        if (!missingRows.isEmpty()) {
+            addIssue(issues, KioskExcelIssueDto.INFO, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
+                    "No se encontraron filas de costo fijo para: " + String.join(", ", missingRows) + ".",
+                    null, null, null, null, null);
+        }
+
+        // 5) Lectura por kiosco (las tasas se derivan de los montos: monto / ventas del mes)
+        final int goalsRowIdx = goalsRow;
+        final int activeKiosks = columns.size();
+        final boolean[] supervisionNoted = {false};
+        ConfigReader reader = new ConfigReader() {
+            @Override
+            public BigDecimal goal(int c, String name) {
+                return goalsRowIdx >= 0 ? configNumber(issues, sheet, goalsRowIdx, c, name, 2, "meta") : null;
+            }
+
+            @Override
+            public KioskExcelDataDto.Rates rates(int c, String name, BigDecimal monthSales) {
+                return KioskExcelDataDto.Rates.builder()
+                        .productCostPct(derivedRate(issues, sheet, rateRows, declaredRates, "PRODUCT", c, name, monthSales,
+                                "costo del producto"))
+                        .salesCommissionPct(derivedRate(issues, sheet, rateRows, declaredRates, "SALES", c, name, monthSales,
+                                "comisión de venta"))
+                        .cardCommissionPct(derivedRate(issues, sheet, rateRows, declaredRates, "CARD", c, name, monthSales,
+                                "comisión de tarjeta"))
+                        .taxPct(derivedRate(issues, sheet, rateRows, declaredRates, "TAX", c, name, monthSales, "IVA"))
+                        .build();
+            }
+
+            @Override
+            public Map<String, BigDecimal> costs(int c, String name) {
+                Map<String, BigDecimal> kioskCosts = new LinkedHashMap<>();
+                for (String code : COST_CODES) {
+                    Integer r = costRows.get(code);
+                    kioskCosts.put(code, r == null ? null : configNumber(issues, sheet, r, c, name, 2, code));
+                }
+                if (kioskCosts.get(SUPERVISION) == null) {
+                    BigDecimal computed = KioskSupervisionCost.compute(kioskCosts.get("SALARIOS_MO_INDIRECTA"),
+                            kioskCosts.get("BONIFICACION"), activeKiosks);
+                    if (computed != null) {
+                        kioskCosts.put(SUPERVISION, computed);
+                        if (!supervisionNoted[0]) {
+                            supervisionNoted[0] = true;
+                            addIssue(issues, KioskExcelIssueDto.INFO, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
+                                    "La fila 'supervisión' no existe o viene vacía; se calculó con ((Salarios MO indirecta + "
+                                            + "Bonificación) × 2 × 14 / 12) / " + activeKiosks + " kioscos.",
+                                    null, null, null, null, null);
+                        }
+                    }
+                }
+                return kioskCosts;
+            }
+        };
+        ParseResult result = collect(sheet, ym, columns, rowDates, totalRow, issues, reader);
+        result.setFileName(fileName);
+        result.setFormat(FORMAT_SHEET_YEAR);
+        result.setPeriodSource(periodSource);
+        result.setPeriodEditable(true);
+        return result;
+    }
+
+    /**
+     * Tasa de un concepto de costo variable: monto del kiosco / ventas del mes. Si coincide con el porcentaje de la
+     * etiqueta (p. ej. "costo del producto (18%)") se usa el de la etiqueta; un monto 0 da tasa 0 (p. ej. comisión
+     * de venta, que sólo aplica a algunos kioscos). Sin ventas no se puede derivar: queda sin valor.
+     */
+    private BigDecimal derivedRate(List<KioskExcelIssueDto> issues, Sheet sheet, Map<String, Integer> rows,
+                                   Map<String, BigDecimal> declared, String key, int c, String name,
+                                   BigDecimal monthSales, String what) {
+        Integer r = rows.get(key);
+        if (r == null) {
+            return null;
+        }
+        BigDecimal amount = configNumber(issues, sheet, r, c, name, 6, "monto de " + what);
+        if (amount == null || monthSales == null || monthSales.signum() <= 0) {
+            return null;
+        }
+        BigDecimal ratio = amount.divide(monthSales, 6, RoundingMode.HALF_UP);
+        BigDecimal label = declared.get(key);
+        if (label != null && ratio.subtract(label).abs().compareTo(new BigDecimal("0.0005")) <= 0) {
+            return clean(label, 4);
+        }
+        return clean(ratio, 4);
+    }
+
+    private static BigDecimal percentInLabel(String rawLabel) {
+        if (rawLabel == null) {
+            return null;
+        }
+        Matcher m = PERCENT_IN_LABEL.matcher(rawLabel);
+        if (!m.find()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(m.group(1).replace(',', '.')).divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** Nombre de archivo en palabras: sin acentos, MAYÚSCULAS y cualquier separador (punto, guion, guion bajo) como espacio. */
+    private static String fileNameWords(String text) {
+        String n = Normalizer.normalize(text, Normalizer.Form.NFD).replaceAll("\\p{M}+", "");
+        return n.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]+", " ").trim();
+    }
+
+    private static Integer monthOnly(String text) {
+        if (text == null) {
+            return null;
+        }
+        Matcher m = MONTH_ONLY.matcher(fileNameWords(text));
+        return m.find() ? MONTHS.get(m.group(1)) : null;
+    }
+
+    private static Integer yearOnly(String text) {
+        if (text == null) {
+            return null;
+        }
+        Matcher m = YEAR_ONLY.matcher(fileNameWords(text));
+        return m.find() ? Integer.valueOf(m.group(1)) : null;
     }
 
     // ------------------------------------------------------------------ lectura de celdas

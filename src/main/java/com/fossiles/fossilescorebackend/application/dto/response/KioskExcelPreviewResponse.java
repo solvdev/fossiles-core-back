@@ -32,6 +32,12 @@ public class KioskExcelPreviewResponse {
         private List<KioskExcelIssueDto> issues;
         private KioskExcelDataDto data;
         private Stats stats;
+        /** LEGACY (hoja "Reporte de Vtas  orig.") | SHEET_YEAR (hojas "ventas 20XX"). */
+        private String format;
+        /** De dónde salió el mes: DATES | FILE_NAME | OVERRIDE. */
+        private String periodSource;
+        /** true si el asistente puede corregir el mes/año (se reenvía en {@code periods} al volver a pedir el preview). */
+        private Boolean periodEditable;
     }
 
     @Data

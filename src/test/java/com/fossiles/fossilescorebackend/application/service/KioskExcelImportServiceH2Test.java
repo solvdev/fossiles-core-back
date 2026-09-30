@@ -82,7 +82,7 @@ class KioskExcelImportServiceH2Test {
                 + "test_sale BOOLEAN DEFAULT FALSE NOT NULL, status VARCHAR(30))");
 
         String[] codes = {"ALQUILER", "LUZ", "TELEFONO_INTERNET_PROG", "MANTENIMIENTO", "SALARIOS_MO_INDIRECTA",
-                "BONIFICACION", "INDEMNIZACION_VACACIONES", "BONO_14", "AGUINALDO", "SALARIOS_MO_DIRECTA"};
+                "BONIFICACION", "INDEMNIZACION_VACACIONES", "BONO_14", "AGUINALDO", "SALARIOS_MO_DIRECTA", "SUPERVISION"};
         for (int i = 0; i < codes.length; i++) {
             jdbc.update("INSERT INTO kiosk_cost_category (code, name, sort_order) VALUES (?, ?, ?)", codes[i], codes[i], i + 1);
         }
@@ -383,6 +383,42 @@ class KioskExcelImportServiceH2Test {
         KioskExcelPreviewResponse.FilePreview third = service.previewBytes(List.of(
                 new KioskExcelImportService.NamedBytes("VENTAS FEBRERO 2025.xlsx", xlsx))).getFiles().get(0);
         assertThat(third.getAlreadyImported()).isNull();
+    }
+
+    @Test
+    void previewAcceptsBothReportFormatsInOneUploadAndHonoursThePeriodOverride() throws Exception {
+        java.nio.file.Path april = java.nio.file.Paths.get("C:/Users/eduar/Desktop/Work/Fossiles/Documentacion/reportesventas",
+                "reporte de ventas abril.xlsx");
+        org.junit.jupiter.api.Assumptions.assumeTrue(java.nio.file.Files.exists(april), "Excel real de abril no disponible");
+        List<KioskExcelImportService.NamedBytes> inputs = List.of(
+                new KioskExcelImportService.NamedBytes("VENTAS FEBRERO 2025.xlsx",
+                        KioskExcelTestFixtures.februaryWorkbook(null, false, null)),
+                new KioskExcelImportService.NamedBytes("reporte de ventas abril.xlsx", java.nio.file.Files.readAllBytes(april)));
+
+        KioskExcelPreviewResponse preview = service.previewBytes(inputs);
+
+        KioskExcelPreviewResponse.FilePreview legacy = preview.getFiles().get(0);
+        KioskExcelPreviewResponse.FilePreview sheetYear = preview.getFiles().get(1);
+        assertThat(legacy.getFormat()).isEqualTo(KioskExcelParser.FORMAT_LEGACY);
+        assertThat(legacy.getPeriodEditable()).isFalse();
+        assertThat(legacy.getMonth()).isEqualTo(2);
+        assertThat(sheetYear.getFormat()).isEqualTo(KioskExcelParser.FORMAT_SHEET_YEAR);
+        assertThat(sheetYear.getPeriodEditable()).isTrue();
+        assertThat(sheetYear.getYear()).isEqualTo(2026);
+        assertThat(sheetYear.getMonth()).isEqualTo(4);
+        // los alias creados con el formato anterior sirven también para el nuevo ("miraflores" -> MIRAFLORES)
+        assertThat(sheetYear.getColumns().get(0).getMatchStatus()).isEqualTo("MATCHED");
+        assertThat(sheetYear.getColumns().get(0).getMatchedSiteId()).isEqualTo(1L);
+
+        KioskExcelPreviewResponse corrected = service.previewBytes(inputs,
+                Map.of("reporte de ventas abril.xlsx", java.time.YearMonth.of(2026, 5),
+                        "VENTAS FEBRERO 2025.xlsx", java.time.YearMonth.of(2030, 1)));
+        assertThat(corrected.getFiles().get(1).getMonth()).isEqualTo(5);
+        assertThat(corrected.getFiles().get(1).getPeriodSource()).isEqualTo(KioskExcelParser.PERIOD_OVERRIDE);
+        assertThat(corrected.getFiles().get(1).getData().getDays()).hasSize(31);
+        // el formato anterior ignora la corrección
+        assertThat(corrected.getFiles().get(0).getMonth()).isEqualTo(2);
+        assertThat(corrected.getFiles().get(0).getYear()).isEqualTo(2025);
     }
 
     @Test
