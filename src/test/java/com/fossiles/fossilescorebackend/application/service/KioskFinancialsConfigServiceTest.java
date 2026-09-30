@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancials
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsCopyResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsSiteResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.application.util.KioskEffectiveGoals;
 import com.fossiles.fossilescorebackend.application.util.KioskSiteAliasNormalizer;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
@@ -30,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -52,14 +54,18 @@ class KioskFinancialsConfigServiceTest {
     private LocationRepository locationRepository;
     @Mock
     private KioskSalesSourceResolver resolver;
+    @Mock
+    private KioskGoalModuleReader goalReader;
     @InjectMocks
     private KioskFinancialsConfigService service;
 
     private KioskSiteEntity site1;
+    private final Map<Long, Map<Integer, BigDecimal>> moduleGoals = new HashMap<>();
 
     @BeforeEach
     void setUp() {
-        site1 = KioskSiteEntity.builder().id(1L).name("MIRAFLORES II").locationId(15L).status("ACTIVE").build();
+        // Sitio historico (sin location): su meta SI se edita en Finanzas. Los kioscos reales se prueban aparte.
+        site1 = KioskSiteEntity.builder().id(1L).name("MAJADAS 11").locationId(null).status("ACTIVE").build();
         lenient().when(siteRepository.findById(1L)).thenReturn(Optional.of(site1));
         lenient().when(siteRepository.findAllById(anyCollection())).thenReturn(List.of(site1));
         lenient().when(siteRepository.findAllByOrderBySortOrderAscNameAsc()).thenReturn(List.of(site1));
@@ -67,6 +73,16 @@ class KioskFinancialsConfigServiceTest {
         lenient().when(categoryRepository.findByActiveTrueOrderBySortOrderAscCodeAsc()).thenReturn(List.of(
                 category("ALQUILER", 1), category("LUZ", 2)));
         lenient().when(guard.currentUserId()).thenReturn(7L);
+        lenient().when(goalReader.forYear(anyInt(), any())).thenAnswer(inv -> {
+            Collection<KioskSiteEntity> sites = inv.getArgument(1);
+            Map<Long, Long> locationBySite = new HashMap<>();
+            for (KioskSiteEntity s : sites) {
+                if (s.getLocationId() != null) {
+                    locationBySite.put(s.getId(), s.getLocationId());
+                }
+            }
+            return new KioskEffectiveGoals(locationBySite, moduleGoals);
+        });
     }
 
     private static KioskCostCategoryEntity category(String code, int order) {
@@ -410,5 +426,88 @@ class KioskFinancialsConfigServiceTest {
         assertThat(KioskSiteAliasNormalizer.normalize("SANTAL�")).isEqualTo("SANTAL");
         assertThat(KioskSiteAliasNormalizer.normalize("  Zona   4 ")).isEqualTo("ZONA 4");
         assertThat(KioskSiteAliasNormalizer.normalize(null)).isEmpty();
+    }
+
+    // ------------------------------------------------------------------ metas: fuente = modulo Metas de kioscos
+
+    private KioskSiteEntity linkedSite() {
+        KioskSiteEntity linked = KioskSiteEntity.builder().id(2L).name("MIRAFLORES II").locationId(15L)
+                .status("ACTIVE").build();
+        lenient().when(siteRepository.findById(2L)).thenReturn(Optional.of(linked));
+        lenient().when(siteRepository.findAllById(anyCollection())).thenReturn(List.of(linked));
+        lenient().when(siteRepository.findAllByOrderBySortOrderAscNameAsc()).thenReturn(List.of(linked));
+        return linked;
+    }
+
+    @Test
+    void bulkRejectsGoalForKioskManagedByGoalsModule() {
+        linkedSite();
+
+        assertThatThrownBy(() -> service.bulkUpdate(bulk(2026, KioskFinancialsConfigBulkRequest.Change.builder()
+                .siteId(2L).month(9).goal(Optional.of(new BigDecimal("130000"))).build())))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Metas de kioscos");
+        verify(configRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void bulkStillSavesRatesAndCostsForKioskManagedByGoalsModule() throws Exception {
+        linkedSite();
+
+        service.bulkUpdate(bulk(2026, KioskFinancialsConfigBulkRequest.Change.builder()
+                .siteId(2L).month(9).productCostPct(Optional.of(new BigDecimal("0.18"))).build()));
+
+        KioskPeriodConfigEntity saved = (KioskPeriodConfigEntity) savedConfigs().get(0);
+        assertThat(saved.getProductCostPct()).isEqualByComparingTo("0.1800");
+        assertThat(saved.getSalesGoal()).isNull();
+    }
+
+    @Test
+    void getConfigShowsGoalFromGoalsModuleAndMarksItReadOnly() throws Exception {
+        linkedSite();
+        moduleGoals.put(15L, Map.of(9, new BigDecimal("130000")));
+        // Respaldo de Finanzas (p. ej. importado de Excel) solo en enero
+        lenient().when(configRepository.findByPeriodYear(2026)).thenReturn(List.of(
+                KioskPeriodConfigEntity.builder().siteId(2L).periodYear(2026).periodMonth(1)
+                        .salesGoal(new BigDecimal("90000")).source("EXCEL").build()));
+        lenient().when(fixedCostRepository.findByPeriodYear(2026)).thenReturn(List.of());
+
+        KioskFinancialsConfigResponse.Site site = service.getConfig(2026, 2L, null).getSites().get(0);
+
+        assertThat(site.getGoalManagedExternally()).isTrue();
+        KioskFinancialsConfigResponse.Month sep = site.getMonths().get(8);
+        assertThat(sep.getGoal()).isEqualByComparingTo("130000");
+        assertThat(sep.getGoalSource()).isEqualTo("METAS_KIOSCOS");   // aunque Finanzas no tenga fila de septiembre
+        KioskFinancialsConfigResponse.Month jan = site.getMonths().get(0);
+        assertThat(jan.getGoal()).isEqualByComparingTo("90000");
+        assertThat(jan.getGoalSource()).isEqualTo("CONFIG");           // respaldo
+        assertThat(site.getMonths().get(1).getGoal()).isNull();
+        assertThat(site.getMonths().get(1).getGoalSource()).isNull();
+    }
+
+    @Test
+    void getConfigKeepsHistoricalSiteGoalEditable() throws Exception {
+        lenient().when(configRepository.findByPeriodYear(2026)).thenReturn(List.of());
+        lenient().when(fixedCostRepository.findByPeriodYear(2026)).thenReturn(List.of());
+
+        KioskFinancialsConfigResponse.Site site = service.getConfig(2026, 1L, null).getSites().get(0);
+
+        assertThat(site.getGoalManagedExternally()).isFalse();
+    }
+
+    @Test
+    void copyDoesNotCopyGoalsOfKiosksManagedByGoalsModule() throws Exception {
+        linkedSite();
+        lenient().when(configRepository.findByPeriodYear(2025)).thenReturn(List.of(
+                KioskPeriodConfigEntity.builder().siteId(2L).periodYear(2025).periodMonth(12)
+                        .salesGoal(new BigDecimal("250000")).source("EXCEL").build()));
+        lenient().when(configRepository.findByPeriodYear(2026)).thenReturn(List.of());
+        lenient().when(fixedCostRepository.findByPeriodYear(anyInt())).thenReturn(List.of());
+
+        KioskFinancialsCopyResponse r = service.copy(copyRequest(false, "GOALS"));
+
+        assertThat(r.getCopiedCells()).isZero();
+        assertThat(r.getSkippedCells()).isEqualTo(2); // enero y febrero
+        verify(configRepository, never()).saveAll(any());
     }
 }

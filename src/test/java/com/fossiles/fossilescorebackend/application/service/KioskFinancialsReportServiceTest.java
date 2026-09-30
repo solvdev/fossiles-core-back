@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancials
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsPnlResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.KioskSalesSourceResolver.SiteSales;
+import com.fossiles.fossilescorebackend.application.util.KioskEffectiveGoals;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskCostCategoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskFixedCostRepository;
@@ -20,6 +21,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -27,6 +30,7 @@ import java.util.TreeMap;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 
@@ -45,11 +49,15 @@ class KioskFinancialsReportServiceTest {
     private KioskPeriodConfigRepository configRepository;
     @Mock
     private KioskSalesSourceResolver resolver;
+    @Mock
+    private KioskGoalModuleReader goalReader;
     @InjectMocks
     private KioskFinancialsReportService service;
 
     private KioskSiteEntity site1;
     private KioskSiteEntity site2;
+    /** Metas del modulo Metas de kioscos por location y mes; vacio = el modulo no tiene metas. */
+    private final Map<Long, Map<Integer, BigDecimal>> moduleGoals = new HashMap<>();
 
     @BeforeEach
     void setUp() {
@@ -62,6 +70,17 @@ class KioskFinancialsReportServiceTest {
                 KioskCostCategoryEntity.builder().code("ALQUILER").name("Alquiler").sortOrder(1).active(true).build(),
                 KioskCostCategoryEntity.builder().code("LUZ").name("Luz").sortOrder(2).active(true).build()));
         lenient().when(resolver.goLiveEffective(any())).thenReturn(Map.of());
+        lenient().when(goalReader.forYear(anyInt(), any())).thenAnswer(inv -> {
+            Collection<KioskSiteEntity> sites = inv.getArgument(1);
+            Map<Long, Long> locationBySite = new HashMap<>();
+            for (KioskSiteEntity s : sites) {
+                if (s.getLocationId() != null) {
+                    locationBySite.put(s.getId(), s.getLocationId());
+                }
+            }
+            return new KioskEffectiveGoals(locationBySite, moduleGoals);
+        });
+        lenient().when(siteRepository.findAll()).thenReturn(List.of(site1, site2));
     }
 
     // ------------------------------------------------------------------ helpers
@@ -355,5 +374,75 @@ class KioskFinancialsReportServiceTest {
         assertThatThrownBy(() -> service.getPnl(2025, 1, "abc")).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.getPnl(2025, 1, "99")).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.getDailyMatrix(2025, null, null)).isInstanceOf(BusinessException.class);
+    }
+
+    // ------------------------------------------------------------------ metas: fuente = modulo Metas de kioscos
+
+    @Test
+    void pnlTakesGoalFromGoalsModuleOverFinancialsConfig() throws Exception {
+        lenient().when(resolver.resolve(any(), eq(LocalDate.of(2026, 9, 1)), eq(LocalDate.of(2026, 9, 30)), any()))
+                .thenReturn(Map.of(1L, sales(1, null, true, false, "2026-09-10", "78472.30")));
+        // Finanzas tiene 100000 (respaldo); el modulo de metas tiene 130000 para la location 15 en septiembre
+        lenient().when(configRepository.findByPeriodYear(2026)).thenReturn(List.of(
+                config(1, 2026, 9, "100000", "0.18", "0.04", "0.025", "0.025")));
+        moduleGoals.put(15L, Map.of(9, new BigDecimal("130000")));
+
+        KioskFinancialsPnlResponse r = service.getPnl(2026, 9, "1");
+
+        KioskFinancialsPnlResponse.SitePnl s = r.getSites().get(0);
+        assertThat(s.getGoal()).isEqualByComparingTo("130000");
+        assertThat(s.getGoalPct()).isEqualByComparingTo("0.6036"); // 78472.30 / 130000
+    }
+
+    @Test
+    void pnlSeesGoalFromGoalsModuleEvenWithoutAnyFinancialsConfig() throws Exception {
+        // Caso reportado: la meta existe en Metas de kioscos pero Finanzas no tiene fila de configuracion
+        lenient().when(resolver.resolve(any(), eq(LocalDate.of(2026, 9, 1)), eq(LocalDate.of(2026, 9, 30)), any()))
+                .thenReturn(Map.of(1L, sales(1, null, true, false, "2026-09-10", "78472.30")));
+        lenient().when(configRepository.findByPeriodYear(2026)).thenReturn(List.of());
+        moduleGoals.put(15L, Map.of(9, new BigDecimal("130000")));
+
+        KioskFinancialsPnlResponse.SitePnl s = service.getPnl(2026, 9, "1").getSites().get(0);
+
+        assertThat(s.getGoal()).isEqualByComparingTo("130000");
+        assertThat(s.getGoalPct()).isNotNull();
+    }
+
+    @Test
+    void pnlFallsBackToFinancialsGoalWhenGoalsModuleHasNone() throws Exception {
+        lenient().when(resolver.resolve(any(), eq(LocalDate.of(2025, 1, 1)), eq(LocalDate.of(2025, 1, 31)), any()))
+                .thenReturn(Map.of(1L, sales(1, null, false, true, "2025-01-02", "60000.00")));
+        lenient().when(configRepository.findByPeriodYear(2025)).thenReturn(List.of(
+                config(1, 2025, 1, "130000", "0.18", "0.04", "0.025", "0.025")));
+        // el modulo de metas tiene septiembre pero no enero
+        moduleGoals.put(15L, Map.of(9, new BigDecimal("999")));
+
+        assertThat(service.getPnl(2025, 1, "1").getSites().get(0).getGoal()).isEqualByComparingTo("130000");
+    }
+
+    @Test
+    void historicalSiteWithoutLocationNeverUsesGoalsModule() throws Exception {
+        lenient().when(resolver.resolve(any(), eq(LocalDate.of(2025, 1, 1)), eq(LocalDate.of(2025, 1, 31)), any()))
+                .thenReturn(Map.of(2L, sales(2, null, false, true, "2025-01-02", "1000.00")));
+        lenient().when(configRepository.findByPeriodYear(2025)).thenReturn(List.of(
+                config(2, 2025, 1, "5000", "0.18", "0.04", "0.025", "0.025")));
+        moduleGoals.put(2L, Map.of(1, new BigDecimal("777"))); // id de sitio no es id de location: se ignora
+
+        assertThat(service.getPnl(2025, 1, "2").getSites().get(0).getGoal()).isEqualByComparingTo("5000");
+    }
+
+    @Test
+    void completenessCountsGoalFromGoalsModule() throws Exception {
+        lenient().when(resolver.resolve(any(), eq(LocalDate.of(2026, 1, 1)), eq(LocalDate.of(2026, 12, 31)), any()))
+                .thenReturn(Map.of(1L, sales(1, null, true, false, "2026-09-10", "10.00"),
+                        2L, sales(2, null, false, false)));
+        lenient().when(fixedCostRepository.findByPeriodYear(2026)).thenReturn(List.of());
+        lenient().when(configRepository.findByPeriodYear(2026)).thenReturn(List.of());
+        moduleGoals.put(15L, Map.of(9, new BigDecimal("130000")));
+
+        KioskFinancialsCompletenessResponse.Site s = service.getCompleteness(2026).getSites().get(0);
+
+        assertThat(s.getMonths().get(8).getHasGoal()).isTrue();   // septiembre: viene del modulo de metas
+        assertThat(s.getMonths().get(7).getHasGoal()).isFalse();  // agosto: nadie la tiene
     }
 }
