@@ -29,6 +29,7 @@ import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -68,6 +69,16 @@ public class KioskExcelImportService {
 
     @Transactional(readOnly = true, rollbackFor = Exception.class)
     public KioskExcelPreviewResponse preview(List<MultipartFile> files) throws BusinessException {
+        return preview(files, null);
+    }
+
+    /**
+     * @param periodsJson opcional: {@code {"<nombre de archivo>":{"year":2026,"month":4}}}. Corrige el mes/año de los
+     *                    archivos del formato 2026, cuyas fechas internas pueden venir mal (los del formato anterior
+     *                    lo ignoran).
+     */
+    @Transactional(readOnly = true, rollbackFor = Exception.class)
+    public KioskExcelPreviewResponse preview(List<MultipartFile> files, String periodsJson) throws BusinessException {
         accessGuard.assertCanImport();
         if (files == null || files.isEmpty()) {
             throw new BusinessException("Debe adjuntar al menos un archivo Excel (campo 'files').");
@@ -86,11 +97,38 @@ public class KioskExcelImportService {
                 throw new BusinessException("No se pudo leer el archivo '" + f.getOriginalFilename() + "'.", e);
             }
         }
-        return previewBytes(inputs);
+        return previewBytes(inputs, parsePeriods(periodsJson));
+    }
+
+    private Map<String, YearMonth> parsePeriods(String periodsJson) throws BusinessException {
+        Map<String, YearMonth> periods = new HashMap<>();
+        if (periodsJson == null || periodsJson.isBlank()) {
+            return periods;
+        }
+        try {
+            Map<String, Map<String, Integer>> raw = objectMapper.readValue(periodsJson,
+                    new TypeReference<Map<String, Map<String, Integer>>>() {
+                    });
+            for (Map.Entry<String, Map<String, Integer>> e : raw.entrySet()) {
+                Integer year = e.getValue() == null ? null : e.getValue().get("year");
+                Integer month = e.getValue() == null ? null : e.getValue().get("month");
+                if (year == null || year < 2000 || year > 2100 || month == null || month < 1 || month > 12) {
+                    throw new BusinessException("Período inválido para '" + e.getKey() + "': indique año (2000-2100) y mes (1-12).");
+                }
+                periods.put(e.getKey(), YearMonth.of(year, month));
+            }
+        } catch (JsonProcessingException e) {
+            throw new BusinessException("El parámetro 'periods' no es un JSON válido.", e);
+        }
+        return periods;
     }
 
     /** Variante sin multipart (usada por tests). */
     public KioskExcelPreviewResponse previewBytes(List<NamedBytes> inputs) {
+        return previewBytes(inputs, Map.of());
+    }
+
+    public KioskExcelPreviewResponse previewBytes(List<NamedBytes> inputs, Map<String, YearMonth> periods) {
         List<KioskExcelPreviewResponse.FilePreview> previews = new ArrayList<>();
         Set<String> seenSha = new HashSet<>();
         Set<String> seenPeriod = new HashSet<>();
@@ -98,7 +136,7 @@ public class KioskExcelImportService {
             String sha = sha256(in.content());
             KioskExcelPreviewResponse.FilePreview preview;
             try {
-                KioskExcelParser.ParseResult parsed = parser.parse(in.name(), in.content());
+                KioskExcelParser.ParseResult parsed = parser.parse(in.name(), in.content(), periods.get(in.name()));
                 preview = buildPreview(parsed, sha);
                 if (!seenSha.add(sha) || !seenPeriod.add(parsed.getYear() + "-" + parsed.getMonth())) {
                     addIssue(preview.getIssues(), KioskExcelIssueDto.WARNING, KioskExcelIssueDto.DUPLICATE_FILE,
@@ -191,6 +229,9 @@ public class KioskExcelImportService {
                 .columns(columns)
                 .issues(issues)
                 .data(parsed.getData())
+                .format(parsed.getFormat())
+                .periodSource(parsed.getPeriodSource())
+                .periodEditable(parsed.isPeriodEditable())
                 .stats(KioskExcelPreviewResponse.Stats.builder()
                         .columns(parsed.getColumns().size())
                         .days(parsed.getDays())

@@ -369,7 +369,8 @@ public class KioskFinancialsReportService {
         Map<Long, SiteSales> baseSales = salesSourceResolver.resolve(selected, baseRangeStart, baseRangeEnd, goLive);
 
         List<String> requiredCodes = categoryRepository.findByActiveTrueOrderBySortOrderAscCodeAsc().stream()
-                .map(KioskCostCategoryEntity::getCode).toList();
+                .map(KioskCostCategoryEntity::getCode)
+                .filter(code -> !KioskExcelParser.OPTIONAL_COST_CODES.contains(code)).toList();
         YearData yd = loadYear(y);
         YearData ybd = by == y ? yd : loadYear(by);
 
@@ -533,7 +534,8 @@ public class KioskFinancialsReportService {
         int y = requireYear(year);
         List<KioskSiteEntity> sites = siteRepository.findAllByOrderBySortOrderAscNameAsc();
         List<String> requiredCodes = categoryRepository.findByActiveTrueOrderBySortOrderAscCodeAsc().stream()
-                .map(KioskCostCategoryEntity::getCode).toList();
+                .map(KioskCostCategoryEntity::getCode)
+                .filter(code -> !KioskExcelParser.OPTIONAL_COST_CODES.contains(code)).toList();
         YearData yd = loadYear(y);
         Map<Long, LocalDate> goLive = salesSourceResolver.goLiveEffective(sites);
         Map<Long, SiteSales> sales = salesSourceResolver.resolve(sites, LocalDate.of(y, 1, 1), LocalDate.of(y, 12, 31), goLive);

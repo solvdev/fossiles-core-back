@@ -181,3 +181,32 @@ Hoja: primera hoja que no sea `Hoja1` (nombre real `"Reporte de Vtas  orig."`). 
 - **Totales de año:** el punto de equilibrio anual y el de la fila `totals` son la suma de los PE mensuales / por sitio; `breakEvenDaily` divide por los días de los meses incluidos; `totals.daysWithSales` = fechas distintas con ventas.
 - El corte por go-live sólo aplica a sitios con `locationId`; un sitio histórico con override igual lee todas sus filas hist.
 - `POST /sites` crea también el alias igual al nombre normalizado si está libre.
+
+## Segundo formato de reporte (abril 2026 en adelante) y supervisión (prevalece sobre lo anterior)
+
+No habrá Excel de costos aparte: los costos se leen de los mismos reportes de ventas mensuales. El importador acepta **los dos formatos, incluso mezclados en una misma carga**; el formato se detecta por archivo según la estructura de la hoja (nunca por el nombre ni por una opción del usuario).
+
+| | Formato anterior (`LEGACY`) | Formato nuevo (`SHEET_YEAR`) |
+|---|---|---|
+| Ejemplos | `VENTAS ENERO 2025.xlsx`, `VENTAS MARZO 2026.xlsx` | `reporte de ventas abril.xlsx`, `Reporte de ventas Mayo 2026.xlsx` |
+| Hoja | `Reporte de Vtas  orig.` (encabezado `Fecha … Total por día`) | `ventas 2025`, `ventas 2026`, `anita`, `gabriela`, `ANALISIS DE COSTO FIJO` |
+| Hoja que se lee | la primera que no sea `Hoja1` | la `ventas <año>` de año más reciente (encabezado `kiosco` en A1); las demás se omiten (INFO) |
+| Tasas | fila de tasa + fila calculada | sólo el monto; la tasa va en la etiqueta (`costo del producto (18%)`) |
+| Mes y año | fechas de la hoja | año = nombre de la hoja; mes = nombre del archivo (respaldo: fechas). **Editable** |
+
+Reglas del formato nuevo:
+- Kioscos = columnas desde B hasta la primera de `venta del día` / `acumulado` / columna con el año / `diferencia`. Filas de fecha = entre el encabezado y la fila `TOTAL`; de la columna de fechas sólo se usa el **número de día** (la hoja arrastra el mes/año de la plantilla anterior: el reporte de abril trae fechas de enero). Un día de relleno (31 en un mes de 30) se ignora. Se lee por etiqueta, no por número de fila (mayo trae una fila extra).
+- Tasa derivada = monto del kiosco / ventas del mes (fila `TOTAL`). Si coincide (±0.0005) con el porcentaje de la etiqueta se usa el de la etiqueta; monto 0 ⇒ tasa 0 (p. ej. comisión de venta, que sólo aplica a Miraflores); kiosco sin ventas ⇒ tasas `null`. La comisión de venta se aplica como `(V / 1.12) × tasa` (la fórmula del contrato, no la del Excel, que usa `V × tasa`).
+- Etiquetas de costos fijos: `Salarios encargadas (MOD)` → `SALARIOS_MO_INDIRECTA` y `Salarios suplentes (MOI)` → `SALARIOS_MO_DIRECTA` (por posición y monto; las siglas del Excel están invertidas respecto al nombre de la categoría). `supervisión` → `SUPERVISION`.
+- Si la fila de supervisión no existe o viene vacía se calcula con la fórmula de abajo (INFO), usando como kioscos activos las columnas de kiosco del archivo.
+
+**`POST /imports/preview`** (cambios): parámetro opcional `periods` (JSON en el formulario multipart): `{"<nombre de archivo>":{"year":2026,"month":4}}`. Sólo corrige archivos del formato nuevo; el formato anterior lo ignora. Cada elemento de `files[]` agrega `format` (`LEGACY` | `SHEET_YEAR`), `periodSource` (`DATES` | `FILE_NAME` | `OVERRIDE`) y `periodEditable` (true sólo en el formato nuevo). Si las fechas de la hoja no coinciden con el período usado se agrega un WARNING `LAYOUT_ASSUMPTION`. El commit no cambia: recibe `year`/`month` del archivo y revalida que los días estén dentro del mes.
+
+**Categoría `SUPERVISION`** (11.ª de costos fijos, “Supervisión”): `((((Salarios MO indirecta + Bonificación) × 2) × 14) / 12) / kioscos activos`, a 2 decimales. Es **opcional**: los meses anteriores a 2026 no la traen y no cuenta para `complete` (`/config`) ni `hasCosts` (`/completeness`) ni `/compare`. Requiere ejecutar a mano `scripts/migration-kiosk-financials-supervision.sql`; mientras no exista en `kiosk_cost_category`, un commit con monto de supervisión se rechaza con 400 (un monto `null` se ignora). Implementación: `KioskSupervisionCost`.
+
+## POS > Resumen (comparativo contra el año anterior)
+
+`GET /api/kiosk-pos/dashboard/manager` (`KioskPosService.getManagerDashboard`):
+- `todayLastYear` y el nuevo `monthToDateLastYear` (1 → día de hoy, un año atrás) salen de `KioskSalesSourceResolver` por el sitio cuyo `location_id` es el kiosco (2025 vive en `kiosk_daily_sales_hist`). Sin sitio, se calculan sólo con ventas POS como antes.
+- `Metric.count` es `null` en esas dos métricas (el histórico sólo guarda montos diarios). Nuevo `growthMonthToDateVsLastYearPercent`. Día sin operación = 0.00.
+- Las ventas de prueba (`test_sale = true`) no cuentan en ninguna métrica del dashboard.

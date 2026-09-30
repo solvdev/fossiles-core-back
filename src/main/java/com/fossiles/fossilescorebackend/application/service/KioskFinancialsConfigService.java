@@ -252,6 +252,9 @@ public class KioskFinancialsConfigService {
 
         List<KioskCostCategoryEntity> categories = categoryRepository.findByActiveTrueOrderBySortOrderAscCodeAsc();
         List<String> categoryCodes = categories.stream().map(KioskCostCategoryEntity::getCode).toList();
+        // Supervisión es opcional: los meses anteriores a 2026 no la traen y no deben verse incompletos por eso.
+        List<String> requiredCodes = categoryCodes.stream()
+                .filter(code -> !KioskExcelParser.OPTIONAL_COST_CODES.contains(code)).toList();
 
         Map<PeriodKey, KioskPeriodConfigEntity> configs = new HashMap<>();
         for (KioskPeriodConfigEntity c : configRepository.findByPeriodYear(y)) {
@@ -287,7 +290,7 @@ public class KioskFinancialsConfigService {
                         cfg.getProductCostPct(), cfg.getSalesCommissionPct(), cfg.getCardCommissionPct(), cfg.getTaxPct());
                 BigDecimal effectiveGoal = goals.goal(site.getId(), m, cfg);
                 boolean complete = cfg != null
-                        && KioskPnlCalculator.isMonthComplete(effectiveGoal, rates, siteCosts, categoryCodes);
+                        && KioskPnlCalculator.isMonthComplete(effectiveGoal, rates, siteCosts, requiredCodes);
                 months.add(KioskFinancialsConfigResponse.Month.builder()
                         .month(m)
                         .goal(effectiveGoal)
