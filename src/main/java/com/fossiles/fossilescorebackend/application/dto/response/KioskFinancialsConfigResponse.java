@@ -38,6 +38,8 @@ public class KioskFinancialsConfigResponse {
         private Long siteId;
         private String name;
         private String status;
+        /** true: kiosco real, su meta se administra en el modulo Metas de kioscos (solo lectura aqui). */
+        private Boolean goalManagedExternally;
         private List<Month> months;
     }
 
@@ -47,7 +49,10 @@ public class KioskFinancialsConfigResponse {
     @AllArgsConstructor
     public static class Month {
         private Integer month;
+        /** Meta efectiva: modulo Metas de kioscos primero; si no hay, la de respaldo de Finanzas. */
         private BigDecimal goal;
+        /** METAS_KIOSCOS | CONFIG | null (sin meta). */
+        private String goalSource;
         private BigDecimal productCostPct;
         private BigDecimal salesCommissionPct;
         private BigDecimal cardCommissionPct;

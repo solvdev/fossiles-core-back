@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancials
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsSiteResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.util.KioskEffectiveGoals;
 import com.fossiles.fossilescorebackend.application.util.KioskPnlCalculator;
 import com.fossiles.fossilescorebackend.application.util.KioskSiteAliasNormalizer;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
@@ -43,6 +44,7 @@ public class KioskFinancialsConfigService {
     private final KioskPeriodConfigRepository configRepository;
     private final LocationRepository locationRepository;
     private final KioskSalesSourceResolver salesSourceResolver;
+    private final KioskGoalModuleReader goalReader;
 
     private record PeriodKey(Long siteId, int year, int month) {
     }
@@ -261,6 +263,7 @@ public class KioskFinancialsConfigService {
                     k -> new HashMap<>()).put(fc.getCategoryCode(), fc.getAmount());
         }
 
+        KioskEffectiveGoals goals = goalReader.forYear(y, sites);
         List<KioskFinancialsConfigResponse.Site> siteDtos = new ArrayList<>();
         for (KioskSiteEntity site : sites) {
             List<KioskFinancialsConfigResponse.Month> months = new ArrayList<>();
@@ -282,11 +285,13 @@ public class KioskFinancialsConfigService {
 
                 KioskPnlCalculator.Rates rates = cfg == null ? null : new KioskPnlCalculator.Rates(
                         cfg.getProductCostPct(), cfg.getSalesCommissionPct(), cfg.getCardCommissionPct(), cfg.getTaxPct());
+                BigDecimal effectiveGoal = goals.goal(site.getId(), m, cfg);
                 boolean complete = cfg != null
-                        && KioskPnlCalculator.isMonthComplete(cfg.getSalesGoal(), rates, siteCosts, categoryCodes);
+                        && KioskPnlCalculator.isMonthComplete(effectiveGoal, rates, siteCosts, categoryCodes);
                 months.add(KioskFinancialsConfigResponse.Month.builder()
                         .month(m)
-                        .goal(cfg == null ? null : cfg.getSalesGoal())
+                        .goal(effectiveGoal)
+                        .goalSource(goals.source(site.getId(), m, cfg))
                         .productCostPct(cfg == null ? null : cfg.getProductCostPct())
                         .salesCommissionPct(cfg == null ? null : cfg.getSalesCommissionPct())
                         .cardCommissionPct(cfg == null ? null : cfg.getCardCommissionPct())
@@ -297,7 +302,9 @@ public class KioskFinancialsConfigService {
                         .build());
             }
             siteDtos.add(KioskFinancialsConfigResponse.Site.builder()
-                    .siteId(site.getId()).name(site.getName()).status(site.getStatus()).months(months).build());
+                    .siteId(site.getId()).name(site.getName()).status(site.getStatus())
+                    .goalManagedExternally(goals.isManagedByGoalsModule(site.getId()))
+                    .months(months).build());
         }
 
         return KioskFinancialsConfigResponse.builder()
@@ -334,8 +341,9 @@ public class KioskFinancialsConfigService {
             }
             siteIds.add(c.getSiteId());
         }
-        Set<Long> existingSites = siteRepository.findAllById(siteIds).stream()
-                .map(KioskSiteEntity::getId).collect(Collectors.toSet());
+        Map<Long, KioskSiteEntity> siteById = siteRepository.findAllById(siteIds).stream()
+                .collect(Collectors.toMap(KioskSiteEntity::getId, x -> x));
+        Set<Long> existingSites = siteById.keySet();
         for (Long id : siteIds) {
             if (!existingSites.contains(id)) {
                 throw new BusinessException("Sitio no encontrado: " + id);
@@ -368,6 +376,11 @@ public class KioskFinancialsConfigService {
             boolean scalarPresent = change.getGoal() != null || change.getProductCostPct() != null
                     || change.getSalesCommissionPct() != null || change.getCardCommissionPct() != null
                     || change.getTaxPct() != null;
+            KioskSiteEntity changeSite = siteById.get(change.getSiteId());
+            if (change.getGoal() != null && changeSite != null && changeSite.getLocationId() != null) {
+                throw new BusinessException("La meta de " + changeSite.getName()
+                        + " se administra en el módulo Metas de kioscos y no se edita aquí.");
+            }
             if (scalarPresent) {
                 KioskPeriodConfigEntity cfg = configs.computeIfAbsent(key, k -> KioskPeriodConfigEntity.builder()
                         .siteId(k.siteId()).periodYear(k.year()).periodMonth(k.month()).build());
@@ -526,10 +539,17 @@ public class KioskFinancialsConfigService {
                                 .siteId(site.getId()).periodYear(toYear).periodMonth(toMonth).build();
                     }
                     if (include.contains(INCLUDE_GOALS)) {
-                        int[] r = copyCell(srcCfg.getSalesGoal(), target.getSalesGoal(), overwrite, target::setSalesGoal);
-                        copiedHere += r[0];
-                        skippedCells += r[1];
-                        configTouched |= r[0] > 0;
+                        if (site.getLocationId() != null) {
+                            // Kiosco real: su meta vive en el modulo Metas de kioscos; no se copia aqui.
+                            if (srcCfg.getSalesGoal() != null) {
+                                skippedCells++;
+                            }
+                        } else {
+                            int[] r = copyCell(srcCfg.getSalesGoal(), target.getSalesGoal(), overwrite, target::setSalesGoal);
+                            copiedHere += r[0];
+                            skippedCells += r[1];
+                            configTouched |= r[0] > 0;
+                        }
                     }
                     if (include.contains(INCLUDE_RATES)) {
                         int[] r1 = copyCell(srcCfg.getProductCostPct(), target.getProductCostPct(), overwrite, target::setProductCostPct);

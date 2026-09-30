@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancials
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsPnlResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.KioskSalesSourceResolver.SiteSales;
+import com.fossiles.fossilescorebackend.application.util.KioskEffectiveGoals;
 import com.fossiles.fossilescorebackend.application.util.KioskPnlCalculator;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskCostCategoryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskFixedCostEntity;
@@ -45,6 +46,7 @@ public class KioskFinancialsReportService {
     private final KioskFixedCostRepository fixedCostRepository;
     private final KioskPeriodConfigRepository configRepository;
     private final KioskSalesSourceResolver salesSourceResolver;
+    private final KioskGoalModuleReader goalReader;
 
     private record PeriodKey(Long siteId, int year, int month) {
     }
@@ -53,6 +55,8 @@ public class KioskFinancialsReportService {
     private static final class YearData {
         final Map<PeriodKey, KioskPeriodConfigEntity> configs = new HashMap<>();
         final Map<PeriodKey, Map<String, BigDecimal>> costs = new HashMap<>();
+        /** Meta efectiva: modulo Metas de kioscos primero, configuracion de Finanzas como respaldo. */
+        KioskEffectiveGoals goals = KioskEffectiveGoals.empty();
     }
 
     /** Resultado de un mes (o fraccion de mes) de un sitio. */
@@ -546,7 +550,7 @@ public class KioskFinancialsReportService {
                 Map<String, BigDecimal> costs = yd.costs.getOrDefault(key, Map.of());
                 boolean hasCosts = !requiredCodes.isEmpty() && requiredCodes.stream().allMatch(c -> costs.get(c) != null);
                 KioskPeriodConfigEntity cfg = yd.configs.get(key);
-                boolean hasGoal = cfg != null && cfg.getSalesGoal() != null;
+                boolean hasGoal = yd.goals.goal(site.getId(), m, cfg) != null;
                 anyTrue |= hasSales || hasCosts || hasGoal;
                 months.add(KioskFinancialsCompletenessResponse.Month.builder()
                         .month(m).hasSales(hasSales).hasCosts(hasCosts).hasGoal(hasGoal).build());
@@ -575,16 +579,17 @@ public class KioskFinancialsReportService {
         boolean scale = factor.compareTo(BigDecimal.ONE) != 0;
         Map<String, BigDecimal> scaled = new LinkedHashMap<>();
         costs.forEach((code, amount) -> scaled.put(code, scale && amount != null ? amount.multiply(factor) : amount));
-        BigDecimal goal = cfg == null || cfg.getSalesGoal() == null ? null
-                : (scale ? cfg.getSalesGoal().multiply(factor) : cfg.getSalesGoal());
+        BigDecimal rawGoal = yd.goals.goal(siteId, month, cfg);
+        BigDecimal goal = rawGoal == null ? null : (scale ? rawGoal.multiply(factor) : rawGoal);
         boolean complete = cfg != null
-                && KioskPnlCalculator.isMonthComplete(cfg.getSalesGoal(), rates, costs, requiredCodes);
+                && KioskPnlCalculator.isMonthComplete(rawGoal, rates, costs, requiredCodes);
         KioskPnlCalculator.Result result = KioskPnlCalculator.calculate(sales, rates, scaled, daysInMonth);
         return new MonthCalc(result, scaled, goal, complete);
     }
 
     private YearData loadYear(int year) {
         YearData data = new YearData();
+        data.goals = goalReader.forYear(year, siteRepository.findAll());
         for (KioskPeriodConfigEntity c : configRepository.findByPeriodYear(year)) {
             data.configs.put(new PeriodKey(c.getSiteId(), c.getPeriodYear(), c.getPeriodMonth()), c);
         }
