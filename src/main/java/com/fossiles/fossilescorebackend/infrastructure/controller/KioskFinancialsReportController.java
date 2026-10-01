@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancials
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsCompletenessResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsDailyMatrixResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsPnlResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsSupervisorsResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.KioskFinancialsReportService;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +28,12 @@ public class KioskFinancialsReportController {
             @RequestParam(required = false) Integer month,
             @RequestParam(required = false) String siteIds) throws BusinessException {
         return ResponseEntity.ok(reportService.getPnl(year, month, siteIds));
+    }
+
+    /** Supervisoras con los sitios de sus kioscos (filtro de los reportes). */
+    @GetMapping("/supervisors")
+    public ResponseEntity<KioskFinancialsSupervisorsResponse> getSupervisors() throws BusinessException {
+        return ResponseEntity.ok(reportService.getSupervisors());
     }
 
     @GetMapping("/daily-matrix")

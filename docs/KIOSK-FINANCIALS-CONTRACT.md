@@ -215,6 +215,14 @@ Reglas del formato nuevo:
 
 `kiosk_site.exclude_from_reports` (BOOLEAN, default false; `scripts/migration-kiosk-financials-exclude-reports.sql`, **ejecutar antes de desplegar**). Un sitio marcado no aparece en `/pnl`, `/daily-matrix`, `/compare`, `/completeness` ni `/config` (costos y metas), y pedirlo por `siteIds` responde 400 (“Sitio no encontrado”). `GET /sites` lo sigue devolviendo con `excludeFromReports:true` para poder desmarcarlo (`PUT /sites/{id}` `{excludeFromReports}`; panel “Sitios”). No se borra ningún dato. El front también lo oculta del filtro de kioscos y del importador.
 
+## Filtro por supervisora
+
+`GET /api/kiosk-financials/supervisors` (permiso `KIOSCOS.FINANZAS.VER`) → `{"supervisors":[{"userId":7,"name":"Ana Pérez","siteIds":[1,2]}],"unassignedSiteIds":[4]}`. Lee con SQL directo `kiosk_supervisor_assignment` (módulo "Supervisoras y kioscos", rama `main`; mismo enfoque que `kiosk_monthly_goal`) y traduce `kiosk_location_id` → `kiosk_site.id`. Sólo sitios que entran a los reportes (sin externos); una supervisora sin kioscos visibles se omite; `unassignedSiteIds` = kioscos con POS que nadie tiene asignados. Si la tabla no existe devuelve listas vacías. No hay parámetro nuevo en los reportes: la pantalla convierte la supervisora en `siteIds` (marcar/desmarcar supervisoras agrega/quita sus kioscos en el filtro "Kioscos"; sin ninguna marcada = todos).
+
+## Comparación del Resumen (`/compare`, `mode`)
+
+Los valores no cambian (`SAME_PERIOD`, `FULL_MONTH`); en pantalla se llaman **"Mismas fechas"** y **"Meses completos"**, con una frase que muestra las fechas reales que se comparan (`describeComparison`).
+
 ## Días sin sistema (corrección desde el Excel del reporte)
 
 Kioscos que arrancaron en el POS a mitad de mes tienen Q 0.00 los días anteriores a su primera venta aunque el reporte Excel sí traiga venta. Esos días ya se leen de `kiosk_daily_sales_hist` (fecha < go-live), así que la corrección escribe sólo esas celdas ahí.

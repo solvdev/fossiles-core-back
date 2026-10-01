@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancials
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsCompletenessResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsDailyMatrixResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsPnlResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsSupervisorsResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.KioskSalesSourceResolver.SiteSales;
 import com.fossiles.fossilescorebackend.application.util.KioskEffectiveGoals;
@@ -51,6 +52,9 @@ class KioskFinancialsReportServiceTest {
     private KioskSalesSourceResolver resolver;
     @Mock
     private KioskGoalModuleReader goalReader;
+    @Mock
+    private KioskSupervisorAssignmentReader supervisorReader;
+
     @InjectMocks
     private KioskFinancialsReportService service;
 
@@ -288,6 +292,28 @@ class KioskFinancialsReportServiceTest {
         assertThat(service.getPnl(2025, 1, null).getTotals().getSales()).isEqualByComparingTo("100.00");
         // pedirlo explícitamente por id tampoco lo trae
         assertThatThrownBy(() -> service.getPnl(2025, 1, "2")).isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void supervisorsListTheirSitesAndTheKiosksWithoutSupervisor() throws Exception {
+        KioskSiteEntity site3 = KioskSiteEntity.builder().id(3L).name("PERI").locationId(17L).sortOrder(3).build();
+        KioskSiteEntity pueblito = KioskSiteEntity.builder().id(4L).name("ENTRECUEROS PUEBLITO").locationId(18L)
+                .sortOrder(4).excludeFromReports(true).build();
+        lenient().when(siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc())
+                .thenReturn(List.of(site1, site2, site3));
+        lenient().when(supervisorReader.supervisors()).thenReturn(List.of(
+                new KioskSupervisorAssignmentReader.Supervisor(7L, "Ana", new java.util.LinkedHashSet<>(List.of(15L, 18L))),
+                new KioskSupervisorAssignmentReader.Supervisor(8L, "Sin kioscos visibles",
+                        new java.util.LinkedHashSet<>(List.of(18L)))));
+
+        KioskFinancialsSupervisorsResponse r = service.getSupervisors();
+
+        // Pueblito (externo) no aparece; la supervisora sin kioscos visibles se omite; MAJADAS (histórico, sin POS) no cuenta
+        assertThat(r.getSupervisors()).hasSize(1);
+        assertThat(r.getSupervisors().get(0).getName()).isEqualTo("Ana");
+        assertThat(r.getSupervisors().get(0).getSiteIds()).containsExactly(1L);
+        assertThat(r.getUnassignedSiteIds()).containsExactly(3L);
+        assertThat(pueblito.getExcludeFromReports()).isTrue();
     }
 
     // ------------------------------------------------------------------ P&L
