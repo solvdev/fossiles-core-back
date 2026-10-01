@@ -26,6 +26,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Co
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskExchangeSlipReturnedItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
@@ -95,6 +96,9 @@ class KioskExchangeServiceTest {
 
     @Autowired
     private KioskExchangeSlipRepository exchangeSlipRepository;
+
+    @Autowired
+    private KioskExchangeSlipReturnedItemRepository exchangeSlipReturnedItemRepository;
 
     @MockBean
     private SecurityUtil securityUtil;
@@ -703,6 +707,249 @@ class KioskExchangeServiceTest {
         assertThat(slipMoves).filteredOn(m -> m.getStockAfter() < m.getStockBefore())
                 .extracting(KioscoMovementEntity::getMovementType)
                 .containsOnly(KioscoMovementType.CAMBIO);
+    }
+
+    // ---- Varias líneas de la factura devueltas en una misma boleta (N→M) ----
+
+    /** Factura con dos productos de distinto precio: originalProduct (180) y cheaper (100). */
+    private KioskPosSaleResponse createTwoLineSale(ProductEntity cheaper) throws Exception {
+        return kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kiosk.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("280.00"))
+                .chargeWithoutDiscount(true)
+                .items(List.of(
+                        item(originalProduct.getId(), negro.getId(), BigDecimal.ONE),
+                        item(cheaper.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+    }
+
+    private ProductEntity seedCheaperProduct() {
+        ProductEntity cheaper = productRepository.save(ProductEntity.builder()
+                .code("OLD-002")
+                .name("Billetera Promo")
+                .salePrice(new BigDecimal("100.00"))
+                .build());
+        seedInventory(cheaper.getId(), 5);
+        return cheaper;
+    }
+
+    private static com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeReturnedItemRequest returned(
+            Long saleItemId, String qty) {
+        return com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeReturnedItemRequest.builder()
+                .originalSaleItemId(saleItemId)
+                .quantity(new BigDecimal(qty))
+                .build();
+    }
+
+    private static com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeGivenItemRequest given(
+            Long productId, Long colorId, String qty) {
+        return com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeGivenItemRequest.builder()
+                .productId(productId)
+                .colorId(colorId)
+                .quantity(new BigDecimal(qty))
+                .build();
+    }
+
+    @Test
+    void previewExchange_multipleReturnedLines_sameUnitPrice_usesWeightedAverage() throws Exception {
+        ProductEntity cheaper = seedCheaperProduct();
+        KioskPosSaleResponse sale = createTwoLineSale(cheaper);
+        List<KioskSaleItemEntity> items = saleItemRepository.findByKioskSaleIdOrderByIdAsc(sale.getId());
+
+        KioskExchangePreviewResponse preview = kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(sale.getId())
+                        .returnedItems(List.of(returned(items.get(0).getId(), "1"), returned(items.get(1).getId(), "1")))
+                        .givenItems(List.of(given(newProduct.getId(), negro.getId(), "2")))
+                        .pricingMode("SAME_UNIT_PRICE")
+                        .build());
+
+        assertThat(preview.getReturnedItems()).hasSize(2);
+        assertThat(preview.getReturnedItems()).extracting(l -> l.getSaleItemId())
+                .containsExactly(items.get(0).getId(), items.get(1).getId());
+        assertThat(preview.getReturned().getSaleItemId()).isEqualTo(items.get(0).getId());
+        assertThat(preview.getReturnedAmount()).isEqualByComparingTo("280.00");
+        // 180 + 100 devueltos = 280 → 140 c/u promedio; 2 unidades entregadas = 280.
+        assertThat(preview.getGiven().getUnitPrice()).isEqualByComparingTo("140.00");
+        assertThat(preview.getGivenAmount()).isEqualByComparingTo("280.00");
+        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    void previewExchange_multipleReturnedLines_catalogGiven_chargesDifference() throws Exception {
+        ProductEntity cheaper = seedCheaperProduct();
+        KioskPosSaleResponse sale = createTwoLineSale(cheaper);
+        List<KioskSaleItemEntity> items = saleItemRepository.findByKioskSaleIdOrderByIdAsc(sale.getId());
+
+        KioskExchangePreviewResponse preview = kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(sale.getId())
+                        .returnedItems(List.of(returned(items.get(0).getId(), "1"), returned(items.get(1).getId(), "1")))
+                        .givenItems(List.of(given(newProduct.getId(), negro.getId(), "2")))
+                        .pricingMode("CATALOG_GIVEN")
+                        .build());
+
+        assertThat(preview.getReturnedAmount()).isEqualByComparingTo("280.00");
+        assertThat(preview.getGivenAmount()).isEqualByComparingTo("500.00");
+        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("220.00");
+    }
+
+    @Test
+    void completeExchange_multipleReturnedLines_registersAllIngresosAndChargesDifference() throws Exception {
+        ProductEntity cheaper = seedCheaperProduct();
+        KioskPosSaleResponse sale = createTwoLineSale(cheaper);
+        List<KioskSaleItemEntity> items = saleItemRepository.findByKioskSaleIdOrderByIdAsc(sale.getId());
+        int oldBefore = currentStock(originalProduct.getId());
+        int cheaperBefore = currentStock(cheaper.getId());
+        int newBefore = currentStock(newProduct.getId());
+
+        KioskExchangeCompleteResponse result = kioskExchangeService.completeExchange(
+                KioskExchangeCompleteRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(sale.getId())
+                        .returnedItems(List.of(returned(items.get(0).getId(), "1"), returned(items.get(1).getId(), "1")))
+                        .givenItems(List.of(given(newProduct.getId(), negro.getId(), "2")))
+                        .pricingMode("CATALOG_GIVEN")
+                        .physicalSlipNumber("BC-MULTI-RET-001")
+                        .paymentMethod("EFECTIVO")
+                        .amountReceived(new BigDecimal("220.00"))
+                        .reason("Cambio de dos productos")
+                        .build());
+
+        KioskExchangeSlipResponse slip = result.getSlip();
+        assertThat(slip.getStatus()).isEqualTo("COMPLETED");
+        assertThat(slip.getReturnedItems()).hasSize(2);
+        assertThat(slip.getReturnedQuantity()).isEqualByComparingTo("2");
+        assertThat(slip.getReturnedAmount()).isEqualByComparingTo("280.00");
+        assertThat(slip.getDifferenceAmount()).isEqualByComparingTo("220.00");
+        assertThat(result.getSale().getTotalAmount()).isEqualByComparingTo("220.00");
+
+        assertThat(currentStock(originalProduct.getId())).isEqualTo(oldBefore + 1);
+        assertThat(currentStock(cheaper.getId())).isEqualTo(cheaperBefore + 1);
+        assertThat(currentStock(newProduct.getId())).isEqualTo(newBefore - 2);
+
+        List<KioscoMovementEntity> slipMoves = kioscoMovementRepository.findByPhysicalSlipNumber("BC-MULTI-RET-001");
+        assertThat(slipMoves).hasSize(3); // 2 ingresos + 1 egreso
+        assertThat(slipMoves).filteredOn(m -> m.getStockAfter() > m.getStockBefore()).hasSize(2);
+        assertThat(slipMoves).extracting(KioscoMovementEntity::getMovementType)
+                .containsOnly(KioscoMovementType.CAMBIO);
+
+        // Cada línea que ingresa queda ligada a su movimiento y a su línea de factura.
+        var rows = exchangeSlipReturnedItemRepository.findByExchangeSlipIdOrderByLineNoAsc(slip.getId());
+        assertThat(rows).extracting(r -> r.getOriginalSaleItemId())
+                .containsExactly(items.get(0).getId(), items.get(1).getId());
+        assertThat(rows).allMatch(r -> r.getReturnMovementId() != null);
+        assertThat(rows).extracting(r -> r.getReturnMovementId()).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void authorizeExchange_multipleReturnedLines_registersEveryIngreso() throws Exception {
+        ProductEntity cheaper = seedCheaperProduct();
+        KioskPosSaleResponse sale = createTwoLineSale(cheaper);
+        List<KioskSaleItemEntity> items = saleItemRepository.findByKioskSaleIdOrderByIdAsc(sale.getId());
+        int oldBefore = currentStock(originalProduct.getId());
+        int cheaperBefore = currentStock(cheaper.getId());
+
+        KioskExchangeCompleteResponse pending = kioskExchangeService.completeExchange(
+                KioskExchangeCompleteRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(sale.getId())
+                        .returnedItems(List.of(returned(items.get(0).getId(), "1"), returned(items.get(1).getId(), "1")))
+                        .givenItems(List.of(given(newProduct.getId(), negro.getId(), "2")))
+                        .pricingMode("SAME_UNIT_PRICE")
+                        .physicalSlipNumber("BC-MULTI-RET-AUTH")
+                        .reason("Cambio de estilo")
+                        .build());
+
+        assertThat(pending.getSlip().getStatus()).isEqualTo("PENDING_AUTHORIZATION");
+        assertThat(pending.getSlip().getReturnedItems()).hasSize(2);
+        // Hasta que la supervisora apruebe no se mueve inventario.
+        assertThat(currentStock(originalProduct.getId())).isEqualTo(oldBefore);
+        assertThat(kioscoMovementRepository.findByPhysicalSlipNumber("BC-MULTI-RET-AUTH")).isEmpty();
+
+        RoleEntity adminRole = roleRepository.save(RoleEntity.builder().name("ADMIN").build());
+        UserEntity admin = userRepository.save(UserEntity.builder()
+                .username("admin.exchange.multi")
+                .email("admin.exchange.multi@fossiles.test")
+                .password("x")
+                .status("ACTIVE")
+                .roles(new HashSet<>(Set.of(adminRole)))
+                .build());
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        KioskExchangeSlipResponse authorized = kioskExchangeService.authorizeExchange(
+                pending.getSlip().getId(), kiosk.getId());
+
+        assertThat(authorized.getStatus()).isEqualTo("COMPLETED");
+        assertThat(currentStock(originalProduct.getId())).isEqualTo(oldBefore + 1);
+        assertThat(currentStock(cheaper.getId())).isEqualTo(cheaperBefore + 1);
+        assertThat(kioscoMovementRepository.findByPhysicalSlipNumber("BC-MULTI-RET-AUTH")).hasSize(3);
+        assertThat(exchangeSlipReturnedItemRepository.findByExchangeSlipIdOrderByLineNoAsc(authorized.getId()))
+                .allMatch(r -> r.getReturnMovementId() != null);
+    }
+
+    @Test
+    void previewExchange_multipleReturnedLines_rejectsInvalidSelections() throws Exception {
+        ProductEntity cheaper = seedCheaperProduct();
+        KioskPosSaleResponse sale = createTwoLineSale(cheaper);
+        List<KioskSaleItemEntity> items = saleItemRepository.findByKioskSaleIdOrderByIdAsc(sale.getId());
+        Long firstId = items.get(0).getId();
+        var oneGiven = List.of(given(newProduct.getId(), negro.getId(), "1"));
+
+        assertThatThrownBy(() -> kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(sale.getId())
+                        .returnedItems(List.of(returned(firstId, "1"), returned(firstId, "1")))
+                        .givenItems(oneGiven)
+                        .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("dos veces");
+
+        assertThatThrownBy(() -> kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(sale.getId())
+                        .returnedItems(List.of(returned(firstId, "2")))
+                        .givenItems(oneGiven)
+                        .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("vendida");
+
+        // Una línea que no es de esta factura (la de la factura del setUp).
+        Long foreignId = saleItemRepository.findByKioskSaleIdOrderByIdAsc(originalSale.getId()).get(0).getId();
+        assertThatThrownBy(() -> kioskExchangeService.previewExchange(
+                KioskExchangePreviewRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(sale.getId())
+                        .returnedItems(List.of(returned(firstId, "1"), returned(foreignId, "1")))
+                        .givenItems(oneGiven)
+                        .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("no pertenece");
+    }
+
+    @Test
+    void sharedReturnedUnitPrice_averagesOnlyWhenPricesDiffer_andKeepsTotalExact() {
+        BigDecimal same = KioskExchangeService.sharedReturnedUnitPrice(
+                List.of(new BigDecimal("90.00"), new BigDecimal("90.00")),
+                new BigDecimal("180.00"), new BigDecimal("2"));
+        assertThat(same).isEqualByComparingTo("90.00");
+
+        BigDecimal avg = KioskExchangeService.sharedReturnedUnitPrice(
+                List.of(new BigDecimal("180.00"), new BigDecimal("100.00")),
+                new BigDecimal("280.00"), new BigDecimal("2"));
+        assertThat(avg).isEqualByComparingTo("140.00");
+
+        // 100 + 100 + 101 = 301 en 3 u.: 100.33 × 3 = 300.99 descuadra, se conserva la precisión.
+        BigDecimal precise = KioskExchangeService.sharedReturnedUnitPrice(
+                List.of(new BigDecimal("100.00"), new BigDecimal("100.00"), new BigDecimal("101.00")),
+                new BigDecimal("301.00"), new BigDecimal("3"));
+        assertThat(precise.multiply(new BigDecimal("3")).setScale(2, java.math.RoundingMode.HALF_UP))
+                .isEqualByComparingTo("301.00");
     }
 
     private int currentStock(Long productId) {

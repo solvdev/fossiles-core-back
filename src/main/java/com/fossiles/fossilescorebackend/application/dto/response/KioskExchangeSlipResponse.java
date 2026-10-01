@@ -30,6 +30,8 @@ public class KioskExchangeSlipResponse {
     private String returnedSize;
     private BigDecimal returnedQuantity;
     private BigDecimal returnedAmount;
+    /** Líneas que ingresan (N). Una sola línea en boletas antiguas sin filas hijas. */
+    private java.util.List<KioskExchangePreviewResponse.ProductLine> returnedItems;
     private Long givenProductId;
     private String givenProductCode;
     private String givenProductName;
