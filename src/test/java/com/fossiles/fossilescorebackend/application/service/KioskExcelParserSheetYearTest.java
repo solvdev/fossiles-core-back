@@ -92,7 +92,7 @@ class KioskExcelParserSheetYearTest {
     }
 
     @Test
-    void ratesAreDerivedFromAmountsAndFixedCostsUseTheNewLabels() throws Exception {
+    void ratesAreDerivedFromAmountsExceptSalesCommissionWhichIsNominal() throws Exception {
         KioskExcelParser.ParseResult r = PARSER.parse("reporte de ventas abril.xlsx", read("reporte de ventas abril.xlsx"));
 
         KioskExcelDataDto.Rates miraflores = r.getData().getRates().get("miraflores");
@@ -100,8 +100,10 @@ class KioskExcelParserSheetYearTest {
         assertThat(miraflores.getSalesCommissionPct()).isEqualByComparingTo("0.04");
         assertThat(miraflores.getCardCommissionPct()).isEqualByComparingTo("0.0287");
         assertThat(miraflores.getTaxPct()).isEqualByComparingTo("0.025");
-        // comisión de venta sólo aplica a Miraflores: en el resto el monto es 0 => tasa 0
-        assertThat(r.getData().getRates().get("pradera concepción").getSalesCommissionPct()).isEqualByComparingTo("0");
+        // la comisión de venta se importa con su tasa NOMINAL (4 %) aunque el monto del Excel sea 0: la condición del
+        // 70 % de la meta la aplica el sistema al calcular, no la deducción del monto
+        assertThat(r.getData().getRates().get("pradera concepción").getSalesCommissionPct()).isEqualByComparingTo("0.04");
+        assertThat(r.getIssues()).anyMatch(i -> i.getMessage() != null && i.getMessage().contains("tasa nominal"));
         // sin ventas en el mes no se puede derivar la tasa
         assertThat(r.getData().getRates().get("pradera xela").getProductCostPct()).isNull();
 
