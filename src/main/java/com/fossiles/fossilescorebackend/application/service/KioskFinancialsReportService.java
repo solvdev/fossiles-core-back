@@ -177,6 +177,7 @@ public class KioskFinancialsReportService {
                 .salesCommission(KioskPnlCalculator.round2(a.salesCommission))
                 .cardCommission(KioskPnlCalculator.round2(a.cardCommission))
                 .tax(KioskPnlCalculator.round2(a.tax))
+                .bonus(KioskPnlCalculator.round2(a.bonus))
                 .total(KioskPnlCalculator.round2(a.variableTotal))
                 .build());
         Map<String, BigDecimal> byCategory = new LinkedHashMap<>();
@@ -216,6 +217,7 @@ public class KioskFinancialsReportService {
         BigDecimal salesCommission = BigDecimal.ZERO;
         BigDecimal cardCommission = BigDecimal.ZERO;
         BigDecimal tax = BigDecimal.ZERO;
+        BigDecimal bonus = BigDecimal.ZERO;
         BigDecimal variableTotal = BigDecimal.ZERO;
         BigDecimal fixedTotal = BigDecimal.ZERO;
         BigDecimal totalCost = BigDecimal.ZERO;
@@ -238,6 +240,7 @@ public class KioskFinancialsReportService {
             a.salesCommission = r.salesCommission();
             a.cardCommission = r.cardCommission();
             a.tax = r.tax();
+            a.bonus = r.bonus();
             a.variableTotal = r.variableTotal();
             a.fixedTotal = r.fixedTotal();
             a.totalCost = r.totalCost();
@@ -270,6 +273,7 @@ public class KioskFinancialsReportService {
             salesCommission = salesCommission.add(o.salesCommission);
             cardCommission = cardCommission.add(o.cardCommission);
             tax = tax.add(o.tax);
+            bonus = bonus.add(o.bonus);
             variableTotal = variableTotal.add(o.variableTotal);
             fixedTotal = fixedTotal.add(o.fixedTotal);
             totalCost = totalCost.add(o.totalCost);
@@ -615,8 +619,10 @@ public class KioskFinancialsReportService {
         boolean complete = cfg != null
                 && KioskPnlCalculator.isMonthComplete(rawGoal, rates, costs, requiredCodes);
         // Comision de venta: regla del anio (desde 2026: ventas x tasa y solo si % de meta >= 70 %)
+        // Regla del mes: comision del anio (desde 2026 solo con 70 % de la meta) + bono por meta desde sept-2026;
+        // el bono se prorratea igual que los costos en periodos parciales.
         KioskPnlCalculator.Result result = KioskPnlCalculator.calculate(sales, rates, scaled, daysInMonth,
-                flatVariableRate, KioskPnlCalculator.CommissionPolicy.forYear(year), goal);
+                flatVariableRate, KioskPnlCalculator.CommissionPolicy.forPeriod(year, month), goal, factor);
         return new MonthCalc(result, scaled, goal, complete);
     }
 

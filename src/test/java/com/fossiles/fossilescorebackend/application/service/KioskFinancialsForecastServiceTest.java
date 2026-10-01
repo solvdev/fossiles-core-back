@@ -118,10 +118,12 @@ class KioskFinancialsForecastServiceTest {
         assertThat(a.getGoal()).isEqualByComparingTo("3000.00");
         assertThat(a.getGoalPctProjected()).isEqualByComparingTo("1.1000");
         assertThat(a.getGoalPctToDate()).isEqualByComparingTo("0.5500");
-        // P&L proyectado con los costos y tasas de septiembre: 3300 × 0.2337 + 1000
+        // P&L proyectado con los costos y tasas de septiembre: 3300 × 0.2337 + (3300 ÷ 1.12) × 4 % (comisión fija,
+        // aplica: 3300 es 110 % de la meta de 3000) + bono por meta Q800 (>= 100 %, desde sept-2026) + 1000
+        // = 771.21 + 117.86 + 800 + 1000
         assertThat(a.getCostsFrom()).isEqualTo("2026-09");
-        assertThat(a.getTotalCost()).isEqualByComparingTo("1771.21");
-        assertThat(a.getDifference()).isEqualByComparingTo("1528.79");
+        assertThat(a.getTotalCost()).isEqualByComparingTo("2689.07");
+        assertThat(a.getDifference()).isEqualByComparingTo("610.93");
         assertThat(a.getBelowBreakEven()).isFalse();
 
         KioskFinancialsForecastResponse.Site b = byName(r, "NUEVO");
@@ -174,10 +176,10 @@ class KioskFinancialsForecastServiceTest {
         assertThat(a.getEstimatedMonths()).isZero();
         // total anual = 121 × 365
         assertThat(a.getSales()).isEqualByComparingTo("44165.00");
-        // P&L: enero = 3751 × (1 - 0.2337) - 1000
+        // P&L: enero = 3751 × (1 - 0.2337) - (3751 ÷ 1.12) × 4 % - 1000 (sin metas del año siguiente la comisión aplica)
         assertThat(a.getCostsFrom()).isEqualTo("2026-09");
-        assertThat(a.getMonths().get(0).getDifference()).isEqualByComparingTo("1874.39");
-        assertThat(a.getMonths().get(0).getBreakEven()).isEqualByComparingTo("1304.97"); // 1000 / 0.7663
+        assertThat(a.getMonths().get(0).getDifference()).isEqualByComparingTo("1740.43");
+        assertThat(a.getMonths().get(0).getBreakEven()).isEqualByComparingTo("1376.84"); // 1000 / 0.7263
         assertThat(r.getTotals().getSales()).isEqualByComparingTo("44165.00");
         assertThat(r.getSeasonalIndex()).hasSize(12);
     }

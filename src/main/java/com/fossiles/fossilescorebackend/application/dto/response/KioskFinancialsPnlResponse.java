@@ -69,6 +69,8 @@ public class KioskFinancialsPnlResponse {
         private BigDecimal salesCommission;
         private BigDecimal cardCommission;
         private BigDecimal tax;
+        /** Bono por meta (encargada): Q500 desde 90 % de la meta, Q800 desde 100 %; desde septiembre 2026. */
+        private BigDecimal bonus;
         private BigDecimal total;
     }
 
