@@ -941,7 +941,14 @@ public class KioskExcelParser {
                     null, null, null, null, null);
         }
 
-        // 5) Lectura por kiosco (las tasas se derivan de los montos: monto / ventas del mes)
+        // 5) Lectura por kiosco (las tasas se derivan de los montos: monto / ventas del mes; la comisión de venta
+        //    es la excepción: se importa la tasa nominal y el 70 % de la meta lo aplica el sistema)
+        if (rateRows.get("SALES") != null) {
+            addIssue(issues, KioskExcelIssueDto.INFO, KioskExcelIssueDto.LAYOUT_ASSUMPTION,
+                    "La comisión de venta se importa con su tasa nominal (la de la etiqueta o 4 %), no con el monto del Excel; "
+                            + "el sistema la cobra solo a los kioscos que llegan al 70 % de su meta.",
+                    null, null, null, null, null);
+        }
         final int goalsRowIdx = goalsRow;
         final int activeKiosks = columns.size();
         final boolean[] supervisionNoted = {false};
@@ -956,8 +963,7 @@ public class KioskExcelParser {
                 return KioskExcelDataDto.Rates.builder()
                         .productCostPct(derivedRate(issues, sheet, rateRows, declaredRates, "PRODUCT", c, name, monthSales,
                                 "costo del producto"))
-                        .salesCommissionPct(derivedRate(issues, sheet, rateRows, declaredRates, "SALES", c, name, monthSales,
-                                "comisión de venta"))
+                        .salesCommissionPct(nominalSalesCommission(rateRows, declaredRates))
                         .cardCommissionPct(derivedRate(issues, sheet, rateRows, declaredRates, "CARD", c, name, monthSales,
                                 "comisión de tarjeta"))
                         .taxPct(derivedRate(issues, sheet, rateRows, declaredRates, "TAX", c, name, monthSales, "IVA"))
@@ -994,6 +1000,24 @@ public class KioskExcelParser {
         result.setPeriodSource(periodSource);
         result.setPeriodEditable(true);
         return result;
+    }
+
+    /** Tasa nominal de la comisión de venta cuando la etiqueta no la declara. */
+    static final BigDecimal DEFAULT_SALES_COMMISSION = new BigDecimal("0.04");
+
+    /**
+     * Comisión de venta del formato nuevo: se importa la tasa NOMINAL (la de la etiqueta, p. ej. "(4%)", o 4 %),
+     * no la deducida del monto. El Excel pone 0 a los kioscos que no llegan al 70 % de su meta (o un monto
+     * atípico por un error de fórmula) y deducir la tasa de ahí dejaría ese mes con una tasa errónea para siempre.
+     * La condición del 70 % la aplica el sistema al calcular ({@code KioskPnlCalculator.CommissionPolicy}).
+     * Si el archivo no trae la fila de comisión de venta, queda sin valor.
+     */
+    private BigDecimal nominalSalesCommission(Map<String, Integer> rows, Map<String, BigDecimal> declared) {
+        if (rows.get("SALES") == null) {
+            return null;
+        }
+        BigDecimal label = declared.get("SALES");
+        return clean(label != null ? label : DEFAULT_SALES_COMMISSION, 4);
     }
 
     /**
