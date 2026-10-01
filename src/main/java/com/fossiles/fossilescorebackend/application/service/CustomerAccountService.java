@@ -1850,6 +1850,16 @@ public class CustomerAccountService {
         return isLfReceivableOrder(order);
     }
 
+    /** Clasificación OPV/OPC viva de una orden (misma regla del saldo por cartera). */
+    public String resolveReceivableOrderKind(ProductionOrderEntity order) {
+        return resolveOrderKind(order);
+    }
+
+    /** Monto bruto que el movimiento descuenta del saldo (incluye descuento al cobrar). */
+    public BigDecimal resolveEntryAppliedCredit(CustomerAccountEntryEntity entry) {
+        return resolveAppliedCreditAmount(entry);
+    }
+
     @Transactional(readOnly = true)
     public BigDecimal estimateVendorOrderTotal(ProductionOrderEntity order) {
         return estimateLfOrderTotal(order);

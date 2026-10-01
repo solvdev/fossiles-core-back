@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountE
 import com.fossiles.fossilescorebackend.application.dto.response.*;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.CustomerAccountPortfolioReportService;
 import com.fossiles.fossilescorebackend.application.service.CustomerAccountService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +24,7 @@ import java.util.List;
 public class CustomerAccountController {
 
     private final CustomerAccountService customerAccountService;
+    private final CustomerAccountPortfolioReportService portfolioReportService;
 
     @GetMapping("/summary")
     public ResponseEntity<List<CustomerAccountSummaryResponse>> getSummary(
@@ -49,6 +51,24 @@ public class CustomerAccountController {
             throws ResourceNotFoundException {
         return ResponseEntity.ok(customerAccountService.getPrintReport(
                 search, luisFelipeOnly, positiveBalanceOnly, from, to, regionCode, routeNumber, routeLocationCode));
+    }
+
+    /** Cartera por documento (cargos, pagos, créditos, saldo) para la impresión RUTAS CxC. */
+    @GetMapping("/portfolio-report")
+    public ResponseEntity<CustomerAccountPortfolioReportResponse> getPortfolioReport(
+            @RequestParam(required = false) String search,
+            @RequestParam(defaultValue = "OPV") String orderKind,
+            @RequestParam(defaultValue = "false") boolean onlyOpen,
+            @RequestParam(required = false) String regionCode,
+            @RequestParam(required = false) Integer routeNumber,
+            @RequestParam(required = false) String routeLocationCode,
+            @RequestParam(defaultValue = "false") boolean includeMovements,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate movementsFrom,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate movementsTo)
+            throws BusinessException {
+        return ResponseEntity.ok(portfolioReportService.buildReport(
+                search, orderKind, onlyOpen, regionCode, routeNumber, routeLocationCode,
+                includeMovements, movementsFrom, movementsTo));
     }
 
     @GetMapping("/receivable-search")
