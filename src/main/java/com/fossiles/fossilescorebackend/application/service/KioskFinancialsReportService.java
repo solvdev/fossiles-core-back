@@ -532,7 +532,7 @@ public class KioskFinancialsReportService {
     public KioskFinancialsCompletenessResponse getCompleteness(Integer year) throws BusinessException {
         guard.assertCanView();
         int y = requireYear(year);
-        List<KioskSiteEntity> sites = siteRepository.findAllByOrderBySortOrderAscNameAsc();
+        List<KioskSiteEntity> sites = siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc();
         List<String> requiredCodes = categoryRepository.findByActiveTrueOrderBySortOrderAscCodeAsc().stream()
                 .map(KioskCostCategoryEntity::getCode)
                 .filter(code -> !KioskExcelParser.OPTIONAL_COST_CODES.contains(code)).toList();
@@ -611,7 +611,7 @@ public class KioskFinancialsReportService {
     }
 
     private List<KioskSiteEntity> selectSites(Set<Long> requested) throws BusinessException {
-        List<KioskSiteEntity> all = siteRepository.findAllByOrderBySortOrderAscNameAsc();
+        List<KioskSiteEntity> all = siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc();
         if (requested.isEmpty()) {
             return all;
         }

@@ -210,3 +210,16 @@ Reglas del formato nuevo:
 - `todayLastYear` y el nuevo `monthToDateLastYear` (1 → día de hoy, un año atrás) salen de `KioskSalesSourceResolver` por el sitio cuyo `location_id` es el kiosco (2025 vive en `kiosk_daily_sales_hist`). Sin sitio, se calculan sólo con ventas POS como antes.
 - `Metric.count` es `null` en esas dos métricas (el histórico sólo guarda montos diarios). Nuevo `growthMonthToDateVsLastYearPercent`. Día sin operación = 0.00.
 - Las ventas de prueba (`test_sale = true`) no cuentan en ninguna métrica del dashboard.
+
+## Sitios externos fuera de los reportes (Entrecueros Pueblito)
+
+`kiosk_site.exclude_from_reports` (BOOLEAN, default false; `scripts/migration-kiosk-financials-exclude-reports.sql`, **ejecutar antes de desplegar**). Un sitio marcado no aparece en `/pnl`, `/daily-matrix`, `/compare`, `/completeness` ni `/config` (costos y metas), y pedirlo por `siteIds` responde 400 (“Sitio no encontrado”). `GET /sites` lo sigue devolviendo con `excludeFromReports:true` para poder desmarcarlo (`PUT /sites/{id}` `{excludeFromReports}`; panel “Sitios”). No se borra ningún dato. El front también lo oculta del filtro de kioscos y del importador.
+
+## Días sin sistema (corrección desde el Excel del reporte)
+
+Kioscos que arrancaron en el POS a mitad de mes tienen Q 0.00 los días anteriores a su primera venta aunque el reporte Excel sí traiga venta. Esos días ya se leen de `kiosk_daily_sales_hist` (fecha < go-live), así que la corrección escribe sólo esas celdas ahí.
+
+- `POST /api/kiosk-financials/imports/gap-fill/preview` (multipart: `file`; opcionales `year`+`month` para corregir el mes). Misma lectura de ambos formatos. Por kiosco (alias → sitio con `location_id`, no externo, con ventas POS) devuelve `candidates` (día < go-live, sistema = 0, reporte > 0), `differences` (mismo día, monto distinto: sólo informativo, p. ej. centavos o fechas corridas) y `afterGoLiveGaps` (sistema = 0 desde el go-live: no cubrible con este flujo). Además `ignoredColumns`, `skippedCells` (texto no numérico) y `totals`.
+- `POST /api/kiosk-financials/imports/gap-fill/commit` (multipart: `file`, `siteIds` CSV, opcionales `year`/`month`). **Vuelve a leer el archivo y recalcula** (nunca confía en montos del cliente); cada sitio elegido debe tener candidatos (400 si no). Escribe sólo `kiosk_daily_sales_hist` con un lote `kiosk_import_batch` cuyo `file_name` empieza con `DIAS SIN SISTEMA - ` y con sha propio; no toca costos, tasas, metas, otros kioscos ni el POS, y nunca pisa un día con venta en el sistema. Revertible con `POST /imports/{batchId}/revert`. Estos lotes no cuentan como “mes ya importado” en el preview del importador completo.
+- Permiso: `KIOSCOS.FINANZAS.IMPORTAR`. Implementación: `KioskGapFillService`, `KioskGapFillPlanner`.
+- Limitación conocida: un kiosco que ya operaba en el POS y deja un día sin registrar a mitad de mes no se puede cubrir (el resolver ignora el histórico desde el go-live); se informa en `afterGoLiveGaps`.

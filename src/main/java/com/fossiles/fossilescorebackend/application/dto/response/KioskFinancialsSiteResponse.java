@@ -22,5 +22,6 @@ public class KioskFinancialsSiteResponse {
     private LocalDate posGoLiveOverride;
     private LocalDate posGoLiveDetected;
     private LocalDate goLiveEffective;
+    private Boolean excludeFromReports;
     private List<String> aliases;
 }

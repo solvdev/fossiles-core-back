@@ -13,6 +13,9 @@ public interface KioskSiteRepository extends JpaRepository<KioskSiteEntity, Long
 
     List<KioskSiteEntity> findAllByOrderBySortOrderAscNameAsc();
 
+    /** Sitios que sí entran a los reportes (excluye los marcados como externos). */
+    List<KioskSiteEntity> findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc();
+
     Optional<KioskSiteEntity> findByNameIgnoreCase(String name);
 
     Optional<KioskSiteEntity> findByLocationId(Long locationId);

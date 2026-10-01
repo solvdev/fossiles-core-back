@@ -69,6 +69,7 @@ class KioskFinancialsConfigServiceTest {
         lenient().when(siteRepository.findById(1L)).thenReturn(Optional.of(site1));
         lenient().when(siteRepository.findAllById(anyCollection())).thenReturn(List.of(site1));
         lenient().when(siteRepository.findAllByOrderBySortOrderAscNameAsc()).thenReturn(List.of(site1));
+        lenient().when(siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc()).thenReturn(List.of(site1));
         lenient().when(siteRepository.save(any(KioskSiteEntity.class))).thenAnswer(i -> i.getArgument(0));
         lenient().when(categoryRepository.findByActiveTrueOrderBySortOrderAscCodeAsc()).thenReturn(List.of(
                 category("ALQUILER", 1), category("LUZ", 2)));
@@ -436,6 +437,7 @@ class KioskFinancialsConfigServiceTest {
         lenient().when(siteRepository.findById(2L)).thenReturn(Optional.of(linked));
         lenient().when(siteRepository.findAllById(anyCollection())).thenReturn(List.of(linked));
         lenient().when(siteRepository.findAllByOrderBySortOrderAscNameAsc()).thenReturn(List.of(linked));
+        lenient().when(siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc()).thenReturn(List.of(linked));
         return linked;
     }
 
