@@ -153,13 +153,14 @@ class KioskFinancialsReportServiceTest {
         assertThat(s.getDelta()).isEqualByComparingTo("30.00");
         assertThat(s.getDeltaPct()).isEqualByComparingTo("0.2500");
         // Alquiler prorrateado por dias: 2900 * 20/29 = 2000 ; 2800 * 19/28 = 1900
-        assertThat(s.getDifference()).isEqualByComparingTo("-1850.00");
-        assertThat(s.getBaseDifference()).isEqualByComparingTo("-1780.00");
+        // + comisión fija de venta (sin metas definidas se aplica): 150 ÷ 1.12 × 4 % = 5.36 ; 120 ÷ 1.12 × 4 % = 4.29
+        assertThat(s.getDifference()).isEqualByComparingTo("-1855.36");
+        assertThat(s.getBaseDifference()).isEqualByComparingTo("-1784.29");
         assertThat(r.getTotals().getSales()).isEqualByComparingTo("150.00");
         assertThat(r.getMonthly()).hasSize(2);
         assertThat(r.getMonthly().get(1).getMonth()).isEqualTo(2);
-        assertThat(r.getMonthly().get(1).getTotalCost()).isEqualByComparingTo("2000.00");
-        assertThat(r.getMonthly().get(1).getBaseTotalCost()).isEqualByComparingTo("1900.00");
+        assertThat(r.getMonthly().get(1).getTotalCost()).isEqualByComparingTo("2005.36");
+        assertThat(r.getMonthly().get(1).getBaseTotalCost()).isEqualByComparingTo("1904.29");
         assertThat(r.getMonthly().get(0).getSales()).isEqualByComparingTo("0");
     }
 
@@ -297,7 +298,7 @@ class KioskFinancialsReportServiceTest {
         assertThat(flat.getBreakEvenMode()).isEqualTo("FLAT");
         KioskFinancialsPnlResponse.SitePnl r1 = real.getSites().get(0);
         KioskFinancialsPnlResponse.SitePnl f1 = flat.getSites().get(0);
-        assertThat(r1.getBreakEven()).isEqualByComparingTo("19052.59"); // 14600 / (1 - 0.2337)
+        assertThat(r1.getBreakEven()).isEqualByComparingTo("20101.89"); // 14600 / (1 - 0.2737): 18 % + 4 % fijo + 2.87 % + 2.5 %
         assertThat(f1.getBreakEven()).isEqualByComparingTo("20000.00"); // 14600 / 0.73
         assertThat(f1.getDifference()).isEqualByComparingTo(r1.getDifference());
         assertThatThrownBy(() -> service.getPnl(2025, 1, null, "otro")).isInstanceOf(BusinessException.class);
@@ -379,7 +380,8 @@ class KioskFinancialsReportServiceTest {
 
         KioskFinancialsPnlResponse.SitePnl s2 = r.getSites().get(1);
         assertThat(s2.getComplete()).isFalse(); // sin configuracion
-        assertThat(s2.getTotalCost()).isEqualByComparingTo("0.00");
+        // sin configuración solo corre la comisión de venta, que es fija (4 %): 25961.20 ÷ 1.12 × 4 %
+        assertThat(s2.getTotalCost()).isEqualByComparingTo("927.19");
         assertThat(r.getTotals().getSales()).isEqualByComparingTo("100000.00");
         assertThat(r.getTotals().getDaysWithSales()).isEqualTo(2);
     }
@@ -406,11 +408,12 @@ class KioskFinancialsReportServiceTest {
         assertThat(s.getFixed().getTotal()).isEqualByComparingTo("400.00"); // febrero (sin ventas) no cuenta
         assertThat(s.getGoal()).isEqualByComparingTo("3000.00");
         assertThat(s.getByMonth()).extracting(KioskFinancialsPnlResponse.MonthLine::getMonth).containsExactly(1, 3);
-        assertThat(s.getByMonth().get(0).getDifference()).isEqualByComparingTo("900.00");
-        assertThat(s.getByMonth().get(1).getDifference()).isEqualByComparingTo("1700.00");
-        assertThat(s.getMargin()).isEqualByComparingTo("0.8667");
-        assertThat(s.getBreakEven()).isEqualByComparingTo("400.00");
-        assertThat(s.getBreakEvenDaily()).isEqualByComparingTo("6.45"); // 400 / (31 + 31) dias de los meses con ventas
+        // con la comisión fija de venta (4 % de ventas ÷ 1.12): enero 1000-100-35.71, marzo 2000-300-71.43
+        assertThat(s.getByMonth().get(0).getDifference()).isEqualByComparingTo("864.29");
+        assertThat(s.getByMonth().get(1).getDifference()).isEqualByComparingTo("1628.57");
+        assertThat(s.getMargin()).isEqualByComparingTo("0.8310");
+        assertThat(s.getBreakEven()).isEqualByComparingTo("416.67"); // 100 / 0.96 + 300 / 0.96
+        assertThat(s.getBreakEvenDaily()).isEqualByComparingTo("6.72"); // 416.67 / (31 + 31) dias de los meses con ventas
     }
 
     // ------------------------------------------------------------------ daily matrix
@@ -548,5 +551,43 @@ class KioskFinancialsReportServiceTest {
     void year2025KeepsTheOriginalExcelRuleNetOfIvaWithoutCondition() throws Exception {
         // mismas ventas y meta que arriba, pero 2025: (78,472.30 / 1.12) x 4 % aunque no llegue al 70 %
         assertThat(commissionOf(2025, "130000", "78472.30")).isEqualByComparingTo("2802.58");
+    }
+
+    // ------------------------------------------------------------------ bono por meta en el P&L (desde sept-2026)
+
+    private BigDecimal bonusOf(int year, int month, String goal, String sales) throws Exception {
+        LocalDate first = LocalDate.of(year, month, 1);
+        lenient().when(resolver.resolve(any(), eq(first), eq(first.withDayOfMonth(first.lengthOfMonth())), any()))
+                .thenReturn(Map.of(1L, sales(1, null, true, false, year + "-" + String.format("%02d", month) + "-10", sales)));
+        lenient().when(configRepository.findByPeriodYear(year)).thenReturn(List.of(
+                config(1, year, month, null, "0.18", "0.04", "0.025", "0.025")));
+        moduleGoals.put(15L, Map.of(month, new BigDecimal(goal)));
+        return service.getPnl(year, month, "1").getSites().get(0).getVariable().getBonus();
+    }
+
+    @Test
+    void septemberPnlIncludesTheGoalBonusAsPartOfVariableCosts() throws Exception {
+        // meta 120,000: 84,226.40 (70.2 %) no llega a 90 %  -> sin bono
+        assertThat(bonusOf(2026, 9, "120000", "84226.40")).isEqualByComparingTo("0.00");
+        // 110,000 / 120,000 = 91.7 % -> Q500
+        assertThat(bonusOf(2026, 9, "120000", "110000.00")).isEqualByComparingTo("500.00");
+        // 125,000 / 120,000 = 104 % -> Q800
+        assertThat(bonusOf(2026, 9, "120000", "125000.00")).isEqualByComparingTo("800.00");
+    }
+
+    @Test
+    void bonusIsAddedToTotalVariableAndTotalCost() throws Exception {
+        bonusOf(2026, 9, "120000", "125000.00");
+
+        KioskFinancialsPnlResponse.SitePnl s = service.getPnl(2026, 9, "1").getSites().get(0);
+
+        // variable = 125000 x (18 % + 2.5 % + 2.5 %) + (125000 / 1.12) x 4 % + 800 bono
+        assertThat(s.getVariable().getTotal()).isEqualByComparingTo("34014.29"); // 28750 + 4464.29 + 800
+    }
+
+    @Test
+    void noBonusBeforeSeptember2026EvenIfTheGoalIsMet() throws Exception {
+        assertThat(bonusOf(2026, 8, "100000", "150000.00")).isEqualByComparingTo("0.00");
+        assertThat(bonusOf(2025, 12, "100000", "150000.00")).isEqualByComparingTo("0.00");
     }
 }

@@ -271,3 +271,30 @@ Kioscos que arrancaron en el POS a mitad de mes tienen Q 0.00 los días anterior
 - Punto de equilibrio con `RATES` sigue restando la tasa completa (`sc`); resta `sc` completo aunque la comisión se calcule sobre `ventas ÷ 1.12` (diferencia ≈ 0.6 % del PE, pendiente de decisión). No considera la condición del 70 %.
 - La proyección anual del año siguiente no tiene metas cargadas: aplica la comisión.
 - La plantilla de Excel descargable usa la misma regla según el año del archivo.
+
+## Comisión de venta: tasa FIJA de 4 % (2026-10-01)
+
+La tasa de la comisión de venta es una constante del código (`KioskPnlCalculator.SALES_COMMISSION_RATE = 0.04`), igual para todos los kioscos y años (en los 12 Excel de 2025 siempre fue 4 %). **No se configura ni se lee de la base:**
+
+- **Cálculo, reportes, comparativo y proyección:** usan 4 % sin mirar `kiosk_period_config.sales_commission_pct`; el valor guardado ahí (aunque sea 0.31 % o 0) no afecta nada.
+- **`GET /config`:** `salesCommissionPct` siempre devuelve `0.04` en todos los meses (con o sin fila de configuración). No cuenta para `complete` ni para `/completeness`.
+- **`PUT /config/bulk`:** enviar `salesCommissionPct` responde 400 (“La comisión de venta es fija (4 %) y no se configura.”). **`POST /config/copy`** con `RATES` ya no la copia.
+- **Importador (ambos formatos):** `rates.salesCommissionPct` es siempre 0.04; no se lee la fila de tasa ni se deduce del monto (el Excel pone 0 a quien no llega al 70 % o trae montos atípicos por errores de fórmula). Se agrega un INFO “La comisión de venta es fija (4 %)…”.
+- **Condición del 70 % (desde 2026):** sigue en `CommissionPolicy.FROM_2026` (ver sección anterior). El único dato configurable que la afecta es la meta del mes.
+- **Pantalla de costos:** la fila “Comisión de venta” es de solo lectura (4 %). La plantilla descargable ya la trae en 4 %.
+- `scripts/fix-kiosk-commission-rate-2026.sql` es opcional (solo limpia valores viejos en la tabla).
+
+## Bono por meta en el P&L y comisión sin IVA en el POS (2026-10-01)
+
+**Comisión de venta 4 % = 2 % encargada + 2 % supervisora**, ambas sobre la venta sin IVA (`ventas ÷ 1.12`), y solo si el kiosco llega al 70 % de su meta (desde 2026). Es fija; no se configura.
+
+**Bono por meta (nuevo en Finanzas, fijo, no configurable).** Es el bono de la encargada del módulo Metas de Kioskos: **Q500 desde 90 % de la meta y Q800 desde 100 %**, medido con ventas con IVA contra la meta efectiva del mes.
+- Se carga como costo variable desde **septiembre 2026** (`CommissionPolicy.forPeriod(año, mes)`, `BONUS_FROM = 2026-09`); antes de eso y en 2025 el bono es 0.
+- Sin meta definida no hay bono (a diferencia de la comisión, que se aplica).
+- Entra en `variable.total`, `totalCost`, utilidad y margen; **no** en el punto de equilibrio (que sigue usando solo tasas %).
+- En periodos parciales (`/compare`) se prorratea igual que los costos fijos. La proyección del mes lo incluye; la del año siguiente no (no hay metas cargadas).
+- `GET /pnl`: `variable.bonus` (sitios y `totals`). La pestaña P&L, el Excel exportado y el glosario tienen la fila “Bono por meta”.
+- El bono de la **supervisora** (Q100/Q200 sobre el agregado de sus kioscos) **no** está repartido por kiosco en el P&L: queda pendiente definir cómo atribuirlo.
+
+**Resumen del POS (comisión de la encargada/supervisora, `KioskGoalService`, rama `main`).** El código vive en `main`, no en esta rama. Se preparó y probó el cambio contra `main` (copia temporal, compila y su prueba pasa): `docs/patches/kiosk-goal-commission-net-of-iva.patch` (`git apply` sobre `main`). Desde septiembre 2026 el 2 % se calcula sobre `vendido ÷ 1.12`; el % de meta y los bonos fijos no cambian; los meses anteriores y las llamadas sin periodo conservan la regla vieja (2 % sobre el total con IVA).
+

@@ -57,14 +57,15 @@ class KioskPnlCalculatorTest {
 
     @Test
     void flatVariableRateOnlyChangesTheBreakEven() {
-        // Kiosco sin comisión de venta: tasas reales 18 % + 2.87 % + 2.5 % = 23.37 %; el Excel reciente usa 27 % fijo.
+        // Tasas reales 18 % + 4 % (comisión de venta, fija) + 2.87 % + 2.5 % = 27.37 %; el Excel reciente usa 27 % fijo.
+        // (el segundo argumento, la comisión de venta, se ignora: siempre es 4 %)
         KioskPnlCalculator.Rates noCommission = KioskPnlCalculator.Rates.of("0.18", "0", "0.0287", "0.025");
         BigDecimal fixed = new BigDecimal("15183.78");
         KioskPnlCalculator.Result real = KioskPnlCalculator.calculate(new BigDecimal("24220.40"), noCommission, fixed, 30);
         KioskPnlCalculator.Result flat = KioskPnlCalculator.calculate(new BigDecimal("24220.40"), noCommission, fixed, 30,
                 KioskPnlCalculator.FLAT_VARIABLE_RATE);
 
-        assertThat(KioskPnlCalculator.round2(real.breakEven())).isEqualByComparingTo("19814.41"); // CF / 0.7663
+        assertThat(KioskPnlCalculator.round2(real.breakEven())).isEqualByComparingTo("20905.66"); // CF / 0.7263
         assertThat(KioskPnlCalculator.round2(flat.breakEven())).isEqualByComparingTo("20799.70"); // CF / 0.73
         assertThat(KioskPnlCalculator.round2(flat.breakEvenDaily())).isEqualByComparingTo("693.32");
         // costos, utilidad y margen no dependen del método
@@ -75,7 +76,8 @@ class KioskPnlCalculatorTest {
 
     @Test
     void breakEvenIsNullWhenDenominatorNotPositive() {
-        KioskPnlCalculator.Rates heavy = KioskPnlCalculator.Rates.of("0.50", "0.30", "0.10", "0.10");
+        // 80 % + 4 % (comisión fija) + 10 % + 10 % = 104 % > 100 %: no hay punto de equilibrio
+        KioskPnlCalculator.Rates heavy = KioskPnlCalculator.Rates.of("0.80", "0.04", "0.10", "0.10");
         KioskPnlCalculator.Result r = KioskPnlCalculator.calculate(new BigDecimal("1000"), heavy, new BigDecimal("500"), 30);
 
         assertThat(r.breakEven()).isNull();
@@ -87,9 +89,10 @@ class KioskPnlCalculatorTest {
         KioskPnlCalculator.Result r = KioskPnlCalculator.calculate(
                 new BigDecimal("100"), new KioskPnlCalculator.Rates(null, null, null, null), new BigDecimal("10"), 30);
 
-        assertThat(r.variableTotal()).isEqualByComparingTo("0");
-        assertThat(r.difference()).isEqualByComparingTo("90");
-        assertThat(r.breakEven()).isEqualByComparingTo("10");
+        // las tasas nulas cuentan como 0, salvo la comisión de venta, que es fija (4 % de ventas / 1.12)
+        assertThat(KioskPnlCalculator.round2(r.variableTotal())).isEqualByComparingTo("3.57");
+        assertThat(KioskPnlCalculator.round2(r.difference())).isEqualByComparingTo("86.43");
+        assertThat(KioskPnlCalculator.round2(r.breakEven())).isEqualByComparingTo("10.42"); // 10 / 0.96
     }
 
     @Test
@@ -119,8 +122,12 @@ class KioskPnlCalculatorTest {
 
         assertThat(KioskPnlCalculator.isMonthComplete(new BigDecimal("1"), RATES, full, required)).isTrue();
         assertThat(KioskPnlCalculator.isMonthComplete(null, RATES, full, required)).isFalse();
+        // tasa faltante de costo del producto => incompleto
         assertThat(KioskPnlCalculator.isMonthComplete(new BigDecimal("1"),
-                new KioskPnlCalculator.Rates(new BigDecimal("0.18"), null, BigDecimal.ONE, BigDecimal.ONE), full, required)).isFalse();
+                new KioskPnlCalculator.Rates(null, new BigDecimal("0.04"), BigDecimal.ONE, BigDecimal.ONE), full, required)).isFalse();
+        // la comisión de venta es fija: que venga vacía NO hace incompleto el mes
+        assertThat(KioskPnlCalculator.isMonthComplete(new BigDecimal("1"),
+                new KioskPnlCalculator.Rates(new BigDecimal("0.18"), null, BigDecimal.ONE, BigDecimal.ONE), full, required)).isTrue();
         Map<String, BigDecimal> missing = new LinkedHashMap<>();
         missing.put("ALQUILER", new BigDecimal("100"));
         assertThat(KioskPnlCalculator.isMonthComplete(new BigDecimal("1"), RATES, missing, required)).isFalse();
@@ -190,5 +197,91 @@ class KioskPnlCalculatorTest {
         // variable = costo 18 % + tarjeta 2.5 % + IVA 2.5 % (+ comision (ventas / 1.12) x 4 % solo arriba del 70 %)
         assertThat(KioskPnlCalculator.round2(below.variableTotal())).isEqualByComparingTo("20700.00"); // 90000 x 23 %
         assertThat(KioskPnlCalculator.round2(above.variableTotal())).isEqualByComparingTo("26571.43"); // 23000 + 3571.43
+    }
+
+    // ------------------------------------------------------------------ comision de venta: tasa FIJA 4 %
+
+    @Test
+    void salesCommissionRateIsFixedAt4PercentAndStoredValueIsIgnored() {
+        assertThat(KioskPnlCalculator.SALES_COMMISSION_RATE).isEqualByComparingTo("0.04");
+        // en la base quedo 0.31 % (el caso de Miraflores II, septiembre 2026): no debe usarse
+        KioskPnlCalculator.Rates stored = KioskPnlCalculator.Rates.of("0.18", "0.0031", "0.025", "0.025");
+        KioskPnlCalculator.Result r = KioskPnlCalculator.calculate(new BigDecimal("84226.40"), stored,
+                new LinkedHashMap<String, BigDecimal>(), 30, null, KioskPnlCalculator.CommissionPolicy.FROM_2026,
+                new BigDecimal("120000"));
+        // 84,226.40 / 120,000 = 70.2 % >= 70 %  ->  (84,226.40 / 1.12) x 4 % = 3,008.09
+        assertThat(KioskPnlCalculator.round2(r.salesCommission())).isEqualByComparingTo("3008.09");
+    }
+
+    @Test
+    void zeroOrMissingStoredCommissionRateStillChargesFourPercent() {
+        for (String stored : new String[]{"0", "0.0000"}) {
+            KioskPnlCalculator.Rates rates = KioskPnlCalculator.Rates.of("0.18", stored, "0.025", "0.025");
+            assertThat(KioskPnlCalculator.round2(KioskPnlCalculator.calculate(new BigDecimal("100000"), rates,
+                    new LinkedHashMap<String, BigDecimal>(), 30).salesCommission())).isEqualByComparingTo("3571.43");
+        }
+        KioskPnlCalculator.Rates none = new KioskPnlCalculator.Rates(new BigDecimal("0.18"), null,
+                new BigDecimal("0.025"), new BigDecimal("0.025"));
+        assertThat(KioskPnlCalculator.round2(KioskPnlCalculator.calculate(new BigDecimal("100000"), none,
+                new LinkedHashMap<String, BigDecimal>(), 30).salesCommission())).isEqualByComparingTo("3571.43");
+    }
+
+    // ------------------------------------------------------------------ bono por meta (fijo, desde septiembre 2026)
+
+    private static BigDecimal bonus(String sales, String goal, KioskPnlCalculator.CommissionPolicy policy) {
+        return KioskPnlCalculator.calculate(new BigDecimal(sales), RATES, new LinkedHashMap<String, BigDecimal>(), 30,
+                null, policy, goal == null ? null : new BigDecimal(goal)).bonus();
+    }
+
+    @Test
+    void policyForPeriodAddsTheBonusOnlyFromSeptember2026() {
+        assertThat(KioskPnlCalculator.CommissionPolicy.forPeriod(2025, 12)).isSameAs(KioskPnlCalculator.CommissionPolicy.LEGACY);
+        assertThat(KioskPnlCalculator.CommissionPolicy.forPeriod(2026, 1)).isSameAs(KioskPnlCalculator.CommissionPolicy.FROM_2026);
+        assertThat(KioskPnlCalculator.CommissionPolicy.forPeriod(2026, 8)).isSameAs(KioskPnlCalculator.CommissionPolicy.FROM_2026);
+        assertThat(KioskPnlCalculator.CommissionPolicy.forPeriod(2026, 9))
+                .isSameAs(KioskPnlCalculator.CommissionPolicy.FROM_2026_WITH_BONUS);
+        assertThat(KioskPnlCalculator.CommissionPolicy.forPeriod(2027, 1))
+                .isSameAs(KioskPnlCalculator.CommissionPolicy.FROM_2026_WITH_BONUS);
+    }
+
+    @Test
+    void bonusIs500From90PercentAnd800From100PercentOfGoal() {
+        KioskPnlCalculator.CommissionPolicy p = KioskPnlCalculator.CommissionPolicy.FROM_2026_WITH_BONUS;
+        assertThat(bonus("89999.99", "100000", p)).isEqualByComparingTo("0");
+        assertThat(bonus("90000", "100000", p)).isEqualByComparingTo("500");   // exactamente 90 %
+        assertThat(bonus("99999.99", "100000", p)).isEqualByComparingTo("500");
+        assertThat(bonus("100000", "100000", p)).isEqualByComparingTo("800");  // exactamente 100 %
+        assertThat(bonus("150000", "100000", p)).isEqualByComparingTo("800");
+    }
+
+    @Test
+    void bonusNeedsAVerifiableGoalAndAnEnabledPolicy() {
+        assertThat(bonus("500000", null, KioskPnlCalculator.CommissionPolicy.FROM_2026_WITH_BONUS)).isEqualByComparingTo("0");
+        assertThat(bonus("500000", "0", KioskPnlCalculator.CommissionPolicy.FROM_2026_WITH_BONUS)).isEqualByComparingTo("0");
+        // antes de septiembre 2026 y en 2025 no hay bono aunque se cumpla la meta
+        assertThat(bonus("150000", "100000", KioskPnlCalculator.CommissionPolicy.FROM_2026)).isEqualByComparingTo("0");
+        assertThat(bonus("150000", "100000", KioskPnlCalculator.CommissionPolicy.LEGACY)).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void bonusIsPartOfTheVariableTotalButNotOfTheBreakEvenRate() {
+        BigDecimal fixed = new BigDecimal("10000");
+        KioskPnlCalculator.Result with = KioskPnlCalculator.calculate(new BigDecimal("100000"), RATES, fixed, 30, null,
+                KioskPnlCalculator.CommissionPolicy.FROM_2026_WITH_BONUS, new BigDecimal("100000"));
+        KioskPnlCalculator.Result without = KioskPnlCalculator.calculate(new BigDecimal("100000"), RATES, fixed, 30, null,
+                KioskPnlCalculator.CommissionPolicy.FROM_2026, new BigDecimal("100000"));
+
+        assertThat(with.variableTotal().subtract(without.variableTotal())).isEqualByComparingTo("800");
+        assertThat(with.totalCost().subtract(without.totalCost())).isEqualByComparingTo("800");
+        assertThat(with.difference().add(new BigDecimal("800"))).isEqualByComparingTo(without.difference());
+        assertThat(with.breakEven()).isEqualByComparingTo(without.breakEven());
+    }
+
+    @Test
+    void bonusIsProratedForPartialPeriods() {
+        KioskPnlCalculator.Result half = KioskPnlCalculator.calculate(new BigDecimal("50000"), RATES,
+                new LinkedHashMap<String, BigDecimal>(), 30, null, KioskPnlCalculator.CommissionPolicy.FROM_2026_WITH_BONUS,
+                new BigDecimal("50000"), new BigDecimal("0.5"));
+        assertThat(half.bonus()).isEqualByComparingTo("400"); // Q800 x 0.5
     }
 }

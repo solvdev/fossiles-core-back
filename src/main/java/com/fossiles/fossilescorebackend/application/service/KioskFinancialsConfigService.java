@@ -291,7 +291,8 @@ public class KioskFinancialsConfigService {
                 siteCosts.forEach(orderedCosts::putIfAbsent);
 
                 KioskPnlCalculator.Rates rates = cfg == null ? null : new KioskPnlCalculator.Rates(
-                        cfg.getProductCostPct(), cfg.getSalesCommissionPct(), cfg.getCardCommissionPct(), cfg.getTaxPct());
+                        cfg.getProductCostPct(), KioskPnlCalculator.SALES_COMMISSION_RATE, cfg.getCardCommissionPct(),
+                        cfg.getTaxPct());
                 BigDecimal effectiveGoal = goals.goal(site.getId(), m, cfg);
                 boolean complete = cfg != null
                         && KioskPnlCalculator.isMonthComplete(effectiveGoal, rates, siteCosts, requiredCodes);
@@ -300,7 +301,7 @@ public class KioskFinancialsConfigService {
                         .goal(effectiveGoal)
                         .goalSource(goals.source(site.getId(), m, cfg))
                         .productCostPct(cfg == null ? null : cfg.getProductCostPct())
-                        .salesCommissionPct(cfg == null ? null : cfg.getSalesCommissionPct())
+                        .salesCommissionPct(KioskPnlCalculator.SALES_COMMISSION_RATE) // fija, no configurable
                         .cardCommissionPct(cfg == null ? null : cfg.getCardCommissionPct())
                         .taxPct(cfg == null ? null : cfg.getTaxPct())
                         .source(cfg == null ? null : cfg.getSource())
@@ -380,9 +381,11 @@ public class KioskFinancialsConfigService {
             PeriodKey key = new PeriodKey(change.getSiteId(), year, month);
 
             // Escalares (meta y tasas): clave presente = campo no nulo (Optional, posiblemente vacio)
+            if (change.getSalesCommissionPct() != null) {
+                throw new BusinessException("La comisión de venta es fija (4 %) y no se configura.");
+            }
             boolean scalarPresent = change.getGoal() != null || change.getProductCostPct() != null
-                    || change.getSalesCommissionPct() != null || change.getCardCommissionPct() != null
-                    || change.getTaxPct() != null;
+                    || change.getCardCommissionPct() != null || change.getTaxPct() != null;
             KioskSiteEntity changeSite = siteById.get(change.getSiteId());
             if (change.getGoal() != null && changeSite != null && changeSite.getLocationId() != null) {
                 throw new BusinessException("La meta de " + changeSite.getName()
@@ -397,10 +400,6 @@ public class KioskFinancialsConfigService {
                 }
                 if (change.getProductCostPct() != null) {
                     cfg.setProductCostPct(rateOrNull(change.getProductCostPct().orElse(null), "costo del producto"));
-                    cells++;
-                }
-                if (change.getSalesCommissionPct() != null) {
-                    cfg.setSalesCommissionPct(rateOrNull(change.getSalesCommissionPct().orElse(null), "comisión de venta"));
                     cells++;
                 }
                 if (change.getCardCommissionPct() != null) {
@@ -560,10 +559,9 @@ public class KioskFinancialsConfigService {
                     }
                     if (include.contains(INCLUDE_RATES)) {
                         int[] r1 = copyCell(srcCfg.getProductCostPct(), target.getProductCostPct(), overwrite, target::setProductCostPct);
-                        int[] r2 = copyCell(srcCfg.getSalesCommissionPct(), target.getSalesCommissionPct(), overwrite, target::setSalesCommissionPct);
                         int[] r3 = copyCell(srcCfg.getCardCommissionPct(), target.getCardCommissionPct(), overwrite, target::setCardCommissionPct);
                         int[] r4 = copyCell(srcCfg.getTaxPct(), target.getTaxPct(), overwrite, target::setTaxPct);
-                        for (int[] r : List.of(r1, r2, r3, r4)) {
+                        for (int[] r : List.of(r1, r3, r4)) { // la comision de venta es fija: no se copia
                             copiedHere += r[0];
                             skippedCells += r[1];
                             configTouched |= r[0] > 0;

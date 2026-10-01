@@ -121,7 +121,7 @@ public class KioskFinancialsForecastService {
             if (ref != null) {
                 KioskPnlCalculator.Result r = KioskPnlCalculator.calculate(
                         BigDecimal.valueOf(me.projected()), ref.rates(), ref.fixed(), me.daysInMonth(), flat,
-                        KioskPnlCalculator.CommissionPolicy.forYear(ym.getYear()), goal);
+                        KioskPnlCalculator.CommissionPolicy.forPeriod(ym.getYear(), ym.getMonthValue()), goal);
                 b.costsFrom(ref.from().toString())
                         .totalCost(KioskPnlCalculator.round2(r.totalCost()))
                         .difference(KioskPnlCalculator.round2(r.difference()))
@@ -294,7 +294,7 @@ public class KioskFinancialsForecastService {
                         KioskPnlCalculator.Result r = KioskPnlCalculator.calculate(BigDecimal.valueOf(s), ref.rates(),
                                 ref.fixed(), YearMonth.of(target, m + 1).lengthOfMonth(), flat,
                                 // sin metas del anio siguiente: la comision se aplica (no se puede verificar el 70 %)
-                                KioskPnlCalculator.CommissionPolicy.forYear(target), null);
+                                KioskPnlCalculator.CommissionPolicy.forPeriod(target, m + 1), null);
                         mb.totalCost(KioskPnlCalculator.round2(r.totalCost())).difference(KioskPnlCalculator.round2(r.difference()))
                                 .margin(KioskPnlCalculator.round4(r.margin())).breakEven(KioskPnlCalculator.round2(r.breakEven()));
                         siteCost += r.totalCost().doubleValue();

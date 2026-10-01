@@ -264,10 +264,11 @@ class KioskFinancialsConfigServiceTest {
 
         KioskFinancialsCopyResponse r = service.copy(copyRequest(false));
 
-        // Enero: meta omitida (1), tasas copiadas (2), ALQUILER omitido (1), LUZ copiado (1) => 3 copiadas / 2 omitidas
-        // Febrero: meta + 2 tasas + 2 costos => 5 copiadas
+        // (la comisión de venta es fija: ya no se copia)
+        // Enero: meta omitida (1), tasa copiada (1), ALQUILER omitido (1), LUZ copiado (1) => 2 copiadas / 2 omitidas
+        // Febrero: meta + 1 tasa + 2 costos => 4 copiadas
         assertThat(r.getCopiedMonths()).isEqualTo(2);
-        assertThat(r.getCopiedCells()).isEqualTo(8);
+        assertThat(r.getCopiedCells()).isEqualTo(6);
         assertThat(r.getSkippedCells()).isEqualTo(2);
 
         List<Object> configs = savedConfigs();
@@ -295,7 +296,7 @@ class KioskFinancialsConfigServiceTest {
         KioskFinancialsCopyResponse r = service.copy(copyRequest(true));
 
         assertThat(r.getSkippedCells()).isZero();
-        assertThat(r.getCopiedCells()).isEqualTo(10);
+        assertThat(r.getCopiedCells()).isEqualTo(8); // por mes: meta + 1 tasa (la comisión es fija) + 2 costos, x 2 meses
         KioskPeriodConfigEntity jan = (KioskPeriodConfigEntity) savedConfigs().stream()
                 .filter(o -> ((KioskPeriodConfigEntity) o).getPeriodMonth() == 1).findFirst().orElseThrow();
         assertThat(jan.getSalesGoal()).isEqualByComparingTo("100.00");
@@ -511,5 +512,31 @@ class KioskFinancialsConfigServiceTest {
         assertThat(r.getCopiedCells()).isZero();
         assertThat(r.getSkippedCells()).isEqualTo(2); // enero y febrero
         verify(configRepository, never()).saveAll(any());
+    }
+
+    // ------------------------------------------------------------------ comision de venta: tasa FIJA 4 %
+
+    @Test
+    void bulkRejectsEditingTheFixedSalesCommissionRate() {
+        assertThatThrownBy(() -> service.bulkUpdate(bulk(2026, KioskFinancialsConfigBulkRequest.Change.builder()
+                .siteId(1L).month(9).salesCommissionPct(Optional.of(new BigDecimal("0.0031"))).build())))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("fija");
+        verify(configRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void getConfigAlwaysReturnsFourPercentSalesCommissionWhateverIsStored() throws Exception {
+        // la base tiene 0.31 % en septiembre y nada en octubre: la pantalla muestra 4 % en los dos
+        lenient().when(configRepository.findByPeriodYear(2026)).thenReturn(List.of(
+                KioskPeriodConfigEntity.builder().siteId(1L).periodYear(2026).periodMonth(9)
+                        .salesCommissionPct(new BigDecimal("0.0031")).source("EXCEL").build()));
+        lenient().when(fixedCostRepository.findByPeriodYear(2026)).thenReturn(List.of());
+
+        List<KioskFinancialsConfigResponse.Month> months = service.getConfig(2026, 1L, null).getSites().get(0).getMonths();
+
+        assertThat(months.get(8).getSalesCommissionPct()).isEqualByComparingTo("0.04");
+        assertThat(months.get(9).getSalesCommissionPct()).isEqualByComparingTo("0.04");
+        assertThat(months.get(0).getSalesCommissionPct()).isEqualByComparingTo("0.04");
     }
 }
