@@ -231,6 +231,22 @@ Es un **ajuste global** guardado en `kiosk_financial_setting` (`BREAK_EVEN_MODE`
 Sólo cambia `breakEven` y `breakEvenDaily` (y lo que se deriva: estado “bajo equilibrio”, metas y equilibrio, Excel); costos, utilidad y margen siempre usan las tasas reales. `/compare` no usa punto de equilibrio. Selector en las pestañas P&L y Metas; el Excel descargado rotula la fila con el método. Pendiente de decisión: el denominador de `RATES` resta la comisión de venta como `sc` y no `sc/1.12` como la calcula la utilidad (efecto ≈ 0.6 % sólo en kioscos con comisión).
 Nota de datos: en los Excel 2026 la comisión de venta es `=IF(% de meta >= 0.7, ventas × 4%, 0)` (sólo si el kiosco llega al 70 % de su meta); el Excel de septiembre “(1)” usa `B2` en vez de `B33` en Miraflores (Q88.71 en vez de ≈ Q3,369).
 
+## Proyecciones (cierre del mes, año siguiente y P&L proyectado)
+
+Sólo lectura, permiso `KIOSCOS.FINANZAS.VER`. Excluyen sitios externos y kioscos cerrados o sin ventas en las últimas 4 semanas. Parámetro opcional `siteIds` (CSV). `asOf` (`yyyy-MM-dd`) simula otro día (por defecto hoy, hora de Guatemala). Cálculo puro y probado en `KioskForecastMath`; orquestación en `KioskFinancialsForecastService`. Pantalla: pestaña **Proyección** (con el filtro de supervisora y kioscos) y **Exportar Excel** (3 hojas: cierre del mes, proyección y metas sugeridas redondeadas a Q100).
+
+**`GET /forecast/month-end`** — por kiosco: `mtd` (días completos del mes), `actualToDate` (incluye hoy), `projected` (cierre), `low`/`high` (rango del 80 %), `goal`, `goalPctProjected`, `goalPctToDate`, `method`, y el P&L proyectado (`totalCost`, `difference`, `margin`, `breakEven`, `belowBreakEven`) con los costos y tasas del último mes configurado (`costsFrom`, hasta 12 meses atrás).
+- Día esperado = promedio de ese día de la semana en las últimas 8 semanas (los ceros cuentan: un kiosco que no abre los domingos tiene esperado 0 esos días), recortado al go-live. Hoy cuenta `max(vendido, esperado)`. Rango = ± 1.28 × desviación de los residuos × √(días por proyectar), sin bajar de lo ya vendido.
+- `method`: `WEEKDAY` (≥ 14 días de historia), `RUN_RATE` (kiosco nuevo: promedio de sus días operados, ≥ 3) o `INSUFFICIENT` (sin proyección; `projected` es null).
+- Meta efectiva = Metas de Kioskos primero, config de Finanzas de respaldo. La comisión de venta se activa al 70 % de la meta (la pantalla marca “Bajo 70 %”, “Sobre 70 %”, “Cumple la meta”).
+
+**`GET /forecast/next-year?targetYear=&growthPct=`** — sólo el año siguiente al actual (otro valor → 400). `growthPct` (−50..100) reemplaza el crecimiento de todos los kioscos.
+- Mes de T = mismo mes del año actual × crecimiento. Año actual = real en los meses cerrados, cierre proyectado en el mes en curso y, en los meses que faltan, el mismo mes del año anterior × crecimiento.
+- Crecimiento propio = ventas de las mismas fechas (desde que el kiosco existía el año anterior hasta ayer) / año anterior; sólo si hay ≥ 90 días comparables y ≥ 60 días con venta en la base (`source: SITE`). Si no, el global de los “mismos kioscos” (`COMPANY`); sin ninguno, 1.0 (`NONE`). Limitado a [0.5, 2.0] (`growthCapped`).
+- Meses sin dato (kiosco que no existía) = nivel del kiosco desestacionalizado × índice estacional (`seasonalIndex`, de los kioscos con ventas los 12 meses del año base); van marcados `estimated`. Kioscos con menos de 2 meses de historia no se proyectan (`skippedSites`).
+- P&L proyectado: los costos fijos y tasas de referencia se mantienen constantes (último mes configurado) y el punto de equilibrio sigue el método de la configuración.
+- Limitaciones: no considera aperturas, cierres, feriados móviles (Semana Santa), promociones, cambios de precio ni inflación; con ≥ 3 años de historia por kiosco convendría un modelo estadístico (pendiente: pruebas contra el pasado).
+
 ## Días sin sistema (corrección desde el Excel del reporte)
 
 Kioscos que arrancaron en el POS a mitad de mes tienen Q 0.00 los días anteriores a su primera venta aunque el reporte Excel sí traiga venta. Esos días ya se leen de `kiosk_daily_sales_hist` (fecha < go-live), así que la corrección escribe sólo esas celdas ahí.
@@ -239,3 +255,19 @@ Kioscos que arrancaron en el POS a mitad de mes tienen Q 0.00 los días anterior
 - `POST /api/kiosk-financials/imports/gap-fill/commit` (multipart: `file`, `siteIds` CSV, opcionales `year`/`month`). **Vuelve a leer el archivo y recalcula** (nunca confía en montos del cliente); cada sitio elegido debe tener candidatos (400 si no). Escribe sólo `kiosk_daily_sales_hist` con un lote `kiosk_import_batch` cuyo `file_name` empieza con `DIAS SIN SISTEMA - ` y con sha propio; no toca costos, tasas, metas, otros kioscos ni el POS, y nunca pisa un día con venta en el sistema. Revertible con `POST /imports/{batchId}/revert`. Estos lotes no cuentan como “mes ya importado” en el preview del importador completo.
 - Permiso: `KIOSCOS.FINANZAS.IMPORTAR`. Implementación: `KioskGapFillService`, `KioskGapFillPlanner`.
 - Limitación conocida: un kiosco que ya operaba en el POS y deja un día sin registrar a mitad de mes no se puede cubrir (el resolver ignora el histórico desde el go-live); se informa en `afterGoLiveGaps`.
+
+## Comisión de venta: regla por año (2026-10-01)
+
+`KioskPnlCalculator.CommissionPolicy.forYear(año)` decide la fórmula y la usan P&L, comparativo y proyección:
+
+| Año | Fórmula | Condición |
+|---|---|---|
+| 2025 y anteriores (`LEGACY`) | `(ventas ÷ 1.12) × tasa` | ninguna |
+| 2026 en adelante (`FROM_2026`) | `ventas × tasa` (ventas con IVA) | solo si `ventas ≥ meta × 0.70`; si no, comisión = 0 |
+
+- Equivale al Excel 2026: `=IF(% de meta >= 0.7, ventas × 4 %, 0)`.
+- Sin meta definida (null o 0) no se puede verificar el 70 %: la comisión **se aplica** (no subestimar costos).
+- La meta usada es la efectiva del mes (Metas de Kioscos primero, respaldo de Finanzas). En `/compare` por periodo parcial, ventas y meta están prorrateadas igual, así que el % de meta es consistente.
+- Punto de equilibrio con `RATES` sigue restando la tasa completa (`sc`); con la regla 2026 ya es coherente con `ventas × tasa`. No considera la condición del 70 %.
+- La proyección anual del año siguiente no tiene metas cargadas: aplica la comisión.
+- La plantilla de Excel descargable usa la misma regla según el año del archivo.

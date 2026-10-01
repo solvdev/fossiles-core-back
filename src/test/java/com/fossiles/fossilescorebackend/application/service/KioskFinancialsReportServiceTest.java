@@ -519,4 +519,34 @@ class KioskFinancialsReportServiceTest {
         assertThat(s.getMonths().get(8).getHasGoal()).isTrue();   // septiembre: viene del modulo de metas
         assertThat(s.getMonths().get(7).getHasGoal()).isFalse();  // agosto: nadie la tiene
     }
+
+    // ------------------------------------------------------------------ comision de venta: regla por anio
+
+    private BigDecimal commissionOf(int year, String goal, String sales) throws Exception {
+        LocalDate first = LocalDate.of(year, 9, 1);
+        lenient().when(resolver.resolve(any(), eq(first), eq(LocalDate.of(year, 9, 30)), any()))
+                .thenReturn(Map.of(1L, sales(1, null, true, false, year + "-09-10", sales)));
+        lenient().when(configRepository.findByPeriodYear(year)).thenReturn(List.of(
+                config(1, year, 9, null, "0.18", "0.04", "0.025", "0.025")));
+        moduleGoals.put(15L, Map.of(9, new BigDecimal(goal)));
+        return service.getPnl(year, 9, "1").getSites().get(0).getVariable().getSalesCommission();
+    }
+
+    @Test
+    void year2026ChargesCommissionOnGrossSalesOnlyFromSeventyPercentOfGoal() throws Exception {
+        // 100,000 de ventas sobre meta 130,000 (76.9 %): 4 % de las ventas con IVA
+        assertThat(commissionOf(2026, "130000", "100000.00")).isEqualByComparingTo("4000.00");
+    }
+
+    @Test
+    void year2026ChargesNoCommissionUnderSeventyPercentOfGoal() throws Exception {
+        // 78,472.30 sobre meta 130,000 = 60.4 %: no llega al 70 %
+        assertThat(commissionOf(2026, "130000", "78472.30")).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    void year2025KeepsTheOriginalExcelRuleNetOfIvaWithoutCondition() throws Exception {
+        // mismas ventas y meta que arriba, pero 2025: (78,472.30 / 1.12) x 4 % aunque no llegue al 70 %
+        assertThat(commissionOf(2025, "130000", "78472.30")).isEqualByComparingTo("2802.58");
+    }
 }

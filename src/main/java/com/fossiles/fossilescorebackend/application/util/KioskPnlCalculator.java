@@ -19,6 +19,38 @@ public final class KioskPnlCalculator {
     private KioskPnlCalculator() {
     }
 
+    /**
+     * Regla de la comision de venta (cambia entre los Excel de 2025 y los de 2026).
+     * <ul>
+     *   <li>{@link #LEGACY} (2025 y anteriores): {@code (ventas / 1.12) x tasa}, siempre.</li>
+     *   <li>{@link #FROM_2026}: {@code ventas x tasa}, y solo si el kiosco llega al 70 % de su meta
+     *       ({@code =IF(% de meta >= 0.7, ventas x tasa, 0)}); si no, 0.</li>
+     * </ul>
+     *
+     * @param grossBase   true = la tasa se aplica sobre ventas con IVA; false = sobre ventas / 1.12
+     * @param minGoalPct  cumplimiento de meta minimo (0.70) para que la comision aplique; null = sin condicion
+     */
+    public record CommissionPolicy(boolean grossBase, BigDecimal minGoalPct) {
+        public static final int POLICY_CHANGE_YEAR = 2026;
+        public static final CommissionPolicy LEGACY = new CommissionPolicy(false, null);
+        public static final CommissionPolicy FROM_2026 = new CommissionPolicy(true, new BigDecimal("0.70"));
+
+        public static CommissionPolicy forYear(int year) {
+            return year >= POLICY_CHANGE_YEAR ? FROM_2026 : LEGACY;
+        }
+
+        /**
+         * Si la comision aplica. Sin meta definida (null o 0) no se puede verificar el 70 %: se aplica,
+         * para no subestimar costos. Comparacion exacta: ventas >= meta x minimo.
+         */
+        boolean applies(BigDecimal sales, BigDecimal goal) {
+            if (minGoalPct == null || goal == null || goal.signum() <= 0) {
+                return true;
+            }
+            return sales.compareTo(goal.multiply(minGoalPct)) >= 0;
+        }
+    }
+
     /** Tasas del mes; null se trata como 0. */
     public record Rates(
             BigDecimal productCostPct,
@@ -81,6 +113,22 @@ public final class KioskPnlCalculator {
      */
     public static Result calculate(BigDecimal sales, Rates rates, BigDecimal fixedTotal, int days,
                                    BigDecimal flatVariableRate) {
+        return calculate(sales, rates, fixedTotal, days, flatVariableRate, CommissionPolicy.LEGACY, null);
+    }
+
+    /** Igual que la anterior pero con la regla de comision del anio y la meta del mes (para el 70 %). */
+    public static Result calculate(BigDecimal sales, Rates rates, Map<String, BigDecimal> fixedByCategory, int days,
+                                   BigDecimal flatVariableRate, CommissionPolicy policy, BigDecimal goal) {
+        return calculate(sales, rates, sumFixed(fixedByCategory), days, flatVariableRate, policy, goal);
+    }
+
+    /**
+     * @param policy regla de la comision de venta (null = {@link CommissionPolicy#LEGACY})
+     * @param goal   meta de ventas del mismo periodo que {@code sales}; solo se usa si la regla tiene minimo
+     */
+    public static Result calculate(BigDecimal sales, Rates rates, BigDecimal fixedTotal, int days,
+                                   BigDecimal flatVariableRate, CommissionPolicy policy, BigDecimal goal) {
+        CommissionPolicy rule = policy == null ? CommissionPolicy.LEGACY : policy;
         BigDecimal v = nz(sales);
         BigDecimal cf = nz(fixedTotal);
         BigDecimal pc = rates == null ? BigDecimal.ZERO : nz(rates.productCostPct());
@@ -89,7 +137,8 @@ public final class KioskPnlCalculator {
         BigDecimal tx = rates == null ? BigDecimal.ZERO : nz(rates.taxPct());
 
         BigDecimal productCost = v.multiply(pc);
-        BigDecimal salesCommission = v.divide(IVA_DIVISOR, SCALE, RoundingMode.HALF_UP).multiply(sc);
+        BigDecimal commissionBase = rule.grossBase() ? v : v.divide(IVA_DIVISOR, SCALE, RoundingMode.HALF_UP);
+        BigDecimal salesCommission = rule.applies(v, goal) ? commissionBase.multiply(sc) : BigDecimal.ZERO;
         BigDecimal cardCommission = v.multiply(tc);
         BigDecimal tax = v.multiply(tx);
         BigDecimal variable = productCost.add(salesCommission).add(cardCommission).add(tax);
