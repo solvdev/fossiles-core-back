@@ -533,9 +533,9 @@ class KioskFinancialsReportServiceTest {
     }
 
     @Test
-    void year2026ChargesCommissionOnGrossSalesOnlyFromSeventyPercentOfGoal() throws Exception {
-        // 100,000 de ventas sobre meta 130,000 (76.9 %): 4 % de las ventas con IVA
-        assertThat(commissionOf(2026, "130000", "100000.00")).isEqualByComparingTo("4000.00");
+    void year2026ChargesCommissionOnSalesWithoutIvaOnlyFromSeventyPercentOfGoal() throws Exception {
+        // 100,000 de ventas sobre meta 130,000 (76.9 %): (100,000 / 1.12) x 4 %
+        assertThat(commissionOf(2026, "130000", "100000.00")).isEqualByComparingTo("3571.43");
     }
 
     @Test
