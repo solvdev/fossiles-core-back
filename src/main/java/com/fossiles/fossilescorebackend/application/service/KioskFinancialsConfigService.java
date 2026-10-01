@@ -144,6 +144,9 @@ public class KioskFinancialsConfigService {
         } else if (Boolean.TRUE.equals(request.getClearGoLiveOverride())) {
             site.setPosGoLiveOverride(null);
         }
+        if (request.getExcludeFromReports() != null) {
+            site.setExcludeFromReports(request.getExcludeFromReports());
+        }
 
         KioskSiteEntity saved = siteRepository.save(site);
 
@@ -206,6 +209,7 @@ public class KioskFinancialsConfigService {
                 .posGoLiveOverride(site.getPosGoLiveOverride())
                 .posGoLiveDetected(detected)
                 .goLiveEffective(effective)
+                .excludeFromReports(Boolean.TRUE.equals(site.getExcludeFromReports()))
                 .aliases(aliases)
                 .build();
     }
@@ -247,7 +251,7 @@ public class KioskFinancialsConfigService {
             sites = List.of(siteRepository.findById(siteId)
                     .orElseThrow(() -> new ResourceNotFoundException("Sitio no encontrado: " + siteId)));
         } else {
-            sites = siteRepository.findAllByOrderBySortOrderAscNameAsc();
+            sites = siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc();
         }
 
         List<KioskCostCategoryEntity> categories = categoryRepository.findByActiveTrueOrderBySortOrderAscCodeAsc();
@@ -491,7 +495,7 @@ public class KioskFinancialsConfigService {
 
         List<KioskSiteEntity> sites;
         if (request.getSiteIds() == null || request.getSiteIds().isEmpty()) {
-            sites = siteRepository.findAllByOrderBySortOrderAscNameAsc();
+            sites = siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc();
         } else {
             sites = siteRepository.findAllById(request.getSiteIds());
             Set<Long> found = sites.stream().map(KioskSiteEntity::getId).collect(Collectors.toSet());

@@ -23,5 +23,7 @@ public class KioskFinancialsSiteUpdateRequest {
     private LocalDate closedOn;
     private LocalDate posGoLiveOverride;
     private Boolean clearGoLiveOverride;
+    /** true = sitio externo, fuera de todos los reportes; false = vuelve a entrar. null no se toca. */
+    private Boolean excludeFromReports;
     private List<String> aliases;
 }

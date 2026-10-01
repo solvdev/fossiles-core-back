@@ -66,6 +66,7 @@ class KioskFinancialsReportServiceTest {
         site2 = KioskSiteEntity.builder().id(2L).name("MAJADAS 11").locationId(null)
                 .status("CLOSED").sortOrder(2).build();
         lenient().when(siteRepository.findAllByOrderBySortOrderAscNameAsc()).thenReturn(List.of(site1, site2));
+        lenient().when(siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc()).thenReturn(List.of(site1, site2));
         lenient().when(categoryRepository.findByActiveTrueOrderBySortOrderAscCodeAsc()).thenReturn(List.of(
                 KioskCostCategoryEntity.builder().code("ALQUILER").name("Alquiler").sortOrder(1).active(true).build(),
                 KioskCostCategoryEntity.builder().code("LUZ").name("Luz").sortOrder(2).active(true).build()));
@@ -268,6 +269,25 @@ class KioskFinancialsReportServiceTest {
 
         assertThat(r.getSites()).extracting(KioskFinancialsCompletenessResponse.Site::getSiteId)
                 .containsExactly(1L, 2L);
+    }
+
+    /** Un sitio externo (p. ej. Entrecueros Pueblito) no sale en ningún reporte aunque tenga ventas. */
+    @Test
+    void excludedSitesNeverAppearInAnyReport() throws Exception {
+        site2.setExcludeFromReports(true);
+        lenient().when(siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc())
+                .thenReturn(List.of(site1));
+        lenient().when(resolver.resolve(any(), any(), any(), any())).thenReturn(Map.of(
+                1L, sales(1, null, false, true, "2025-01-02", "100.00"),
+                2L, sales(2, null, false, true, "2025-01-02", "999.00")));
+
+        assertThat(service.getCompleteness(2025).getSites())
+                .extracting(KioskFinancialsCompletenessResponse.Site::getSiteId).containsExactly(1L);
+        assertThat(service.getPnl(2025, 1, null).getSites())
+                .extracting(KioskFinancialsPnlResponse.SitePnl::getSiteId).containsExactly(1L);
+        assertThat(service.getPnl(2025, 1, null).getTotals().getSales()).isEqualByComparingTo("100.00");
+        // pedirlo explícitamente por id tampoco lo trae
+        assertThatThrownBy(() -> service.getPnl(2025, 1, "2")).isInstanceOf(BusinessException.class);
     }
 
     // ------------------------------------------------------------------ P&L

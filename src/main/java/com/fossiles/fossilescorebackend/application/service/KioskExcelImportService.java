@@ -513,7 +513,8 @@ public class KioskExcelImportService {
     private KioskExcelPreviewResponse.AlreadyImported findAlreadyImported(String sha, int year, int month) {
         List<KioskExcelPreviewResponse.AlreadyImported> bySha = jdbc.query(
                 "SELECT id, created_at FROM kiosk_import_batch WHERE status = '" + STATUS_APPLIED
-                        + "' AND file_sha256 = :sha ORDER BY id DESC LIMIT 1",
+                        + "' AND file_name NOT LIKE '" + KioskGapFillService.BATCH_PREFIX + "%'"
+                        + " AND file_sha256 = :sha ORDER BY id DESC LIMIT 1",
                 new MapSqlParameterSource("sha", sha),
                 (rs, i) -> alreadyImported(rs, true));
         if (!bySha.isEmpty()) {
@@ -521,7 +522,8 @@ public class KioskExcelImportService {
         }
         List<KioskExcelPreviewResponse.AlreadyImported> byPeriod = jdbc.query(
                 "SELECT id, created_at FROM kiosk_import_batch WHERE status = '" + STATUS_APPLIED
-                        + "' AND year = :y AND month = :m ORDER BY id DESC LIMIT 1",
+                        + "' AND file_name NOT LIKE '" + KioskGapFillService.BATCH_PREFIX + "%'"
+                        + " AND year = :y AND month = :m ORDER BY id DESC LIMIT 1",
                 new MapSqlParameterSource().addValue("y", year).addValue("m", month),
                 (rs, i) -> alreadyImported(rs, false));
         return byPeriod.isEmpty() ? null : byPeriod.get(0);

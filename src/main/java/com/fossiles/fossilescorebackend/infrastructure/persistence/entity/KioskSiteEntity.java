@@ -45,6 +45,11 @@ public class KioskSiteEntity {
     @Builder.Default
     private Integer sortOrder = 0;
 
+    /** Sitio externo (p. ej. Entrecueros Pueblito): no aparece en ningún reporte ni pantalla de costos de Finanzas. */
+    @Column(name = "exclude_from_reports", nullable = false)
+    @Builder.Default
+    private Boolean excludeFromReports = false;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
