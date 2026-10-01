@@ -223,6 +223,14 @@ Reglas del formato nuevo:
 
 Los valores no cambian (`SAME_PERIOD`, `FULL_MONTH`); en pantalla se llaman **"Mismas fechas"** y **"Meses completos"**, con una frase que muestra las fechas reales que se comparan (`describeComparison`).
 
+## Método del punto de equilibrio (configuración persistente)
+
+Es un **ajuste global** guardado en `kiosk_financial_setting` (`BREAK_EVEN_MODE`, clave/valor; `scripts/migration-kiosk-financials-settings.sql`, ejecutar a mano; sin la tabla se usa `RATES` y no se puede guardar). `GET /api/kiosk-financials/settings` (VER) → `{breakEvenMode, flatBreakEvenRate:0.27, persisted, updatedAt}`; `PUT /settings` `{breakEvenMode:"RATES"|"FLAT"}` (EDITAR; otro valor → 400). Se cambia en **Costos por kiosco** y vale para todos los reportes y descargas hasta que se vuelva a cambiar: `GET /pnl` (y con él P&L, metas y equilibrio, estado “bajo equilibrio” y el Excel) lee el ajuste; **no** hay parámetro por petición. La respuesta de `/pnl` trae `breakEvenMode` (el vigente).
+- `RATES`: `CF / (1 − (sc + pc + tc + tx))` con las tasas del kiosco (fórmula de los Excel de 2025 y enero 2026): es el punto donde la utilidad es 0.
+- `FLAT`: `CF / (1 − 0.27)` para todos (fórmula de los Excel de abril 2026 en adelante: `=CF/(1-0.27)`, ≈ 18 % + 4 % + 2.87 % + 2.5 %). Más exigente con los kioscos sin comisión de venta (en septiembre 2026 marcaba “bajo equilibrio” a 4 kioscos con utilidad positiva).
+Sólo cambia `breakEven` y `breakEvenDaily` (y lo que se deriva: estado “bajo equilibrio”, metas y equilibrio, Excel); costos, utilidad y margen siempre usan las tasas reales. `/compare` no usa punto de equilibrio. Selector en las pestañas P&L y Metas; el Excel descargado rotula la fila con el método. Pendiente de decisión: el denominador de `RATES` resta la comisión de venta como `sc` y no `sc/1.12` como la calcula la utilidad (efecto ≈ 0.6 % sólo en kioscos con comisión).
+Nota de datos: en los Excel 2026 la comisión de venta es `=IF(% de meta >= 0.7, ventas × 4%, 0)` (sólo si el kiosco llega al 70 % de su meta); el Excel de septiembre “(1)” usa `B2` en vez de `B33` en Miraflores (Q88.71 en vez de ≈ Q3,369).
+
 ## Días sin sistema (corrección desde el Excel del reporte)
 
 Kioscos que arrancaron en el POS a mitad de mes tienen Q 0.00 los días anteriores a su primera venta aunque el reporte Excel sí traiga venta. Esos días ya se leen de `kiosk_daily_sales_hist` (fecha < go-live), así que la corrección escribe sólo esas celdas ahí.

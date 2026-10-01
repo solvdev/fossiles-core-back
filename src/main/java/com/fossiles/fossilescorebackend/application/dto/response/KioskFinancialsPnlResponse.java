@@ -21,6 +21,8 @@ public class KioskFinancialsPnlResponse {
     private Integer year;
     /** null = ano completo. */
     private Integer month;
+    /** Cómo se midió el punto de equilibrio: RATES (tasas de cada kiosco) | FLAT (tasa fija, 27 %). */
+    private String breakEvenMode;
     private List<SitePnl> sites;
     private Figures totals;
 
