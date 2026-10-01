@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancials
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsCompletenessResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsDailyMatrixResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsPnlResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsSupervisorsResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.KioskSalesSourceResolver.SiteSales;
 import com.fossiles.fossilescorebackend.application.util.KioskEffectiveGoals;
@@ -47,6 +48,7 @@ public class KioskFinancialsReportService {
     private final KioskPeriodConfigRepository configRepository;
     private final KioskSalesSourceResolver salesSourceResolver;
     private final KioskGoalModuleReader goalReader;
+    private final KioskSupervisorAssignmentReader supervisorReader;
 
     private record PeriodKey(Long siteId, int year, int month) {
     }
@@ -608,6 +610,36 @@ public class KioskFinancialsReportService {
             order.put(c.getCode(), c.getSortOrder());
         }
         return order;
+    }
+
+    /**
+     * Supervisoras (módulo "Supervisoras y kioscos") con los sitios de sus kioscos, para filtrar los reportes.
+     * Sólo sitios que entran a los reportes; {@code unassignedSiteIds} = kioscos con POS sin supervisora.
+     */
+    @Transactional(readOnly = true)
+    public KioskFinancialsSupervisorsResponse getSupervisors() throws BusinessException {
+        guard.assertCanView();
+        Map<Long, Long> siteByLocation = new HashMap<>();
+        for (KioskSiteEntity s : siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc()) {
+            if (s.getLocationId() != null) {
+                siteByLocation.put(s.getLocationId(), s.getId());
+            }
+        }
+        Set<Long> assigned = new HashSet<>();
+        List<KioskFinancialsSupervisorsResponse.Supervisor> supervisors = new ArrayList<>();
+        for (KioskSupervisorAssignmentReader.Supervisor sup : supervisorReader.supervisors()) {
+            List<Long> siteIds = sup.kioskLocationIds().stream().map(siteByLocation::get).filter(Objects::nonNull)
+                    .sorted().collect(Collectors.toList());
+            if (siteIds.isEmpty()) {
+                continue;
+            }
+            assigned.addAll(siteIds);
+            supervisors.add(KioskFinancialsSupervisorsResponse.Supervisor.builder()
+                    .userId(sup.userId()).name(sup.name()).siteIds(siteIds).build());
+        }
+        List<Long> unassigned = siteByLocation.values().stream().filter(id -> !assigned.contains(id)).sorted()
+                .collect(Collectors.toList());
+        return KioskFinancialsSupervisorsResponse.builder().supervisors(supervisors).unassignedSiteIds(unassigned).build();
     }
 
     private List<KioskSiteEntity> selectSites(Set<Long> requested) throws BusinessException {
