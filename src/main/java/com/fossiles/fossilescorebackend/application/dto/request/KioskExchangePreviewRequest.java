@@ -22,6 +22,13 @@ public class KioskExchangePreviewRequest {
     private Long originalSaleItemId;
 
     /**
+     * Líneas de la factura original que devuelve el cliente (N). Si viene con ítems, tiene prioridad sobre
+     * {@code originalSaleItemId}/{@code returnedQuantity}, que quedan como compat 1→1.
+     */
+    @Valid
+    private List<KioskExchangeReturnedItemRequest> returnedItems;
+
+    /**
      * Productos a entregar (1→N). Si viene con ítems, tiene prioridad sobre los campos escalares
      * {@code givenProductId}/{@code givenQuantity}/…
      */

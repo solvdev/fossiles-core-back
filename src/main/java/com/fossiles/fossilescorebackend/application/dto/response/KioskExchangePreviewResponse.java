@@ -17,7 +17,10 @@ public class KioskExchangePreviewResponse {
     private String originalSaleNumber;
     private LocalDate originalSaleDate;
     private Long originalSaleItemId;
+    /** Primera línea que ingresa (compat 1→1). */
     private ProductLine returned;
+    /** Todas las líneas que ingresan (N); incluye siempre al menos {@link #returned}. */
+    private java.util.List<ProductLine> returnedItems;
     /** Primera línea entregada (compat 1→1). */
     private ProductLine given;
     /** Todas las líneas entregadas (1→N). */
@@ -38,6 +41,8 @@ public class KioskExchangePreviewResponse {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class ProductLine {
+        /** Línea de la factura original de la que proviene (solo en productos que ingresan con factura). */
+        private Long saleItemId;
         private Long productId;
         private String productCode;
         private String productName;
