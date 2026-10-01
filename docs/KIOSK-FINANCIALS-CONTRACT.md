@@ -263,11 +263,11 @@ Kioscos que arrancaron en el POS a mitad de mes tienen Q 0.00 los días anterior
 | Año | Fórmula | Condición |
 |---|---|---|
 | 2025 y anteriores (`LEGACY`) | `(ventas ÷ 1.12) × tasa` | ninguna |
-| 2026 en adelante (`FROM_2026`) | `ventas × tasa` (ventas con IVA) | solo si `ventas ≥ meta × 0.70`; si no, comisión = 0 |
+| 2026 en adelante (`FROM_2026`) | `(ventas ÷ 1.12) × tasa` | solo si `ventas ≥ meta × 0.70`; si no, comisión = 0 |
 
-- Equivale al Excel 2026: `=IF(% de meta >= 0.7, ventas × 4 %, 0)`.
+- Equivale al Excel 2026: `=IF(% de meta >= 0.7, (ventas ÷ 1.12) × 4 %, 0)`. La base es siempre la venta sin IVA (corregido el 2026-10-01: una primera versión usó ventas con IVA); lo único que cambia desde 2026 es la condición del 70 %.
 - Sin meta definida (null o 0) no se puede verificar el 70 %: la comisión **se aplica** (no subestimar costos).
 - La meta usada es la efectiva del mes (Metas de Kioscos primero, respaldo de Finanzas). En `/compare` por periodo parcial, ventas y meta están prorrateadas igual, así que el % de meta es consistente.
-- Punto de equilibrio con `RATES` sigue restando la tasa completa (`sc`); con la regla 2026 ya es coherente con `ventas × tasa`. No considera la condición del 70 %.
+- Punto de equilibrio con `RATES` sigue restando la tasa completa (`sc`); resta `sc` completo aunque la comisión se calcule sobre `ventas ÷ 1.12` (diferencia ≈ 0.6 % del PE, pendiente de decisión). No considera la condición del 70 %.
 - La proyección anual del año siguiente no tiene metas cargadas: aplica la comisión.
 - La plantilla de Excel descargable usa la misma regla según el año del archivo.

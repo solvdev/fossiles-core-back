@@ -23,17 +23,18 @@ public final class KioskPnlCalculator {
      * Regla de la comision de venta (cambia entre los Excel de 2025 y los de 2026).
      * <ul>
      *   <li>{@link #LEGACY} (2025 y anteriores): {@code (ventas / 1.12) x tasa}, siempre.</li>
-     *   <li>{@link #FROM_2026}: {@code ventas x tasa}, y solo si el kiosco llega al 70 % de su meta
-     *       ({@code =IF(% de meta >= 0.7, ventas x tasa, 0)}); si no, 0.</li>
+     *   <li>{@link #FROM_2026}: {@code (ventas / 1.12) x tasa}, y solo si el kiosco llega al 70 % de su meta
+     *       ({@code =IF(% de meta >= 0.7, (ventas / 1.12) x tasa, 0)}); si no, 0.</li>
      * </ul>
+     * La base es siempre la venta sin IVA; lo que cambia en 2026 es la condicion del 70 %.
      *
-     * @param grossBase   true = la tasa se aplica sobre ventas con IVA; false = sobre ventas / 1.12
+     * @param grossBase   true = la tasa se aplica sobre ventas con IVA; false = sobre ventas / 1.12 (ambas reglas usan false)
      * @param minGoalPct  cumplimiento de meta minimo (0.70) para que la comision aplique; null = sin condicion
      */
     public record CommissionPolicy(boolean grossBase, BigDecimal minGoalPct) {
         public static final int POLICY_CHANGE_YEAR = 2026;
         public static final CommissionPolicy LEGACY = new CommissionPolicy(false, null);
-        public static final CommissionPolicy FROM_2026 = new CommissionPolicy(true, new BigDecimal("0.70"));
+        public static final CommissionPolicy FROM_2026 = new CommissionPolicy(false, new BigDecimal("0.70"));
 
         public static CommissionPolicy forYear(int year) {
             return year >= POLICY_CHANGE_YEAR ? FROM_2026 : LEGACY;
