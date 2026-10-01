@@ -614,8 +614,9 @@ public class KioskFinancialsReportService {
         BigDecimal goal = rawGoal == null ? null : (scale ? rawGoal.multiply(factor) : rawGoal);
         boolean complete = cfg != null
                 && KioskPnlCalculator.isMonthComplete(rawGoal, rates, costs, requiredCodes);
+        // Comision de venta: regla del anio (desde 2026: ventas x tasa y solo si % de meta >= 70 %)
         KioskPnlCalculator.Result result = KioskPnlCalculator.calculate(sales, rates, scaled, daysInMonth,
-                flatVariableRate);
+                flatVariableRate, KioskPnlCalculator.CommissionPolicy.forYear(year), goal);
         return new MonthCalc(result, scaled, goal, complete);
     }
 

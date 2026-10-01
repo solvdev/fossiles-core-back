@@ -127,4 +127,68 @@ class KioskPnlCalculatorTest {
         assertThat(KioskPnlCalculator.isMonthComplete(new BigDecimal("1"), RATES, null, required)).isFalse();
         assertThat(KioskPnlCalculator.isMonthComplete(new BigDecimal("1"), null, full, required)).isFalse();
     }
+
+    // ------------------------------------------------------------------ comision de venta: regla por anio
+
+    private static BigDecimal commission(String sales, String goal, KioskPnlCalculator.CommissionPolicy policy) {
+        KioskPnlCalculator.Result r = KioskPnlCalculator.calculate(new BigDecimal(sales), RATES,
+                new LinkedHashMap<String, BigDecimal>(), 30, null, policy, goal == null ? null : new BigDecimal(goal));
+        return KioskPnlCalculator.round2(r.salesCommission());
+    }
+
+    @Test
+    void policyIsChosenByYear() {
+        assertThat(KioskPnlCalculator.CommissionPolicy.forYear(2025)).isSameAs(KioskPnlCalculator.CommissionPolicy.LEGACY);
+        assertThat(KioskPnlCalculator.CommissionPolicy.forYear(2026)).isSameAs(KioskPnlCalculator.CommissionPolicy.FROM_2026);
+        assertThat(KioskPnlCalculator.CommissionPolicy.forYear(2027)).isSameAs(KioskPnlCalculator.CommissionPolicy.FROM_2026);
+    }
+
+    @Test
+    void from2026AppliesRateOverGrossSalesWhenGoalReachedAtLeast70Percent() {
+        // 100,000 / 130,000 = 76.9 % -> comision = ventas x 4 % (SIN dividir entre 1.12)
+        assertThat(commission("100000", "130000", KioskPnlCalculator.CommissionPolicy.FROM_2026))
+                .isEqualByComparingTo("4000.00");
+    }
+
+    @Test
+    void from2026ChargesNoCommissionBelow70Percent() {
+        // 90,000 / 130,000 = 69.2 % -> 0
+        assertThat(commission("90000", "130000", KioskPnlCalculator.CommissionPolicy.FROM_2026))
+                .isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    void from2026Exactly70PercentStillCharges() {
+        // 91,000 / 130,000 = exactamente 70 % -> aplica (>= 0.7)
+        assertThat(commission("91000", "130000", KioskPnlCalculator.CommissionPolicy.FROM_2026))
+                .isEqualByComparingTo("3640.00");
+        assertThat(commission("90999.99", "130000", KioskPnlCalculator.CommissionPolicy.FROM_2026))
+                .isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    void from2026WithoutGoalCannotVerify70PercentSoItCharges() {
+        assertThat(commission("100000", null, KioskPnlCalculator.CommissionPolicy.FROM_2026))
+                .isEqualByComparingTo("4000.00");
+        assertThat(commission("100000", "0", KioskPnlCalculator.CommissionPolicy.FROM_2026))
+                .isEqualByComparingTo("4000.00");
+    }
+
+    @Test
+    void legacyKeepsNetOfIvaAndNoConditionEvenBelow70Percent() {
+        // Excel 2025: (ventas / 1.12) x 4 %, siempre
+        assertThat(commission("90000", "130000", KioskPnlCalculator.CommissionPolicy.LEGACY))
+                .isEqualByComparingTo("3214.29");
+    }
+
+    @Test
+    void totalCostExcludesCommissionWhenBelow70PercentIn2026() {
+        KioskPnlCalculator.Result below = KioskPnlCalculator.calculate(new BigDecimal("90000"), RATES,
+                new BigDecimal("10000"), 30, null, KioskPnlCalculator.CommissionPolicy.FROM_2026, new BigDecimal("130000"));
+        KioskPnlCalculator.Result above = KioskPnlCalculator.calculate(new BigDecimal("100000"), RATES,
+                new BigDecimal("10000"), 30, null, KioskPnlCalculator.CommissionPolicy.FROM_2026, new BigDecimal("130000"));
+        // variable = costo 18 % + tarjeta 2.5 % + IVA 2.5 % (+ comision 4 % solo arriba del 70 %)
+        assertThat(KioskPnlCalculator.round2(below.variableTotal())).isEqualByComparingTo("20700.00"); // 90000 x 23 %
+        assertThat(KioskPnlCalculator.round2(above.variableTotal())).isEqualByComparingTo("27000.00"); // 100000 x 27 %
+    }
 }
