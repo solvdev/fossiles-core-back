@@ -56,6 +56,24 @@ class KioskPnlCalculatorTest {
     }
 
     @Test
+    void flatVariableRateOnlyChangesTheBreakEven() {
+        // Kiosco sin comisión de venta: tasas reales 18 % + 2.87 % + 2.5 % = 23.37 %; el Excel reciente usa 27 % fijo.
+        KioskPnlCalculator.Rates noCommission = KioskPnlCalculator.Rates.of("0.18", "0", "0.0287", "0.025");
+        BigDecimal fixed = new BigDecimal("15183.78");
+        KioskPnlCalculator.Result real = KioskPnlCalculator.calculate(new BigDecimal("24220.40"), noCommission, fixed, 30);
+        KioskPnlCalculator.Result flat = KioskPnlCalculator.calculate(new BigDecimal("24220.40"), noCommission, fixed, 30,
+                KioskPnlCalculator.FLAT_VARIABLE_RATE);
+
+        assertThat(KioskPnlCalculator.round2(real.breakEven())).isEqualByComparingTo("19814.41"); // CF / 0.7663
+        assertThat(KioskPnlCalculator.round2(flat.breakEven())).isEqualByComparingTo("20799.70"); // CF / 0.73
+        assertThat(KioskPnlCalculator.round2(flat.breakEvenDaily())).isEqualByComparingTo("693.32");
+        // costos, utilidad y margen no dependen del método
+        assertThat(flat.variableTotal()).isEqualByComparingTo(real.variableTotal());
+        assertThat(flat.difference()).isEqualByComparingTo(real.difference());
+        assertThat(flat.margin()).isEqualByComparingTo(real.margin());
+    }
+
+    @Test
     void breakEvenIsNullWhenDenominatorNotPositive() {
         KioskPnlCalculator.Rates heavy = KioskPnlCalculator.Rates.of("0.50", "0.30", "0.10", "0.10");
         KioskPnlCalculator.Result r = KioskPnlCalculator.calculate(new BigDecimal("1000"), heavy, new BigDecimal("500"), 30);

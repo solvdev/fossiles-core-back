@@ -55,6 +55,9 @@ class KioskFinancialsReportServiceTest {
     @Mock
     private KioskSupervisorAssignmentReader supervisorReader;
 
+    @Mock
+    private KioskFinancialsSettingsService settingsService;
+
     @InjectMocks
     private KioskFinancialsReportService service;
 
@@ -273,6 +276,31 @@ class KioskFinancialsReportServiceTest {
 
         assertThat(r.getSites()).extracting(KioskFinancialsCompletenessResponse.Site::getSiteId)
                 .containsExactly(1L, 2L);
+    }
+
+    @Test
+    void pnlBreakEvenCanBeMeasuredWithTheFlat27PercentWithoutChangingProfit() throws Exception {
+        lenient().when(resolver.resolve(any(), eq(LocalDate.of(2025, 1, 1)), eq(LocalDate.of(2025, 1, 31)), any()))
+                .thenReturn(Map.of(1L, sales(1, null, false, true, "2025-01-02", "60000.00"),
+                        2L, sales(2, null, false, true, "2025-01-02", "1000.00")));
+        lenient().when(configRepository.findByPeriodYear(2025)).thenReturn(List.of(
+                config(1, 2025, 1, "130000", "0.18", "0", "0.0287", "0.025")));
+        lenient().when(fixedCostRepository.findByPeriodYear(2025)).thenReturn(List.of(cost(1, 2025, 1, "ALQUILER", "14600.00")));
+
+        KioskFinancialsPnlResponse real = service.getPnl(2025, 1, null);
+        lenient().when(settingsService.breakEvenMode()).thenReturn("FLAT");
+        KioskFinancialsPnlResponse flat = service.getPnl(2025, 1, null); // el método sale de la configuración
+        KioskFinancialsPnlResponse flatExplicit = service.getPnl(2025, 1, null, "flat");
+        assertThat(flatExplicit.getSites().get(0).getBreakEven()).isEqualByComparingTo(flat.getSites().get(0).getBreakEven());
+
+        assertThat(real.getBreakEvenMode()).isEqualTo("RATES");
+        assertThat(flat.getBreakEvenMode()).isEqualTo("FLAT");
+        KioskFinancialsPnlResponse.SitePnl r1 = real.getSites().get(0);
+        KioskFinancialsPnlResponse.SitePnl f1 = flat.getSites().get(0);
+        assertThat(r1.getBreakEven()).isEqualByComparingTo("19052.59"); // 14600 / (1 - 0.2337)
+        assertThat(f1.getBreakEven()).isEqualByComparingTo("20000.00"); // 14600 / 0.73
+        assertThat(f1.getDifference()).isEqualByComparingTo(r1.getDifference());
+        assertThatThrownBy(() -> service.getPnl(2025, 1, null, "otro")).isInstanceOf(BusinessException.class);
     }
 
     /** Un sitio externo (p. ej. Entrecueros Pueblito) no sale en ningún reporte aunque tenga ventas. */

@@ -40,6 +40,9 @@ public class KioskFinancialsReportService {
 
     public static final String MODE_SAME_PERIOD = "SAME_PERIOD";
     public static final String MODE_FULL_MONTH = "FULL_MONTH";
+    /** Punto de equilibrio con las tasas reales de cada kiosco (por defecto) o con la tasa fija de los Excel recientes. */
+    public static final String BREAK_EVEN_RATES = "RATES";
+    public static final String BREAK_EVEN_FLAT = "FLAT";
 
     private final KioskFinancialsAccessGuard guard;
     private final KioskSiteRepository siteRepository;
@@ -49,6 +52,7 @@ public class KioskFinancialsReportService {
     private final KioskSalesSourceResolver salesSourceResolver;
     private final KioskGoalModuleReader goalReader;
     private final KioskSupervisorAssignmentReader supervisorReader;
+    private final KioskFinancialsSettingsService settingsService;
 
     private record PeriodKey(Long siteId, int year, int month) {
     }
@@ -70,7 +74,17 @@ public class KioskFinancialsReportService {
 
     @Transactional(readOnly = true)
     public KioskFinancialsPnlResponse getPnl(Integer year, Integer month, String siteIdsCsv) throws BusinessException {
+        // Método vigente en la configuración (Costos por kiosco): aplica a todos los reportes y descargas
+        return getPnl(year, month, siteIdsCsv, settingsService.breakEvenMode());
+    }
+
+    /** @param breakEvenMode RATES (por defecto) o FLAT: sólo cambia el punto de equilibrio, no costos ni utilidad. */
+    @Transactional(readOnly = true)
+    public KioskFinancialsPnlResponse getPnl(Integer year, Integer month, String siteIdsCsv, String breakEvenMode)
+            throws BusinessException {
         guard.assertCanView();
+        final String beMode = normalizeBreakEvenMode(breakEvenMode);
+        final BigDecimal flatRate = BREAK_EVEN_FLAT.equals(beMode) ? KioskPnlCalculator.FLAT_VARIABLE_RATE : null;
         int y = requireYear(year);
         if (month != null) {
             requireMonth(month);
@@ -106,7 +120,7 @@ public class KioskFinancialsReportService {
                         continue;
                     }
                     MonthCalc mc = calcMonth(yd, site.getId(), y, m, monthSales, BigDecimal.ONE, requiredCodes,
-                            mTo.getDayOfMonth());
+                            mTo.getDayOfMonth(), flatRate);
                     Acc monthAcc = Acc.ofMonth(m, mc, mTo.getDayOfMonth(), ss.daily().subMap(mFrom, true, mTo, true));
                     acc.add(monthAcc);
                 }
@@ -135,7 +149,19 @@ public class KioskFinancialsReportService {
         KioskFinancialsPnlResponse.Figures totals = KioskFinancialsPnlResponse.Figures.builder().build();
         fillFigures(totals, total, grandSales, month == null, categoryOrder);
 
-        return KioskFinancialsPnlResponse.builder().year(y).month(month).sites(siteDtos).totals(totals).build();
+        return KioskFinancialsPnlResponse.builder().year(y).month(month).breakEvenMode(beMode)
+                .sites(siteDtos).totals(totals).build();
+    }
+
+    private static String normalizeBreakEvenMode(String mode) throws BusinessException {
+        if (mode == null || mode.isBlank()) {
+            return BREAK_EVEN_RATES;
+        }
+        String m = mode.trim().toUpperCase(Locale.ROOT);
+        if (!BREAK_EVEN_RATES.equals(m) && !BREAK_EVEN_FLAT.equals(m)) {
+            throw new BusinessException("breakEvenMode inválido: '" + mode + "' (use RATES o FLAT).");
+        }
+        return m;
     }
 
     private static void fillFigures(KioskFinancialsPnlResponse.Figures f, Acc a, BigDecimal grandSales,
@@ -433,8 +459,8 @@ public class KioskFinancialsReportService {
                     long baseDays = ChronoUnit.DAYS.between(baseSliceFrom, baseSliceTo) + 1;
                     BigDecimal baseFactor = dayFactor(Math.max(baseDays, 0), bym.lengthOfMonth());
 
-                    MonthCalc c = calcMonth(yd, site.getId(), y, m, cur, curFactor, requiredCodes, ym.lengthOfMonth());
-                    MonthCalc b = calcMonth(ybd, site.getId(), by, m, base, baseFactor, requiredCodes, bym.lengthOfMonth());
+                    MonthCalc c = calcMonth(yd, site.getId(), y, m, cur, curFactor, requiredCodes, ym.lengthOfMonth(), null);
+                    MonthCalc b = calcMonth(ybd, site.getId(), by, m, base, baseFactor, requiredCodes, bym.lengthOfMonth(), null);
 
                     sSales = sSales.add(cur);
                     sBaseSales = sBaseSales.add(base);
@@ -571,7 +597,8 @@ public class KioskFinancialsReportService {
     // ------------------------------------------------------------------ Utilidades
 
     private MonthCalc calcMonth(YearData yd, Long siteId, int year, int month, BigDecimal sales,
-                                BigDecimal factor, List<String> requiredCodes, int daysInMonth) {
+                                BigDecimal factor, List<String> requiredCodes, int daysInMonth,
+                                BigDecimal flatVariableRate) {
         PeriodKey key = new PeriodKey(siteId, year, month);
         KioskPeriodConfigEntity cfg = yd.configs.get(key);
         Map<String, BigDecimal> costs = yd.costs.getOrDefault(key, Map.of());
@@ -587,7 +614,8 @@ public class KioskFinancialsReportService {
         BigDecimal goal = rawGoal == null ? null : (scale ? rawGoal.multiply(factor) : rawGoal);
         boolean complete = cfg != null
                 && KioskPnlCalculator.isMonthComplete(rawGoal, rates, costs, requiredCodes);
-        KioskPnlCalculator.Result result = KioskPnlCalculator.calculate(sales, rates, scaled, daysInMonth);
+        KioskPnlCalculator.Result result = KioskPnlCalculator.calculate(sales, rates, scaled, daysInMonth,
+                flatVariableRate);
         return new MonthCalc(result, scaled, goal, complete);
     }
 
