@@ -844,7 +844,7 @@ public class KioskExchangeService {
 
     /**
      * Empaques SUM de la venta original: crédito potencial (precio de factura, sin descuento).
-     * Se aplica a la liquidación solo si hay diferencia de precio entre productos.
+     * Informativo: nunca se aplica a la liquidación del cambio.
      * No van en el egreso ni en movimiento de stock.
      */
     private PackagingAllocation allocatePackagingCredit(
@@ -1625,20 +1625,15 @@ public class KioskExchangeService {
     }
 
     /**
-     * El empaque de la factura original solo entra cuando hay diferencia de precio
-     * entre el producto que ingresa y el que se entrega. Sin diferencia de producto, se ignora.
+     * El empaque de la factura original nunca entra en la liquidación del cambio,
+     * haya o no diferencia de precio entre producto que ingresa y el que se entrega.
      */
     static BigDecimal appliedPackagingCredit(
             BigDecimal productGivenAmount,
             BigDecimal productReturnedAmount,
             BigDecimal allocatedCredit
     ) {
-        BigDecimal given = safeAmount(productGivenAmount).setScale(2, RoundingMode.HALF_UP);
-        BigDecimal returned = safeAmount(productReturnedAmount).setScale(2, RoundingMode.HALF_UP);
-        if (given.compareTo(returned) == 0) {
-            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
-        }
-        return safeAmount(allocatedCredit).setScale(2, RoundingMode.HALF_UP);
+        return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
     }
 
     /**

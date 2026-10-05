@@ -554,7 +554,7 @@ class KioskExchangeServiceTest {
     }
 
     @Test
-    void previewExchange_differentProductPrice_includesInvoicePackaging() throws Exception {
+    void previewExchange_differentProductPrice_ignoresInvoicePackaging() throws Exception {
         ProductEntity packaging = productRepository.save(ProductEntity.builder()
                 .code("SUM-EX-002")
                 .name("Bolsa cambio diff")
@@ -588,10 +588,10 @@ class KioskExchangeServiceTest {
                         .build());
 
         assertThat(preview.getPackagingCreditAmount()).isEqualByComparingTo("15.00");
-        assertThat(preview.getPackagingReturnedAmount()).isEqualByComparingTo("15.00");
-        assertThat(preview.getReturnedAmount()).isEqualByComparingTo("195.00");
+        assertThat(preview.getPackagingReturnedAmount()).isEqualByComparingTo("0.00");
+        assertThat(preview.getReturnedAmount()).isEqualByComparingTo("180.00");
         assertThat(preview.getGivenAmount()).isEqualByComparingTo("250.00");
-        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("55.00");
+        assertThat(preview.getDifferenceAmount()).isEqualByComparingTo("70.00");
     }
 
     @Test
