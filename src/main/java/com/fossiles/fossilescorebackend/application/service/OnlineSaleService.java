@@ -245,6 +245,16 @@ public class OnlineSaleService {
     }
 
     @Transactional(readOnly = true)
+    public List<OnlineSaleResponse> getByShipmentNumber(String shipmentNumber) {
+        String query = shipmentNumber == null ? "" : shipmentNumber.trim();
+        if (query.isEmpty()) {
+            return List.of();
+        }
+        return saleRepository.findByShipmentNumberIgnoreCaseOrderBySaleDateDescIdDesc(query).stream()
+                .map(this::toResponse).collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
     public List<OnlineSaleResponse> getEligibleForProduction() {
         return saleRepository.findEligibleForProduction().stream()
                 .map(this::toResponse).collect(Collectors.toList());
