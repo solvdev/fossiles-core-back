@@ -104,6 +104,11 @@ public class OnlineSaleController {
         return ResponseEntity.ok(saleService.getByDateRange(startDate, endDate));
     }
 
+    @GetMapping("/by-shipment")
+    public ResponseEntity<List<OnlineSaleResponse>> getByShipmentNumber(@RequestParam String shipmentNumber) {
+        return ResponseEntity.ok(saleService.getByShipmentNumber(shipmentNumber));
+    }
+
     // ─── Importación masiva CSV ──────────────────────────────────────
 
     @PostMapping("/import")
