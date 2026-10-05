@@ -18,20 +18,20 @@ class KioskExchangePackagingCreditTest {
     }
 
     @Test
-    void includesPackagingWhenProductPricesDiffer() {
+    void ignoresPackagingWhenProductPricesDiffer() {
         assertThat(KioskExchangeService.appliedPackagingCredit(
                 new BigDecimal("250.00"),
                 new BigDecimal("180.00"),
                 new BigDecimal("15.00")
-        )).isEqualByComparingTo("15.00");
+        )).isEqualByComparingTo("0.00");
     }
 
     @Test
-    void includesPackagingWhenGivenProductIsCheaper() {
+    void ignoresPackagingWhenGivenProductIsCheaper() {
         assertThat(KioskExchangeService.appliedPackagingCredit(
                 new BigDecimal("180.00"),
                 new BigDecimal("250.00"),
                 new BigDecimal("15.00")
-        )).isEqualByComparingTo("15.00");
+        )).isEqualByComparingTo("0.00");
     }
 }
