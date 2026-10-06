@@ -25,5 +25,7 @@ public class KioskFinancialsSiteUpdateRequest {
     private Boolean clearGoLiveOverride;
     /** true = sitio externo, fuera de todos los reportes; false = vuelve a entrar. null no se toca. */
     private Boolean excludeFromReports;
+    /** "A", "B" o "C"; cadena vacia = quitar la categoria. null no se toca. */
+    private String salesCategory;
     private List<String> aliases;
 }

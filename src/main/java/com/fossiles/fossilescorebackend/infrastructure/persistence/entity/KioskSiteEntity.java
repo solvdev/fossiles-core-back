@@ -50,6 +50,10 @@ public class KioskSiteEntity {
     @Builder.Default
     private Boolean excludeFromReports = false;
 
+    /** Categoria de ventas del kiosco (A, B o C), manual; null = sin categoria. */
+    @Column(name = "sales_category", length = 1)
+    private String salesCategory;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

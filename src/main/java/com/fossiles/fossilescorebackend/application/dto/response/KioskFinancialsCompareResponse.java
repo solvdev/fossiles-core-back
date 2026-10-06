@@ -18,12 +18,19 @@ public class KioskFinancialsCompareResponse {
 
     private Integer year;
     private Integer baseYear;
-    /** SAME_PERIOD | FULL_MONTH. */
+    /** SAME_PERIOD | FULL_MONTH | CUSTOM. */
     private String mode;
     private LocalDate asOf;
+    /** Solo CUSTOM: periodo actual y periodo de comparacion elegidos (fechas exactas). */
+    private LocalDate from;
+    private LocalDate to;
+    private LocalDate baseFrom;
+    private LocalDate baseTo;
     private List<SiteCompare> sites;
     private Totals totals;
     private List<MonthCompare> monthly;
+    /** Solo CUSTOM: ventas dia a dia (el dia N del periodo actual contra el dia N del de comparacion). */
+    private List<DayCompare> daily;
 
     @Data
     @Builder
@@ -76,5 +83,20 @@ public class KioskFinancialsCompareResponse {
         private BigDecimal baseTotalCost;
         private BigDecimal margin;
         private BigDecimal baseMargin;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class DayCompare {
+        /** 1 = primer dia de cada periodo. */
+        private Integer index;
+        /** null si el periodo actual es mas corto que el de comparacion. */
+        private LocalDate date;
+        /** null si el periodo de comparacion es mas corto que el actual. */
+        private LocalDate baseDate;
+        private BigDecimal sales;
+        private BigDecimal baseSales;
     }
 }

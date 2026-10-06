@@ -395,6 +395,24 @@ class KioskFinancialsConfigServiceTest {
     }
 
     @Test
+    void updateSiteSetsChangesAndClearsSalesCategory() throws Exception {
+        lenient().when(aliasRepository.findBySiteId(1L)).thenReturn(List.of());
+        lenient().when(resolver.detectedGoLive(anyCollection())).thenReturn(Map.of());
+
+        assertThat(service.updateSite(1L, KioskFinancialsSiteUpdateRequest.builder().salesCategory(" b ").build())
+                .getSalesCategory()).isEqualTo("B");
+        assertThat(site1.getSalesCategory()).isEqualTo("B");
+        // null no la toca
+        assertThat(service.updateSite(1L, KioskFinancialsSiteUpdateRequest.builder().name("MIRAFLORES II").build())
+                .getSalesCategory()).isEqualTo("B");
+        // vacio la quita
+        assertThat(service.updateSite(1L, KioskFinancialsSiteUpdateRequest.builder().salesCategory("").build())
+                .getSalesCategory()).isNull();
+        assertThatThrownBy(() -> service.updateSite(1L, KioskFinancialsSiteUpdateRequest.builder().salesCategory("D").build()))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("A, B o C");
+    }
+
+    @Test
     void createSiteBuildsHistoricalSiteAndRejectsDuplicates() throws Exception {
         lenient().when(siteRepository.findByNameIgnoreCase("NUEVO KIOSCO")).thenReturn(Optional.empty());
         lenient().when(siteRepository.findByNameIgnoreCase("MIRAFLORES II")).thenReturn(Optional.of(site1));
