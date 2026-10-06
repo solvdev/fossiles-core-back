@@ -23,5 +23,7 @@ public class KioskFinancialsSiteResponse {
     private LocalDate posGoLiveDetected;
     private LocalDate goLiveEffective;
     private Boolean excludeFromReports;
+    /** A, B, C o null (sin categoria). */
+    private String salesCategory;
     private List<String> aliases;
 }

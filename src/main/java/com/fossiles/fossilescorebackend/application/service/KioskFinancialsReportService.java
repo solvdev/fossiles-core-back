@@ -40,6 +40,10 @@ public class KioskFinancialsReportService {
 
     public static final String MODE_SAME_PERIOD = "SAME_PERIOD";
     public static final String MODE_FULL_MONTH = "FULL_MONTH";
+    /** Fechas exactas: un rango contra otro rango cualquiera (no necesariamente meses ni el mismo anio). */
+    public static final String MODE_CUSTOM = "CUSTOM";
+    /** Largo maximo de cada periodo en modo CUSTOM. */
+    static final int CUSTOM_MAX_DAYS = 366;
     /** Punto de equilibrio con las tasas reales de cada kiosco (por defecto) o con la tasa fija de los Excel recientes. */
     public static final String BREAK_EVEN_RATES = "RATES";
     public static final String BREAK_EVEN_FLAT = "FLAT";
@@ -543,6 +547,168 @@ public class KioskFinancialsReportService {
                 .year(y).baseYear(by).mode(effectiveMode).asOf(asOf)
                 .sites(siteDtos).totals(totals).monthly(monthly)
                 .build();
+    }
+
+    // ------------------------------------------------------------------ Comparativo por fechas exactas
+
+    @Transactional(readOnly = true)
+    public KioskFinancialsCompareResponse compareCustom(LocalDate from, LocalDate to, LocalDate baseFrom,
+                                                        LocalDate baseTo, String siteIdsCsv) throws BusinessException {
+        return compareCustom(from, to, baseFrom, baseTo, siteIdsCsv, GuatemalaDateTime.today());
+    }
+
+    /**
+     * Compara el rango [from, to] contra el rango [baseFrom, baseTo], ambos elegidos por el usuario. Los costos fijos
+     * de cada mes se prorratean por los dias del rango que caen en ese mes (igual que el modo "mismas fechas").
+     * Variante con fecha "hoy" explicita (pruebas).
+     */
+    KioskFinancialsCompareResponse compareCustom(LocalDate from, LocalDate to, LocalDate baseFrom, LocalDate baseTo,
+                                                 String siteIdsCsv, LocalDate asOf) throws BusinessException {
+        guard.assertCanView();
+        requireCustomRange("actual", from, to, asOf);
+        requireCustomRange("de comparación", baseFrom, baseTo, asOf);
+        Set<Long> requested = parseSiteIds(siteIdsCsv);
+        List<KioskSiteEntity> selected = selectSites(requested);
+
+        Map<Long, LocalDate> goLive = salesSourceResolver.goLiveEffective(selected);
+        Map<Long, SiteSales> sales = salesSourceResolver.resolve(selected, from, to, goLive);
+        Map<Long, SiteSales> baseSales = salesSourceResolver.resolve(selected, baseFrom, baseTo, goLive);
+        List<String> requiredCodes = categoryRepository.findByActiveTrueOrderBySortOrderAscCodeAsc().stream()
+                .map(KioskCostCategoryEntity::getCode)
+                .filter(code -> !KioskExcelParser.OPTIONAL_COST_CODES.contains(code)).toList();
+        Map<Integer, YearData> years = new HashMap<>();
+
+        int curDays = (int) ChronoUnit.DAYS.between(from, to) + 1;
+        int baseDays = (int) ChronoUnit.DAYS.between(baseFrom, baseTo) + 1;
+        int dayCount = Math.max(curDays, baseDays);
+        BigDecimal[] dayCur = new BigDecimal[dayCount];
+        BigDecimal[] dayBase = new BigDecimal[dayCount];
+        Arrays.fill(dayCur, BigDecimal.ZERO);
+        Arrays.fill(dayBase, BigDecimal.ZERO);
+
+        List<KioskFinancialsCompareResponse.SiteCompare> siteDtos = new ArrayList<>();
+        BigDecimal tSales = BigDecimal.ZERO, tBaseSales = BigDecimal.ZERO;
+        BigDecimal tDiff = BigDecimal.ZERO, tBaseDiff = BigDecimal.ZERO;
+        for (KioskSiteEntity site : selected) {
+            SiteSales ss = sales.get(site.getId());
+            SiteSales bs = baseSales.get(site.getId());
+            SliceTotals cur = sliceTotals(site.getId(), ss, from, to, years, requiredCodes);
+            SliceTotals base = sliceTotals(site.getId(), bs, baseFrom, baseTo, years, requiredCodes);
+            if (requested.isEmpty() && cur.sales.signum() == 0 && base.sales.signum() == 0) {
+                continue;
+            }
+            BigDecimal diff = cur.sales.subtract(cur.cost);
+            BigDecimal baseDiff = base.sales.subtract(base.cost);
+            BigDecimal delta = cur.sales.subtract(base.sales);
+            tSales = tSales.add(cur.sales);
+            tBaseSales = tBaseSales.add(base.sales);
+            tDiff = tDiff.add(diff);
+            tBaseDiff = tBaseDiff.add(baseDiff);
+            for (int i = 0; i < dayCount; i++) {
+                if (ss != null && i < curDays) {
+                    dayCur[i] = dayCur[i].add(ss.daily().getOrDefault(from.plusDays(i), BigDecimal.ZERO));
+                }
+                if (bs != null && i < baseDays) {
+                    dayBase[i] = dayBase[i].add(bs.daily().getOrDefault(baseFrom.plusDays(i), BigDecimal.ZERO));
+                }
+            }
+            siteDtos.add(KioskFinancialsCompareResponse.SiteCompare.builder()
+                    .siteId(site.getId()).name(site.getName())
+                    .periodFrom(from).periodTo(to).basePeriodFrom(baseFrom).basePeriodTo(baseTo)
+                    .sales(KioskPnlCalculator.round2(cur.sales))
+                    .baseSales(KioskPnlCalculator.round2(base.sales))
+                    .delta(KioskPnlCalculator.round2(delta))
+                    .deltaPct(KioskPnlCalculator.round4(KioskPnlCalculator.ratio(delta, base.sales)))
+                    .goalPct(KioskPnlCalculator.round4(KioskPnlCalculator.ratio(cur.sales, cur.goal)))
+                    .baseGoalPct(KioskPnlCalculator.round4(KioskPnlCalculator.ratio(base.sales, base.goal)))
+                    .margin(KioskPnlCalculator.round4(KioskPnlCalculator.ratio(diff, cur.sales)))
+                    .baseMargin(KioskPnlCalculator.round4(KioskPnlCalculator.ratio(baseDiff, base.sales)))
+                    .difference(KioskPnlCalculator.round2(diff))
+                    .baseDifference(KioskPnlCalculator.round2(baseDiff))
+                    .build());
+        }
+
+        BigDecimal tDelta = tSales.subtract(tBaseSales);
+        KioskFinancialsCompareResponse.Totals totals = KioskFinancialsCompareResponse.Totals.builder()
+                .sales(KioskPnlCalculator.round2(tSales))
+                .baseSales(KioskPnlCalculator.round2(tBaseSales))
+                .delta(KioskPnlCalculator.round2(tDelta))
+                .deltaPct(KioskPnlCalculator.round4(KioskPnlCalculator.ratio(tDelta, tBaseSales)))
+                .margin(KioskPnlCalculator.round4(KioskPnlCalculator.ratio(tDiff, tSales)))
+                .baseMargin(KioskPnlCalculator.round4(KioskPnlCalculator.ratio(tBaseDiff, tBaseSales)))
+                .difference(KioskPnlCalculator.round2(tDiff))
+                .baseDifference(KioskPnlCalculator.round2(tBaseDiff))
+                .build();
+
+        List<KioskFinancialsCompareResponse.DayCompare> daily = new ArrayList<>(dayCount);
+        for (int i = 0; i < dayCount; i++) {
+            daily.add(KioskFinancialsCompareResponse.DayCompare.builder()
+                    .index(i + 1)
+                    .date(i < curDays ? from.plusDays(i) : null)
+                    .baseDate(i < baseDays ? baseFrom.plusDays(i) : null)
+                    .sales(i < curDays ? KioskPnlCalculator.round2(dayCur[i]) : null)
+                    .baseSales(i < baseDays ? KioskPnlCalculator.round2(dayBase[i]) : null)
+                    .build());
+        }
+
+        return KioskFinancialsCompareResponse.builder()
+                .year(from.getYear()).baseYear(baseFrom.getYear()).mode(MODE_CUSTOM).asOf(asOf)
+                .from(from).to(to).baseFrom(baseFrom).baseTo(baseTo)
+                .sites(siteDtos).totals(totals).monthly(List.of()).daily(daily)
+                .build();
+    }
+
+    /** Ventas, costos y meta de un sitio en un rango, mes a mes (los meses sin ventas no cargan costos fijos). */
+    private SliceTotals sliceTotals(Long siteId, SiteSales ss, LocalDate from, LocalDate to,
+                                    Map<Integer, YearData> years, List<String> requiredCodes) {
+        SliceTotals t = new SliceTotals();
+        if (ss == null) {
+            return t;
+        }
+        for (YearMonth ym = YearMonth.from(from); !ym.isAfter(YearMonth.from(to)); ym = ym.plusMonths(1)) {
+            LocalDate sliceFrom = from.isAfter(ym.atDay(1)) ? from : ym.atDay(1);
+            LocalDate sliceTo = to.isBefore(ym.atEndOfMonth()) ? to : ym.atEndOfMonth();
+            BigDecimal monthSales = ss.totalBetween(sliceFrom, sliceTo);
+            if (monthSales.signum() == 0) {
+                continue;
+            }
+            BigDecimal factor = dayFactor(ChronoUnit.DAYS.between(sliceFrom, sliceTo) + 1, ym.lengthOfMonth());
+            YearData yd = years.computeIfAbsent(ym.getYear(), this::loadYear);
+            MonthCalc c = calcMonth(yd, siteId, ym.getYear(), ym.getMonthValue(), monthSales, factor, requiredCodes,
+                    ym.lengthOfMonth(), null);
+            t.sales = t.sales.add(monthSales);
+            t.cost = t.cost.add(c.result().totalCost());
+            if (c.goal() != null) {
+                t.goal = t.goal == null ? c.goal() : t.goal.add(c.goal());
+            }
+        }
+        return t;
+    }
+
+    private static final class SliceTotals {
+        BigDecimal sales = BigDecimal.ZERO;
+        BigDecimal cost = BigDecimal.ZERO;
+        BigDecimal goal; // null si ningun mes tiene meta
+    }
+
+    private static void requireCustomRange(String label, LocalDate from, LocalDate to, LocalDate asOf)
+            throws BusinessException {
+        if (from == null || to == null) {
+            throw new BusinessException("Indique las fechas inicial y final del periodo " + label + ".");
+        }
+        if (from.isAfter(to)) {
+            throw new BusinessException("En el periodo " + label + " la fecha inicial no puede ser posterior a la final.");
+        }
+        if (to.isAfter(asOf)) {
+            throw new BusinessException("El periodo " + label + " no puede terminar después de hoy ("
+                    + asOf + "): los días futuros aún no tienen ventas.");
+        }
+        if (ChronoUnit.DAYS.between(from, to) + 1 > CUSTOM_MAX_DAYS) {
+            throw new BusinessException("El periodo " + label + " no puede pasar de " + CUSTOM_MAX_DAYS + " días.");
+        }
+        if (from.getYear() < 2000) {
+            throw new BusinessException("Fecha inválida en el periodo " + label + ": " + from + ".");
+        }
     }
 
     /** Misma fecha en el anio base; 29-feb pasa a 28-feb cuando el anio base no es bisiesto. */

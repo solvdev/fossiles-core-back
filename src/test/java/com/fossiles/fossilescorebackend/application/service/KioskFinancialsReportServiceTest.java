@@ -218,6 +218,86 @@ class KioskFinancialsReportServiceTest {
     }
 
     @Test
+    void compareCustomUsesExactDatesAndProratesCostsByDays() throws Exception {
+        LocalDate from = LocalDate.of(2026, 10, 1);
+        LocalDate to = LocalDate.of(2026, 10, 5);
+        LocalDate baseFrom = LocalDate.of(2025, 10, 1);
+        LocalDate baseTo = LocalDate.of(2025, 10, 5);
+        lenient().when(resolver.resolve(any(), eq(from), eq(to), any()))
+                .thenReturn(Map.of(1L, sales(1, null, true, false,
+                        "2026-10-02", "100.00", "2026-10-05", "50.00", "2026-10-06", "9999.00")));
+        lenient().when(resolver.resolve(any(), eq(baseFrom), eq(baseTo), any()))
+                .thenReturn(Map.of(1L, sales(1, null, false, true, "2025-10-03", "80.00", "2025-10-04", "0.00")));
+        lenient().when(fixedCostRepository.findByPeriodYear(2026)).thenReturn(List.of(cost(1, 2026, 10, "ALQUILER", "3100.00")));
+        lenient().when(fixedCostRepository.findByPeriodYear(2025)).thenReturn(List.of(cost(1, 2025, 10, "ALQUILER", "3100.00")));
+
+        KioskFinancialsCompareResponse r = service.compareCustom(from, to, baseFrom, baseTo, null, LocalDate.of(2026, 10, 6));
+
+        assertThat(r.getMode()).isEqualTo("CUSTOM");
+        assertThat(r.getFrom()).isEqualTo(from);
+        assertThat(r.getBaseTo()).isEqualTo(baseTo);
+        assertThat(r.getMonthly()).isEmpty();
+        assertThat(r.getSites()).hasSize(1); // el sitio sin ventas en ninguno de los dos periodos no aparece
+        KioskFinancialsCompareResponse.SiteCompare s = r.getSites().get(0);
+        assertThat(s.getPeriodFrom()).isEqualTo(from);
+        assertThat(s.getBasePeriodTo()).isEqualTo(baseTo);
+        assertThat(s.getSales()).isEqualByComparingTo("150.00");   // el 6-oct queda fuera del rango
+        assertThat(s.getBaseSales()).isEqualByComparingTo("80.00");
+        assertThat(s.getDelta()).isEqualByComparingTo("70.00");
+        assertThat(s.getDeltaPct()).isEqualByComparingTo("0.8750");
+        // Alquiler: 3100 * 5/31 = 500 ; comisión fija de venta: 150 ÷ 1.12 × 4 % = 5.36 ; 80 ÷ 1.12 × 4 % = 2.86
+        assertThat(s.getDifference()).isEqualByComparingTo("-355.36");
+        assertThat(s.getBaseDifference()).isEqualByComparingTo("-422.86");
+
+        assertThat(r.getDaily()).hasSize(5);
+        assertThat(r.getDaily().get(1).getDate()).isEqualTo(LocalDate.of(2026, 10, 2));
+        assertThat(r.getDaily().get(1).getBaseDate()).isEqualTo(LocalDate.of(2025, 10, 2));
+        assertThat(r.getDaily().get(1).getSales()).isEqualByComparingTo("100.00");
+        assertThat(r.getDaily().get(2).getBaseSales()).isEqualByComparingTo("80.00");
+        assertThat(r.getDaily().get(4).getSales()).isEqualByComparingTo("50.00");
+    }
+
+    @Test
+    void compareCustomAllowsRangesOfDifferentLengthAcrossMonths() throws Exception {
+        LocalDate from = LocalDate.of(2026, 9, 28);
+        LocalDate to = LocalDate.of(2026, 10, 3);          // 6 dias, dos meses
+        LocalDate baseFrom = LocalDate.of(2026, 9, 1);
+        LocalDate baseTo = LocalDate.of(2026, 9, 3);       // 3 dias, mismo anio
+        lenient().when(resolver.resolve(any(), eq(from), eq(to), any()))
+                .thenReturn(Map.of(1L, sales(1, null, true, false, "2026-09-28", "10.00", "2026-10-02", "20.00")));
+        lenient().when(resolver.resolve(any(), eq(baseFrom), eq(baseTo), any()))
+                .thenReturn(Map.of(1L, sales(1, null, true, false, "2026-09-01", "40.00")));
+
+        KioskFinancialsCompareResponse r = service.compareCustom(from, to, baseFrom, baseTo, "1", LocalDate.of(2026, 10, 6));
+
+        KioskFinancialsCompareResponse.SiteCompare s = r.getSites().get(0);
+        assertThat(s.getSales()).isEqualByComparingTo("30.00");
+        assertThat(s.getBaseSales()).isEqualByComparingTo("40.00");
+        assertThat(r.getYear()).isEqualTo(2026);
+        assertThat(r.getBaseYear()).isEqualTo(2026);
+        assertThat(r.getDaily()).hasSize(6);
+        assertThat(r.getDaily().get(0).getBaseSales()).isEqualByComparingTo("40.00");
+        assertThat(r.getDaily().get(3).getBaseDate()).isNull();   // el periodo de comparación ya terminó
+        assertThat(r.getDaily().get(3).getBaseSales()).isNull();
+        assertThat(r.getDaily().get(5).getDate()).isEqualTo(LocalDate.of(2026, 10, 3));
+    }
+
+    @Test
+    void compareCustomRejectsInvalidRanges() {
+        LocalDate today = LocalDate.of(2026, 10, 6);
+        LocalDate a = LocalDate.of(2026, 10, 1);
+        LocalDate b = LocalDate.of(2025, 10, 1);
+        assertThatThrownBy(() -> service.compareCustom(null, a, b, b, null, today))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.compareCustom(a, a.minusDays(1), b, b, null, today))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("inicial");
+        assertThatThrownBy(() -> service.compareCustom(a, today.plusDays(1), b, b, null, today))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("después de hoy");
+        assertThatThrownBy(() -> service.compareCustom(a, a, b, b.plusDays(366), null, today))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("366");
+    }
+
+    @Test
     void alignToBaseYearMapsLeapDay() {
         assertThat(KioskFinancialsReportService.alignToBaseYear(LocalDate.of(2028, 2, 29), 2027))
                 .isEqualTo(LocalDate.of(2027, 2, 28));

@@ -147,6 +147,9 @@ public class KioskFinancialsConfigService {
         if (request.getExcludeFromReports() != null) {
             site.setExcludeFromReports(request.getExcludeFromReports());
         }
+        if (request.getSalesCategory() != null) {
+            site.setSalesCategory(normalizeSalesCategory(request.getSalesCategory()));
+        }
 
         KioskSiteEntity saved = siteRepository.save(site);
 
@@ -210,8 +213,21 @@ public class KioskFinancialsConfigService {
                 .posGoLiveDetected(detected)
                 .goLiveEffective(effective)
                 .excludeFromReports(Boolean.TRUE.equals(site.getExcludeFromReports()))
+                .salesCategory(site.getSalesCategory())
                 .aliases(aliases)
                 .build();
+    }
+
+    /** A, B o C (sin importar mayusculas); vacio = sin categoria (null). */
+    static String normalizeSalesCategory(String raw) throws BusinessException {
+        String c = raw == null ? "" : raw.trim().toUpperCase(Locale.ROOT);
+        if (c.isEmpty()) {
+            return null;
+        }
+        if (!c.equals("A") && !c.equals("B") && !c.equals("C")) {
+            throw new BusinessException("La categoría de ventas debe ser A, B o C (o vacía para quitarla).");
+        }
+        return c;
     }
 
     private static String cleanName(String raw) throws BusinessException {
