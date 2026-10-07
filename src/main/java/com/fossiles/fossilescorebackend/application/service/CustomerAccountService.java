@@ -1869,6 +1869,63 @@ public class CustomerAccountService {
         return estimateLfOrderTotal(order);
     }
 
+    /**
+     * Total estimado de órdenes vendedor en lote, con el mismo cálculo de {@link #estimateVendorOrderTotal}
+     * pero sin consultar la base de datos: ítems y catálogo llegan precargados.
+     *
+     * @param items        ítems de todas las órdenes (se agrupan por productionOrderId)
+     * @param productsById catálogo de los productos de los ítems; los ausentes se valoran en cero
+     * @return desglose por id de orden
+     */
+    public Map<Long, VendorOrderBreakdown> estimateVendorOrderBreakdowns(
+            Collection<ProductionOrderEntity> orders,
+            Collection<ProductionOrderItemEntity> items,
+            Map<Long, ProductEntity> productsById) {
+        Map<Long, List<ProductionOrderItemEntity>> itemsByOrderId = items.stream()
+                .filter(i -> i.getProductionOrderId() != null)
+                .collect(Collectors.groupingBy(ProductionOrderItemEntity::getProductionOrderId));
+        Map<Long, ProductEntity> catalog = productsById != null ? productsById : Map.of();
+        Map<Long, VendorOrderBreakdown> result = new LinkedHashMap<>();
+        for (ProductionOrderEntity order : orders) {
+            boolean preferSellerPrice = isLfReceivableOrder(order);
+            java.util.function.Function<Long, BigDecimal> catalogPrice =
+                    productId -> resolveProductUnitPrice(catalog.get(productId), preferSellerPrice);
+
+            Map<Long, BigDecimal> subtotalByItemId = new LinkedHashMap<>();
+            BigDecimal itemsTotal = BigDecimal.ZERO;
+            for (ProductionOrderItemEntity item : itemsByOrderId.getOrDefault(order.getId(), List.of())) {
+                BigDecimal subtotal = ProductionOrderItemPricing.itemSubtotal(item, catalogPrice);
+                subtotalByItemId.put(item.getId(), subtotal);
+                itemsTotal = itemsTotal.add(subtotal);
+            }
+            itemsTotal = itemsTotal.setScale(2, RoundingMode.HALF_UP);
+
+            OrderMeta meta = parseOrderMeta(order.getObservations());
+            BigDecimal packingTotal = meta.packingItems.stream()
+                    .map(p -> p.unitPrice.multiply(p.quantity))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal total = itemsTotal.add(packingTotal).add(meta.shippingCost).setScale(2, RoundingMode.HALF_UP);
+            result.put(order.getId(), new VendorOrderBreakdown(
+                    itemsTotal, subtotalByItemId, packingTotal, meta.shippingCost, total));
+        }
+        return result;
+    }
+
+    /**
+     * @param itemsSubtotal     suma de subtotales de ítems (escala 2)
+     * @param subtotalByItemId  subtotal de cada ítem, por id de ítem
+     * @param packingTotal      empaque declarado en observaciones (__OPV_PACKING__)
+     * @param shippingCost      envío declarado en observaciones (__OPV_SHIPPING__)
+     * @param total             itemsSubtotal + packingTotal + shippingCost, escala 2
+     */
+    public record VendorOrderBreakdown(
+            BigDecimal itemsSubtotal,
+            Map<Long, BigDecimal> subtotalByItemId,
+            BigDecimal packingTotal,
+            BigDecimal shippingCost,
+            BigDecimal total) {
+    }
+
     private boolean isLfReceivableOrder(ProductionOrderEntity order) {
         if (order == null || order.getSellerName() == null) {
             return false;
