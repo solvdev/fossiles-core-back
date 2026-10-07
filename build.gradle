@@ -42,6 +42,8 @@ dependencies {
     implementation 'io.sentry:sentry-async-profiler:8.53.0'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-cache'
+    implementation 'com.github.ben-manes.caffeine:caffeine'
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'software.amazon.awssdk:s3:2.27.18'
     implementation 'org.apache.poi:poi-ooxml:5.4.0'

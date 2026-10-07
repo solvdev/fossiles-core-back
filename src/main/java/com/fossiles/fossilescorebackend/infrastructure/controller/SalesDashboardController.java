@@ -1,10 +1,16 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.response.OpvShipmentCatalogRowResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.SalesConsolidatedResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.SalesDashboardResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.SalesSourceDetailResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.application.service.KioskSalesDashboardService;
+import com.fossiles.fossilescorebackend.application.service.OnlineSalesDashboardService;
 import com.fossiles.fossilescorebackend.application.service.OpvShipmentCatalogService;
-import com.fossiles.fossilescorebackend.application.service.SalesDashboardService;
+import com.fossiles.fossilescorebackend.application.service.SalesConsolidatedService;
+import com.fossiles.fossilescorebackend.application.service.SalesUnifiedService;
+import com.fossiles.fossilescorebackend.application.service.VendorSalesDashboardService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -21,17 +27,48 @@ import java.util.List;
 @RequiredArgsConstructor
 public class SalesDashboardController {
 
-    private final SalesDashboardService salesDashboardService;
+    private final SalesConsolidatedService salesConsolidatedService;
+    private final KioskSalesDashboardService kioskSalesDashboardService;
+    private final OnlineSalesDashboardService onlineSalesDashboardService;
+    private final VendorSalesDashboardService vendorSalesDashboardService;
+    private final SalesUnifiedService salesUnifiedService;
     private final OpvShipmentCatalogService opvShipmentCatalogService;
 
-    @GetMapping("/dashboard")
-    public ResponseEntity<SalesDashboardResponse> getDashboard(
+    @GetMapping("/dashboard/consolidated")
+    public ResponseEntity<SalesConsolidatedResponse> getConsolidated(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(defaultValue = "false") boolean refresh
+    ) throws BusinessException {
+        return ResponseEntity.ok(salesConsolidatedService.getConsolidated(startDate, endDate, refresh));
+    }
+
+    @GetMapping("/dashboard/kiosks")
+    public ResponseEntity<SalesSourceDetailResponse> getKiosks(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
             @RequestParam(required = false) Long kioskLocationId,
-            @RequestParam(required = false, defaultValue = "all") String scope
+            @RequestParam(defaultValue = "false") boolean refresh
     ) throws BusinessException {
-        return ResponseEntity.ok(salesDashboardService.getDashboard(startDate, endDate, kioskLocationId, scope));
+        return ResponseEntity.ok(kioskSalesDashboardService.getDashboard(startDate, endDate, kioskLocationId, refresh));
+    }
+
+    @GetMapping("/dashboard/online")
+    public ResponseEntity<SalesSourceDetailResponse> getOnline(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(defaultValue = "false") boolean refresh
+    ) throws BusinessException {
+        return ResponseEntity.ok(onlineSalesDashboardService.getDashboard(startDate, endDate, refresh));
+    }
+
+    @GetMapping("/dashboard/vendor")
+    public ResponseEntity<SalesSourceDetailResponse> getVendor(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(defaultValue = "false") boolean refresh
+    ) throws BusinessException {
+        return ResponseEntity.ok(vendorSalesDashboardService.getDashboard(startDate, endDate, refresh));
     }
 
     @GetMapping("/unified")
@@ -42,7 +79,7 @@ public class SalesDashboardController {
             @RequestParam(required = false) Long kioskLocationId,
             @RequestParam(required = false, defaultValue = "500") Integer limit
     ) throws BusinessException {
-        return ResponseEntity.ok(salesDashboardService.getUnifiedSales(startDate, endDate, channel, kioskLocationId, limit));
+        return ResponseEntity.ok(salesUnifiedService.getUnifiedSales(startDate, endDate, channel, kioskLocationId, limit));
     }
 
     @GetMapping("/opv-shipments")
