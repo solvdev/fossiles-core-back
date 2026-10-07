@@ -83,3 +83,50 @@ Sin cambios. El `GET /api/sales/dashboard` antiguo se elimina.
 
 ## Caché
 Caffeine, TTL 60 s, máx. 300 entradas, clave `(fuente, startDate, endDate, kioskLocationId)`. `refresh=true` evicta la clave y recalcula.
+
+---
+
+# Addendum — Inversión en publicidad vs venta online (por día)
+
+Base: `/api/sales/online/ad-spend`. Un solo monto por día (gasto general de todas las plataformas). Se compara contra la **venta total online del día** (`OnlineSale.totalAmount`, con envío, mismas ventas válidas del dashboard: sin CANCELADO/CANCELADA/ANULADA; fecha = `saleDate`).
+Resultado del día = `salesAmount − adSpend` (quetzales) y `roas = salesAmount / adSpend` (Q vendidos por cada Q1 invertido). No incluye costo de producción.
+Tabla nueva `online_ad_spend` (migración manual `scripts/migration-online-ad-spend.sql`; el proyecto usa `ddl-auto=validate`, hay que correrla ANTES de desplegar el backend).
+
+## Tipos
+```
+AdSpendEntry { date, amount, notes, updatedAt, updatedBy }
+```
+Reglas de validación (error 400 `BusinessException`, mensajes en español): `amount` ≥ 0, máx. 9,999,999.99, 2 decimales; `date` no puede ser posterior a hoy (hora Guatemala); `notes` ≤ 255 caracteres.
+
+## Endpoints
+- `GET  /api/sales/online/ad-spend?startDate&endDate` → `[AdSpendEntry]` (ordenado por fecha asc).
+- `PUT  /api/sales/online/ad-spend/{date}` body `{ "amount": 1500.00, "notes": "..." }` → `AdSpendEntry` (crea o actualiza ese día).
+- `DELETE /api/sales/online/ad-spend/{date}` → 204 (borra la captura de ese día; si no existe, 204 igual).
+- `POST /api/sales/online/ad-spend/bulk` body `{ "entries": [ { "date": "2026-09-03", "amount": 1500.00, "notes": null }, { "date": "2026-09-04", "amount": null } ] }`
+  `amount: null` = borrar la captura de ese día. Máx. 400 entradas, fechas únicas, todo-o-nada (transaccional). → `{ "saved": n, "deleted": m }`.
+- `GET  /api/sales/online/ad-spend/report?startDate&endDate` (default: 1 del mes → hoy; máx. 400 días, si no 400 con mensaje):
+```
+{
+  startDate, endDate,
+  totals: {
+    salesAmount,            // venta total online de TODO el rango
+    ordersCount,
+    comparableSales,        // venta de los días con inversión capturada
+    adSpend,                // Σ inversión capturada
+    netResult,              // comparableSales − adSpend
+    roas,                   // comparableSales / adSpend; null si adSpend = 0
+    daysWithSpend, daysNoSpend,   // días con / sin captura (adSpend ausente)
+    daysWin, daysLoss, daysEven
+  },
+  days: [ {                 // un elemento por cada día del rango, en orden asc
+    date, salesAmount, ordersCount,
+    adSpend,                // null si no hay captura
+    netResult,              // null si adSpend null
+    roas,                   // null si adSpend null o 0
+    status,                 // "WIN" (net>0) | "LOSS" (net<0) | "EVEN" (net=0) | "NO_SPEND" (sin captura)
+    notes
+  } ]
+}
+```
+El reporte NO se cachea. Guardar/borrar inversión no necesita invalidar la caché del dashboard (no la usa).
+Permisos: seguir el mismo patrón de autorización que las operaciones de escritura de ventas online (ver `OnlineSaleController`/seguridad); ver el reporte requiere el mismo acceso que ver el dashboard de ventas.
