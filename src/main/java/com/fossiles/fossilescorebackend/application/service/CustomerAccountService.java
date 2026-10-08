@@ -905,7 +905,11 @@ public class CustomerAccountService {
         BigDecimal chargedAmount = chargeOpt.map(CustomerAccountEntryEntity::getAmount).orElse(BigDecimal.ZERO);
         BigDecimal appliedCredits = chargeOpt.map(c -> computeAppliedCredits(c, entries)).orElse(BigDecimal.ZERO);
         BigDecimal balanceDue = chargeOpt.map(c -> computeChargeBalanceDue(c, entries)).orElse(BigDecimal.ZERO);
-        String status = resolveChargeStatus(chargeOpt, balanceDue);
+        String status = resolveDocumentChargeStatus(
+                chargeOpt, balanceDue, entries, order.getId(), partialReleaseId, productShipmentId);
+        if ("COVERED".equals(status)) {
+            return;
+        }
         boolean charged = chargeOpt.isPresent();
         boolean paid = "PARTIAL".equals(status) || "PAID".equals(status);
 
@@ -1098,7 +1102,7 @@ public class CustomerAccountService {
                 .estimatedTotal(estimatedTotal)
                 .chargedAmount(withBalance ? chargedAmount : null)
                 .balanceDue(withBalance ? balanceDue : null)
-                .chargeStatus(resolveChargeStatus(orderCharge, balanceDue))
+                .chargeStatus(resolveDocumentChargeStatus(orderCharge, balanceDue, entries, order.getId(), null, null))
                 .chargeEntryId(orderCharge.map(CustomerAccountEntryEntity::getId).orElse(null))
                 .vendorShipmentVoided(order.getVendorShipmentVoidedAt() != null)
                 .partialReleases(partialDocs)
@@ -1135,7 +1139,8 @@ public class CustomerAccountService {
                 .estimatedTotal(estimatedTotal.compareTo(BigDecimal.ZERO) > 0 ? estimatedTotal : null)
                 .chargedAmount(withBalance ? chargedAmount : null)
                 .balanceDue(withBalance ? balanceDue : null)
-                .chargeStatus(resolveChargeStatus(releaseCharge, balanceDue))
+                .chargeStatus(resolveDocumentChargeStatus(
+                        releaseCharge, balanceDue, entries, order.getId(), release.getId(), null))
                 .chargeEntryId(releaseCharge.map(CustomerAccountEntryEntity::getId).orElse(null))
                 .shipments(shipmentDocs)
                 .build();
@@ -1198,7 +1203,8 @@ public class CustomerAccountService {
                 .estimatedTotal(estimatedTotal)
                 .chargedAmount(withBalance ? chargedAmount : null)
                 .balanceDue(withBalance ? balanceDue : null)
-                .chargeStatus(resolveChargeStatus(shipmentCharge, balanceDue))
+                .chargeStatus(resolveDocumentChargeStatus(
+                        shipmentCharge, balanceDue, entries, order.getId(), partialReleaseId, shipment.getId()))
                 .chargeEntryId(shipmentCharge.map(CustomerAccountEntryEntity::getId).orElse(null))
                 .build();
     }
@@ -1227,6 +1233,51 @@ public class CustomerAccountService {
                 .filter(e -> Objects.equals(e.getPartialReleaseId(), partialReleaseId))
                 .filter(e -> Objects.equals(e.getProductShipmentId(), productShipmentId))
                 .findFirst();
+    }
+
+    /**
+     * Cargo activo de la misma orden cuyo alcance se cruza con el documento (orden, parcial o envío):
+     * un cargo de orden cubre sus parciales y envíos, uno de parcial cubre sus envíos, y viceversa.
+     */
+    private Optional<CustomerAccountEntryEntity> findOverlappingCharge(
+            List<CustomerAccountEntryEntity> entries,
+            Long productionOrderId,
+            Long partialReleaseId,
+            Long productShipmentId) {
+        return entries.stream()
+                .filter(e -> TYPE_CHARGE.equalsIgnoreCase(e.getEntryType()))
+                .filter(e -> STATUS_ACTIVE.equalsIgnoreCase(e.getStatus()))
+                .filter(e -> Objects.equals(e.getProductionOrderId(), productionOrderId))
+                .filter(e -> chargeScopesOverlap(
+                        e.getPartialReleaseId(), e.getProductShipmentId(), partialReleaseId, productShipmentId))
+                .findFirst();
+    }
+
+    private static boolean chargeScopesOverlap(Long releaseA, Long shipmentA, Long releaseB, Long shipmentB) {
+        if (shipmentA != null && shipmentB != null) {
+            return shipmentA.equals(shipmentB);
+        }
+        boolean orderLevelA = releaseA == null && shipmentA == null;
+        boolean orderLevelB = releaseB == null && shipmentB == null;
+        if (orderLevelA || orderLevelB) {
+            return true;
+        }
+        return Objects.equals(releaseA, releaseB);
+    }
+
+    /** CHARGED/PARTIAL/PAID/NONE del documento; COVERED si no tiene cargo propio pero otro cargo ya lo cubre. */
+    private String resolveDocumentChargeStatus(
+            Optional<CustomerAccountEntryEntity> ownCharge,
+            BigDecimal balanceDue,
+            List<CustomerAccountEntryEntity> entries,
+            Long productionOrderId,
+            Long partialReleaseId,
+            Long productShipmentId) {
+        if (ownCharge.isEmpty()
+                && findOverlappingCharge(entries, productionOrderId, partialReleaseId, productShipmentId).isPresent()) {
+            return "COVERED";
+        }
+        return resolveChargeStatus(ownCharge, balanceDue);
     }
 
     private BigDecimal computeChargeBalanceDue(CustomerAccountEntryEntity charge) {
@@ -1291,13 +1342,20 @@ public class CustomerAccountService {
         if (!TYPE_CHARGE.equals(entryType)) {
             return;
         }
-        Optional<CustomerAccountEntryEntity> existing = entryRepository.findActiveCharge(
-                customerId,
+        if (request.getProductionOrderId() == null) {
+            return;
+        }
+        Optional<CustomerAccountEntryEntity> existing = findOverlappingCharge(
+                loadActiveEntries(customerId),
                 request.getProductionOrderId(),
                 request.getPartialReleaseId(),
                 request.getProductShipmentId());
         if (existing.isPresent()) {
-            throw new BusinessException("Ya existe un cargo activo para este documento.");
+            CustomerAccountEntryEntity charge = existing.get();
+            throw new BusinessException("Este documento ya está cubierto por el cargo "
+                    + firstNonBlank(charge.getVendorShipmentNumber(), charge.getInvoiceNumber(), "#" + charge.getId())
+                    + " (Q " + charge.getAmount().setScale(2, RoundingMode.HALF_UP) + ", saldo Q "
+                    + computeChargeBalanceDue(charge) + "). Anúlelo si necesita registrarlo de nuevo.");
         }
     }
 
