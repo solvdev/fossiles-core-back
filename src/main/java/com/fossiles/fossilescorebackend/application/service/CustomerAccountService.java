@@ -906,7 +906,7 @@ public class CustomerAccountService {
         BigDecimal appliedCredits = chargeOpt.map(c -> computeAppliedCredits(c, entries)).orElse(BigDecimal.ZERO);
         BigDecimal balanceDue = chargeOpt.map(c -> computeChargeBalanceDue(c, entries)).orElse(BigDecimal.ZERO);
         String status = resolveDocumentChargeStatus(
-                chargeOpt, balanceDue, entries, order.getId(), partialReleaseId, productShipmentId);
+                chargeOpt, balanceDue, entries, order, partialReleaseId, productShipmentId);
         if ("COVERED".equals(status)) {
             return;
         }
@@ -1102,7 +1102,7 @@ public class CustomerAccountService {
                 .estimatedTotal(estimatedTotal)
                 .chargedAmount(withBalance ? chargedAmount : null)
                 .balanceDue(withBalance ? balanceDue : null)
-                .chargeStatus(resolveDocumentChargeStatus(orderCharge, balanceDue, entries, order.getId(), null, null))
+                .chargeStatus(resolveDocumentChargeStatus(orderCharge, balanceDue, entries, order, null, null))
                 .chargeEntryId(orderCharge.map(CustomerAccountEntryEntity::getId).orElse(null))
                 .vendorShipmentVoided(order.getVendorShipmentVoidedAt() != null)
                 .partialReleases(partialDocs)
@@ -1140,7 +1140,7 @@ public class CustomerAccountService {
                 .chargedAmount(withBalance ? chargedAmount : null)
                 .balanceDue(withBalance ? balanceDue : null)
                 .chargeStatus(resolveDocumentChargeStatus(
-                        releaseCharge, balanceDue, entries, order.getId(), release.getId(), null))
+                        releaseCharge, balanceDue, entries, order, release.getId(), null))
                 .chargeEntryId(releaseCharge.map(CustomerAccountEntryEntity::getId).orElse(null))
                 .shipments(shipmentDocs)
                 .build();
@@ -1204,7 +1204,7 @@ public class CustomerAccountService {
                 .chargedAmount(withBalance ? chargedAmount : null)
                 .balanceDue(withBalance ? balanceDue : null)
                 .chargeStatus(resolveDocumentChargeStatus(
-                        shipmentCharge, balanceDue, entries, order.getId(), partialReleaseId, shipment.getId()))
+                        shipmentCharge, balanceDue, entries, order, partialReleaseId, shipment.getId()))
                 .chargeEntryId(shipmentCharge.map(CustomerAccountEntryEntity::getId).orElse(null))
                 .build();
     }
@@ -1265,19 +1265,33 @@ public class CustomerAccountService {
         return Objects.equals(releaseA, releaseB);
     }
 
-    /** CHARGED/PARTIAL/PAID/NONE del documento; COVERED si no tiene cargo propio pero otro cargo ya lo cubre. */
+    /**
+     * CHARGED/PARTIAL/PAID/NONE del documento; COVERED si no tiene cargo propio pero ya está cubierto:
+     * por un cargo de alcance cruzado o porque los cargos activos de la orden ya suman su valor total.
+     */
     private String resolveDocumentChargeStatus(
             Optional<CustomerAccountEntryEntity> ownCharge,
             BigDecimal balanceDue,
             List<CustomerAccountEntryEntity> entries,
-            Long productionOrderId,
+            ProductionOrderEntity order,
             Long partialReleaseId,
             Long productShipmentId) {
         if (ownCharge.isEmpty()
-                && findOverlappingCharge(entries, productionOrderId, partialReleaseId, productShipmentId).isPresent()) {
+                && (findOverlappingCharge(entries, order.getId(), partialReleaseId, productShipmentId).isPresent()
+                || isOrderFullyCharged(order, entries))) {
             return "COVERED";
         }
         return resolveChargeStatus(ownCharge, balanceDue);
+    }
+
+    private boolean isOrderFullyCharged(ProductionOrderEntity order, List<CustomerAccountEntryEntity> entries) {
+        BigDecimal charged = entries.stream()
+                .filter(e -> TYPE_CHARGE.equalsIgnoreCase(e.getEntryType()))
+                .filter(e -> STATUS_ACTIVE.equalsIgnoreCase(e.getStatus()))
+                .filter(e -> Objects.equals(e.getProductionOrderId(), order.getId()))
+                .map(CustomerAccountEntryEntity::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return charged.signum() > 0 && charged.compareTo(estimateLfOrderTotal(order)) >= 0;
     }
 
     private BigDecimal computeChargeBalanceDue(CustomerAccountEntryEntity charge) {
