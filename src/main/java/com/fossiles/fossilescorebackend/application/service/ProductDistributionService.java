@@ -493,6 +493,7 @@ public class ProductDistributionService {
         if (details.isEmpty() && !hasPacking) {
             throw new BusinessException("No se puede confirmar un envío sin productos ni empaques.");
         }
+        assertShipmentDetailsHaveCinchoSize(shipmentId);
         // Congela precios en la línea del envío al confirmar (CxC usa este precio, no el catálogo futuro).
         freezeMissingShipmentDetailUnitPrices(shipment, details);
         shipment.setStatus("CONFIRMED");
@@ -1049,11 +1050,20 @@ public class ProductDistributionService {
                                 .build());
                         addedFromSizes = true;
                     }
-                } catch (Exception ignored) {
-                    // malformed sizes JSON
+                } catch (Exception ex) {
+                    String label = product != null && product.getCode() != null
+                            ? product.getCode()
+                            : ("producto " + item.getProductId());
+                    throw new BusinessException(
+                            "No se pudieron leer las tallas de " + label + ". El envío no se armó.");
                 }
             }
             if (!addedFromSizes && item.getQuantity() != null && item.getQuantity() > 0) {
+                if (CinchoProductUtils.isCinchoLineForProduction(product)) {
+                    String label = product.getCode() != null ? product.getCode() : ("producto " + product.getId());
+                    throw new BusinessException(
+                            "El cincho " + label + " no tiene tallas. Indique la cantidad de cada talla antes de armar el envío.");
+                }
                 BigDecimal unitPrice = resolveShipmentUnitPriceFromOrderItem(item, null, preferSellerPrice);
                 lines.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
                         .productId(item.getProductId())
@@ -1468,6 +1478,10 @@ public class ProductDistributionService {
         if (normalized.isEmpty()) {
             throw new BusinessException("El envío debe tener al menos un producto con cantidad.");
         }
+        for (ProductShipmentRequest.ProductShipmentDetailRequest line : normalized) {
+            ProductEntity product = productRepository.findById(line.getProductId()).orElse(null);
+            assertCinchoSizePresent(product, line.getSize());
+        }
 
         String status = shipment.getStatus() == null ? "" : shipment.getStatus().trim().toUpperCase();
         boolean dispatchInventory = shipmentDispatchesFromPtWarehouses(shipment);
@@ -1779,6 +1793,9 @@ public class ProductDistributionService {
         if (shipments.isEmpty()) {
             throw new BusinessException("No se puede completar una distribución sin envíos");
         }
+        for (ProductShipmentEntity shipment : shipments) {
+            assertShipmentDetailsHaveCinchoSize(shipment.getId());
+        }
         
         if (generateProductionOrder) {
             // Agregar productos de todos los envíos (sumar cantidades por producto+color)
@@ -1786,6 +1803,7 @@ public class ProductDistributionService {
             Map<String, BigDecimal> aggregatedProducts = new HashMap<>();
             Map<String, Long> keyToProductId = new HashMap<>();
             Map<String, Long> keyToColorId = new HashMap<>();
+            Map<String, Map<String, Integer>> sizesByKey = new HashMap<>();
 
             for (ProductShipmentEntity shipment : shipments) {
                 List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipment.getId());
@@ -1797,6 +1815,11 @@ public class ProductDistributionService {
                     aggregatedProducts.merge(key, detail.getQuantity(), BigDecimal::add);
                     keyToProductId.put(key, detail.getProductId());
                     keyToColorId.put(key, detail.getColorId());
+                    String size = normalizeSize(detail.getSizeLabel());
+                    if (!size.isEmpty() && detail.getQuantity() != null) {
+                        sizesByKey.computeIfAbsent(key, ignored -> new LinkedHashMap<>())
+                                .merge(size, detail.getQuantity().intValue(), Integer::sum);
+                    }
                 }
             }
 
@@ -1823,11 +1846,21 @@ public class ProductDistributionService {
                 Long productId = keyToProductId.get(key);
                 Long colorId = keyToColorId.get(key);
 
+                String sizesData = null;
+                Map<String, Integer> sizes = sizesByKey.get(key);
+                if (sizes != null && !sizes.isEmpty()) {
+                    try {
+                        sizesData = objectMapper.writeValueAsString(sizes);
+                    } catch (Exception ex) {
+                        throw new BusinessException("No se pudieron guardar las tallas de la orden de producción.");
+                    }
+                }
                 ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
                         .productionOrderId(productionOrder.getId())
                         .productId(productId)
                         .colorId(colorId)
                         .quantity(entry.getValue().intValue())
+                        .sizesData(sizesData)
                         .observations("Cantidad total de distribución #" + distribution.getDistributionNumber())
                         .build();
                 productionOrderItemRepository.save(item);
@@ -1929,6 +1962,7 @@ public class ProductDistributionService {
         if (details.isEmpty() && !hasPacking) {
             throw new BusinessException("No se puede enviar un envío sin productos ni empaques.");
         }
+        assertShipmentDetailsHaveCinchoSize(shipmentId);
         // Empaques SUM- solos: no hay líneas de producto ni salida de Bodega PT;
         // al recibir en kiosko el material se convierte en producto de stock.
         if (details.isEmpty()) {
@@ -4362,6 +4396,25 @@ public class ProductDistributionService {
 
     private String normalizeSize(String size) {
         return size == null ? "" : size.trim().toUpperCase();
+    }
+
+    private void assertShipmentDetailsHaveCinchoSize(Long shipmentId) throws BusinessException {
+        for (ProductShipmentDetailEntity detail : shipmentDetailRepository.findByShipmentId(shipmentId)) {
+            if (detail.getProductId() == null || isPackagingProduct(detail.getProductId())) {
+                continue;
+            }
+            ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
+            assertCinchoSizePresent(product, detail.getSizeLabel());
+        }
+    }
+
+    private void assertCinchoSizePresent(ProductEntity product, String size) throws BusinessException {
+        if (!CinchoProductUtils.isCinchoLineForProduction(product) || !normalizeSize(size).isEmpty()) {
+            return;
+        }
+        String label = product.getCode() != null ? product.getCode() : ("producto " + product.getId());
+        throw new BusinessException(
+                "El cincho " + label + " debe llevar talla en el envío. Indique la cantidad de cada talla antes de guardar o enviar.");
     }
 
     private String persistShipmentHardware(Long locationId, Long productId, String raw, String size)
