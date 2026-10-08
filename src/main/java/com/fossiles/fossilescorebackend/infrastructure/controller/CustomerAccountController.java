@@ -53,12 +53,14 @@ public class CustomerAccountController {
                 search, luisFelipeOnly, positiveBalanceOnly, from, to, regionCode, routeNumber, routeLocationCode));
     }
 
-    /** Cartera por documento (cargos, pagos, créditos, saldo) para la impresión RUTAS CxC. */
+    /**
+     * Cartera por documento (cargos, pagos, créditos, saldo) para la impresión RUTAS CxC.
+     * Solo incluye documentos y clientes con saldo: lo saldado (cero) no forma parte de la cartera.
+     */
     @GetMapping("/portfolio-report")
     public ResponseEntity<CustomerAccountPortfolioReportResponse> getPortfolioReport(
             @RequestParam(required = false) String search,
             @RequestParam(defaultValue = "OPV") String orderKind,
-            @RequestParam(defaultValue = "false") boolean onlyOpen,
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) Integer routeNumber,
             @RequestParam(required = false) String routeLocationCode,
@@ -67,7 +69,7 @@ public class CustomerAccountController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate movementsTo)
             throws BusinessException {
         return ResponseEntity.ok(portfolioReportService.buildReport(
-                search, orderKind, onlyOpen, regionCode, routeNumber, routeLocationCode,
+                search, orderKind, regionCode, routeNumber, routeLocationCode,
                 includeMovements, movementsFrom, movementsTo));
     }
 

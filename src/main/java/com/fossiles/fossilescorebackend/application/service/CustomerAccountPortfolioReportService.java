@@ -36,6 +36,9 @@ import java.util.stream.Collectors;
  * créditos y saldo, calculado desde el libro de cuentas por cobrar con la misma regla que el listado
  * ({@link CustomerAccountService#getSummary}), de modo que los totales cuadran con los saldos del sistema.
  *
+ * <p>Es una cartera de saldos: un documento cuyo saldo es cero ya no se debe y no se lista, y un cliente sin
+ * ningún documento con saldo tampoco. Los documentos con saldo negativo (crédito a favor) sí se listan.
+ *
  * <p>El detalle de movimientos es un anexo separado y opcional; nunca se mezcla con las filas de cartera.
  */
 @Service
@@ -54,6 +57,8 @@ public class CustomerAccountPortfolioReportService {
     private static final String TYPE_OPENING_BALANCE = "OPENING_BALANCE";
     private static final String TYPE_RETURN = "RETURN";
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(2);
+    /** Por debajo de medio centavo un saldo es cero (los montos se guardan a 2 decimales). */
+    private static final BigDecimal BALANCE_EPSILON = new BigDecimal("0.005");
 
     private final CustomerAccountService accountService;
     private final CustomerAccountEntryRepository entryRepository;
@@ -63,7 +68,6 @@ public class CustomerAccountPortfolioReportService {
     public CustomerAccountPortfolioReportResponse buildReport(
             String search,
             String orderKind,
-            boolean onlyOpen,
             String regionCode,
             Integer routeNumber,
             String routeLocationCode,
@@ -108,21 +112,33 @@ public class CustomerAccountPortfolioReportService {
             }
 
             boolean customerMatches = searchNorm.isEmpty() || customerMatchesSearch(summary, searchNorm);
-            // "Solo con saldo" solo quita filas en cero (no altera el saldo del cliente).
-            List<CustomerAccountPortfolioRowResponse> open = customerRows.stream()
-                    .filter(r -> !onlyOpen || r.getBalanceDue().abs().compareTo(new BigDecimal("0.005")) >= 0)
-                    .toList();
-            List<CustomerAccountPortfolioRowResponse> filtered = open.stream()
+            List<CustomerAccountPortfolioRowResponse> matching = customerRows.stream()
                     .filter(r -> customerMatches || rowMatchesSearch(r, searchNorm))
                     .toList();
+            if (matching.isEmpty()) {
+                continue;
+            }
+            // Cartera = lo que todavía se debe: los documentos saldados (saldo cero) no se listan y un cliente
+            // sin documentos con saldo no sale. Quitarlos no cambia el saldo neto del cliente.
+            List<CustomerAccountPortfolioRowResponse> filtered = matching.stream()
+                    .filter(CustomerAccountPortfolioReportService::hasBalance)
+                    .toList();
+            CustomerAccountPortfolioCustomerResponse customerTotals = totalsFor(summary, filtered);
+
+            // Si la búsqueda ocultó documentos, el saldo del cliente ya no es comparable con el del sistema.
+            // La conciliación incluye también a los clientes en cero: así un saldo en cero aquí que el sistema
+            // todavía muestra como deuda sigue apareciendo como diferencia en vez de esconderse.
+            boolean subset = matching.size() != customerRows.size();
+            if (!subset) {
+                reconDue = reconDue.add(customerTotals.getBalanceDue());
+                BigDecimal due = "OPC".equals(kind) ? summary.getBalanceDueOpc() : summary.getBalanceDueOpv();
+                systemDue = systemDue.add(due != null ? due : ZERO);
+            }
             if (filtered.isEmpty()) {
                 continue;
             }
-            // Si la búsqueda ocultó documentos, el saldo del cliente ya no es comparable con el del sistema.
-            boolean subset = filtered.size() != open.size();
 
             rows.addAll(filtered);
-            CustomerAccountPortfolioCustomerResponse customerTotals = totalsFor(summary, filtered);
             customers.add(customerTotals);
             duplicateDocs += (int) filtered.stream().filter(CustomerAccountPortfolioRowResponse::isDuplicateCharges).count();
 
@@ -130,12 +146,6 @@ public class CustomerAccountPortfolioReportService {
                 if (isCredit(credit.getEntryType()) && credit.getAppliedToEntryId() == null) {
                     unappliedCredits = unappliedCredits.add(accountService.resolveEntryAppliedCredit(credit));
                 }
-            }
-
-            if (!subset) {
-                reconDue = reconDue.add(customerTotals.getBalanceDue());
-                BigDecimal due = "OPC".equals(kind) ? summary.getBalanceDueOpc() : summary.getBalanceDueOpv();
-                systemDue = systemDue.add(due != null ? due : ZERO);
             }
 
             if (includeMovements) {
@@ -394,6 +404,11 @@ public class CustomerAccountPortfolioReportService {
         private int paymentCount;
         private int creditCount;
         private LocalDate lastPaymentDate;
+    }
+
+    /** Un documento sigue en cartera mientras su saldo no sea cero (un saldo negativo es crédito a favor). */
+    private static boolean hasBalance(CustomerAccountPortfolioRowResponse row) {
+        return row.getBalanceDue().abs().compareTo(BALANCE_EPSILON) >= 0;
     }
 
     private static String statusOf(BigDecimal balance, Amounts amounts) {
