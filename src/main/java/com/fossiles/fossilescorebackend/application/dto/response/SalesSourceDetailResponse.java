@@ -38,6 +38,11 @@ public class SalesSourceDetailResponse {
         private BigDecimal productAmount;
         private BigDecimal packagingAmount;
         private BigDecimal shippingAmount;
+        /**
+         * Parte del total que viene del histórico de Finanzas kioscos (sin tickets ni desglose):
+         * {@code max(0, total - producto - empaque)} en el canal KIOSKO; 0.00 en los demás canales.
+         */
+        private BigDecimal historicalAmount;
         private BigDecimal previousTotalAmount;
         private BigDecimal growthPercent;
         private BigDecimal dailyAmount;
@@ -111,8 +116,13 @@ public class SalesSourceDetailResponse {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class KioskOption {
+        /** Id del sitio de Finanzas kioscos: valor del selector y del parámetro {@code siteId}. */
+        private Long siteId;
+        /** Id de la location POS ligada al sitio; null si es un sitio histórico (sin kiosko POS). */
         private Long kioskId;
+        /** Código de la location POS, o "" si el sitio es histórico. */
         private String kioskCode;
+        /** Nombre del sitio. */
         private String kioskName;
     }
 }

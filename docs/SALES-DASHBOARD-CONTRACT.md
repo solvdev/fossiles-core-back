@@ -130,3 +130,39 @@ Reglas de validación (error 400 `BusinessException`, mensajes en español): `am
 ```
 El reporte NO se cachea. Guardar/borrar inversión no necesita invalidar la caché del dashboard (no la usa).
 Permisos: seguir el mismo patrón de autorización que las operaciones de escritura de ventas online (ver `OnlineSaleController`/seguridad); ver el reporte requiere el mismo acceso que ver el dashboard de ventas.
+
+---
+
+# Addendum 2 — Ventas de kioscos desde la fuente de Finanzas kioscos (histórico + POS)
+
+Pedido del usuario: las ventas de kioscos del dashboard deben coincidir con **Finanzas kioscos**, que además del POS tiene datos históricos (`kiosk_daily_sales_hist`), y ahí el dinero incluye TODO (empaque incluido).
+
+## Fuente del dinero (canal KIOSKO)
+Misma que Finanzas: `KioskSalesSourceResolver.resolve(sites, from, to, goLive)` (HIST antes del go-live efectivo del sitio, POS desde el go-live) sobre los sitios `kiosk_site` con `exclude_from_reports = false` (`KioskSiteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc()`). Solo se LLAMA al resolver y repos de Finanzas (solo lectura); no se modifica código de Finanzas.
+De esa fuente salen, para el canal KIOSKO: `kpis.totalAmount`, `previousTotalAmount`, `growthPercent`, `dailyAmount` (hoy), `dailySeries[].amount`, `monthlyTrend[].amount` y los importes de `breakdowns.byKiosk`. Es el mismo número que muestra Finanzas kioscos para esos días/sitios; incluye empaque.
+
+## Detalle solo-POS (lo único que tiene tickets)
+`kpis.salesCount` (tickets), `kpis.unitsFinished`, `kpis.productAmount`, `kpis.packagingAmount`, `kpis.avgTicket`, `dailySeries[].count`, `breakdowns.byPaymentMethod`, `topProducts`, `recentSales` salen SOLO de ventas POS (`KioskSalesDashboardService` actual: cabeceras + ítems en lote) restringidas a: locations ligadas a un sitio incluido y `saleDate >= goLive efectivo de ese sitio` (mismo corte que Finanzas; así lo POS detallado == la parte POS del total de Finanzas). Se cargan solo las cabeceras/ítems del periodo actual (el periodo anterior y la tendencia ya no necesitan POS).
+- `kpis.historicalAmount` (NUEVO, BigDecimal, 2 decimales) = `max(0, totalAmount − productAmount − packagingAmount)`: parte del total que viene del histórico (sin tickets ni desglose). Invariante del canal KIOSKO: `productAmount + packagingAmount + shippingAmount(=0) + historicalAmount == totalAmount`.
+- `kpis.avgTicket` (KIOSKO) = `(productAmount + packagingAmount) / salesCount` (0 si no hay tickets POS).
+- Los otros canales devuelven `historicalAmount = 0.00`.
+- Consolidado: `totals.historicalAmount` = suma de las 3 fuentes; `totals.avgTicket` = `(totals.totalAmount − totals.historicalAmount) / totals.salesCount`.
+
+## Filtro por kiosko
+`GET /api/sales/dashboard/kiosks?startDate&endDate&siteId&kioskLocationId&refresh`
+- `siteId` (NUEVO): id de `kiosk_site`. Filtra dinero y detalle a ese sitio (si el sitio es histórico, sin location, el detalle POS sale vacío y el dinero viene del histórico).
+- `kioskLocationId` (legacy, sigue aceptado): se traduce al sitio ligado a esa location (`KioskSiteRepository.findByLocationId`); si no hay sitio incluido → `BusinessException("El kiosko seleccionado no existe o no está incluido en los reportes.")`. Igual error si `siteId` no existe o está excluido. Si llegan ambos, manda `siteId`.
+- La tendencia de 6 meses y el periodo anterior respetan el filtro.
+- Clave de caché: agrega `siteId` (y `kioskLocationId`).
+
+## byKiosk, byPaymentMethod, kioskOptions
+- `breakdowns.byKiosk`: una fila por SITIO con venta ≠ 0 en el periodo: `key = String(siteId)`, `label = site.name`, `amount` = venta del sitio (fuente Finanzas), `count` = tickets POS del sitio en el periodo (0 si es histórico), `sharePercent` sobre `totalAmount`; orden `amount` desc.
+- `breakdowns.byPaymentMethod`: solo POS; `sharePercent` sobre `productAmount + packagingAmount` (la base POS), no sobre el total con histórico.
+- `kioskOptions[]` ahora: `{ siteId, kioskId, kioskCode, kioskName }` donde `siteId` = id del sitio (valor para el selector y para el parámetro `siteId`), `kioskId` = id de la location POS (null si es histórico), `kioskCode` = código de la location o "", `kioskName` = `site.name`. Lista = sitios con venta ≠ 0 en el periodo (más el `siteId` pedido aunque no tenga venta), SIN aplicar el filtro de kiosko, orden por nombre.
+
+## Respuesta consolidada
+`GET /dashboard/consolidated` usa la misma construcción del canal KIOSKO (sin filtro de sitio), por lo que sus `sources[0].kpis`, `monthlyTrend[].kiosko` y `dailySeries[].kiosko` coinciden con la pestaña Kioskos.
+
+## Frontend (comportamiento esperado)
+- Pestaña Kioskos: selector de kiosko por `siteId`; barra de composición con 4º segmento "Histórico (sin desglose)" cuando `historicalAmount > 0`; tarjetas "Tickets (POS)", "Unidades terminadas (POS)", "Ticket promedio (POS)"; forma de pago y productos más vendidos rotulados "solo POS"; aviso cuando `historicalAmount > 0`: "Q X vienen del histórico de Finanzas kioscos (sin tickets ni productos)".
+- Consolidado: composición y tabla "Producto terminado por fuente" suman la columna/segmento "Histórico" (solo se muestra si `historicalAmount > 0`); ticket promedio con la definición nueva.
