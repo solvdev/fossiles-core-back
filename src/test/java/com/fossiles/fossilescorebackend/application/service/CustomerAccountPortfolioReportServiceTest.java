@@ -117,7 +117,7 @@ class CustomerAccountPortfolioReportServiceTest {
     void paymentWithCollectionDiscount_separatesCashFromDiscount() throws Exception {
         long cust = customer("Tienda Dos");
         long order = order(cust, "OPV-2", "NORMAL", "ENVP-2");
-        long charge = charge(cust, order, null, null, "1000.00", "ENVP-2", D1);
+        long charge = charge(cust, order, null, null, "1200.00", "ENVP-2", D1);
         CustomerAccountEntryEntity pay = payment(cust, charge, "900.00", D1.plusDays(3));
         pay.setGrossCollectedAmount(new BigDecimal("1000.00"));
         pay.setPaymentDiscountAmount(new BigDecimal("100.00"));
@@ -127,8 +127,25 @@ class CustomerAccountPortfolioReportServiceTest {
         CustomerAccountPortfolioRowResponse row = report.getRows().get(0);
         assertThat(row.getPaymentsApplied()).isEqualByComparingTo("900.00");
         assertThat(row.getCreditsApplied()).isEqualByComparingTo("100.00");
-        assertThat(row.getBalanceDue()).isEqualByComparingTo("0.00");
-        assertThat(row.getStatus()).isEqualTo("PAID");
+        assertThat(row.getBalanceDue()).isEqualByComparingTo("200.00");
+        assertThat(row.getStatus()).isEqualTo("PARTIAL");
+        assertReconciled(report);
+    }
+
+    @Test
+    void documentPaidInFullThroughCollectionDiscount_isNotListed() throws Exception {
+        long cust = customer("Tienda Dos Saldada");
+        long order = order(cust, "OPV-2B", "NORMAL", "ENVP-2B");
+        long charge = charge(cust, order, null, null, "1000.00", "ENVP-2B", D1);
+        CustomerAccountEntryEntity pay = payment(cust, charge, "900.00", D1.plusDays(3));
+        pay.setGrossCollectedAmount(new BigDecimal("1000.00"));
+        pay.setPaymentDiscountAmount(new BigDecimal("100.00"));
+
+        CustomerAccountPortfolioReportResponse report = run("OPV");
+
+        assertThat(report.getRows()).isEmpty();
+        assertThat(report.getCustomers()).isEmpty();
+        assertThat(report.getTotalBalanceDue()).isEqualByComparingTo("0.00");
         assertReconciled(report);
     }
 
@@ -153,7 +170,7 @@ class CustomerAccountPortfolioReportServiceTest {
     }
 
     @Test
-    void zeroBalanceCustomer_isListedOnce_andHiddenByOnlyOpen() throws Exception {
+    void zeroBalanceCustomer_isNotListed() throws Exception {
         long paid = customer("Cliente Saldado");
         long paidOrder = order(paid, "OPV-4", "NORMAL", "ENVP-4");
         long paidCharge = charge(paid, paidOrder, null, null, "500.00", "ENVP-4", D1);
@@ -162,21 +179,76 @@ class CustomerAccountPortfolioReportServiceTest {
         long openOrder = order(open, "OPV-5", "NORMAL", "ENVP-5");
         charge(open, openOrder, null, null, "300.00", "ENVP-5", D1);
 
-        CustomerAccountPortfolioReportResponse all = run("OPV");
-        assertThat(all.getRows()).extracting(CustomerAccountPortfolioRowResponse::getCustomerId)
-                .containsExactlyInAnyOrder(paid, open);
-        CustomerAccountPortfolioCustomerResponse zero = all.getCustomers().stream()
-                .filter(c -> c.getCustomerId() == paid).findFirst().orElseThrow();
-        assertThat(zero.getBalanceDue()).isEqualByComparingTo("0.00");
-        assertThat(zero.getDocumentCount()).isEqualTo(1);
-        assertReconciled(all);
+        CustomerAccountPortfolioReportResponse report = run("OPV");
 
-        CustomerAccountPortfolioReportResponse onlyOpen = reportService.buildReport(
-                null, "OPV", true, null, null, null, false, null, null);
-        assertThat(onlyOpen.getRows()).extracting(CustomerAccountPortfolioRowResponse::getCustomerId)
+        assertThat(report.getRows()).extracting(CustomerAccountPortfolioRowResponse::getCustomerId)
                 .containsExactly(open);
-        assertThat(onlyOpen.getTotalBalanceDue()).isEqualByComparingTo("300.00");
-        assertReconciled(onlyOpen);
+        assertThat(report.getCustomers()).extracting(CustomerAccountPortfolioCustomerResponse::getCustomerId)
+                .containsExactly(open);
+        assertThat(report.getCustomerCount()).isEqualTo(1);
+        assertThat(report.getDocumentCount()).isEqualTo(1);
+        assertThat(report.getTotalBalanceDue()).isEqualByComparingTo("300.00");
+        assertReconciled(report);
+    }
+
+    @Test
+    void paidDocumentOfCustomerWithOpenDocuments_isHidden_andTotalsOnlyCoverWhatIsOwed() throws Exception {
+        long cust = customer("Cliente Mixto");
+        long paidOrder = order(cust, "OPV-4M", "NORMAL", "ENVP-4M");
+        long paidCharge = charge(cust, paidOrder, null, null, "500.00", "ENVP-4M", D1);
+        payment(cust, paidCharge, "200.00", D1.plusDays(1));
+        creditNote(cust, paidCharge, "300.00");
+        long openOrder = order(cust, "OPV-5M", "NORMAL", "ENVP-5M");
+        long openCharge = charge(cust, openOrder, null, null, "300.00", "ENVP-5M", D1.plusDays(2));
+        payment(cust, openCharge, "100.00", D1.plusDays(4));
+
+        CustomerAccountPortfolioReportResponse report = run("OPV");
+
+        assertThat(report.getRows()).hasSize(1);
+        assertThat(report.getRows().get(0).getInvoiceNumber()).isEqualTo("ENVP-5M");
+        CustomerAccountPortfolioCustomerResponse totals = report.getCustomers().get(0);
+        assertThat(totals.getDocumentCount()).isEqualTo(1);
+        assertThat(totals.getChargedAmount()).isEqualByComparingTo("300.00");
+        assertThat(totals.getPaymentsApplied()).isEqualByComparingTo("100.00");
+        assertThat(totals.getCreditsApplied()).isEqualByComparingTo("0.00");
+        assertThat(totals.getBalanceDue()).isEqualByComparingTo("200.00");
+        assertBalanceFormula(report);
+        assertReconciled(report);
+    }
+
+    @Test
+    void customerPaidInOneKindButOwingInTheOther_onlyAppearsWhereItOwes() throws Exception {
+        long cust = customer("Cliente Dos Carteras");
+        long opvOrder = order(cust, "OPV-4K", "NORMAL", "ENVP-4K");
+        long opvCharge = charge(cust, opvOrder, null, null, "500.00", "ENVP-4K", D1);
+        payment(cust, opvCharge, "500.00", D1.plusDays(1));
+        long opcOrder = order(cust, "OPC-4K", "CINCHOS", "ENVP-4KC");
+        charge(cust, opcOrder, null, null, "250.00", "ENVP-4KC", D1);
+
+        CustomerAccountPortfolioReportResponse opv = run("OPV");
+        CustomerAccountPortfolioReportResponse opc = run("OPC");
+
+        assertThat(opv.getCustomers()).isEmpty();
+        assertThat(opv.getRows()).isEmpty();
+        assertThat(opc.getCustomers()).extracting(CustomerAccountPortfolioCustomerResponse::getCustomerId)
+                .containsExactly(cust);
+        assertThat(opc.getTotalBalanceDue()).isEqualByComparingTo("250.00");
+        assertReconciled(opv);
+        assertReconciled(opc);
+    }
+
+    @Test
+    void overpaidDocument_isStillListedAsCreditInFavor() throws Exception {
+        long cust = customer("Cliente Con Credito");
+        long order = order(cust, "OPV-4C", "NORMAL", "ENVP-4C");
+        long charge = charge(cust, order, null, null, "100.00", "ENVP-4C", D1);
+        payment(cust, charge, "150.00", D1.plusDays(1));
+
+        CustomerAccountPortfolioReportResponse report = run("OPV");
+
+        assertThat(report.getRows()).hasSize(1);
+        assertThat(report.getRows().get(0).getBalanceDue()).isEqualByComparingTo("-50.00");
+        assertThat(report.getCustomers().get(0).getCreditBalance()).isEqualByComparingTo("50.00");
     }
 
     @Test
@@ -192,7 +264,7 @@ class CustomerAccountPortfolioReportServiceTest {
         payment(cust, charge, "100.00", D1.plusDays(4));
 
         CustomerAccountPortfolioReportResponse report = reportService.buildReport(
-                null, "OPV", false, null, null, null, true, null, null);
+                null, "OPV", null, null, null, true, null, null);
 
         assertThat(report.getRows()).hasSize(1);
         CustomerAccountPortfolioRowResponse row = report.getRows().get(0);
@@ -301,7 +373,7 @@ class CustomerAccountPortfolioReportServiceTest {
         charge(active, activeOrder, null, null, "600.00", "ENVP-12", LocalDate.of(2026, 7, 10));
 
         CustomerAccountPortfolioReportResponse report = reportService.buildReport(
-                null, "OPV", false, null, null, null, true,
+                null, "OPV", null, null, null, true,
                 LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 31));
 
         assertThat(report.getCustomers()).extracting(CustomerAccountPortfolioCustomerResponse::getCustomerId)
@@ -368,13 +440,14 @@ class CustomerAccountPortfolioReportServiceTest {
 
         CustomerAccountPortfolioReportResponse report = run("OPV");
 
-        assertThat(report.getRows()).hasSize(customerCount * 3);
+        // el documento d=1 quedó saldado con la nota de crédito: ya no se debe y no se lista
+        assertThat(report.getRows()).hasSize(customerCount * 2);
         Set<Long> chargeIds = new HashSet<>();
         report.getRows().forEach(r -> r.getChargeEntryIds().forEach(id -> assertThat(chargeIds.add(id)).isTrue()));
         assertThat(report.getCustomerCount()).isEqualTo(customerCount);
-        assertThat(report.getTotalCharged()).isEqualByComparingTo(String.valueOf(customerCount * 300) + ".00");
+        assertThat(report.getTotalCharged()).isEqualByComparingTo(String.valueOf(customerCount * 200) + ".00");
         assertThat(report.getTotalPayments()).isEqualByComparingTo(String.valueOf(customerCount * 60) + ".00");
-        assertThat(report.getTotalCredits()).isEqualByComparingTo(String.valueOf(customerCount * 100) + ".00");
+        assertThat(report.getTotalCredits()).isEqualByComparingTo("0.00");
         assertThat(report.getTotalBalanceDue()).isEqualByComparingTo(String.valueOf(customerCount * 140) + ".00");
         assertBalanceFormula(report);
         assertReconciled(report);
@@ -389,7 +462,7 @@ class CustomerAccountPortfolioReportServiceTest {
         charge(cust, order2, null, null, "200.00", "ENVP-S2", D1);
 
         CustomerAccountPortfolioReportResponse report = reportService.buildReport(
-                "envp-s2", "OPV", false, null, null, null, false, null, null);
+                "envp-s2", "OPV", null, null, null, false, null, null);
 
         assertThat(report.getRows()).hasSize(1);
         assertThat(report.getRows().get(0).getInvoiceNumber()).isEqualTo("ENVP-S2");
@@ -398,7 +471,7 @@ class CustomerAccountPortfolioReportServiceTest {
     @Test
     void invalidKind_isRejected() {
         assertThatThrownBy(() -> reportService.buildReport(
-                null, "XYZ", false, null, null, null, false, null, null))
+                null, "XYZ", null, null, null, false, null, null))
                 .isInstanceOf(BusinessException.class);
     }
 
@@ -432,7 +505,7 @@ class CustomerAccountPortfolioReportServiceTest {
     // ---- fixtures --------------------------------------------------------------------------
 
     private CustomerAccountPortfolioReportResponse run(String kind) throws BusinessException {
-        return reportService.buildReport(null, kind, false, null, null, null, false, null, null);
+        return reportService.buildReport(null, kind, null, null, null, false, null, null);
     }
 
     private long customer(String name) {
