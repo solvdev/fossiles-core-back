@@ -47,10 +47,12 @@ public class SalesDashboardController {
     public ResponseEntity<SalesSourceDetailResponse> getKiosks(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false) Long siteId,
             @RequestParam(required = false) Long kioskLocationId,
             @RequestParam(defaultValue = "false") boolean refresh
     ) throws BusinessException {
-        return ResponseEntity.ok(kioskSalesDashboardService.getDashboard(startDate, endDate, kioskLocationId, refresh));
+        return ResponseEntity.ok(kioskSalesDashboardService.getDashboard(
+                startDate, endDate, siteId, kioskLocationId, refresh));
     }
 
     @GetMapping("/dashboard/online")

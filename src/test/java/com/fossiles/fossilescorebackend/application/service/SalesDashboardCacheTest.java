@@ -64,7 +64,22 @@ class SalesDashboardCacheTest {
         LocalDate from = LocalDate.of(2026, 9, 1);
         LocalDate to = LocalDate.of(2026, 9, 30);
 
-        assertThat(SalesDashboardCache.key("KIOSKO", from, to, 4L)).isEqualTo("KIOSKO|2026-09-01|2026-09-30|4");
-        assertThat(SalesDashboardCache.key("ONLINE", from, to, null)).isEqualTo("ONLINE|2026-09-01|2026-09-30|");
+        assertThat(SalesDashboardCache.key("KIOSKO", from, to, 4L)).isEqualTo("KIOSKO|2026-09-01|2026-09-30|4|");
+        assertThat(SalesDashboardCache.key("ONLINE", from, to, null)).isEqualTo("ONLINE|2026-09-01|2026-09-30||");
+    }
+
+    @Test
+    void keyIncludesSiteIdAndKioskLocationIdInSeparateSlots() {
+        LocalDate from = LocalDate.of(2026, 9, 1);
+        LocalDate to = LocalDate.of(2026, 9, 30);
+
+        assertThat(SalesDashboardCache.key("KIOSKO", from, to, null, 7L)).isEqualTo("KIOSKO|2026-09-01|2026-09-30||7");
+        assertThat(SalesDashboardCache.key("KIOSKO", from, to, 4L, 7L)).isEqualTo("KIOSKO|2026-09-01|2026-09-30|4|7");
+        assertThat(SalesDashboardCache.key("KIOSKO", from, to, null, null)).isEqualTo("KIOSKO|2026-09-01|2026-09-30||");
+        // Mismo número como location POS y como sitio son consultas distintas: no deben compartir entrada.
+        assertThat(SalesDashboardCache.key("KIOSKO", from, to, 4L, null))
+                .isNotEqualTo(SalesDashboardCache.key("KIOSKO", from, to, null, 4L));
+        assertThat(SalesDashboardCache.key("KIOSKO", from, to, 4L))
+                .isEqualTo(SalesDashboardCache.key("KIOSKO", from, to, 4L, null));
     }
 }

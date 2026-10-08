@@ -117,12 +117,48 @@ final class SalesDashboardSupport {
                 .productAmount(money(product))
                 .packagingAmount(money(packaging))
                 .shippingAmount(money(shipping))
+                .historicalAmount(money(BigDecimal.ZERO))
                 .previousTotalAmount(money(previousTotal))
                 .growthPercent(growthPercent(total, previousTotal))
                 .dailyAmount(money(daily))
                 .salesCount(count)
                 .unitsFinished(units.setScale(2, RoundingMode.HALF_UP))
                 .avgTicket(average(total, count))
+                .build();
+    }
+
+    /**
+     * KPIs del canal KIOSKO. El dinero (total, periodo anterior y hoy) viene de la fuente de Finanzas kioscos
+     * (histórico + POS); el desglose, los tickets y las unidades solo existen para el detalle POS.
+     * <p>
+     * {@code historicalAmount} es la parte del total sin desglose (histórico): {@code max(0, total - producto - empaque)},
+     * por lo que {@code producto + empaque + envío(0) + histórico == total}. El ticket promedio es sobre la base POS:
+     * {@code (producto + empaque) / tickets POS}.
+     */
+    static SourceKpis kioskKpis(
+            BigDecimal total,
+            BigDecimal previousTotal,
+            BigDecimal todayAmount,
+            BigDecimal posProduct,
+            BigDecimal posPackaging,
+            BigDecimal posUnits,
+            int posTickets) {
+        BigDecimal totalMoney = money(total);
+        BigDecimal productMoney = money(posProduct);
+        BigDecimal packagingMoney = money(posPackaging);
+        BigDecimal historical = money(totalMoney.subtract(productMoney).subtract(packagingMoney).max(BigDecimal.ZERO));
+        return SourceKpis.builder()
+                .totalAmount(totalMoney)
+                .productAmount(productMoney)
+                .packagingAmount(packagingMoney)
+                .shippingAmount(money(BigDecimal.ZERO))
+                .historicalAmount(historical)
+                .previousTotalAmount(money(previousTotal))
+                .growthPercent(growthPercent(total, previousTotal))
+                .dailyAmount(money(todayAmount))
+                .salesCount(posTickets)
+                .unitsFinished(nz(posUnits).setScale(2, RoundingMode.HALF_UP))
+                .avgTicket(average(nz(posProduct).add(nz(posPackaging)), posTickets))
                 .build();
     }
 
@@ -135,6 +171,15 @@ final class SalesDashboardSupport {
                 countByDay.merge(fact.date(), 1, Integer::sum);
             }
         }
+        return dailySeries(range, amountByDay, countByDay);
+    }
+
+    /**
+     * Serie diaria con importe y conteo de fuentes distintas (kioscos: dinero de Finanzas + tickets POS).
+     * Un punto por cada día del rango; los días ausentes de los mapas salen con {@code amount: 0, count: 0}.
+     */
+    static List<DailyPoint> dailySeries(
+            DateRange range, Map<LocalDate, BigDecimal> amountByDay, Map<LocalDate, Integer> countByDay) {
         List<DailyPoint> points = new ArrayList<>();
         for (LocalDate day = range.from(); !day.isAfter(range.to()); day = day.plusDays(1)) {
             points.add(DailyPoint.builder()

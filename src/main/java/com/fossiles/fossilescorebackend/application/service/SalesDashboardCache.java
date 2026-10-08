@@ -10,7 +10,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.util.function.Supplier;
 
 /**
- * Caché de 60 s de las respuestas del dashboard de ventas, con clave (fuente, desde, hasta, kiosko).
+ * Caché de 60 s de las respuestas del dashboard de ventas, con clave (fuente, desde, hasta, location, sitio).
  * Es programática (no @Cacheable) para que el cálculo corra dentro de una transacción de solo lectura
  * sin depender de proxies ni de auto-invocación. No se invalida por escrituras: la frescura máxima es el TTL.
  */
@@ -50,6 +50,14 @@ public class SalesDashboardCache {
     }
 
     public static String key(String source, java.time.LocalDate from, java.time.LocalDate to, Long kioskLocationId) {
-        return source + "|" + from + "|" + to + "|" + (kioskLocationId != null ? kioskLocationId : "");
+        return key(source, from, to, kioskLocationId, null);
+    }
+
+    /** Clave completa: el filtro de kiosko puede llegar como location POS (legacy) y/o como sitio de Finanzas. */
+    public static String key(
+            String source, java.time.LocalDate from, java.time.LocalDate to, Long kioskLocationId, Long siteId) {
+        return source + "|" + from + "|" + to
+                + "|" + (kioskLocationId != null ? kioskLocationId : "")
+                + "|" + (siteId != null ? siteId : "");
     }
 }

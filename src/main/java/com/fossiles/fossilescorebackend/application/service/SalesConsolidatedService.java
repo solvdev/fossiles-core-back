@@ -32,9 +32,10 @@ public class SalesConsolidatedService {
             LocalDate startDate, LocalDate endDate, boolean refresh) throws BusinessException {
         DateRange range = resolveRange(startDate, endDate);
         String key = SalesDashboardCache.key("CONSOLIDATED", range.from(), range.to(), null);
+        // El canal KIOSKO se construye igual que la pestaña Kioskos sin filtro de sitio (misma fuente de Finanzas).
         return cache.get(key, refresh, () -> build(
                 range,
-                kioskService.build(range, null),
+                kioskService.buildAll(range),
                 onlineService.build(range),
                 vendorService.build(range)));
     }
@@ -99,11 +100,16 @@ public class SalesConsolidatedService {
                 .build();
     }
 
+    /**
+     * Suma de las tres fuentes. El ticket promedio excluye el histórico de kioscos (no tiene tickets):
+     * {@code (total - histórico) / tickets}, es decir, el promedio de lo que sí tiene ticket.
+     */
     private static SourceKpis sumKpis(SourceKpis... kpis) {
         BigDecimal total = BigDecimal.ZERO;
         BigDecimal product = BigDecimal.ZERO;
         BigDecimal packaging = BigDecimal.ZERO;
         BigDecimal shipping = BigDecimal.ZERO;
+        BigDecimal historical = BigDecimal.ZERO;
         BigDecimal previousTotal = BigDecimal.ZERO;
         BigDecimal daily = BigDecimal.ZERO;
         BigDecimal units = BigDecimal.ZERO;
@@ -113,6 +119,7 @@ public class SalesConsolidatedService {
             product = product.add(k.getProductAmount());
             packaging = packaging.add(k.getPackagingAmount());
             shipping = shipping.add(k.getShippingAmount());
+            historical = historical.add(nz(k.getHistoricalAmount()));
             previousTotal = previousTotal.add(k.getPreviousTotalAmount());
             daily = daily.add(k.getDailyAmount());
             units = units.add(k.getUnitsFinished());
@@ -123,12 +130,13 @@ public class SalesConsolidatedService {
                 .productAmount(money(product))
                 .packagingAmount(money(packaging))
                 .shippingAmount(money(shipping))
+                .historicalAmount(money(historical))
                 .previousTotalAmount(money(previousTotal))
                 .growthPercent(growthPercent(total, previousTotal))
                 .dailyAmount(money(daily))
                 .salesCount(count)
                 .unitsFinished(units)
-                .avgTicket(average(total, count))
+                .avgTicket(average(total.subtract(historical), count))
                 .build();
     }
 }
