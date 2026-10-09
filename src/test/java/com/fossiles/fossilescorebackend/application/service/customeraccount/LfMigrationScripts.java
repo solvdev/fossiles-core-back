@@ -41,6 +41,17 @@ final class LfMigrationScripts {
         boolean singleQuote = false;
         for (int i = 0; i < sql.length(); i++) {
             char c = sql.charAt(i);
+            if (!dollarQuote && !singleQuote && c == '-' && i + 1 < sql.length() && sql.charAt(i + 1) == '-') {
+                int start = i;
+                while (i < sql.length() && sql.charAt(i) != '\n') {
+                    i++;
+                }
+                current.append(sql, start, i);
+                if (i < sql.length()) {
+                    current.append('\n');
+                }
+                continue;
+            }
             if (!singleQuote && c == '$' && i + 1 < sql.length() && sql.charAt(i + 1) == '$') {
                 dollarQuote = !dollarQuote;
                 current.append("$$");
