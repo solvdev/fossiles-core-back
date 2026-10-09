@@ -105,6 +105,18 @@ class ShipmentChargeDetectionCharacterizationTest extends LfReceivablesH2TestBas
     }
 
     @Test
+    @DisplayName("CURRENT BEHAVIOR (bug): a CHARGE with no productionOrderId is accepted and stored without an order "
+            + "— fix should REJECT it (every charge needs production_order_id)")
+    void chargeWithoutProductionOrderIsAccepted() throws Exception {
+        CustomerAccountEntryResponse charge = fx.create(customer, chargeRequest(null, null, null, "1783.00"));
+
+        CustomerAccountEntryEntity stored = fx.entry(charge.getId());
+        assertThat(stored.getStatus()).isEqualTo("ACTIVE");
+        assertThat(stored.getProductionOrderId()).isNull();
+        assertThat(fx.balance(customer)).isEqualByComparingTo("1783.00");
+    }
+
+    @Test
     @DisplayName("CURRENT BEHAVIOR (bug): charge on the shipment id but without its partial_release_id -> list "
             + "offers GENERAR CARGO, cartera hides the shipment slot as COVERED and lists the charge only as an "
             + "orphan row, and createEntry rejects the charge the list offers — fix should key charges to the order "
