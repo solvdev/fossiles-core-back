@@ -24,6 +24,8 @@ import com.fossiles.fossilescorebackend.application.service.ProductionTaskGenera
 import com.fossiles.fossilescorebackend.application.service.ProductionTaskLifecycleService;
 import com.fossiles.fossilescorebackend.application.service.TaskCodeGenerator;
 import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillService;
+import com.fossiles.fossilescorebackend.application.service.TaskDeskAssignerService;
+import com.fossiles.fossilescorebackend.application.service.ProductionCenterCache;
 import com.fossiles.fossilescorebackend.application.service.TaskOrganizerService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
@@ -78,6 +80,8 @@ public class TaskController {
     private final TaskCodeGenerator taskCodeGenerator;
     private final TaskOrganizerService taskOrganizerService;
     private final TaskDeskBackfillService taskDeskBackfillService;
+    private final TaskDeskAssignerService taskDeskAssignerService;
+    private final ProductionCenterCache productionCenterCache;
     private final ProductionTaskLifecycleService productionTaskLifecycleService;
     private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
     private final ProductionDeskSupervisorRepository productionDeskSupervisorRepository;
@@ -166,15 +170,80 @@ public class TaskController {
         return ResponseEntity.ok(productionAutoPlannerService.planPending(date));
     }
 
+    /**
+     * Cola del día: las OPs con prioridad manual (2..99), en su orden. Es la misma prioridad
+     * que usa «Planificar» en el Centro y «Distribuir» en el Organizador. Antes la cola vivía
+     * solo en el navegador y se guardaba al distribuir, que llega después del corte: para
+     * entonces el plan ya había decidido qué entraba en el día.
+     */
+    @GetMapping("/day-queue")
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<Map<String, Object>>> getDayQueue() {
+        return ResponseEntity.ok(dayQueueRows());
+    }
+
+    /**
+     * Reemplaza la cola entera: las OPs recibidas toman prioridad 2, 3, 4... en ese orden y las
+     * que tenían prioridad manual y ya no vienen vuelven a la de su tipo. Así quitar una OP de
+     * la cola no la deja adelantada para siempre.
+     */
+    @PutMapping("/day-queue")
+    @Transactional
+    public ResponseEntity<List<Map<String, Object>>> saveDayQueue(@RequestBody Map<String, List<Long>> body) {
+        // Mismo turno que los repartos: la prioridad decide el orden en que reparten.
+        productionPlanningLock.acquire();
+        List<Long> ids = body != null && body.get("orderIds") != null ? body.get("orderIds") : List.of();
+        Map<Long, Integer> nueva = new LinkedHashMap<>();
+        for (Long id : ids) {
+            if (id != null && !nueva.containsKey(id)) {
+                nueva.put(id, Math.min(MIN_MANUAL_SCHEDULING_PRIORITY + nueva.size(), MAX_MANUAL_SCHEDULING_PRIORITY));
+            }
+        }
+        List<ProductionOrderEntity> cambiadas = new ArrayList<>();
+        for (ProductionOrderEntity po : productionOrderRepository.findActiveOrders()) {
+            Integer actual = po.getSchedulingPriority();
+            boolean manual = actual != null
+                    && actual >= MIN_MANUAL_SCHEDULING_PRIORITY && actual <= MAX_MANUAL_SCHEDULING_PRIORITY;
+            if (manual && !nueva.containsKey(po.getId())) {
+                po.setSchedulingPriority(null);
+                cambiadas.add(po);
+            }
+        }
+        for (ProductionOrderEntity po : productionOrderRepository.findAllById(nueva.keySet())) {
+            po.setSchedulingPriority(nueva.get(po.getId()));
+            cambiadas.add(po);
+        }
+        productionOrderRepository.saveAll(cambiadas);
+        return ResponseEntity.ok(dayQueueRows());
+    }
+
+    private List<Map<String, Object>> dayQueueRows() {
+        return productionOrderRepository.findActiveOrders().stream()
+                .filter(po -> po.getSchedulingPriority() != null
+                        && po.getSchedulingPriority() >= MIN_MANUAL_SCHEDULING_PRIORITY
+                        && po.getSchedulingPriority() <= MAX_MANUAL_SCHEDULING_PRIORITY)
+                .sorted(ProductionOrderPlanPriority.comparator())
+                .map(po -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", po.getId());
+                    row.put("code", po.getCode());
+                    return row;
+                })
+                .collect(Collectors.toList());
+    }
+
     @GetMapping("/blocked-leather")
     public ResponseEntity<List<ProductionAutoPlanResult.BlockedLeatherLine>> blockedLeather() {
-        return ResponseEntity.ok(productionAutoPlannerService.listBlockedLeather());
+        return ResponseEntity.ok(productionCenterCache.panel("blocked-leather",
+                productionAutoPlannerService::listBlockedLeather));
     }
 
     @GetMapping("/day-sales-summary")
     public ResponseEntity<ProductionDaySalesSummaryResponse> daySalesSummary(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return ResponseEntity.ok(productionAutoPlannerService.daySalesSummary(date));
+        LocalDate day = date != null ? date : GuatemalaDateTime.today();
+        return ResponseEntity.ok(productionCenterCache.panel("day-sales|" + day,
+                () -> productionAutoPlannerService.daySalesSummary(day)));
     }
 
     /**
@@ -184,7 +253,9 @@ public class TaskController {
     @GetMapping("/opl-dispatch-summary")
     public ResponseEntity<OplDispatchSummaryResponse> oplDispatchSummary(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate dispatchDate) {
-        return ResponseEntity.ok(oplDispatchSummaryService.summaryForDispatchDate(dispatchDate));
+        LocalDate day = dispatchDate != null ? dispatchDate : GuatemalaDateTime.today();
+        return ResponseEntity.ok(productionCenterCache.panel("opl-dispatch|" + day,
+                () -> oplDispatchSummaryService.summaryForDispatchDate(day)));
     }
 
     /**
@@ -1232,6 +1303,9 @@ public class TaskController {
                 Boolean.TRUE.equals(hermana.getMaterialsDelivered()) ? LocalDateTime.now() : null);
         taskRepository.save(hermana);
 
+        // La de origen quedo toda cortada: es la que baja a mesa.
+        taskDeskAssignerService.assignIfReady(sourceTask.getId());
+
         body.put("split", true);
         body.put("movedItems", sinCortar.size());
         body.put("siblingTaskId", hermana.getId());
@@ -1417,6 +1491,10 @@ public class TaskController {
         entity.setDieCutReady(areTaskItemsDieCut(entity));
         entity.setDieCutDate(Boolean.TRUE.equals(entity.getDieCutReady()) ? LocalDate.now() : null);
         TaskEntity updated = taskRepository.save(entity);
+        // Con el último producto cortado la tarea baja a mesa sola.
+        if (ready) {
+            updated = taskDeskAssignerService.assignIfReady(updated.getId()).orElse(updated);
+        }
         return ResponseEntity.ok(toResponse(updated));
     }
 
@@ -1588,6 +1666,16 @@ public class TaskController {
         TaskResponse response = toResponse(updated);
         response.setLastItemMaterialsConsumed(consumedLines);
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Asigna mesa con la regla única del sistema (menor carga con cupo, desempate al azar).
+     * Reemplaza el cálculo que hacía el navegador, que no conocía el cupo ni el troquelado.
+     */
+    @PostMapping("/{id:\\d+}/auto-desk")
+    public ResponseEntity<TaskResponse> autoAssignDesk(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(toResponse(taskDeskAssignerService.assignOrExplain(id)));
     }
 
     @PutMapping("/{id:\\d+}/schedule")
@@ -1838,6 +1926,9 @@ public class TaskController {
         entity.setDieCutDate(ready ? GuatemalaDateTime.today() : null);
 
         TaskEntity updated = taskRepository.save(entity);
+        if (ready) {
+            updated = taskDeskAssignerService.assignIfReady(updated.getId()).orElse(updated);
+        }
         return ResponseEntity.ok(toResponse(updated));
     }
 
@@ -1861,7 +1952,11 @@ public class TaskController {
                 }
                 task.setDieCutReady(ready);
                 task.setDieCutDate(dieCutDate);
-                responses.add(toResponse(taskRepository.save(task)));
+                TaskEntity saved = taskRepository.save(task);
+                if (ready) {
+                    saved = taskDeskAssignerService.assignIfReady(saved.getId()).orElse(saved);
+                }
+                responses.add(toResponse(saved));
             }
         }
         return ResponseEntity.ok(responses);

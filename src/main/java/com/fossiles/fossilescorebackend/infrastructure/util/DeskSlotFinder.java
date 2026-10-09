@@ -2,8 +2,11 @@ package com.fossiles.fossilescorebackend.infrastructure.util;
 
 import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Primer hueco de mesa usando horas base (cupo 4h). Horas 0 (OPL) entran el primer día hábil
@@ -57,6 +60,41 @@ public final class DeskSlotFinder {
             fallback = fallback.plusDays(1);
         }
         return new Slot(fallback, 1);
+    }
+
+    /**
+     * Mesa para {@code requiredHours} dentro de un solo día: la de menor carga entre las que
+     * caben en el cupo; si hay empate se elige al azar, para que la mesa 1 no sea siempre la
+     * primera en llenarse. Una tarea de más de 4 h solo entra en una mesa vacía.
+     *
+     * @return la mesa elegida, o {@code null} si ninguna tiene espacio ese día
+     */
+    public static Integer pickDeskOnDay(Map<Integer, Double> dayLoads, int numDesks, double requiredHours) {
+        int desks = Math.max(numDesks, 1);
+        double needed = Math.max(requiredHours, 0.0);
+        boolean oversized = needed > ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
+        List<Integer> best = new ArrayList<>();
+        double bestLoad = Double.MAX_VALUE;
+        for (int desk = 1; desk <= desks; desk++) {
+            double used = dayLoads.getOrDefault(desk, 0.0);
+            boolean fits = oversized
+                    ? used <= 1e-9
+                    : used + needed <= ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
+            if (!fits) {
+                continue;
+            }
+            if (used < bestLoad - 1e-9) {
+                bestLoad = used;
+                best.clear();
+                best.add(desk);
+            } else if (Math.abs(used - bestLoad) < 1e-9) {
+                best.add(desk);
+            }
+        }
+        if (best.isEmpty()) {
+            return null;
+        }
+        return best.get(ThreadLocalRandom.current().nextInt(best.size()));
     }
 
     public static void addLoad(Map<LocalDate, Map<Integer, Double>> scheduleMap, Slot slot, double hours) {
