@@ -168,7 +168,7 @@ class CustomerAccountLedgerScriptTest {
         Psql refused = psql("rollback-customer-account-lf-phase1.sql");
         assertThat(refused.exitCode).as(refused.output).isNotZero();
         assertThat(refused.output).contains("reassigned_from_entry_id");
-        assertThat(refused.output).contains("No se cambio nada");
+        assertThat(refused.output).contains("Se revirtieron 0 reenlaces de limpieza");
         assertThat(count("SELECT reassigned_from_entry_id FROM customer_account_entry WHERE entry_type = 'PAYMENT'")).isEqualTo(1);
         assertThat(count("SELECT credit_days FROM customer WHERE id = 1")).isEqualTo(15);
         assertThat(constraintDef("chk_customer_account_entry_type")).contains("CHARGE_ADJUSTMENT");

@@ -404,6 +404,7 @@ class CustomerAccountCleanupScriptTest {
         Psql rollback = psql("rollback-customer-account-lf-phase1.sql");
         assertThat(rollback.exitCode).as(rollback.output).isNotZero();
         assertThat(rollback.output).contains("ROLLBACK FASE 1 abortado");
+        assertThat(rollback.output).contains("Se revirtieron 1 reenlaces de limpieza");
         assertThat(text("SELECT applied_to_entry_id::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("8801");
         assertThat(text("SELECT reassigned_from_entry_id::text FROM customer_account_entry WHERE id = 8802")).isNull();
         assertThat(text("SELECT description FROM customer_account_entry WHERE id = 8802")).isEqualTo("ajuste-original");

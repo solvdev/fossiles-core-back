@@ -594,7 +594,7 @@ SET applied_to_entry_id = p.survivor_id,
     order_kind = p.order_kind,
     reassigned_from_entry_id = COALESCE(a.reassigned_from_entry_id, r.from_charge_id),
     description = CASE
-        WHEN coalesce(a.description, '') LIKE ('%LIMPIEZA-CXC-2026-10 cargo:' || r.from_charge_id::text || '%')
+        WHEN coalesce(a.description, '') ~ ('LIMPIEZA-CXC-2026-10 cargo:' || r.from_charge_id::text || '(\D|$)')
             THEN a.description
         WHEN a.description IS NULL OR btrim(a.description) = ''
             THEN 'LIMPIEZA-CXC-2026-10 cargo:' || r.from_charge_id::text
