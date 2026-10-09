@@ -41,6 +41,8 @@ out/
 application.properties
 application-*.properties
 application.properties.local
+# Test classpath shadow. Keeps tests off the production file.
+!src/test/resources/application.properties
 application.yml
 application-*.yml
 application.yaml
