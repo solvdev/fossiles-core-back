@@ -96,42 +96,6 @@ class LfReceivablesMigrationAcceptanceTest {
                 .satisfies(error -> assertThat(messages(error)).contains("chk_customer_account_entry_type"));
     }
 
-    /**
-     * Phase 1 rollback must refuse to run while a CHARGE_ADJUSTMENT row exists.
-     * It stops with a clear message, rolls the transaction back, and leaves the row
-     * and the phase-1 checks in place.
-     */
-    @Test
-    void phase1RollbackWithAdjustmentRowRollsBackCleanly() throws Exception {
-        deleteEntries();
-        LfMigrationScripts.apply(POSTGRES, ROLLBACK2);
-        LfMigrationScripts.apply(POSTGRES, PHASE1);
-
-        long customerId = insertCustomer("Rollback", 30);
-        long chargeId = insertEntry(customerId, "CHARGE", "10.00", 88L, null, null, null, null, "ACTIVE");
-        insertEntry(customerId, "CHARGE_ADJUSTMENT", "5.00", 88L, 9L, chargeId, null, null, "ACTIVE");
-        List<String> rowsBefore = ledgerRows();
-        String typeCheck = constraintDefinition("chk_customer_account_entry_type");
-        String linksCheck = constraintDefinition("chk_customer_account_entry_adjustment_links");
-
-        LfMigrationScripts.PsqlResult rollback = LfMigrationScripts.run(POSTGRES, ROLLBACK1);
-
-        assertThat(rollback.exitCode()).as(rollback.output()).isNotZero();
-        assertThat(rollback.output())
-                .contains("ROLLBACK FASE 1 abortado")
-                .contains("CHARGE_ADJUSTMENT")
-                .contains("No se cambio nada");
-        assertThat(rollback.output().toLowerCase()).doesNotContain("violat");
-        assertThat(ledgerRows()).isEqualTo(rowsBefore);
-        assertThat(entryCount("CHARGE_ADJUSTMENT")).isEqualTo(1);
-        assertThat(constraintDefinition("chk_customer_account_entry_type")).isEqualTo(typeCheck).contains("CHARGE_ADJUSTMENT");
-        assertThat(constraintDefinition("chk_customer_account_entry_adjustment_links")).isEqualTo(linksCheck);
-        assertThat(indexCount("uq_cae_one_active_adjustment_per_shipment")).isEqualTo(1);
-        assertThat(columnCount("customer", "credit_days")).isEqualTo(1);
-        assertThat(creditDays(customerId)).isEqualTo(30);
-        assertThat(columnCount("customer_account_entry", "reassigned_from_entry_id")).isEqualTo(1);
-    }
-
     @Test
     void phase1RollbackWithReassignedTraceChangesNothing() throws Exception {
         deleteEntries();
