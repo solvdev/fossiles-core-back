@@ -19,6 +19,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskD
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionTierEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSiteEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductCategoryEntity;

@@ -57,6 +57,8 @@ dependencies {
     annotationProcessor 'org.projectlombok:lombok'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.security:spring-security-test'
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:postgresql'
     testRuntimeOnly 'com.h2database:h2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
@@ -97,21 +99,25 @@ def resolveTestDatasourceUrl() {
 
 tasks.named('test') {
     useJUnitPlatform()
-    // Pin the test JVM so a parent environment cannot point tests at production.
-    def h2Url = 'jdbc:h2:mem:fossiles_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE'
-    environment 'SPRING_DATASOURCE_URL', h2Url
-    environment 'SPRING_DATASOURCE_USERNAME', 'sa'
-    environment 'SPRING_DATASOURCE_PASSWORD', 'sa'
-    environment 'SPRING_DATASOURCE_DRIVER_CLASS_NAME', 'org.h2.Driver'
+    // -Dsentry.* on the Gradle command is the Gradle JVM only. Forward it into
+    // the test worker, and default to off so a run cannot report to production.
+    systemProperty 'sentry.enabled', System.getProperty('sentry.enabled', 'false')
+    systemProperty 'sentry.dsn', System.getProperty('sentry.dsn', '')
+    environment 'SPRING_DATASOURCE_URL', 'jdbc:h2:mem:fossiles;MODE=PostgreSQL;DB_CLOSE_DELAY=-1'
     environment 'SENTRY_DSN', ''
     doFirst {
-        def resolved = resolveTestDatasourceUrl()
-        def normalized = resolved.toLowerCase(Locale.ROOT)
-        if (!normalized.startsWith('jdbc:h2:mem')
-                || normalized.contains('rds.amazonaws.com')
-                || normalized.contains('jdbc:postgresql')) {
+        def fromEnv = System.getenv('SPRING_DATASOURCE_URL')
+        def resolved = (fromEnv != null && !fromEnv.isBlank()) ? fromEnv : testResourceDatasourceUrl()
+        if (resolved == null || !resolved.startsWith('jdbc:h2:mem')) {
             throw new GradleException(
-                    'Refusing to run tests: resolved datasource URL is not an in-memory H2 database.')
+                    'Refusing to run tests: datasource URL must start with jdbc:h2:mem')
         }
+        logger.lifecycle('Test datasource URL: ' + resolved)
     }
+}
+
+def testResourceDatasourceUrl() {
+    def props = new java.util.Properties()
+    file('src/test/resources/application.properties').withInputStream { props.load(it) }
+    return props.getProperty('spring.datasource.url')
 }

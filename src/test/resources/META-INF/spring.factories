@@ -1,2 +1,1 @@
-org.springframework.boot.env.EnvironmentPostProcessor=\
-com.fossiles.fossilescorebackend.infrastructure.config.ProductionDataSourceGuard
+org.springframework.boot.env.EnvironmentPostProcessor=com.fossiles.fossilescorebackend.infrastructure.config.ProductionDataSourceGuard

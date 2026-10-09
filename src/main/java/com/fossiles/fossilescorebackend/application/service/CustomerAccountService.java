@@ -16,8 +16,10 @@ import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySize
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -38,6 +40,12 @@ public class CustomerAccountService {
     private static final String TYPE_CREDIT_NOTE = "CREDIT_NOTE";
     private static final String TYPE_OPENING_BALANCE = "OPENING_BALANCE";
     private static final String TYPE_RETURN = "RETURN";
+    private static final String TYPE_CHARGE_ADJUSTMENT = "CHARGE_ADJUSTMENT";
+    /**
+     * true: el cargo vence el día del primer envío + días de crédito (sin fecha hasta ese envío).
+     * false: el cargo vence en la fecha del cargo + días de crédito.
+     */
+    static final boolean CHARGE_DUE_FROM_FIRST_SHIPMENT = true;
     private static final String CONCEPT_DISCHARGE = "11";
     private static final String CONCEPT_CREDIT_NOTE = "2";
     private static final String OPV_PACKING_TAG = "__OPV_PACKING__:";
@@ -278,6 +286,7 @@ public class CustomerAccountService {
         BigDecimal totalReturns = BigDecimal.ZERO;
         List<CustomerAccountStatementLineResponse> lines = new ArrayList<>();
         Map<Long, ChargeMeta> chargeMetaById = buildChargeMetaMap(allActive);
+        Map<Long, LineAllocation> allocationByEntryId = allocateOpenDocuments(customer, allActive);
         Map<Long, String> kindByOrderId = new HashMap<>();
 
         for (CustomerAccountEntryEntity entry : inRange) {
@@ -306,6 +315,7 @@ public class CustomerAccountService {
             ChargeMeta chargeMeta = TYPE_CHARGE.equalsIgnoreCase(entry.getEntryType())
                     ? chargeMetaById.get(entry.getId())
                     : null;
+            LineAllocation allocation = allocationByEntryId.get(entry.getId());
             lines.add(CustomerAccountStatementLineResponse.builder()
                     .id(entry.getId())
                     .entryDate(entry.getEntryDate())
@@ -329,7 +339,11 @@ public class CustomerAccountService {
                     .paymentDiscountAmount(entry.getPaymentDiscountAmount())
                     .status(entry.getStatus())
                     .appliedToEntryId(entry.getAppliedToEntryId())
+                    .reassignedFromEntryId(entry.getReassignedFromEntryId())
                     .chargeBalanceDue(chargeMeta != null ? chargeMeta.balanceDue() : null)
+                    .dueDate(allocation != null ? allocation.dueDate() : null)
+                    .allocatedCredit(allocation != null ? allocation.allocatedCredit() : null)
+                    .lineOpenBalance(allocation != null ? allocation.lineOpenBalance() : null)
                     .debit(debit)
                     .credit(credit)
                     .runningBalance(active ? running.setScale(2, RoundingMode.HALF_UP) : null)
@@ -371,18 +385,126 @@ public class CustomerAccountService {
 
     public CustomerAccountEntryResponse createEntry(Long customerId, CustomerAccountEntryRequest request)
             throws ResourceNotFoundException, BusinessException {
-        CustomerEntity customer = loadCustomer(customerId);
+        CustomerEntity customer = lockCustomer(customerId);
         String entryType = normalizeEntryType(request.getEntryType());
-        String conceptCode = trimToNull(request.getMovementConceptCode());
+        if (TYPE_CHARGE.equals(entryType)) {
+            return createOrderCharge(customer, request);
+        }
+        if (TYPE_CHARGE_ADJUSTMENT.equals(entryType)) {
+            return createChargeAdjustment(customer, request);
+        }
+        return createCreditOrOpening(customer, request, entryType);
+    }
 
+    /**
+     * Un solo cargo activo por orden. Cubre todos los productos. El monto lo calcula el servidor.
+     * No depende del índice único de fase 2: la fila del cliente queda bloqueada durante el alta.
+     */
+    private CustomerAccountEntryResponse createOrderCharge(CustomerEntity customer, CustomerAccountEntryRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        if (request.getProductionOrderId() == null) {
+            throw new BusinessException("El cargo requiere una orden de producción.");
+        }
+        if (request.getPartialReleaseId() != null || request.getProductShipmentId() != null) {
+            throw new BusinessException("El cargo es de la orden completa. Un parcial no tiene cargo propio.");
+        }
+        ProductionOrderEntity order = resolveLinkedOrder(customer, request);
+        rejectDuplicateOrderCharge(order.getId());
+        OrderChargeAmounts quote = computeOrderChargeAmounts(order);
+        if (request.getAmount() != null && request.getAmount().compareTo(quote.orderTotal()) > 0) {
+            throw new BusinessException("El monto supera el total de la orden (Q "
+                    + quote.orderTotal().setScale(2, RoundingMode.HALF_UP)
+                    + "). El cargo se calcula en el servidor.");
+        }
+        if (quote.products().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("El cargo calculado debe ser mayor a cero.");
+        }
+        Long userId = securityUtil.getCurrentUserId();
+        CustomerAccountEntryEntity saved = saveLedgerEntry(CustomerAccountEntryEntity.builder()
+                .customerId(customer.getId())
+                .entryType(TYPE_CHARGE)
+                .entryDate(request.getEntryDate())
+                .amount(quote.products())
+                .reference(trimToNull(request.getReference()))
+                .description(trimToNull(request.getDescription()))
+                .invoiceNumber(trimToNull(firstNonBlank(request.getInvoiceNumber(), order.getVendorShipmentNumber())))
+                .documentNumber(trimToNull(firstNonBlank(request.getDocumentNumber(), order.getCode())))
+                .productionOrderId(order.getId())
+                .vendorShipmentNumber(trimToNull(firstNonBlank(request.getVendorShipmentNumber(), order.getVendorShipmentNumber())))
+                .orderKind(resolveOrderKind(order))
+                .status(STATUS_ACTIVE)
+                .createdBy(userId)
+                .updatedBy(userId)
+                .build());
+        return toEntryResponse(saved);
+    }
+
+    /**
+     * Un ajuste por envío real. El envío no entra al cargo: solo este débito, por el costo guardado en el envío.
+     */
+    private CustomerAccountEntryResponse createChargeAdjustment(CustomerEntity customer, CustomerAccountEntryRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        if (request.getProductShipmentId() == null) {
+            throw new BusinessException("El ajuste de envío requiere un envío real del parcial.");
+        }
+        ProductShipmentEntity shipment = productShipmentRepository.findById(request.getProductShipmentId())
+                .orElseThrow(() -> new BusinessException("Envío no encontrado."));
+        if (shipment.getProductionOrderId() == null) {
+            throw new BusinessException("El envío no pertenece a una orden de producción.");
+        }
+        ProductionOrderEntity order = productionOrderRepository.findById(shipment.getProductionOrderId())
+                .orElseThrow(() -> new ResourceNotFoundException("ProductionOrder", shipment.getProductionOrderId()));
+        if (order.getCustomerId() == null || !order.getCustomerId().equals(customer.getId())) {
+            throw new BusinessException("El envío no pertenece a este cliente.");
+        }
+        if ("CANCELLED".equalsIgnoreCase(order.getStatus())) {
+            throw new BusinessException("No se puede vincular una orden cancelada.");
+        }
+        BigDecimal shipping = actualShippingCost(shipment);
+        if (shipping == null) {
+            throw new BusinessException("Este parcial no tiene un costo de envío real.");
+        }
+        CustomerAccountEntryEntity charge = requireActiveOrderCharge(customer.getId(), order.getId());
+        if (!entryRepository.findNonVoidAdjustmentsByProductShipmentId(shipment.getId()).isEmpty()) {
+            throw new BusinessException("Ya existe un ajuste de envío activo para este parcial.");
+        }
+        if (charge.getId() == null || order.getId() == null || shipment.getId() == null) {
+            throw new BusinessException("El ajuste de envío requiere la orden, el envío y el cargo al que aplica.");
+        }
+        Long userId = securityUtil.getCurrentUserId();
+        CustomerAccountEntryEntity saved = saveLedgerEntry(CustomerAccountEntryEntity.builder()
+                .customerId(customer.getId())
+                .entryType(TYPE_CHARGE_ADJUSTMENT)
+                .entryDate(request.getEntryDate())
+                .amount(shipping)
+                .reference(trimToNull(request.getReference()))
+                .description(trimToNull(request.getDescription()))
+                .appliedToEntryId(charge.getId())
+                .productionOrderId(order.getId())
+                .partialReleaseId(shipment.getPartialReleaseId())
+                .productShipmentId(shipment.getId())
+                .vendorShipmentNumber(trimToNull(firstNonBlank(charge.getVendorShipmentNumber(), order.getVendorShipmentNumber())))
+                .orderKind(kindCopiedFromCharge(charge))
+                .invoiceNumber(trimToNull(charge.getInvoiceNumber()))
+                .documentNumber(trimToNull(firstNonBlank(charge.getDocumentNumber(), order.getCode())))
+                .status(STATUS_ACTIVE)
+                .createdBy(userId)
+                .updatedBy(userId)
+                .build());
+        return toEntryResponse(saved);
+    }
+
+    private CustomerAccountEntryResponse createCreditOrOpening(
+            CustomerEntity customer, CustomerAccountEntryRequest request, String entryType)
+            throws ResourceNotFoundException, BusinessException {
+        String conceptCode = trimToNull(request.getMovementConceptCode());
         ProductionOrderEntity linkedOrder = resolveLinkedOrder(customer, request);
         String orderKind = linkedOrder != null ? resolveOrderKind(linkedOrder) : null;
 
         validateDocumentLinks(entryType, request, linkedOrder);
-        preventDuplicateCharge(customer.getId(), entryType, request);
 
         BigDecimal netAmount = resolveNetAmount(entryType, request);
-        CustomerAccountEntryEntity chargeTarget = resolveAppliedCharge(customer.getId(), entryType, conceptCode, request);
+        CustomerAccountEntryEntity chargeTarget = resolveAppliedCharge(customer.getId(), entryType, request);
 
         if (chargeTarget != null) {
             BigDecimal balanceDue = computeChargeBalanceDue(chargeTarget);
@@ -395,15 +517,21 @@ public class CustomerAccountService {
 
         validatePaymentFields(entryType, conceptCode, request, chargeTarget);
 
+        Long productionOrderId = chargeTarget != null ? chargeTarget.getProductionOrderId() : request.getProductionOrderId();
+        String storedKind = chargeTarget != null ? kindCopiedFromCharge(chargeTarget) : orderKind;
+        ProductionOrderEntity orderForLabels = chargeTarget != null && chargeTarget.getProductionOrderId() != null
+                ? productionOrderRepository.findById(chargeTarget.getProductionOrderId()).orElse(linkedOrder)
+                : linkedOrder;
+
         Long userId = securityUtil.getCurrentUserId();
-        String vendorShipmentNumber = resolveVendorShipmentNumber(request, linkedOrder, chargeTarget);
+        String vendorShipmentNumber = resolveVendorShipmentNumber(request, orderForLabels, chargeTarget);
         String invoiceNumber = firstNonBlank(request.getInvoiceNumber(), vendorShipmentNumber, chargeTarget != null ? chargeTarget.getInvoiceNumber() : null);
         String documentNumber = firstNonBlank(
                 request.getDocumentNumber(),
-                linkedOrder != null ? linkedOrder.getCode() : null,
+                orderForLabels != null ? orderForLabels.getCode() : null,
                 chargeTarget != null ? chargeTarget.getDocumentNumber() : null);
 
-        CustomerAccountEntryEntity saved = entryRepository.save(CustomerAccountEntryEntity.builder()
+        CustomerAccountEntryEntity saved = saveLedgerEntry(CustomerAccountEntryEntity.builder()
                 .customerId(customer.getId())
                 .entryType(entryType)
                 .entryDate(request.getEntryDate())
@@ -417,24 +545,21 @@ public class CustomerAccountService {
                 .paymentDiscountAmount(scaleOrNull(request.getPaymentDiscountAmount()))
                 .paymentDiscountPercent(scalePercentOrNull(request.getPaymentDiscountPercent()))
                 .grossCollectedAmount(scaleOrNull(request.getGrossCollectedAmount()))
-                .appliedToEntryId(chargeTarget != null ? chargeTarget.getId() : request.getAppliedToEntryId())
+                .appliedToEntryId(chargeTarget != null ? chargeTarget.getId() : null)
                 .invoiceNumber(trimToNull(invoiceNumber))
                 .documentNumber(trimToNull(documentNumber))
                 .returnVoucherNumber(trimToNull(request.getReturnVoucherNumber()))
                 .returnDate(request.getReturnDate())
                 .returnReason(trimToNull(request.getReturnReason()))
-                .productionOrderId(firstNonNull(request.getProductionOrderId(), chargeTarget != null ? chargeTarget.getProductionOrderId() : null))
-                .partialReleaseId(firstNonNull(request.getPartialReleaseId(), chargeTarget != null ? chargeTarget.getPartialReleaseId() : null))
-                .productShipmentId(firstNonNull(request.getProductShipmentId(), chargeTarget != null ? chargeTarget.getProductShipmentId() : null))
+                .productionOrderId(productionOrderId)
+                .partialReleaseId(request.getPartialReleaseId())
+                .productShipmentId(request.getProductShipmentId())
                 .vendorShipmentNumber(trimToNull(vendorShipmentNumber))
-                .orderKind(orderKind != null
-                        ? orderKind
-                        : chargeTarget != null ? resolveEntryOrderKind(chargeTarget, new HashMap<>()) : null)
+                .orderKind(storedKind)
                 .status(STATUS_ACTIVE)
                 .createdBy(userId)
                 .updatedBy(userId)
                 .build());
-
         return toEntryResponse(saved);
     }
 
@@ -574,10 +699,16 @@ public class CustomerAccountService {
 
     public CustomerAccountEntryResponse voidEntry(Long entryId, CustomerAccountEntryVoidRequest request)
             throws ResourceNotFoundException, BusinessException {
+        Long customerId = entryRepository.findCustomerIdById(entryId)
+                .orElseThrow(() -> new ResourceNotFoundException("CustomerAccountEntry", entryId));
+        lockCustomer(customerId);
         CustomerAccountEntryEntity entry = entryRepository.findById(entryId)
                 .orElseThrow(() -> new ResourceNotFoundException("CustomerAccountEntry", entryId));
         if (STATUS_VOID.equalsIgnoreCase(entry.getStatus())) {
             throw new BusinessException("El movimiento ya está anulado.");
+        }
+        if (TYPE_CHARGE.equalsIgnoreCase(entry.getEntryType())) {
+            reassignVoidedChargeDependents(entry, request.getReassignToChargeId(), request.getVoidReason());
         }
         entry.setStatus(STATUS_VOID);
         entry.setVoidedAt(LocalDateTime.now());
@@ -587,16 +718,125 @@ public class CustomerAccountService {
         return toEntryResponse(entryRepository.save(entry));
     }
 
+    /**
+     * Pagos, notas de crédito y devoluciones del cargo anulado pasan a otro cargo activo.
+     * Los ajustes de envío solo pasan si el destino es de la misma orden. Nada se escribe si la validación falla.
+     */
+    private void reassignVoidedChargeDependents(
+            CustomerAccountEntryEntity charge, Long reassignToChargeId, String voidReason)
+            throws BusinessException {
+        List<CustomerAccountEntryEntity> active = loadActiveEntries(charge.getCustomerId());
+        List<CustomerAccountEntryEntity> credits = active.stream()
+                .filter(entry -> charge.getId().equals(entry.getAppliedToEntryId()))
+                .filter(entry -> isCreditType(entry.getEntryType()))
+                .toList();
+        List<CustomerAccountEntryEntity> adjustments = active.stream()
+                .filter(entry -> isActiveAdjustmentOf(charge, entry))
+                .toList();
+        if (credits.isEmpty() && adjustments.isEmpty()) {
+            return;
+        }
+        if (!credits.isEmpty() && reassignToChargeId == null) {
+            throw new BusinessException(
+                    "Este cargo tiene pagos, notas de crédito o devoluciones activos. Indique el cargo al que deben trasladarse.");
+        }
+        if (!adjustments.isEmpty() && reassignToChargeId == null) {
+            throw new BusinessException(
+                    "Este cargo tiene ajustes de envío activos. Anúlelos primero; solo pueden pasar a un cargo de la misma orden.");
+        }
+        if (reassignToChargeId == null) {
+            return;
+        }
+        if (reassignToChargeId.equals(charge.getId())) {
+            throw new BusinessException("El cargo destino no puede ser el mismo movimiento.");
+        }
+        CustomerAccountEntryEntity target = entryRepository.findById(reassignToChargeId)
+                .orElseThrow(() -> new BusinessException("Cargo destino no encontrado."));
+        if (!charge.getCustomerId().equals(target.getCustomerId())) {
+            throw new BusinessException("El cargo destino no pertenece a este cliente.");
+        }
+        if (!TYPE_CHARGE.equalsIgnoreCase(target.getEntryType()) || !STATUS_ACTIVE.equalsIgnoreCase(target.getStatus())) {
+            throw new BusinessException("El cargo destino debe ser un cargo activo.");
+        }
+        if (!adjustments.isEmpty() && !Objects.equals(charge.getProductionOrderId(), target.getProductionOrderId())) {
+            throw new BusinessException(
+                    "Este cargo tiene ajustes de envío activos. Anúlelos primero; solo pueden pasar a un cargo de la misma orden.");
+        }
+        BigDecimal moved = credits.stream()
+                .map(this::resolveAppliedCreditAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal available = reassignmentRoom(target, active, adjustments);
+        if (moved.compareTo(available) > 0) {
+            throw new BusinessException("El monto a trasladar (Q " + moved.setScale(2, RoundingMode.HALF_UP)
+                    + ") supera el saldo pendiente del cargo destino (Q " + available.setScale(2, RoundingMode.HALF_UP) + ").");
+        }
+        String kind = kindCopiedFromCharge(target);
+        Long userId = securityUtil.getCurrentUserId();
+        for (CustomerAccountEntryEntity credit : credits) {
+            credit.setAppliedToEntryId(target.getId());
+            credit.setProductionOrderId(target.getProductionOrderId());
+            credit.setOrderKind(kind);
+            traceReassignment(credit, charge.getId(), voidReason);
+            credit.setUpdatedBy(userId);
+            entryRepository.save(credit);
+        }
+        for (CustomerAccountEntryEntity adjustment : adjustments) {
+            adjustment.setAppliedToEntryId(target.getId());
+            adjustment.setProductionOrderId(target.getProductionOrderId());
+            adjustment.setOrderKind(kind);
+            traceReassignment(adjustment, charge.getId(), voidReason);
+            adjustment.setUpdatedBy(userId);
+            entryRepository.save(adjustment);
+        }
+    }
+
+    /**
+     * Room on the target after the adjustments that move with this void:
+     * target charge + its adjustments + moved adjustments − credits already on the target.
+     */
+    private BigDecimal reassignmentRoom(
+            CustomerAccountEntryEntity target,
+            List<CustomerAccountEntryEntity> active,
+            List<CustomerAccountEntryEntity> movedAdjustments) {
+        BigDecimal room = target.getAmount() != null ? target.getAmount() : BigDecimal.ZERO;
+        for (CustomerAccountEntryEntity entry : active) {
+            if (isActiveAdjustmentOf(target, entry) && entry.getAmount() != null) {
+                room = room.add(entry.getAmount());
+            }
+            if (target.getId().equals(entry.getAppliedToEntryId()) && isCreditType(entry.getEntryType())) {
+                room = room.subtract(resolveAppliedCreditAmount(entry));
+            }
+        }
+        for (CustomerAccountEntryEntity adjustment : movedAdjustments) {
+            if (adjustment.getAmount() != null) {
+                room = room.add(adjustment.getAmount());
+            }
+        }
+        return room.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /** Keeps the first original charge. Later moves only append the void reason. */
+    private static void traceReassignment(CustomerAccountEntryEntity row, Long originalChargeId, String voidReason) {
+        if (row.getReassignedFromEntryId() == null) {
+            row.setReassignedFromEntryId(originalChargeId);
+        }
+        String reason = trimToNull(voidReason);
+        if (reason == null) {
+            return;
+        }
+        String description = trimToNull(row.getDescription());
+        row.setDescription(description == null ? reason : description + "\n" + reason);
+    }
+
     @Transactional(readOnly = true)
     public List<LfSalesDocumentResponse> getLfDocuments(Long customerId, boolean withBalance) throws ResourceNotFoundException {
         loadCustomer(customerId);
         List<CustomerAccountEntryEntity> entries = loadActiveEntries(customerId);
-        Map<Long, ChargeMeta> chargeMetaById = buildChargeMetaMap(entries);
 
         return productionOrderRepository.findByCustomerId(customerId).stream()
                 .filter(this::isLfReceivableOrder)
                 .sorted(Comparator.comparing(ProductionOrderEntity::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
-                .map(order -> toLfDocument(order, entries, chargeMetaById, withBalance))
+                .map(order -> toLfDocument(order, entries, withBalance))
                 .collect(Collectors.toList());
     }
 
@@ -841,8 +1081,9 @@ public class CustomerAccountService {
                 : null;
 
         BigDecimal appliedCredits = computeAppliedCredits(charge, entries);
+        BigDecimal documentTotal = documentDebitTotal(charge, entries);
         BigDecimal balanceDue = computeChargeBalanceDue(charge, entries);
-        String status = resolveChargeStatus(Optional.of(charge), balanceDue);
+        String status = resolveChargeStatus(Optional.of(charge), balanceDue, documentTotal);
         boolean paid = "PARTIAL".equals(status) || "PAID".equals(status);
 
         if (!matchesReceivableRowSearch(customer, order, release, shipment, charge, searchNorm)) {
@@ -876,7 +1117,7 @@ public class CustomerAccountService {
                 .chargeEntryId(charge.getId())
                 .invoiceNumber(charge.getInvoiceNumber())
                 .chargeStatus(status)
-                .chargedAmount(charge.getAmount())
+                .chargedAmount(documentTotal)
                 .appliedCredits(appliedCredits)
                 .balanceDue(balanceDue)
                 .estimatedTotal(order != null ? estimateReceivableDocumentTotal(order, release, shipment) : charge.getAmount())
@@ -898,18 +1139,12 @@ public class CustomerAccountService {
             String statusFilter,
             Boolean hasCharge,
             Boolean hasPayment) {
-        Long partialReleaseId = release != null ? release.getId() : null;
-        Long productShipmentId = shipment != null ? shipment.getId() : null;
-        Optional<CustomerAccountEntryEntity> chargeOpt =
-                findActiveCharge(entries, order.getId(), partialReleaseId, productShipmentId);
-        BigDecimal chargedAmount = chargeOpt.map(CustomerAccountEntryEntity::getAmount).orElse(BigDecimal.ZERO);
+        OrderChargeState orderCharge = orderChargeState(entries, order.getId());
+        Optional<CustomerAccountEntryEntity> chargeOpt = orderCharge.charge();
+        BigDecimal chargedAmount = orderCharge.documentTotal();
         BigDecimal appliedCredits = chargeOpt.map(c -> computeAppliedCredits(c, entries)).orElse(BigDecimal.ZERO);
-        BigDecimal balanceDue = chargeOpt.map(c -> computeChargeBalanceDue(c, entries)).orElse(BigDecimal.ZERO);
-        String status = resolveDocumentChargeStatus(
-                chargeOpt, balanceDue, entries, order, partialReleaseId, productShipmentId);
-        if ("COVERED".equals(status)) {
-            return;
-        }
+        BigDecimal balanceDue = orderCharge.balanceDue();
+        String status = orderCharge.status();
         boolean charged = chargeOpt.isPresent();
         boolean paid = "PARTIAL".equals(status) || "PAID".equals(status);
 
@@ -937,18 +1172,18 @@ public class CustomerAccountService {
                 .orderCode(order.getCode())
                 .orderKind(resolveOrderKind(order))
                 .orderType(order.getOrderType())
-                .productShipmentId(productShipmentId)
+                .productShipmentId(shipment != null ? shipment.getId() : null)
                 .shipmentNumber(shipmentNumber)
                 .vendorShipmentNumber(order.getVendorShipmentNumber())
-                .partialReleaseId(partialReleaseId)
+                .partialReleaseId(release != null ? release.getId() : null)
                 .partialReleaseLabel(release != null ? release.getLabel() : null)
                 .documentLevel(documentLevel)
                 .chargeEntryId(chargeOpt.map(CustomerAccountEntryEntity::getId).orElse(null))
                 .invoiceNumber(chargeOpt.map(CustomerAccountEntryEntity::getInvoiceNumber).orElse(null))
                 .chargeStatus(status)
-                .chargedAmount(charged ? chargedAmount : null)
-                .appliedCredits(charged ? appliedCredits : null)
-                .balanceDue(charged ? balanceDue : null)
+                .chargedAmount(charged ? chargedAmount : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
+                .appliedCredits(charged ? appliedCredits : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
+                .balanceDue(charged ? balanceDue : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
                 .estimatedTotal(estimatedTotal)
                 .hasCharge(charged)
                 .hasPayment(paid)
@@ -1028,6 +1263,10 @@ public class CustomerAccountService {
                 ? productionOrderRepository.findById(charge.getProductionOrderId()).orElse(null)
                 : null;
         String orderKind = order != null ? resolveOrderKind(order) : charge.getOrderKind();
+        List<ProductShipmentEntity> shipments = charge.getProductionOrderId() == null
+                ? List.of()
+                : productShipmentRepository.findByProductionOrderId(charge.getProductionOrderId());
+        BigDecimal documentAmount = documentDebitTotal(charge, entries);
         return LfReceivableDocumentResponse.builder()
                 .chargeEntryId(charge.getId())
                 .customerId(charge.getCustomerId())
@@ -1045,20 +1284,19 @@ public class CustomerAccountService {
                 .documentNumber(firstNonBlank(charge.getDocumentNumber(), orderCode, charge.getVendorShipmentNumber()))
                 .vendorShipmentNumber(charge.getVendorShipmentNumber())
                 .partialReleaseLabel(partialLabel)
-                .dueDate(charge.getEntryDate())
+                .dueDate(chargeDueDate(charge, customer, shipments))
                 .chargeDate(charge.getEntryDate())
                 .chargeAmount(charge.getAmount())
+                .documentAmount(documentAmount)
                 .appliedCredits(appliedCredits)
                 .balanceDue(balanceDue)
-                .chargeStatus(balanceDue.compareTo(BigDecimal.ZERO) <= 0 ? "PAID"
-                        : balanceDue.compareTo(charge.getAmount()) < 0 ? "PARTIAL" : "OPEN")
+                .chargeStatus(resolveChargeStatus(Optional.of(charge), balanceDue, documentAmount))
                 .build();
     }
 
     private LfSalesDocumentResponse toLfDocument(
             ProductionOrderEntity order,
             List<CustomerAccountEntryEntity> entries,
-            Map<Long, ChargeMeta> chargeMetaById,
             boolean withBalance) {
         List<ProductionOrderItemEntity> orderItems =
                 productionOrderItemRepository.findByProductionOrderId(order.getId());
@@ -1067,8 +1305,9 @@ public class CustomerAccountService {
                 partialReleaseRepository.findByProductionOrderIdOrderBySequenceNumAsc(order.getId());
         Set<Long> usedShipmentIds = new HashSet<>();
         List<LfPartialReleaseDocumentResponse> partialDocs = new ArrayList<>();
+        OrderChargeState orderCharge = orderChargeState(entries, order.getId());
         for (ProductionOrderPartialReleaseEntity release : releases) {
-            partialDocs.add(toPartialReleaseDoc(release, order, orderItems, entries, chargeMetaById, withBalance));
+            partialDocs.add(toPartialReleaseDoc(release, order, orderItems, orderCharge, withBalance));
             productShipmentRepository.findByPartialReleaseId(release.getId())
                     .forEach(s -> usedShipmentIds.add(s.getId()));
         }
@@ -1076,7 +1315,7 @@ public class CustomerAccountService {
                 .filter(s -> !usedShipmentIds.contains(s.getId()))
                 .collect(Collectors.toList());
         if (!looseShipments.isEmpty()) {
-            partialDocs.add(buildLooseShipmentsPartialDoc(order, orderItems, looseShipments, entries, withBalance));
+            partialDocs.add(buildLooseShipmentsPartialDoc(order, orderItems, looseShipments, orderCharge, withBalance));
         }
 
         BigDecimal estimatedTotal = partialDocs.isEmpty()
@@ -1086,9 +1325,6 @@ public class CustomerAccountService {
                         .filter(Objects::nonNull)
                         .reduce(BigDecimal.ZERO, BigDecimal::add)
                         .setScale(2, RoundingMode.HALF_UP);
-        Optional<CustomerAccountEntryEntity> orderCharge = findActiveCharge(entries, order.getId(), null, null);
-        BigDecimal chargedAmount = orderCharge.map(CustomerAccountEntryEntity::getAmount).orElse(BigDecimal.ZERO);
-        BigDecimal balanceDue = orderCharge.map(c -> computeChargeBalanceDue(c, entries)).orElse(BigDecimal.ZERO);
 
         return LfSalesDocumentResponse.builder()
                 .productionOrderId(order.getId())
@@ -1100,10 +1336,10 @@ public class CustomerAccountService {
                 .startDate(order.getStartDate())
                 .deliveryDate(order.getDeliveryDate())
                 .estimatedTotal(estimatedTotal)
-                .chargedAmount(withBalance ? chargedAmount : null)
-                .balanceDue(withBalance ? balanceDue : null)
-                .chargeStatus(resolveDocumentChargeStatus(orderCharge, balanceDue, entries, order, null, null))
-                .chargeEntryId(orderCharge.map(CustomerAccountEntryEntity::getId).orElse(null))
+                .chargedAmount(withBalance ? orderCharge.documentTotal() : null)
+                .balanceDue(withBalance ? orderCharge.balanceDue() : null)
+                .chargeStatus(orderCharge.status())
+                .chargeEntryId(orderCharge.charge().map(CustomerAccountEntryEntity::getId).orElse(null))
                 .vendorShipmentVoided(order.getVendorShipmentVoidedAt() != null)
                 .partialReleases(partialDocs)
                 .build();
@@ -1113,17 +1349,11 @@ public class CustomerAccountService {
             ProductionOrderPartialReleaseEntity release,
             ProductionOrderEntity order,
             List<ProductionOrderItemEntity> orderItems,
-            List<CustomerAccountEntryEntity> entries,
-            Map<Long, ChargeMeta> chargeMetaById,
+            OrderChargeState orderCharge,
             boolean withBalance) {
-        Optional<CustomerAccountEntryEntity> releaseCharge =
-                findActiveCharge(entries, order.getId(), release.getId(), null);
-        BigDecimal chargedAmount = releaseCharge.map(CustomerAccountEntryEntity::getAmount).orElse(BigDecimal.ZERO);
-        BigDecimal balanceDue = releaseCharge.map(c -> computeChargeBalanceDue(c, entries)).orElse(BigDecimal.ZERO);
-
         List<ProductShipmentEntity> shipments = productShipmentRepository.findByPartialReleaseId(release.getId());
         List<LfShipmentDocumentResponse> shipmentDocs = shipments.stream()
-                .map(shipment -> toShipmentDoc(shipment, order, orderItems, release.getId(), entries, withBalance))
+                .map(shipment -> toShipmentDoc(shipment, order, orderItems, release.getId(), orderCharge, withBalance))
                 .collect(Collectors.toList());
         BigDecimal estimatedTotal = shipmentDocs.stream()
                 .map(LfShipmentDocumentResponse::getEstimatedTotal)
@@ -1137,11 +1367,10 @@ public class CustomerAccountService {
                 .label(release.getLabel())
                 .status(release.getStatus())
                 .estimatedTotal(estimatedTotal.compareTo(BigDecimal.ZERO) > 0 ? estimatedTotal : null)
-                .chargedAmount(withBalance ? chargedAmount : null)
-                .balanceDue(withBalance ? balanceDue : null)
-                .chargeStatus(resolveDocumentChargeStatus(
-                        releaseCharge, balanceDue, entries, order, release.getId(), null))
-                .chargeEntryId(releaseCharge.map(CustomerAccountEntryEntity::getId).orElse(null))
+                .chargedAmount(withBalance ? orderCharge.documentTotal() : null)
+                .balanceDue(withBalance ? orderCharge.balanceDue() : null)
+                .chargeStatus(orderCharge.status())
+                .chargeEntryId(orderCharge.charge().map(CustomerAccountEntryEntity::getId).orElse(null))
                 .shipments(shipmentDocs)
                 .build();
     }
@@ -1150,7 +1379,7 @@ public class CustomerAccountService {
             ProductionOrderEntity order,
             List<ProductionOrderItemEntity> orderItems,
             List<ProductShipmentEntity> shipments,
-            List<CustomerAccountEntryEntity> entries,
+            OrderChargeState orderCharge,
             boolean withBalance) {
         List<LfShipmentDocumentResponse> shipmentDocs = shipments.stream()
                 .map(shipment -> toShipmentDoc(
@@ -1158,7 +1387,7 @@ public class CustomerAccountService {
                         order,
                         orderItems,
                         shipment.getPartialReleaseId(),
-                        entries,
+                        orderCharge,
                         withBalance))
                 .collect(Collectors.toList());
         BigDecimal estimatedTotal = shipmentDocs.stream()
@@ -1172,10 +1401,10 @@ public class CustomerAccountService {
                 .label(shipments.size() == 1 ? "Envío directo" : "Envíos directos")
                 .status(null)
                 .estimatedTotal(estimatedTotal.compareTo(BigDecimal.ZERO) > 0 ? estimatedTotal : null)
-                .chargedAmount(null)
-                .balanceDue(null)
-                .chargeStatus("NONE")
-                .chargeEntryId(null)
+                .chargedAmount(withBalance ? orderCharge.documentTotal() : null)
+                .balanceDue(withBalance ? orderCharge.balanceDue() : null)
+                .chargeStatus(orderCharge.status())
+                .chargeEntryId(orderCharge.charge().map(CustomerAccountEntryEntity::getId).orElse(null))
                 .shipments(shipmentDocs)
                 .build();
     }
@@ -1185,15 +1414,11 @@ public class CustomerAccountService {
             ProductionOrderEntity order,
             List<ProductionOrderItemEntity> orderItems,
             Long partialReleaseId,
-            List<CustomerAccountEntryEntity> entries,
+            OrderChargeState orderCharge,
             boolean withBalance) {
         ProductionOrderPartialReleaseEntity release = partialReleaseId != null
                 ? partialReleaseRepository.findById(partialReleaseId).orElse(null)
                 : null;
-        Optional<CustomerAccountEntryEntity> shipmentCharge =
-                findActiveCharge(entries, order.getId(), partialReleaseId, shipment.getId());
-        BigDecimal chargedAmount = shipmentCharge.map(CustomerAccountEntryEntity::getAmount).orElse(BigDecimal.ZERO);
-        BigDecimal balanceDue = shipmentCharge.map(c -> computeChargeBalanceDue(c, entries)).orElse(BigDecimal.ZERO);
         BigDecimal estimatedTotal = estimateReceivableDocumentTotal(order, release, shipment);
 
         return LfShipmentDocumentResponse.builder()
@@ -1201,98 +1426,61 @@ public class CustomerAccountService {
                 .shipmentNumber(shipment.getShipmentNumber())
                 .status(shipment.getStatus())
                 .estimatedTotal(estimatedTotal)
-                .chargedAmount(withBalance ? chargedAmount : null)
-                .balanceDue(withBalance ? balanceDue : null)
-                .chargeStatus(resolveDocumentChargeStatus(
-                        shipmentCharge, balanceDue, entries, order, partialReleaseId, shipment.getId()))
-                .chargeEntryId(shipmentCharge.map(CustomerAccountEntryEntity::getId).orElse(null))
+                .chargedAmount(withBalance ? orderCharge.documentTotal() : null)
+                .balanceDue(withBalance ? orderCharge.balanceDue() : null)
+                .chargeStatus(orderCharge.status())
+                .chargeEntryId(orderCharge.charge().map(CustomerAccountEntryEntity::getId).orElse(null))
                 .build();
     }
 
-    private static String resolveChargeStatus(Optional<CustomerAccountEntryEntity> charge, BigDecimal balanceDue) {
+    private static String resolveChargeStatus(
+            Optional<CustomerAccountEntryEntity> charge, BigDecimal balanceDue, BigDecimal documentTotal) {
         if (charge.isEmpty()) {
             return "NONE";
         }
         if (balanceDue == null || balanceDue.compareTo(BigDecimal.ZERO) <= 0) {
             return "PAID";
         }
-        if (balanceDue.compareTo(charge.get().getAmount()) < 0) {
+        BigDecimal total = documentTotal != null ? documentTotal : charge.get().getAmount();
+        if (total != null && balanceDue.compareTo(total) < 0) {
             return "PARTIAL";
         }
         return "CHARGED";
     }
 
-    private Optional<CustomerAccountEntryEntity> findActiveCharge(
-            List<CustomerAccountEntryEntity> entries,
-            Long productionOrderId,
-            Long partialReleaseId,
-            Long productShipmentId) {
-        return entries.stream()
-                .filter(e -> TYPE_CHARGE.equalsIgnoreCase(e.getEntryType()))
-                .filter(e -> Objects.equals(e.getProductionOrderId(), productionOrderId))
-                .filter(e -> Objects.equals(e.getPartialReleaseId(), partialReleaseId))
-                .filter(e -> Objects.equals(e.getProductShipmentId(), productShipmentId))
-                .findFirst();
+    /** Estado del cargo de la orden. Lo usa también el catálogo OPV para no ofrecer otro cargo. */
+    public String orderChargeStatus(List<CustomerAccountEntryEntity> entries, Long productionOrderId) {
+        return orderChargeState(entries == null ? List.of() : entries, productionOrderId).status();
     }
 
-    /**
-     * Cargo activo de la misma orden cuyo alcance se cruza con el documento (orden, parcial o envío):
-     * un cargo de orden cubre sus parciales y envíos, uno de parcial cubre sus envíos, y viceversa.
-     */
-    private Optional<CustomerAccountEntryEntity> findOverlappingCharge(
-            List<CustomerAccountEntryEntity> entries,
-            Long productionOrderId,
-            Long partialReleaseId,
-            Long productShipmentId) {
+    private Optional<CustomerAccountEntryEntity> findOrderCharge(
+            List<CustomerAccountEntryEntity> entries, Long productionOrderId) {
+        if (entries == null || productionOrderId == null) {
+            return Optional.empty();
+        }
         return entries.stream()
                 .filter(e -> TYPE_CHARGE.equalsIgnoreCase(e.getEntryType()))
                 .filter(e -> STATUS_ACTIVE.equalsIgnoreCase(e.getStatus()))
-                .filter(e -> Objects.equals(e.getProductionOrderId(), productionOrderId))
-                .filter(e -> chargeScopesOverlap(
-                        e.getPartialReleaseId(), e.getProductShipmentId(), partialReleaseId, productShipmentId))
-                .findFirst();
+                .filter(e -> productionOrderId.equals(e.getProductionOrderId()))
+                .min(Comparator.comparing(CustomerAccountEntryEntity::getId, Comparator.nullsLast(Long::compareTo)));
     }
 
-    private static boolean chargeScopesOverlap(Long releaseA, Long shipmentA, Long releaseB, Long shipmentB) {
-        if (shipmentA != null && shipmentB != null) {
-            return shipmentA.equals(shipmentB);
+    private OrderChargeState orderChargeState(List<CustomerAccountEntryEntity> entries, Long productionOrderId) {
+        Optional<CustomerAccountEntryEntity> charge = findOrderCharge(entries, productionOrderId);
+        if (charge.isEmpty()) {
+            BigDecimal zero = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+            return new OrderChargeState(Optional.empty(), zero, zero, "NONE");
         }
-        boolean orderLevelA = releaseA == null && shipmentA == null;
-        boolean orderLevelB = releaseB == null && shipmentB == null;
-        if (orderLevelA || orderLevelB) {
-            return true;
-        }
-        return Objects.equals(releaseA, releaseB);
+        BigDecimal total = documentDebitTotal(charge.get(), entries);
+        BigDecimal due = computeChargeBalanceDue(charge.get(), entries);
+        return new OrderChargeState(charge, total, due, resolveChargeStatus(charge, due, total));
     }
 
-    /**
-     * CHARGED/PARTIAL/PAID/NONE del documento; COVERED si no tiene cargo propio pero ya está cubierto:
-     * por un cargo de alcance cruzado o porque los cargos activos de la orden ya suman su valor total.
-     */
-    private String resolveDocumentChargeStatus(
-            Optional<CustomerAccountEntryEntity> ownCharge,
+    private record OrderChargeState(
+            Optional<CustomerAccountEntryEntity> charge,
+            BigDecimal documentTotal,
             BigDecimal balanceDue,
-            List<CustomerAccountEntryEntity> entries,
-            ProductionOrderEntity order,
-            Long partialReleaseId,
-            Long productShipmentId) {
-        if (ownCharge.isEmpty()
-                && (findOverlappingCharge(entries, order.getId(), partialReleaseId, productShipmentId).isPresent()
-                || isOrderFullyCharged(order, entries))) {
-            return "COVERED";
-        }
-        return resolveChargeStatus(ownCharge, balanceDue);
-    }
-
-    private boolean isOrderFullyCharged(ProductionOrderEntity order, List<CustomerAccountEntryEntity> entries) {
-        BigDecimal charged = entries.stream()
-                .filter(e -> TYPE_CHARGE.equalsIgnoreCase(e.getEntryType()))
-                .filter(e -> STATUS_ACTIVE.equalsIgnoreCase(e.getStatus()))
-                .filter(e -> Objects.equals(e.getProductionOrderId(), order.getId()))
-                .map(CustomerAccountEntryEntity::getAmount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        return charged.signum() > 0 && charged.compareTo(estimateLfOrderTotal(order)) >= 0;
-    }
+            String status) {}
 
     private BigDecimal computeChargeBalanceDue(CustomerAccountEntryEntity charge) {
         return computeChargeBalanceDue(charge, loadActiveEntries(charge.getCustomerId()));
@@ -1311,10 +1499,29 @@ public class CustomerAccountService {
                 .setScale(2, RoundingMode.HALF_UP);
     }
 
+    private BigDecimal documentDebitTotal(CustomerAccountEntryEntity charge, List<CustomerAccountEntryEntity> entries) {
+        BigDecimal total = charge.getAmount() != null ? charge.getAmount() : BigDecimal.ZERO;
+        if (charge.getId() != null && entries != null) {
+            for (CustomerAccountEntryEntity entry : entries) {
+                if (isActiveAdjustmentOf(charge, entry) && entry.getAmount() != null) {
+                    total = total.add(entry.getAmount());
+                }
+            }
+        }
+        return total.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private static boolean isActiveAdjustmentOf(CustomerAccountEntryEntity charge, CustomerAccountEntryEntity entry) {
+        return entry != null
+                && charge.getId() != null
+                && STATUS_ACTIVE.equalsIgnoreCase(entry.getStatus())
+                && TYPE_CHARGE_ADJUSTMENT.equalsIgnoreCase(entry.getEntryType())
+                && charge.getId().equals(entry.getAppliedToEntryId());
+    }
+
     private BigDecimal computeChargeBalanceDue(CustomerAccountEntryEntity charge, List<CustomerAccountEntryEntity> entries) {
         BigDecimal applied = computeAppliedCredits(charge, entries);
-        BigDecimal chargeAmount = charge.getAmount() != null ? charge.getAmount() : BigDecimal.ZERO;
-        return chargeAmount.subtract(applied).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
+        return documentDebitTotal(charge, entries).subtract(applied).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
     }
 
     private Map<Long, ChargeMeta> buildChargeMetaMap(List<CustomerAccountEntryEntity> entries) {
@@ -1351,25 +1558,9 @@ public class CustomerAccountService {
         }
     }
 
-    private void preventDuplicateCharge(Long customerId, String entryType, CustomerAccountEntryRequest request)
-            throws BusinessException {
-        if (!TYPE_CHARGE.equals(entryType)) {
-            return;
-        }
-        if (request.getProductionOrderId() == null) {
-            return;
-        }
-        Optional<CustomerAccountEntryEntity> existing = findOverlappingCharge(
-                loadActiveEntries(customerId),
-                request.getProductionOrderId(),
-                request.getPartialReleaseId(),
-                request.getProductShipmentId());
-        if (existing.isPresent()) {
-            CustomerAccountEntryEntity charge = existing.get();
-            throw new BusinessException("Este documento ya está cubierto por el cargo "
-                    + firstNonBlank(charge.getVendorShipmentNumber(), charge.getInvoiceNumber(), "#" + charge.getId())
-                    + " (Q " + charge.getAmount().setScale(2, RoundingMode.HALF_UP) + ", saldo Q "
-                    + computeChargeBalanceDue(charge) + "). Anúlelo si necesita registrarlo de nuevo.");
+    private void rejectDuplicateOrderCharge(Long productionOrderId) throws BusinessException {
+        if (!entryRepository.findNonVoidChargesByProductionOrderId(productionOrderId).isEmpty()) {
+            throw new BusinessException("Ya existe un cargo activo para esta orden de producción.");
         }
     }
 
@@ -1392,17 +1583,13 @@ public class CustomerAccountService {
     private CustomerAccountEntryEntity resolveAppliedCharge(
             Long customerId,
             String entryType,
-            String conceptCode,
             CustomerAccountEntryRequest request) throws BusinessException {
-        if (!TYPE_PAYMENT.equals(entryType) && !TYPE_RETURN.equals(entryType) && !TYPE_CREDIT_NOTE.equals(entryType)) {
+        if (!isCreditType(entryType)) {
             return null;
         }
         Long appliedId = request.getAppliedToEntryId();
         if (appliedId == null) {
-            if (CONCEPT_DISCHARGE.equals(conceptCode)) {
-                throw new BusinessException("Debe seleccionar un documento con saldo pendiente (concepto 11).");
-            }
-            return null;
+            throw new BusinessException("El pago, la nota de crédito o la devolución debe aplicarse al cargo de la orden.");
         }
         CustomerAccountEntryEntity charge = entryRepository.findById(appliedId)
                 .orElseThrow(() -> new BusinessException("Cargo vinculado no encontrado."));
@@ -1568,17 +1755,19 @@ public class CustomerAccountService {
         }
         if (release != null) {
             List<ProductShipmentEntity> shipments = productShipmentRepository.findByPartialReleaseId(release.getId());
-            if (!shipments.isEmpty()) {
-                List<ProductionOrderItemEntity> orderItems =
-                        productionOrderItemRepository.findByProductionOrderId(order.getId());
-                BigDecimal total = BigDecimal.ZERO;
-                for (ProductShipmentEntity s : shipments) {
-                    total = total.add(estimateShipmentDocumentTotal(order, orderItems, release, s));
-                }
-                return total.setScale(2, RoundingMode.HALF_UP);
+            if (shipments.isEmpty()) {
+                return null;
             }
+            List<ProductionOrderItemEntity> orderItems =
+                    productionOrderItemRepository.findByProductionOrderId(order.getId());
+            BigDecimal total = BigDecimal.ZERO;
+            for (ProductShipmentEntity s : shipments) {
+                total = total.add(estimateShipmentDocumentTotal(order, orderItems, release, s));
+            }
+            return total.setScale(2, RoundingMode.HALF_UP);
         }
-        return estimateLfOrderTotal(order);
+        List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(order.getId());
+        return estimateOrderItemsSubtotal(items, isLfReceivableOrder(order));
     }
 
     private BigDecimal estimateShipmentDocumentTotal(
@@ -1623,11 +1812,9 @@ public class CustomerAccountService {
 
         OrderMeta meta = parseOrderMeta(order.getObservations());
         BigDecimal packingSubtotal = BigDecimal.ZERO;
-        BigDecimal shippingCost = BigDecimal.ZERO;
-        if (shipment != null && shipment.getShippingCost() != null) {
-            shippingCost = shipment.getShippingCost();
-        } else if (includeFirstReleaseExtras(release)) {
-            shippingCost = meta.shippingCost != null ? meta.shippingCost : BigDecimal.ZERO;
+        BigDecimal shippingCost = actualShippingCost(shipment);
+        if (shippingCost == null) {
+            shippingCost = BigDecimal.ZERO;
         }
         if (includeFirstReleaseExtras(release)) {
             packingSubtotal = meta.packingItems.stream()
@@ -2043,8 +2230,189 @@ public class CustomerAccountService {
         return "MARCAS".equals(orderType);
     }
 
+    @Transactional(readOnly = true)
+    public OrderChargeQuoteResponse quoteOrderCharge(Long productionOrderId) throws ResourceNotFoundException {
+        ProductionOrderEntity order = productionOrderRepository.findById(productionOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("ProductionOrder", productionOrderId));
+        OrderChargeAmounts quote = computeOrderChargeAmounts(order);
+        return OrderChargeQuoteResponse.builder()
+                .productionOrderId(order.getId())
+                .orderCode(order.getCode())
+                .orderKind(resolveOrderKind(order))
+                .productsTotal(quote.products())
+                .shippingTotal(quote.shipping())
+                .amount(quote.products())
+                .orderTotal(quote.orderTotal())
+                .shippingLines(quote.lines())
+                .build();
+    }
+
+    private OrderChargeAmounts computeOrderChargeAmounts(ProductionOrderEntity order) {
+        List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(order.getId());
+        BigDecimal products = estimateOrderItemsSubtotal(items, isLfReceivableOrder(order));
+        List<OrderChargeShippingLineResponse> lines = new ArrayList<>();
+        BigDecimal shipping = BigDecimal.ZERO;
+        for (ProductShipmentEntity shipment : productShipmentRepository.findByProductionOrderId(order.getId())) {
+            BigDecimal cost = actualShippingCost(shipment);
+            if (cost == null) {
+                continue;
+            }
+            lines.add(OrderChargeShippingLineResponse.builder()
+                    .partialReleaseId(shipment.getPartialReleaseId())
+                    .productShipmentId(shipment.getId())
+                    .shipmentNumber(shipment.getShipmentNumber())
+                    .shippingCost(cost)
+                    .build());
+            shipping = shipping.add(cost);
+        }
+        shipping = shipping.setScale(2, RoundingMode.HALF_UP);
+        return new OrderChargeAmounts(products, shipping, products.add(shipping).setScale(2, RoundingMode.HALF_UP), lines);
+    }
+
+    /** Costo real del envío. Null si no hay costo o no es positivo: no se estima. */
+    private static BigDecimal actualShippingCost(ProductShipmentEntity shipment) {
+        if (shipment == null || shipment.getShippingCost() == null
+                || shipment.getShippingCost().compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+        return shipment.getShippingCost().setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private record OrderChargeAmounts(
+            BigDecimal products, BigDecimal shipping, BigDecimal orderTotal, List<OrderChargeShippingLineResponse> lines) {}
+
+    private CustomerEntity lockCustomer(Long customerId) throws ResourceNotFoundException {
+        return customerRepository.findByIdForUpdate(customerId)
+                .orElseThrow(() -> new ResourceNotFoundException("Customer", customerId));
+    }
+
+    private CustomerAccountEntryEntity saveLedgerEntry(CustomerAccountEntryEntity entry) throws BusinessException {
+        try {
+            CustomerAccountEntryEntity saved = entryRepository.save(entry);
+            entryRepository.flush();
+            return saved;
+        } catch (DataIntegrityViolationException ex) {
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            String detail = String.valueOf(ex.getMostSpecificCause().getMessage());
+            if (detail.contains("uq_cae_one_active_charge_per_order")) {
+                throw new BusinessException("Ya existe un cargo activo para esta orden de producción.");
+            }
+            if (detail.contains("uq_cae_one_active_adjustment_per_shipment")) {
+                throw new BusinessException("Ya existe un ajuste de envío activo para este parcial.");
+            }
+            if (detail.contains("chk_customer_account_entry_adjustment_links")) {
+                throw new BusinessException("El ajuste de envío requiere la orden, el envío y el cargo al que aplica.");
+            }
+            throw ex;
+        }
+    }
+
+    private CustomerAccountEntryEntity requireActiveOrderCharge(Long customerId, Long productionOrderId)
+            throws BusinessException {
+        List<CustomerAccountEntryEntity> charges = entryRepository.findNonVoidChargesByProductionOrderId(productionOrderId);
+        CustomerAccountEntryEntity charge = charges.stream()
+                .filter(c -> customerId.equals(c.getCustomerId()))
+                .findFirst()
+                .orElse(null);
+        if (charge == null) {
+            throw new BusinessException("La orden no tiene un cargo activo.");
+        }
+        return charge;
+    }
+
+    private String kindCopiedFromCharge(CustomerAccountEntryEntity charge) {
+        if (charge.getOrderKind() != null && !charge.getOrderKind().isBlank()) {
+            return charge.getOrderKind();
+        }
+        if (charge.getProductionOrderId() == null) {
+            return null;
+        }
+        return productionOrderRepository.findById(charge.getProductionOrderId())
+                .map(this::resolveOrderKind)
+                .orElse(null);
+    }
+
+    private record LineAllocation(LocalDate dueDate, BigDecimal allocatedCredit, BigDecimal lineOpenBalance) {}
+
+    private Map<Long, LineAllocation> allocateOpenDocuments(
+            CustomerEntity customer, List<CustomerAccountEntryEntity> active) {
+        Map<Long, LineAllocation> result = new HashMap<>();
+        Map<Long, List<ProductShipmentEntity>> shipmentsByOrder = new HashMap<>();
+        for (CustomerAccountEntryEntity charge : active) {
+            if (!TYPE_CHARGE.equalsIgnoreCase(charge.getEntryType()) || charge.getId() == null) {
+                continue;
+            }
+            List<ProductShipmentEntity> shipments = charge.getProductionOrderId() == null
+                    ? List.of()
+                    : shipmentsByOrder.computeIfAbsent(
+                            charge.getProductionOrderId(), productShipmentRepository::findByProductionOrderId);
+            Map<Long, ProductShipmentEntity> shipmentById = new HashMap<>();
+            for (ProductShipmentEntity shipment : shipments) {
+                shipmentById.putIfAbsent(shipment.getId(), shipment);
+            }
+            List<CustomerAccountEntryEntity> targets = new ArrayList<>();
+            targets.add(charge);
+            for (CustomerAccountEntryEntity entry : active) {
+                if (isActiveAdjustmentOf(charge, entry)) {
+                    targets.add(entry);
+                }
+            }
+            targets.sort(Comparator
+                    .comparing((CustomerAccountEntryEntity entry) -> dueDateOf(customer, charge, entry, shipmentById, shipments),
+                            Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(CustomerAccountEntryEntity::getId, Comparator.nullsLast(Long::compareTo)));
+            BigDecimal remaining = computeAppliedCredits(charge, active);
+            for (CustomerAccountEntryEntity target : targets) {
+                BigDecimal amount = target.getAmount() != null ? target.getAmount() : BigDecimal.ZERO;
+                BigDecimal allocated = remaining.min(amount).max(BigDecimal.ZERO);
+                remaining = remaining.subtract(allocated);
+                result.put(target.getId(), new LineAllocation(
+                        dueDateOf(customer, charge, target, shipmentById, shipments),
+                        allocated.setScale(2, RoundingMode.HALF_UP),
+                        amount.subtract(allocated).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP)));
+            }
+        }
+        return result;
+    }
+
+    private LocalDate dueDateOf(
+            CustomerEntity customer,
+            CustomerAccountEntryEntity charge,
+            CustomerAccountEntryEntity entry,
+            Map<Long, ProductShipmentEntity> shipmentById,
+            List<ProductShipmentEntity> orderShipments) {
+        int days = customer != null && customer.getCreditDays() != null ? customer.getCreditDays() : 0;
+        if (TYPE_CHARGE_ADJUSTMENT.equalsIgnoreCase(entry.getEntryType())) {
+            ProductShipmentEntity shipment = entry.getProductShipmentId() == null
+                    ? null
+                    : shipmentById.get(entry.getProductShipmentId());
+            LocalDate ship = shipDate(shipment);
+            return ship == null ? null : ship.plusDays(days);
+        }
+        if (!CHARGE_DUE_FROM_FIRST_SHIPMENT) {
+            return entry.getEntryDate() == null ? null : entry.getEntryDate().plusDays(days);
+        }
+        LocalDate first = orderShipments.stream()
+                .map(this::shipDate)
+                .filter(Objects::nonNull)
+                .min(LocalDate::compareTo)
+                .orElse(null);
+        return first == null ? null : first.plusDays(days);
+    }
+
+    private LocalDate chargeDueDate(
+            CustomerAccountEntryEntity charge, CustomerEntity customer, List<ProductShipmentEntity> shipments) {
+        return dueDateOf(customer, charge, charge, Map.of(), shipments == null ? List.of() : shipments);
+    }
+
+    private LocalDate shipDate(ProductShipmentEntity shipment) {
+        return shipment != null && shipment.getSentAt() != null ? shipment.getSentAt().toLocalDate() : null;
+    }
+
     private static boolean isDebitType(String entryType) {
-        return TYPE_CHARGE.equalsIgnoreCase(entryType) || TYPE_OPENING_BALANCE.equalsIgnoreCase(entryType);
+        return TYPE_CHARGE.equalsIgnoreCase(entryType)
+                || TYPE_OPENING_BALANCE.equalsIgnoreCase(entryType)
+                || TYPE_CHARGE_ADJUSTMENT.equalsIgnoreCase(entryType);
     }
 
     private static boolean isCreditType(String entryType) {
@@ -2091,7 +2459,8 @@ public class CustomerAccountService {
             throw new BusinessException("Tipo de movimiento requerido.");
         }
         String normalized = raw.trim().toUpperCase(Locale.ROOT);
-        if (!Set.of(TYPE_CHARGE, TYPE_PAYMENT, TYPE_CREDIT_NOTE, TYPE_OPENING_BALANCE, TYPE_RETURN).contains(normalized)) {
+        if (!Set.of(TYPE_CHARGE, TYPE_PAYMENT, TYPE_CREDIT_NOTE, TYPE_OPENING_BALANCE, TYPE_RETURN, TYPE_CHARGE_ADJUSTMENT)
+                .contains(normalized)) {
             throw new BusinessException("Tipo de movimiento no válido: " + raw);
         }
         return normalized;
@@ -2171,6 +2540,7 @@ public class CustomerAccountService {
                 .paymentDiscountPercent(entity.getPaymentDiscountPercent())
                 .grossCollectedAmount(entity.getGrossCollectedAmount())
                 .appliedToEntryId(entity.getAppliedToEntryId())
+                .reassignedFromEntryId(entity.getReassignedFromEntryId())
                 .invoiceNumber(entity.getInvoiceNumber())
                 .documentNumber(entity.getDocumentNumber())
                 .returnVoucherNumber(entity.getReturnVoucherNumber())

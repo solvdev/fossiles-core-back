@@ -44,6 +44,9 @@ application.properties.local
 application.yml
 application-*.yml
 application.yaml
+
+# Test config holds only dummy values and must be versioned
+!src/test/resources/application.properties
 application-*.yaml
 
 # Spring Boot resources (typical location)
