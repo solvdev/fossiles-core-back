@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountEntryRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountEntryVoidRequest;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
@@ -130,6 +131,63 @@ class CustomerAccountLedgerConcurrencyTest {
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
+    @Test
+    void concurrentReassignCannotOverfillTheTarget() throws Exception {
+        CustomerEntity customer = customers.save(CustomerEntity.builder().name("Reasignar").status("active").build());
+        Long target = chargeOf(customer, "OP-VOID-T", "100.00");
+        Long first = chargeOf(customer, "OP-VOID-A", "100.00");
+        Long second = chargeOf(customer, "OP-VOID-B", "100.00");
+        accounts.createEntry(customer.getId(), payment(first, "60.00"));
+        accounts.createEntry(customer.getId(), payment(second, "60.00"));
+
+        Outcome outcome = race(
+                () -> accounts.voidEntry(first, voidOf(target)),
+                () -> accounts.voidEntry(second, voidOf(target)));
+        assertThat(outcome.unexpected).isEmpty();
+        assertThat(outcome.successes).isEqualTo(1);
+        assertThat(outcome.rejected).isEqualTo(1);
+        long voided = List.of(first, second).stream()
+                .filter(id -> "VOID".equals(entries.findStatusById(id).orElseThrow()))
+                .count();
+        assertThat(voided).isEqualTo(1);
+        assertThat(entries.findByAppliedToEntryIdAndStatus(target, "ACTIVE")).hasSize(1);
+    }
+
+    private Long chargeOf(CustomerEntity customer, String code, String price) throws Exception {
+        ProductionOrderEntity order = orders.save(ProductionOrderEntity.builder()
+                .code(code)
+                .orderType("OPV")
+                .customerId(customer.getId())
+                .sellerName("LUIS FELIPE")
+                .status("IN_PROGRESS")
+                .build());
+        items.save(ProductionOrderItemEntity.builder()
+                .productionOrderId(order.getId())
+                .quantity(1)
+                .unitPrice(new BigDecimal(price))
+                .build());
+        CustomerAccountEntryRequest charge = request("CHARGE", price);
+        charge.setProductionOrderId(order.getId());
+        return accounts.createEntry(customer.getId(), charge).getId();
+    }
+
+    private static CustomerAccountEntryRequest payment(Long chargeId, String amount) {
+        CustomerAccountEntryRequest request = request("PAYMENT", amount);
+        request.setAppliedToEntryId(chargeId);
+        request.setGrossCollectedAmount(new BigDecimal(amount));
+        request.setMovementConceptCode("11");
+        request.setReceiptNumber("REC-" + chargeId);
+        request.setCollectionDate(LocalDate.of(2026, 9, 1));
+        return request;
+    }
+
+    private static CustomerAccountEntryVoidRequest voidOf(Long targetId) {
+        CustomerAccountEntryVoidRequest request = new CustomerAccountEntryVoidRequest();
+        request.setVoidReason("cargo equivocado");
+        request.setReassignToChargeId(targetId);
+        return request;
+    }
+
     private static CustomerAccountEntryRequest request(String type, String amount) {
         CustomerAccountEntryRequest request = new CustomerAccountEntryRequest();
         request.setEntryType(type);
@@ -138,7 +196,7 @@ class CustomerAccountLedgerConcurrencyTest {
         return request;
     }
 
-    private Outcome race(Task task) throws Exception {
+    private Outcome race(Task first, Task second) throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(2);
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);
@@ -146,7 +204,7 @@ class CustomerAccountLedgerConcurrencyTest {
         AtomicInteger rejected = new AtomicInteger();
         List<Throwable> unexpected = new ArrayList<>();
         List<Future<?>> futures = new ArrayList<>();
-        for (int i = 0; i < 2; i++) {
+        for (Task task : List.of(first, second)) {
             futures.add(pool.submit(() -> {
                 ready.countDown();
                 start.await(10, TimeUnit.SECONDS);
@@ -170,6 +228,10 @@ class CustomerAccountLedgerConcurrencyTest {
         }
         pool.shutdown();
         return new Outcome(successes.get(), rejected.get(), unexpected);
+    }
+
+    private Outcome race(Task task) throws Exception {
+        return race(task, task);
     }
 
     @FunctionalInterface

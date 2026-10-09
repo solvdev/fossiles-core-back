@@ -701,12 +701,13 @@ public class CustomerAccountService {
         CustomerAccountEntryEntity entry = entryRepository.findById(entryId)
                 .orElseThrow(() -> new ResourceNotFoundException("CustomerAccountEntry", entryId));
         lockCustomer(entry.getCustomerId());
-        if (STATUS_VOID.equalsIgnoreCase(entry.getStatus())) {
+        String statusNow = entryRepository.findStatusById(entryId)
+                .orElseThrow(() -> new ResourceNotFoundException("CustomerAccountEntry", entryId));
+        if (STATUS_VOID.equalsIgnoreCase(statusNow)) {
             throw new BusinessException("El movimiento ya está anulado.");
         }
-        if (TYPE_CHARGE.equalsIgnoreCase(entry.getEntryType()) && chargeHasActiveDependents(entry)) {
-            throw new BusinessException(
-                    "No se puede anular el cargo porque tiene pagos, notas de crédito, devoluciones o ajustes de envío activos.");
+        if (TYPE_CHARGE.equalsIgnoreCase(entry.getEntryType())) {
+            reassignVoidedChargeDependents(entry, request.getReassignToChargeId());
         }
         entry.setStatus(STATUS_VOID);
         entry.setVoidedAt(LocalDateTime.now());
@@ -714,6 +715,75 @@ public class CustomerAccountService {
         entry.setVoidReason(request.getVoidReason().trim());
         entry.setUpdatedBy(securityUtil.getCurrentUserId());
         return toEntryResponse(entryRepository.save(entry));
+    }
+
+    /**
+     * Pagos, notas de crédito y devoluciones del cargo anulado pasan a otro cargo activo.
+     * Los ajustes de envío solo pasan si el destino es de la misma orden. Nada se escribe si la validación falla.
+     */
+    private void reassignVoidedChargeDependents(CustomerAccountEntryEntity charge, Long reassignToChargeId)
+            throws BusinessException {
+        List<CustomerAccountEntryEntity> active = loadActiveEntries(charge.getCustomerId());
+        List<CustomerAccountEntryEntity> credits = active.stream()
+                .filter(entry -> charge.getId().equals(entry.getAppliedToEntryId()))
+                .filter(entry -> isCreditType(entry.getEntryType()))
+                .toList();
+        List<CustomerAccountEntryEntity> adjustments = active.stream()
+                .filter(entry -> isActiveAdjustmentOf(charge, entry))
+                .toList();
+        if (credits.isEmpty() && adjustments.isEmpty()) {
+            return;
+        }
+        if (!credits.isEmpty() && reassignToChargeId == null) {
+            throw new BusinessException(
+                    "Este cargo tiene pagos, notas de crédito o devoluciones activos. Indique el cargo al que deben trasladarse.");
+        }
+        if (!adjustments.isEmpty() && reassignToChargeId == null) {
+            throw new BusinessException(
+                    "Este cargo tiene ajustes de envío activos. Anúlelos primero; solo pueden pasar a un cargo de la misma orden.");
+        }
+        if (reassignToChargeId == null) {
+            return;
+        }
+        if (reassignToChargeId.equals(charge.getId())) {
+            throw new BusinessException("El cargo destino no puede ser el mismo movimiento.");
+        }
+        CustomerAccountEntryEntity target = entryRepository.findById(reassignToChargeId)
+                .orElseThrow(() -> new BusinessException("Cargo destino no encontrado."));
+        if (!charge.getCustomerId().equals(target.getCustomerId())) {
+            throw new BusinessException("El cargo destino no pertenece a este cliente.");
+        }
+        if (!TYPE_CHARGE.equalsIgnoreCase(target.getEntryType()) || !STATUS_ACTIVE.equalsIgnoreCase(target.getStatus())) {
+            throw new BusinessException("El cargo destino debe ser un cargo activo.");
+        }
+        if (!adjustments.isEmpty() && !Objects.equals(charge.getProductionOrderId(), target.getProductionOrderId())) {
+            throw new BusinessException(
+                    "Este cargo tiene ajustes de envío activos. Anúlelos primero; solo pueden pasar a un cargo de la misma orden.");
+        }
+        BigDecimal moved = credits.stream()
+                .map(this::resolveAppliedCreditAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal open = computeChargeBalanceDue(target, active);
+        if (moved.compareTo(open) > 0) {
+            throw new BusinessException("El monto a trasladar (Q " + moved.setScale(2, RoundingMode.HALF_UP)
+                    + ") supera el saldo pendiente del cargo destino (Q " + open.setScale(2, RoundingMode.HALF_UP) + ").");
+        }
+        String kind = kindCopiedFromCharge(target);
+        Long userId = securityUtil.getCurrentUserId();
+        for (CustomerAccountEntryEntity credit : credits) {
+            credit.setAppliedToEntryId(target.getId());
+            credit.setProductionOrderId(target.getProductionOrderId());
+            credit.setOrderKind(kind);
+            credit.setUpdatedBy(userId);
+            entryRepository.save(credit);
+        }
+        for (CustomerAccountEntryEntity adjustment : adjustments) {
+            adjustment.setAppliedToEntryId(target.getId());
+            adjustment.setProductionOrderId(target.getProductionOrderId());
+            adjustment.setOrderKind(kind);
+            adjustment.setUpdatedBy(userId);
+            entryRepository.save(adjustment);
+        }
     }
 
     @Transactional(readOnly = true)
@@ -2218,13 +2288,6 @@ public class CustomerAccountService {
         return productionOrderRepository.findById(charge.getProductionOrderId())
                 .map(this::resolveOrderKind)
                 .orElse(null);
-    }
-
-    private boolean chargeHasActiveDependents(CustomerAccountEntryEntity charge) {
-        return loadActiveEntries(charge.getCustomerId()).stream()
-                .anyMatch(entry -> charge.getId().equals(entry.getAppliedToEntryId())
-                        && (isCreditType(entry.getEntryType())
-                        || TYPE_CHARGE_ADJUSTMENT.equalsIgnoreCase(entry.getEntryType())));
     }
 
     private record LineAllocation(LocalDate dueDate, BigDecimal allocatedCredit, BigDecimal lineOpenBalance) {}

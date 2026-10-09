@@ -256,20 +256,113 @@ class CustomerAccountLedgerRulesTest {
     }
 
     @Test
-    void voidOfChargeWithPaymentIsBlockedWithoutReregisterGuidance() throws Exception {
+    void voidWithoutReassignIsRejectedWhenCreditsExist() throws Exception {
         CustomerEntity customer = customer();
         ProductionOrderEntity order = order(customer, "OPV", "90.00");
         CustomerAccountEntryResponse charge = charge(customer, order, null, null, "90.00");
         accounts.createEntry(customer.getId(), payment(charge.getId(), "10.00"));
 
-        CustomerAccountEntryVoidRequest voidRequest = new CustomerAccountEntryVoidRequest();
-        voidRequest.setVoidReason("prueba");
-        assertThatThrownBy(() -> accounts.voidEntry(charge.getId(), voidRequest))
+        assertThatThrownBy(() -> accounts.voidEntry(charge.getId(), voidRequest(null)))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("No se puede anular el cargo")
+                .hasMessageContaining("trasladarse")
                 .hasMessageNotContaining("Anúlelo")
                 .hasMessageNotContaining("registrarlo de nuevo");
         assertThat(entries.findById(charge.getId()).orElseThrow().getStatus()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void voidReassignsCreditsOnTheSameOrderAndOnAnotherKind() throws Exception {
+        CustomerEntity customer = customer();
+        ProductionOrderEntity order = order(customer, "OPV", "100.00");
+        CustomerAccountEntryResponse keeper = charge(customer, order, null, null, "100.00");
+        CustomerAccountEntryEntity mistaken = entries.save(CustomerAccountEntryEntity.builder()
+                .customerId(customer.getId())
+                .entryType("CHARGE")
+                .status("ACTIVE")
+                .entryDate(LocalDate.of(2026, 9, 1))
+                .amount(new BigDecimal("60.00"))
+                .productionOrderId(order.getId())
+                .orderKind("OPV")
+                .build());
+        ProductShipmentEntity shipment = shipment(order, release(order, 1), "60.00", "15.00");
+        entries.save(CustomerAccountEntryEntity.builder()
+                .customerId(customer.getId())
+                .entryType("CHARGE_ADJUSTMENT")
+                .status("ACTIVE")
+                .entryDate(LocalDate.of(2026, 9, 2))
+                .amount(new BigDecimal("15.00"))
+                .productionOrderId(order.getId())
+                .productShipmentId(shipment.getId())
+                .appliedToEntryId(mistaken.getId())
+                .orderKind("OPV")
+                .build());
+        CustomerAccountEntryResponse payment = accounts.createEntry(customer.getId(), payment(mistaken.getId(), "20.00"));
+        BigDecimal before = accounts.getBalance(customer.getId()).getBalance();
+
+        accounts.voidEntry(mistaken.getId(), voidRequest(keeper.getId()));
+
+        assertThat(entries.findById(mistaken.getId()).orElseThrow().getStatus()).isEqualTo("VOID");
+        CustomerAccountEntryEntity movedPayment = entries.findById(payment.getId()).orElseThrow();
+        assertThat(movedPayment.getStatus()).isEqualTo("ACTIVE");
+        assertThat(movedPayment.getAppliedToEntryId()).isEqualTo(keeper.getId());
+        assertThat(movedPayment.getProductionOrderId()).isEqualTo(order.getId());
+        assertThat(movedPayment.getOrderKind()).isEqualTo("OPV");
+        CustomerAccountEntryEntity movedAdjustment = entries.findByCustomerIdOrderByEntryDateAscIdAsc(customer.getId()).stream()
+                .filter(entry -> "CHARGE_ADJUSTMENT".equals(entry.getEntryType()))
+                .findFirst().orElseThrow();
+        assertThat(movedAdjustment.getAppliedToEntryId()).isEqualTo(keeper.getId());
+        assertThat(movedAdjustment.getProductShipmentId()).isEqualTo(shipment.getId());
+        assertThat(accounts.getBalance(customer.getId()).getBalance()).isEqualByComparingTo(before.subtract(new BigDecimal("60.00")));
+
+        ProductionOrderEntity opv = order(customer, "OPV", "80.00");
+        ProductionOrderEntity opc = order(customer, "MARCAS", "200.00");
+        CustomerAccountEntryResponse opvCharge = charge(customer, opv, null, null, "80.00");
+        CustomerAccountEntryResponse opcCharge = charge(customer, opc, null, null, "200.00");
+        CustomerAccountEntryResponse cross = accounts.createEntry(customer.getId(), payment(opvCharge.getId(), "25.00"));
+        accounts.voidEntry(opvCharge.getId(), voidRequest(opcCharge.getId()));
+        CustomerAccountEntryEntity crossPayment = entries.findById(cross.getId()).orElseThrow();
+        assertThat(crossPayment.getAppliedToEntryId()).isEqualTo(opcCharge.getId());
+        assertThat(crossPayment.getProductionOrderId()).isEqualTo(opc.getId());
+        assertThat(crossPayment.getOrderKind()).isEqualTo("OPC");
+        assertThat(entries.findById(opvCharge.getId()).orElseThrow().getStatus()).isEqualTo("VOID");
+    }
+
+    @Test
+    void voidReassignRejectsBadTargetsAndLeavesRowsUntouched() throws Exception {
+        CustomerEntity customer = customer();
+        CustomerEntity other = customer();
+        ProductionOrderEntity sourceOrder = order(customer, "OPV", "100.00");
+        ProductionOrderEntity smallOrder = order(customer, "OPV", "50.00");
+        ProductionOrderEntity otherOrder = order(other, "OPV", "100.00");
+        CustomerAccountEntryResponse source = charge(customer, sourceOrder, null, null, "100.00");
+        CustomerAccountEntryResponse small = charge(customer, smallOrder, null, null, "50.00");
+        CustomerAccountEntryResponse foreign = charge(other, otherOrder, null, null, "100.00");
+        CustomerAccountEntryResponse payment = accounts.createEntry(customer.getId(), payment(source.getId(), "80.00"));
+
+        assertThatThrownBy(() -> accounts.voidEntry(source.getId(), voidRequest(small.getId())))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("supera el saldo");
+        assertThat(entries.findById(source.getId()).orElseThrow().getStatus()).isEqualTo("ACTIVE");
+        assertThat(entries.findById(payment.getId()).orElseThrow().getAppliedToEntryId()).isEqualTo(source.getId());
+
+        assertThatThrownBy(() -> accounts.voidEntry(source.getId(), voidRequest(foreign.getId())))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("no pertenece");
+
+        accounts.voidEntry(small.getId(), voidRequest(null));
+        assertThatThrownBy(() -> accounts.voidEntry(source.getId(), voidRequest(small.getId())))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("cargo activo");
+
+        ProductShipmentEntity shipment = shipment(sourceOrder, release(sourceOrder, 1), "100.00", "10.00");
+        CustomerAccountEntryResponse adjustment = accounts.createEntry(customer.getId(), adjustment(shipment.getId()));
+        ProductionOrderEntity sibling = order(customer, "MARCAS", "100.00");
+        CustomerAccountEntryResponse siblingCharge = charge(customer, sibling, null, null, "100.00");
+        assertThatThrownBy(() -> accounts.voidEntry(source.getId(), voidRequest(siblingCharge.getId())))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("ajustes de envío");
+        assertThat(entries.findById(adjustment.getId()).orElseThrow().getAppliedToEntryId()).isEqualTo(source.getId());
+        assertThat(entries.findById(source.getId()).orElseThrow().getStatus()).isEqualTo("ACTIVE");
     }
 
     @Test
@@ -419,6 +512,13 @@ class CustomerAccountLedgerRulesTest {
     private static CustomerAccountEntryRequest adjustment(Long shipmentId) {
         CustomerAccountEntryRequest request = base("CHARGE_ADJUSTMENT", "1.00");
         request.setProductShipmentId(shipmentId);
+        return request;
+    }
+
+    private static CustomerAccountEntryVoidRequest voidRequest(Long reassignToChargeId) {
+        CustomerAccountEntryVoidRequest request = new CustomerAccountEntryVoidRequest();
+        request.setVoidReason("cargo equivocado");
+        request.setReassignToChargeId(reassignToChargeId);
         return request;
     }
 

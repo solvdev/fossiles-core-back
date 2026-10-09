@@ -19,6 +19,9 @@ public interface CustomerAccountEntryRepository extends JpaRepository<CustomerAc
 
     List<CustomerAccountEntryEntity> findByAppliedToEntryIdAndStatus(Long appliedToEntryId, String status);
 
+    @Query("SELECT e.status FROM CustomerAccountEntryEntity e WHERE e.id = :id")
+    Optional<String> findStatusById(@Param("id") Long id);
+
     @Query("""
             SELECT e FROM CustomerAccountEntryEntity e
             WHERE e.productionOrderId = :productionOrderId
