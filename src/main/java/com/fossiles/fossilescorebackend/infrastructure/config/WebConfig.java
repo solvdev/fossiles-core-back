@@ -1,11 +1,23 @@
 package com.fossiles.fossilescorebackend.infrastructure.config;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 @Configuration
+@RequiredArgsConstructor
 public class WebConfig implements WebMvcConfigurer {
+
+    private final ProductionCenterCacheInvalidator productionCenterCacheInvalidator;
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(productionCenterCacheInvalidator)
+                .addPathPatterns("/api/production-orders/**", "/api/tasks/**",
+                        "/api/leather/**", "/api/product-variant-leathers/**");
+    }
 
     @Override
     public void addCorsMappings(CorsRegistry registry) {
