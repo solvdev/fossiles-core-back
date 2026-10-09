@@ -133,6 +133,66 @@ class LfReceivablesMigrationAcceptanceTest {
     }
 
     @Test
+    void phase1RollbackWithReassignedTraceChangesNothing() throws Exception {
+        deleteEntries();
+        LfMigrationScripts.apply(POSTGRES, ROLLBACK2);
+        LfMigrationScripts.apply(POSTGRES, PHASE1);
+
+        long customerId = insertCustomer("Trace", 12);
+        long chargeId = insertEntry(customerId, "CHARGE", "40.00", 41L, null, null, null, null, "ACTIVE");
+        long paymentId = insertEntry(customerId, "PAYMENT", "4.00", 41L, null, chargeId, "4.00", null, "ACTIVE");
+        jdbc.update(
+                "UPDATE customer_account_entry SET reassigned_from_entry_id = ? WHERE id = ?",
+                chargeId, paymentId);
+        List<String> rowsBefore = ledgerRows();
+        String fk = constraintDefinition("fk_customer_account_entry_reassigned_from");
+        String typeCheck = constraintDefinition("chk_customer_account_entry_type");
+
+        LfMigrationScripts.PsqlResult rollback = LfMigrationScripts.run(POSTGRES, ROLLBACK1);
+
+        assertThat(rollback.exitCode()).as(rollback.output()).isNotZero();
+        assertThat(rollback.output())
+                .contains("ROLLBACK FASE 1 abortado")
+                .contains("reassigned_from_entry_id")
+                .contains("No se cambio nada");
+        assertThat(rollback.output().toLowerCase()).doesNotContain("violat");
+        assertThat(entryCount("CHARGE_ADJUSTMENT")).isZero();
+        assertThat(ledgerRows()).isEqualTo(rowsBefore);
+        assertThat(reassignedFrom(paymentId)).isEqualTo(chargeId);
+        assertThat(columnCount("customer_account_entry", "reassigned_from_entry_id")).isEqualTo(1);
+        assertThat(constraintDefinition("fk_customer_account_entry_reassigned_from")).isEqualTo(fk).contains("reassigned_from_entry_id");
+        assertThat(constraintDefinition("chk_customer_account_entry_type")).isEqualTo(typeCheck);
+        assertThat(columnCount("customer", "credit_days")).isEqualTo(1);
+        assertThat(creditDays(customerId)).isEqualTo(12);
+    }
+
+    @Test
+    void phase1RollbackRemovesReassignedColumnWhenNothingPointsAtIt() throws Exception {
+        deleteEntries();
+        LfMigrationScripts.apply(POSTGRES, ROLLBACK2);
+        LfMigrationScripts.apply(POSTGRES, PHASE1);
+
+        long customerId = insertCustomer("Clear", 0);
+        long chargeId = insertEntry(customerId, "CHARGE", "15.00", 42L, null, null, null, null, "ACTIVE");
+        long paymentId = insertEntry(customerId, "PAYMENT", "3.00", 42L, null, chargeId, "3.00", null, "ACTIVE");
+        assertThat(entryCount("CHARGE_ADJUSTMENT")).isZero();
+        assertThat(reassignedFrom(paymentId)).isNull();
+
+        LfMigrationScripts.apply(POSTGRES, ROLLBACK1);
+
+        assertThat(columnCount("customer_account_entry", "reassigned_from_entry_id")).isZero();
+        assertThat(constraintDefinition("fk_customer_account_entry_reassigned_from")).isNull();
+        assertThat(entryCount("CHARGE")).isEqualTo(1);
+        assertThat(entryCount("PAYMENT")).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT amount FROM customer_account_entry WHERE id = ?", BigDecimal.class, chargeId))
+                .isEqualByComparingTo("15.00");
+        assertThat(jdbc.queryForObject(
+                "SELECT amount FROM customer_account_entry WHERE id = ?", BigDecimal.class, paymentId))
+                .isEqualByComparingTo("3.00");
+    }
+
+    @Test
     void phase2WithDuplicateActiveChargesChangesNothing() throws Exception {
         deleteEntries();
         LfMigrationScripts.apply(POSTGRES, ROLLBACK2);
@@ -381,6 +441,12 @@ class LfReceivablesMigrationAcceptanceTest {
         Integer days = jdbc.queryForObject(
                 "SELECT credit_days FROM customer WHERE id = ?", Integer.class, customerId);
         return days == null ? -1 : days;
+    }
+
+    private Long reassignedFrom(long entryId) {
+        return jdbc.queryForObject(
+                "SELECT reassigned_from_entry_id FROM customer_account_entry WHERE id = ?",
+                Long.class, entryId);
     }
 
     private long appliedTo(long entryId) {

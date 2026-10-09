@@ -1,5 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service.customeraccount;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.dto.response.CustomerAccountEntryResponse;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerAccountEntryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerEntity;
@@ -21,6 +23,7 @@ import static com.fossiles.fossilescorebackend.application.service.customeraccou
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.adjustmentRequest;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.creditRequest;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -89,7 +92,8 @@ class ChargeReassignmentAcceptanceTest extends LfReceivablesH2TestBase {
             assertThat(movedRow.getAppliedToEntryId()).isEqualTo(target.getId());
             assertThat(movedRow.getProductionOrderId()).isEqualTo(targetOrder.getId());
             assertThat(movedRow.getOrderKind()).isEqualTo("OPC");
-            assertReassignmentTrace(movedRow, source.getId());
+            assertThat(movedRow.getReassignedFromEntryId()).isEqualTo(source.getId());
+            assertThat(movedRow.getDescription()).contains(REASON);
         }
         assertThat(fx.chargeBalance(customer, target.getId())).isEqualByComparingTo(targetOpenBefore.subtract(moved));
         assertThat(fx.balance(customer))
@@ -166,7 +170,8 @@ class ChargeReassignmentAcceptanceTest extends LfReceivablesH2TestBase {
         assertThat(moved.getProductionOrderId()).isEqualTo(order.getId());
         assertThat(moved.getProductShipmentId()).isEqualTo(shipment.getId());
         assertThat(moved.getOrderKind()).isEqualTo("OPV");
-        assertReassignmentTrace(moved, source.getId());
+        assertThat(moved.getReassignedFromEntryId()).isEqualTo(source.getId());
+        assertThat(moved.getDescription()).contains(REASON);
 
         ProductionOrderEntity otherOrder = fx.order(customer, "OPC-5E", TYPE_OPC, "90.00");
         var otherShipment = fx.withShipping(
@@ -188,6 +193,42 @@ class ChargeReassignmentAcceptanceTest extends LfReceivablesH2TestBase {
     }
 
     @Test
+    @DisplayName("5f. The first charge id stays on the row and in the API after a second move")
+    void reassignmentTraceKeepsTheFirstCharge() throws Exception {
+        CustomerEntity customer = fx.customer("VOID-5F");
+        ProductionOrderEntity firstOrder = fx.order(customer, "OPV-5F-A", TYPE_OPV, "100.00");
+        ProductionOrderEntity secondOrder = fx.order(customer, "OPV-5F-B", TYPE_OPV, "200.00");
+        ProductionOrderEntity thirdOrder = fx.order(customer, "OPV-5F-C", TYPE_OPV, "200.00");
+        CustomerAccountEntryResponse first = fx.charge(customer, firstOrder, null, null, "100.00");
+        CustomerAccountEntryResponse second = fx.charge(customer, secondOrder, null, null, "200.00");
+        CustomerAccountEntryResponse third = fx.charge(customer, thirdOrder, null, null, "200.00");
+        CustomerAccountEntryResponse payment = fx.create(customer, creditRequest("PAYMENT", first.getId(), "30.00"));
+
+        voidOk(first.getId(), second.getId(), "primero");
+
+        CustomerAccountEntryEntity once = fx.entry(payment.getId());
+        assertThat(once.getAppliedToEntryId()).isEqualTo(second.getId());
+        assertThat(once.getReassignedFromEntryId()).isEqualTo(first.getId());
+        assertThat(once.getDescription()).isEqualTo("primero");
+        JsonNode onceLine = statementLine(customer.getId(), payment.getId());
+        assertThat(onceLine.get("reassignedFromEntryId").asLong()).isEqualTo(first.getId());
+        assertThat(onceLine.get("description").asText()).isEqualTo("primero");
+        assertThat(fx.statementLine(customer, payment.getId()).getReassignedFromEntryId()).isEqualTo(first.getId());
+
+        voidOk(second.getId(), third.getId(), "segundo");
+
+        CustomerAccountEntryEntity twice = fx.entry(payment.getId());
+        assertThat(twice.getAppliedToEntryId()).isEqualTo(third.getId());
+        assertThat(twice.getReassignedFromEntryId()).isEqualTo(first.getId());
+        assertThat(twice.getDescription()).isEqualTo("primero\nsegundo");
+        JsonNode twiceLine = statementLine(customer.getId(), payment.getId());
+        assertThat(twiceLine.get("reassignedFromEntryId").asLong()).isEqualTo(first.getId());
+        assertThat(twiceLine.get("description").asText()).isEqualTo("primero\nsegundo");
+        assertThat(twiceLine.get("appliedToEntryId").asLong()).isEqualTo(third.getId());
+        assertThat(fx.statementLine(customer, payment.getId()).getReassignedFromEntryId()).isEqualTo(first.getId());
+    }
+
+    @Test
     @DisplayName("5h. A charge with no active items voids without reassignToChargeId")
     void chargeWithoutActiveItemsVoidsWithoutTarget() throws Exception {
         CustomerEntity customer = fx.customer("VOID-5H");
@@ -202,26 +243,28 @@ class ChargeReassignmentAcceptanceTest extends LfReceivablesH2TestBase {
         assertThat(fx.balance(customer)).isEqualByComparingTo("0");
     }
 
-    private void assertReassignmentTrace(CustomerAccountEntryEntity row, Long originalChargeId) {
-        boolean column = row.getReassignedFromEntryId() != null;
-        boolean described = row.getDescription() != null && row.getDescription().contains(REASON);
-        if (!column && !described) {
-            throw new AssertionError("BUG: no reassignment trace");
-        }
-        if (column) {
-            assertThat(row.getReassignedFromEntryId()).isEqualTo(originalChargeId);
-        }
-        if (described) {
-            assertThat(row.getDescription()).contains(REASON);
-        }
+    private void voidOk(Long entryId, Long reassignToChargeId) throws Exception {
+        voidOk(entryId, reassignToChargeId, REASON);
     }
 
-    private void voidOk(Long entryId, Long reassignToChargeId) throws Exception {
+    private void voidOk(Long entryId, Long reassignToChargeId, String reason) throws Exception {
         mvc.perform(put("/api/customer-accounts/entries/{id}/void", entryId)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body(reassignToChargeId)))
+                        .content(body(reassignToChargeId, reason)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("VOID"));
+    }
+
+    private JsonNode statementLine(Long customerId, Long entryId) throws Exception {
+        String json = mvc.perform(get("/api/customer-accounts/customers/{id}/statement", customerId))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        for (JsonNode line : new ObjectMapper().readTree(json).get("lines")) {
+            if (line.get("id").asLong() == entryId) {
+                return line;
+            }
+        }
+        throw new AssertionError("statement has no line " + entryId);
     }
 
     private void reject(Long entryId, Long reassignToChargeId, String message) throws Exception {
@@ -233,10 +276,14 @@ class ChargeReassignmentAcceptanceTest extends LfReceivablesH2TestBase {
     }
 
     private static String body(Long reassignToChargeId) {
+        return body(reassignToChargeId, REASON);
+    }
+
+    private static String body(Long reassignToChargeId, String reason) {
         if (reassignToChargeId == null) {
-            return "{\"voidReason\":\"" + REASON + "\"}";
+            return "{\"voidReason\":\"" + reason + "\"}";
         }
-        return "{\"voidReason\":\"" + REASON + "\",\"reassignToChargeId\":" + reassignToChargeId + "}";
+        return "{\"voidReason\":\"" + reason + "\",\"reassignToChargeId\":" + reassignToChargeId + "}";
     }
 
     private List<String> ledger(CustomerEntity customer) {
