@@ -6,9 +6,10 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotio
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionTierRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRestoreRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDepositReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
-import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromotionEstimateResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPosContextResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -1522,106 +1523,248 @@ class KioskPosServiceTest {
     }
 
     @Test
-    void createSale_entrecuerosStoresServerPriceNotClientPrice() throws Exception {
-        kioskA.setPosMode("ENTRECUEROS");
-        kioskA = locationRepository.save(kioskA);
-        wallet.setEntrecuerosEnabled(true);
-        wallet = productRepository.save(wallet);
-
-        ProductEntity cincho = productRepository.save(ProductEntity.builder()
-                .code("CIN-CAS-1")
-                .name("Cincho casual")
-                .cinchoType("CASUAL")
-                .entrecuerosEnabled(true)
-                .salePrice(new BigDecimal("250.00"))
-                .build());
-        kioscoStockRepository.save(KioscoStockEntity.builder()
-                .locationId(kioskA.getId())
-                .productId(cincho.getId())
-                .colorId(negro.getId())
-                .currentStock(10)
-                .build());
-
+    void entrecueros_sale_rejectsPackagingAloneAndPersistsNothing() {
+        enableEntrecuerosKiosk();
+        ProductEntity packaging = savePackaging("SUM-EC-SOLO", "Bolsa Entrecueros", "12.00");
         when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
 
-        KioskPosPromotionEstimateResponse estimate = kioskPosService.estimatePromotionDiscount(
-                KioskPosPromotionEstimateRequest.builder()
-                        .kioskLocationId(kioskA.getId())
-                        .items(List.of(
-                                KioskPosPromotionEstimateRequest.ItemRequest.builder()
-                                        .productId(cincho.getId())
-                                        .colorId(negro.getId())
-                                        .size("34")
-                                        .quantity(new BigDecimal("6"))
-                                        .build(),
-                                KioskPosPromotionEstimateRequest.ItemRequest.builder()
-                                        .productId(wallet.getId())
-                                        .colorId(negro.getId())
-                                        .quantity(BigDecimal.ONE)
-                                        .build()))
-                        .build());
-        assertThat(estimate.getSubtotal()).isEqualByComparingTo("535.00");
-        assertThat(estimate.getDiscountAmount()).isEqualByComparingTo("0.00");
-        assertThat(estimate.getTotalAmount()).isEqualByComparingTo("535.00");
+        assertEntrecuerosSaleRejected(
+                List.of(item(packaging.getId(), negro.getId(), BigDecimal.ONE)),
+                "Bolsa Entrecueros",
+                packaging.getId());
+    }
+
+    @Test
+    void entrecueros_sale_rejectsMixedCasualAndPackaging() {
+        enableEntrecuerosKiosk();
+        ProductEntity casual = saveCasual("FOSS-CAS-6", "Cincho Casual");
+        ProductEntity packaging = savePackaging("SUM-EC-MIX", "Caja Empaque", "5.00");
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        assertEntrecuerosSaleRejected(
+                List.of(
+                        item(casual.getId(), negro.getId(), new BigDecimal("6")),
+                        item(packaging.getId(), negro.getId(), new BigDecimal("2"))),
+                "Caja Empaque",
+                packaging.getId());
+        assertThat(currentStock(casual.getId())).isEqualTo(10);
+    }
+
+    @Test
+    void entrecueros_sale_rejectsMixedPackagingWalletAndCasual() {
+        enableEntrecuerosKiosk();
+        wallet.setEntrecuerosEnabled(true);
+        wallet = productRepository.save(wallet);
+        ProductEntity packaging = savePackaging("SUM-EC-MIX2", "Bolsa Mixta", "4.00");
+        ProductEntity casual = saveCasual("FOSS-CAS-2", "Cincho Casual Mixto");
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        assertEntrecuerosSaleRejected(
+                List.of(
+                        item(packaging.getId(), negro.getId(), new BigDecimal("6")),
+                        item(wallet.getId(), negro.getId(), BigDecimal.ONE),
+                        item(casual.getId(), negro.getId(), new BigDecimal("2"))),
+                "Bolsa Mixta",
+                packaging.getId());
+        assertThat(currentStock(wallet.getId())).isEqualTo(5);
+        assertThat(currentStock(casual.getId())).isEqualTo(10);
+    }
+
+    @Test
+    void entrecueros_estimate_rejectsPackaging() throws Exception {
+        enableEntrecuerosKiosk();
+        ProductEntity packaging = savePackaging("SUM-EC-EST", "Empaque Cotizacion", "9.00");
+        wallet.setEntrecuerosEnabled(true);
+        wallet = productRepository.save(wallet);
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        assertThatThrownBy(() -> kioskPosService.estimatePromotionDiscount(estimateRequest(List.of(
+                estimateItem(packaging.getId(), BigDecimal.ONE)))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("Entrecueros no vende empaque: Empaque Cotizacion.");
+
+        assertThatThrownBy(() -> kioskPosService.estimatePromotionDiscount(estimateRequest(List.of(
+                estimateItem(wallet.getId(), new BigDecimal("6")),
+                estimateItem(packaging.getId(), new BigDecimal("2"))))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("Entrecueros no vende empaque: Empaque Cotizacion.");
+        assertThat(saleRepository.count()).isZero();
+    }
+
+    @Test
+    void entrecueros_catalog_excludesPackaging() throws Exception {
+        enableEntrecuerosKiosk();
+        wallet.setEntrecuerosEnabled(true);
+        wallet = productRepository.save(wallet);
+        ProductEntity inStock = savePackaging("SUM-EC-STK", "Bolsa en stock", "3.00");
+        productRepository.save(ProductEntity.builder()
+                .code("SUM-EC-CAT")
+                .name("Bolsa sin stock")
+                .salePrice(new BigDecimal("3.00"))
+                .entrecuerosEnabled(true)
+                .build());
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosContextResponse context = kioskPosService.getCurrentContext(kioskA.getId(), null, null, null);
+
+        assertThat(context.getPosMode()).isEqualTo("ENTRECUEROS");
+        assertThat(context.getInventory())
+                .extracting(KioskPosContextResponse.InventoryItem::getProductCode)
+                .contains("BILL-001")
+                .doesNotContain("SUM-EC-STK", "SUM-EC-CAT");
+        assertThat(currentStock(inStock.getId())).isEqualTo(20);
+    }
+
+    @Test
+    void kiosk_catalogIncludesPackaging_andSaleChargesFullPrice() throws Exception {
+        ProductEntity catalogOnly = productRepository.save(ProductEntity.builder()
+                .code("SUM-POS-CAT")
+                .name("Bolsa catalogo")
+                .salePrice(new BigDecimal("8.00"))
+                .discountedPrice(new BigDecimal("1.00"))
+                .build());
+        ProductEntity packaging = productRepository.save(ProductEntity.builder()
+                .code("SUM-POS-STK")
+                .name("Bolsa vendible")
+                .salePrice(new BigDecimal("8.00"))
+                .discountedPrice(new BigDecimal("1.00"))
+                .build());
+        seedInventory(packaging.getId(), 5);
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosContextResponse context = kioskPosService.getCurrentContext(kioskA.getId(), null, null, null);
+        assertThat(context.getInventory())
+                .extracting(KioskPosContextResponse.InventoryItem::getProductCode)
+                .contains("SUM-POS-CAT", "SUM-POS-STK", "BILL-001");
+        assertThat(context.getInventory())
+                .filteredOn(item -> "SUM-POS-CAT".equals(item.getProductCode()))
+                .singleElement()
+                .extracting(KioskPosContextResponse.InventoryItem::getSuggestedUnitPrice)
+                .isEqualTo(new BigDecimal("8.00"));
+        assertThat(catalogOnly.getId()).isNotNull();
 
         KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
                 .kioskLocationId(kioskA.getId())
                 .paymentMethod("EFECTIVO")
-                .amountReceived(new BigDecimal("600.00"))
-                .requestInvoice(false)
-                .shippingSheetNumber("2001")
-                .items(List.of(
-                        KioskPosSaleRequest.ItemRequest.builder()
-                                .productId(cincho.getId())
-                                .colorId(negro.getId())
-                                .size("34")
-                                .quantity(new BigDecimal("6"))
-                                .unitPrice(new BigDecimal("1.00"))
-                                .build(),
-                        KioskPosSaleRequest.ItemRequest.builder()
-                                .productId(wallet.getId())
-                                .colorId(negro.getId())
-                                .quantity(BigDecimal.ONE)
-                                .unitPrice(new BigDecimal("999.99"))
-                                .build()))
+                .amountReceived(new BigDecimal("20.00"))
+                .items(List.of(item(packaging.getId(), negro.getId(), new BigDecimal("2"))))
                 .build());
 
-        assertThat(sale.getSubtotal()).isEqualByComparingTo("535.00");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("535.00");
-        assertThat(unitPrice(sale, cincho.getId())).isEqualByComparingTo("80.00");
-        assertThat(lineTotal(sale, cincho.getId())).isEqualByComparingTo("480.00");
-        assertThat(unitPrice(sale, wallet.getId())).isEqualByComparingTo("55.00");
-        assertThat(lineTotal(sale, wallet.getId())).isEqualByComparingTo("55.00");
-
-        KioskSaleEntity stored = saleRepository.findById(sale.getId()).orElseThrow();
-        assertThat(stored.getSubtotal()).isEqualByComparingTo("535.00");
-        assertThat(stored.getTotalAmount()).isEqualByComparingTo("535.00");
-        assertThat(storedUnitPrice(stored, cincho.getId())).isEqualByComparingTo("80.00");
-        assertThat(storedUnitPrice(stored, wallet.getId())).isEqualByComparingTo("55.00");
+        assertThat(sale.getItems()).hasSize(1);
+        assertThat(sale.getItems().get(0).getUnitPrice()).isEqualByComparingTo("8.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("0.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("16.00");
+        assertThat(currentStock(packaging.getId())).isEqualTo(3);
     }
 
-    private static BigDecimal unitPrice(KioskPosSaleResponse sale, Long productId) {
-        return sale.getItems().stream()
-                .filter(item -> productId.equals(item.getProductId()))
-                .findFirst()
-                .orElseThrow()
-                .getUnitPrice();
+    @Test
+    void entrecueros_restoreAndExchange_rejectPackagingBeforeSave() {
+        enableEntrecuerosKiosk();
+        ProductEntity packaging = savePackaging("SUM-EC-REST", "Empaque Restaurado", "6.00");
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        assertThatThrownBy(() -> kioskPosService.restoreSale(KioskPosSaleRestoreRequest.builder()
+                .saleNumber("POS-20261009-0099")
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("20.00"))
+                .createTaxInvoiceDraft(false)
+                .items(List.of(KioskPosSaleRestoreRequest.RestoreItemRequest.builder()
+                        .productId(packaging.getId())
+                        .colorId(negro.getId())
+                        .quantity(BigDecimal.ONE)
+                        .unitPrice(new BigDecimal("6.00"))
+                        .build()))
+                .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("Entrecueros no vende empaque: Empaque Restaurado.");
+
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        assertThatThrownBy(() -> kioskPosService.createExchangeSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("20.00"))
+                .exchangeCreditAmount(new BigDecimal("6.00"))
+                .shippingSheetNumber("1842")
+                .items(List.of(item(packaging.getId(), negro.getId(), BigDecimal.ONE)))
+                .build(), "CAM-EC-1"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("Entrecueros no vende empaque: Empaque Restaurado.");
+
+        assertThat(saleRepository.count()).isZero();
+        assertThat(currentStock(packaging.getId())).isEqualTo(20);
     }
 
-    private static BigDecimal lineTotal(KioskPosSaleResponse sale, Long productId) {
-        return sale.getItems().stream()
-                .filter(item -> productId.equals(item.getProductId()))
-                .findFirst()
-                .orElseThrow()
-                .getLineTotal();
+    private void enableEntrecuerosKiosk() {
+        kioskA.setPosMode("ENTRECUEROS");
+        kioskA = locationRepository.save(kioskA);
     }
 
-    private static BigDecimal storedUnitPrice(KioskSaleEntity sale, Long productId) {
-        return sale.getItems().stream()
-                .filter(item -> productId.equals(item.getProductId()))
-                .map(KioskSaleItemEntity::getUnitPrice)
-                .findFirst()
-                .orElseThrow();
+    private ProductEntity savePackaging(String code, String name, String salePrice) {
+        ProductEntity packaging = productRepository.save(ProductEntity.builder()
+                .code(code)
+                .name(name)
+                .salePrice(new BigDecimal(salePrice))
+                .entrecuerosEnabled(true)
+                .build());
+        seedInventory(packaging.getId(), 20);
+        return packaging;
+    }
+
+    private ProductEntity saveCasual(String code, String name) {
+        ProductEntity casual = productRepository.save(ProductEntity.builder()
+                .code(code)
+                .name(name)
+                .cinchoType("CASUAL")
+                .salePrice(new BigDecimal("100.00"))
+                .entrecuerosEnabled(true)
+                .entrecuerosPriceUnit(new BigDecimal("100.00"))
+                .build());
+        seedInventory(casual.getId(), 10);
+        return casual;
+    }
+
+    private void assertEntrecuerosSaleRejected(
+            List<KioskPosSaleRequest.ItemRequest> items,
+            String packagingName,
+            Long packagingProductId
+    ) {
+        long salesBefore = saleRepository.count();
+        int stockBefore = currentStock(packagingProductId);
+        assertThatThrownBy(() -> kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("5000.00"))
+                .shippingSheetNumber("1842")
+                .items(items)
+                .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("Entrecueros no vende empaque: " + packagingName + ".");
+        assertThat(saleRepository.count()).isEqualTo(salesBefore);
+        assertThat(currentStock(packagingProductId)).isEqualTo(stockBefore);
+    }
+
+    private KioskPosPromotionEstimateRequest estimateRequest(
+            List<KioskPosPromotionEstimateRequest.ItemRequest> items
+    ) {
+        return KioskPosPromotionEstimateRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .items(items)
+                .build();
+    }
+
+    private static KioskPosPromotionEstimateRequest.ItemRequest estimateItem(Long productId, BigDecimal qty) {
+        return KioskPosPromotionEstimateRequest.ItemRequest.builder()
+                .productId(productId)
+                .quantity(qty)
+                .build();
+    }
+
+    private int currentStock(Long productId) {
+        return kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorId(kioskA.getId(), productId, negro.getId())
+                .map(row -> row.getCurrentStock() != null ? row.getCurrentStock() : 0)
+                .orElse(0);
     }
 
     private static KioskPosSaleRequest.ItemRequest item(Long productId, Long colorId, BigDecimal qty) {

@@ -64,5 +64,6 @@ src/main/resources/application-*.yaml
 !application.example.properties
 !application.example.yml
 
-# Test override disables Sentry. It has no secrets.
+# Test classpath replacement for src/main/resources/application.properties.
+# This file hides the main file during tests. Do not import the main file.
 !src/test/resources/application.properties
