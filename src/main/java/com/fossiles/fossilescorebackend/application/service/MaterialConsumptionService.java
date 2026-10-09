@@ -717,6 +717,11 @@ public class MaterialConsumptionService {
     }
 
     private int resolveQuantityForTaskItemBom(TaskItemEntity item) {
+        // La tarea produce solo su parte de la línea de la OP: la receta se multiplica por la cantidad del ítem
+        // de la tarea, no por el total de la línea (una línea puede repartirse en varias tareas).
+        if (item.getQuantity() != null && item.getQuantity() > 0) {
+            return item.getQuantity();
+        }
         if (item.getProductionOrderItemId() != null) {
             return productionOrderItemRepository.findById(item.getProductionOrderItemId())
                     .map(ProductionOrderItemQuantityHelper::effectiveQuantityForBom)

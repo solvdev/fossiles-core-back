@@ -1,0 +1,189 @@
+diff --git a/src/main/java/com/fossiles/fossilescorebackend/application/service/KioskGoalService.java b/src/main/java/com/fossiles/fossilescorebackend/application/service/KioskGoalService.java
+index 9c54e1d..ee9081e 100644
+--- a/src/main/java/com/fossiles/fossilescorebackend/application/service/KioskGoalService.java
++++ b/src/main/java/com/fossiles/fossilescorebackend/application/service/KioskGoalService.java
+@@ -54,6 +54,16 @@ public class KioskGoalService {
+     private static final BigDecimal TIER3_MIN = new BigDecimal("1.00");
+     private static final BigDecimal COMMISSION_RATE = new BigDecimal("0.02");
+ 
++    /** IVA incluido en el total vendido (12 %). */
++    private static final BigDecimal IVA_DIVISOR = new BigDecimal("1.12");
++
++    /**
++     * Desde este mes (septiembre 2026, cuando ya hay datos del sistema) el 2 % de comision se calcula sobre la venta
++     * SIN IVA (total vendido / 1.12), igual que la comision de venta del reporte financiero (4 % = 2 % encargada +
++     * 2 % supervisora). El % de meta y los bonos fijos no cambian: se siguen midiendo con el total vendido.
++     */
++    public static final YearMonth NET_OF_IVA_FROM = YearMonth.of(2026, 9);
++
+     private static final BigDecimal ENCARGADA_BONUS_TIER2 = new BigDecimal("500");
+     private static final BigDecimal ENCARGADA_BONUS_TIER3 = new BigDecimal("800");
+ 
+@@ -72,19 +82,39 @@ public class KioskGoalService {
+     // Cálculo puro de comisión (sin acceso a BD, fácil de probar)
+     // ---------------------------------------------------------------------
+ 
++    /** Sin periodo: regla anterior (2 % sobre el total vendido con IVA). */
+     public CommissionResult computeEncargadaCommission(BigDecimal goalAmount, BigDecimal soldAmount) {
+-        return computeTieredCommission(goalAmount, soldAmount, ENCARGADA_BONUS_TIER2, ENCARGADA_BONUS_TIER3);
++        return computeEncargadaCommission(goalAmount, soldAmount, null);
++    }
++
++    /** Con periodo: desde {@link #NET_OF_IVA_FROM} el 2 % se calcula sobre el total vendido / 1.12. */
++    public CommissionResult computeEncargadaCommission(BigDecimal goalAmount, BigDecimal soldAmount, YearMonth period) {
++        return computeTieredCommission(goalAmount, soldAmount, ENCARGADA_BONUS_TIER2, ENCARGADA_BONUS_TIER3,
++                isNetOfIva(period));
+     }
+ 
++    /** Sin periodo: regla anterior (2 % sobre el total vendido con IVA). */
+     public CommissionResult computeSupervisoraCommission(BigDecimal aggregateGoalAmount, BigDecimal aggregateSoldAmount) {
+-        return computeTieredCommission(aggregateGoalAmount, aggregateSoldAmount, SUPERVISORA_BONUS_TIER2, SUPERVISORA_BONUS_TIER3);
++        return computeSupervisoraCommission(aggregateGoalAmount, aggregateSoldAmount, null);
++    }
++
++    /** Con periodo: desde {@link #NET_OF_IVA_FROM} el 2 % se calcula sobre el total vendido / 1.12. */
++    public CommissionResult computeSupervisoraCommission(BigDecimal aggregateGoalAmount, BigDecimal aggregateSoldAmount,
++                                                         YearMonth period) {
++        return computeTieredCommission(aggregateGoalAmount, aggregateSoldAmount, SUPERVISORA_BONUS_TIER2,
++                SUPERVISORA_BONUS_TIER3, isNetOfIva(period));
++    }
++
++    private static boolean isNetOfIva(YearMonth period) {
++        return period != null && !period.isBefore(NET_OF_IVA_FROM);
+     }
+ 
+     private CommissionResult computeTieredCommission(
+             BigDecimal goalAmount,
+             BigDecimal soldAmount,
+             BigDecimal tier2Bonus,
+-            BigDecimal tier3Bonus
++            BigDecimal tier3Bonus,
++            boolean netOfIva
+     ) {
+         BigDecimal safeGoal = goalAmount != null ? goalAmount : BigDecimal.ZERO;
+         BigDecimal safeSold = soldAmount != null ? soldAmount : BigDecimal.ZERO;
+@@ -116,9 +146,12 @@ public class KioskGoalService {
+             bonus = null;
+         }
+ 
++        BigDecimal commissionBase = netOfIva
++                ? safeSold.divide(IVA_DIVISOR, 6, RoundingMode.HALF_UP)
++                : safeSold;
+         BigDecimal commission = bonus == null
+                 ? BigDecimal.ZERO
+-                : bonus.add(safeSold.multiply(COMMISSION_RATE));
++                : bonus.add(commissionBase.multiply(COMMISSION_RATE));
+ 
+         return CommissionResult.builder()
+                 .percentAchieved(percent)
+@@ -145,7 +178,7 @@ public class KioskGoalService {
+                 .orElse(null);
+ 
+         BigDecimal goalAmount = goal != null ? goal.getGoalAmount() : null;
+-        CommissionResult result = computeEncargadaCommission(goalAmount, soldAmount);
++        CommissionResult result = computeEncargadaCommission(goalAmount, soldAmount, period);
+ 
+         return KioskGoalProgressResponse.builder()
+                 .kioskLocationId(kiosk.getId())
+@@ -208,7 +241,7 @@ public class KioskGoalService {
+         for (KioskMonthlyGoalEntity goal : goals) {
+             YearMonth period = YearMonth.of(goal.getGoalYear(), goal.getGoalMonth());
+             BigDecimal soldAmount = sumRealSales(List.of(kiosk.getId()), period);
+-            CommissionResult result = computeEncargadaCommission(goal.getGoalAmount(), soldAmount);
++            CommissionResult result = computeEncargadaCommission(goal.getGoalAmount(), soldAmount, period);
+             history.add(KioskGoalHistoryItemResponse.builder()
+                     .goalYear(goal.getGoalYear())
+                     .goalMonth(goal.getGoalMonth())
+@@ -369,7 +402,8 @@ public class KioskGoalService {
+ 
+         CommissionResult aggregateResult = computeSupervisoraCommission(
+                 anyGoalConfigured ? aggregateGoal : null,
+-                aggregateSold
++                aggregateSold,
++                period
+         );
+ 
+         return SupervisorAggregateDashboardResponse.builder()
+diff --git a/src/test/java/com/fossiles/fossilescorebackend/application/service/KioskGoalServiceCommissionTest.java b/src/test/java/com/fossiles/fossilescorebackend/application/service/KioskGoalServiceCommissionTest.java
+new file mode 100644
+index 0000000..8f16543
+--- /dev/null
++++ b/src/test/java/com/fossiles/fossilescorebackend/application/service/KioskGoalServiceCommissionTest.java
+@@ -0,0 +1,77 @@
++package com.fossiles.fossilescorebackend.application.service;
++
++import org.junit.jupiter.api.Test;
++
++import java.math.BigDecimal;
++import java.time.YearMonth;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++/**
++ * Comision de encargada / supervisora: el 2 % se calcula sobre la venta SIN IVA (total vendido / 1.12) desde
++ * septiembre 2026; antes, sobre el total vendido. Bonos fijos y % de meta no cambian (se miden con el total vendido).
++ */
++class KioskGoalServiceCommissionTest {
++
++    private final KioskGoalService service = new KioskGoalService(null, null, null, null, null, null, null);
++
++    private static final YearMonth SEP_2026 = YearMonth.of(2026, 9);
++    private static final YearMonth AUG_2026 = YearMonth.of(2026, 8);
++
++    @Test
++    void encargadaCommissionFromSeptember2026IsTwoPercentOfSalesWithoutIva() {
++        // Miraflores II, septiembre 2026: vendio 84,226.40 de una meta de 120,000 (70.2 %): nivel 1, sin bono
++        KioskGoalService.CommissionResult r = service.computeEncargadaCommission(
++                new BigDecimal("120000"), new BigDecimal("84226.40"), SEP_2026);
++
++        assertThat(r.getTier()).isEqualTo("TIER1");
++        assertThat(r.getPercentAchieved()).isEqualByComparingTo("70.2");
++        assertThat(r.getCommissionAmount()).isEqualByComparingTo("1504.04"); // 84,226.40 / 1.12 x 2 %
++    }
++
++    @Test
++    void previousMonthsAndNoPeriodKeepTheOldRuleOverTotalSold() {
++        BigDecimal goal = new BigDecimal("120000");
++        BigDecimal sold = new BigDecimal("84226.40");
++
++        assertThat(service.computeEncargadaCommission(goal, sold, AUG_2026).getCommissionAmount())
++                .isEqualByComparingTo("1684.53"); // 84,226.40 x 2 %
++        assertThat(service.computeEncargadaCommission(goal, sold).getCommissionAmount())
++                .isEqualByComparingTo("1684.53");
++        assertThat(service.computeEncargadaCommission(goal, sold, null).getCommissionAmount())
++                .isEqualByComparingTo("1684.53");
++    }
++
++    @Test
++    void fixedBonusesAreUnchangedAndAddedOnTopOfTheNetCommission() {
++        // 100 % de la meta: bono Q800 + 2 % de (100,000 / 1.12)
++        KioskGoalService.CommissionResult tier3 = service.computeEncargadaCommission(
++                new BigDecimal("100000"), new BigDecimal("100000"), SEP_2026);
++        assertThat(tier3.getTier()).isEqualTo("TIER3");
++        assertThat(tier3.getCommissionAmount()).isEqualByComparingTo("2585.71"); // 800 + 1,785.71
++
++        // 90 % de la meta: bono Q500 + 2 % de (90,000 / 1.12)
++        KioskGoalService.CommissionResult tier2 = service.computeEncargadaCommission(
++                new BigDecimal("100000"), new BigDecimal("90000"), SEP_2026);
++        assertThat(tier2.getTier()).isEqualTo("TIER2");
++        assertThat(tier2.getCommissionAmount()).isEqualByComparingTo("2107.14"); // 500 + 1,607.14
++    }
++
++    @Test
++    void belowSeventyPercentThereIsNoCommissionInAnyPeriod() {
++        assertThat(service.computeEncargadaCommission(new BigDecimal("100000"), new BigDecimal("69999"), SEP_2026)
++                .getCommissionAmount()).isEqualByComparingTo("0");
++    }
++
++    @Test
++    void supervisoraAggregateCommissionAlsoUsesSalesWithoutIvaFromSeptember2026() {
++        // meta agregada 200,000, vendido agregado 200,000 (100 %): bono Q200 + 2 % de (200,000 / 1.12)
++        KioskGoalService.CommissionResult r = service.computeSupervisoraCommission(
++                new BigDecimal("200000"), new BigDecimal("200000"), SEP_2026);
++
++        assertThat(r.getTier()).isEqualTo("TIER3");
++        assertThat(r.getCommissionAmount()).isEqualByComparingTo("3771.43"); // 200 + 3,571.43
++        assertThat(service.computeSupervisoraCommission(new BigDecimal("200000"), new BigDecimal("200000"), AUG_2026)
++                .getCommissionAmount()).isEqualByComparingTo("4200.00"); // 200 + 4,000
++    }
++}

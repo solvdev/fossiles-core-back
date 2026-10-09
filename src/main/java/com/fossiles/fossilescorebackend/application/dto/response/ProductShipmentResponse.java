@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -27,6 +28,8 @@ public class ProductShipmentResponse {
     private String status;
     private String notes;
     private List<PackingItemResponse> packingItems;
+    /** Costo de envío asignado a este documento. */
+    private BigDecimal shippingCost;
     private LocalDateTime sentAt;
     private Long sentBy;
     private LocalDateTime receivedAt;

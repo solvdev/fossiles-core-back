@@ -33,9 +33,9 @@ public class TaskCodeGenerator {
                     return documentSeriesRepository.save(newSeries);
                 });
 
-        documentSeriesRepository.incrementCorrelative(seriesEntity.getId());
-        seriesEntity.setCurrentCorrelative(seriesEntity.getCurrentCorrelative() + 1);
-        documentSeriesRepository.save(seriesEntity);
+        long current = seriesEntity.getCurrentCorrelative() == null ? 0L : seriesEntity.getCurrentCorrelative();
+        seriesEntity.setCurrentCorrelative(current + 1);
+        documentSeriesRepository.saveAndFlush(seriesEntity);
 
         return String.format("%s-%05d", series, seriesEntity.getCurrentCorrelative());
     }

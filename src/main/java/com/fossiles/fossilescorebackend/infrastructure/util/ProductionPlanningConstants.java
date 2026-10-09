@@ -24,6 +24,12 @@ public final class ProductionPlanningConstants {
     /** Horas por unidad cuando el producto no tiene prd_time configurado. */
     public static final double DEFAULT_PRD_TIME_PER_UNIT = 0.1;
 
+    /**
+     * Corte KPI post-saneamiento: la eficiencia del dashboard y la estimación de OP
+     * solo usan tareas medidas desde esta fecha (datos previos se cerraron a 100%).
+     */
+    public static final LocalDate KPI_EFFICIENCY_FROM = LocalDate.of(2026, 9, 14);
+
     /** Número de mesas por defecto si no hay configuración. */
     public static final int MAX_DESKS = 12;
 

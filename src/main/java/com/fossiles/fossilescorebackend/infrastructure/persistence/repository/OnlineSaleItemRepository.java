@@ -17,6 +17,17 @@ public interface OnlineSaleItemRepository extends JpaRepository<OnlineSaleItemEn
 
     List<OnlineSaleItemEntity> findByOnlineSaleIdInOrderByIdAsc(java.util.Collection<Long> onlineSaleIds);
 
+    /** Ítems de todas las ventas online del rango en una sola consulta (dashboards). */
+    @Query("""
+            SELECT i FROM OnlineSaleItemEntity i, OnlineSaleEntity s
+            WHERE i.onlineSaleId = s.id
+              AND s.saleDate >= :startDate AND s.saleDate <= :endDate
+            ORDER BY i.id ASC
+            """)
+    List<OnlineSaleItemEntity> findBySaleDateBetween(
+            @Param("startDate") java.time.LocalDate startDate,
+            @Param("endDate") java.time.LocalDate endDate);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM OnlineSaleItemEntity e WHERE e.onlineSaleId = :saleId")

@@ -67,8 +67,10 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskCashSessionRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionTierRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSiteEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleSequenceRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSiteRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
@@ -155,6 +157,8 @@ public class KioskPosService {
     private final TaxInvoiceRepository taxInvoiceRepository;
     private final KioscoPhysicalCountRepository kioscoPhysicalCountRepository;
     private final KioscoInventoryService kioscoInventoryService;
+    private final KioskSiteRepository kioskSiteRepository;
+    private final KioskSalesSourceResolver kioskSalesSourceResolver;
 
     @Transactional(readOnly = true)
     public KioskPosContextResponse getCurrentContext(
@@ -1148,22 +1152,16 @@ public class KioskPosService {
             throw new BusinessException("La venta ya está anulada.");
         }
 
-        if (sale.getCashSessionId() != null) {
-            KioskCashSessionEntity openSession = kioskCashSessionRepository
-                    .findFirstByKioskLocationIdAndStatusOrderByOpenedAtDesc(kiosk.getId(), CASH_SESSION_OPEN)
-                    .orElse(null);
-            if (openSession == null) {
-                throw new BusinessException("Debes tener caja abierta para anular ventas.");
-            }
-            if (!Objects.equals(sale.getCashSessionId(), openSession.getId())) {
-                throw new BusinessException("Solo puedes anular ventas registradas en la caja abierta actual.");
-            }
+        boolean hasOpenCash = kioskCashSessionRepository
+                .findFirstByKioskLocationIdAndStatusOrderByOpenedAtDesc(kiosk.getId(), CASH_SESSION_OPEN)
+                .isPresent();
+        if (!hasOpenCash) {
+            throw new BusinessException("Debes tener caja abierta para anular ventas.");
         }
 
-        if ("CERTIFIED".equalsIgnoreCase(safeTrim(sale.getFelStatus())) && sale.getInvoiceId() != null) {
+        if (sale.getInvoiceId() != null) {
             try {
-                // Encargadas de kiosko: anulan FEL vía POS (sin permiso Contabilidad).
-                taxInvoiceService.voidInvoiceFromPos(sale.getInvoiceId(), request.getReason().trim());
+                taxInvoiceService.voidInvoiceFromPosIfCertified(sale.getInvoiceId(), request.getReason().trim());
             } catch (BusinessException ex) {
                 throw ex;
             } catch (ResourceNotFoundException ex) {
@@ -1283,41 +1281,71 @@ public class KioskPosService {
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, kioskLocationId);
 
         LocalDate today = GuatemalaDateTime.today();
+        // Java ya lleva 29-feb a 28-feb al restar un año.
         LocalDate todayLastYear = today.minusYears(1);
         LocalDate lastMonthStart = today.minusMonths(1).withDayOfMonth(1);
         LocalDate lastMonthEnd = today.withDayOfMonth(1).minusDays(1);
         LocalDate monthToDateStart = today.withDayOfMonth(1);
-        LocalDate rangeStart = todayLastYear.isBefore(lastMonthStart)
-                ? todayLastYear
-                : lastMonthStart;
+        LocalDate monthToDateStartLastYear = monthToDateStart.minusYears(1);
+
+        // El año anterior vive en kiosk_daily_sales_hist (no en kiosk_sale): se lee con el resolver de
+        // Finanzas por el sitio ligado al kiosco. Sin sitio se conserva el calculo solo con ventas POS.
+        Optional<KioskSiteEntity> site = kioskSiteRepository.findByLocationId(kiosk.getId());
+        LocalDate rangeStart = site.isPresent()
+                ? lastMonthStart
+                : (monthToDateStartLastYear.isBefore(lastMonthStart) ? monthToDateStartLastYear : lastMonthStart);
 
         List<KioskSaleEntity> sales = findSalesByDateRangeForKiosk(kiosk.getId(), rangeStart, today).stream()
                 .filter(KioskPosService::countsForManagerDashboard)
                 .toList();
 
         KioskPosManagerDashboardResponse.Metric todayMetric = buildDashboardMetric(sales, today, today);
-        KioskPosManagerDashboardResponse.Metric todayLastYearMetric = buildDashboardMetric(
+        KioskPosManagerDashboardResponse.Metric monthToDateMetric = buildDashboardMetric(
                 sales,
-                todayLastYear,
-                todayLastYear
+                monthToDateStart,
+                today
         );
         KioskPosManagerDashboardResponse.Metric lastMonthMetric = buildDashboardMetric(
                 sales,
                 lastMonthStart,
                 lastMonthEnd
         );
-        KioskPosManagerDashboardResponse.Metric monthToDateMetric = buildDashboardMetric(
-                sales,
-                monthToDateStart,
-                today
-        );
+
+        KioskPosManagerDashboardResponse.Metric todayLastYearMetric;
+        KioskPosManagerDashboardResponse.Metric monthToDateLastYearMetric;
+        if (site.isPresent()) {
+            KioskSalesSourceResolver.SiteSales lastYear = kioskSalesSourceResolver
+                    .resolve(List.of(site.get()), monthToDateStartLastYear, todayLastYear)
+                    .get(site.get().getId());
+            todayLastYearMetric = historicMetric(lastYear, todayLastYear, todayLastYear);
+            monthToDateLastYearMetric = historicMetric(lastYear, monthToDateStartLastYear, todayLastYear);
+        } else {
+            todayLastYearMetric = buildDashboardMetric(sales, todayLastYear, todayLastYear);
+            monthToDateLastYearMetric = buildDashboardMetric(sales, monthToDateStartLastYear, todayLastYear);
+        }
 
         return KioskPosManagerDashboardResponse.builder()
                 .today(todayMetric)
                 .todayLastYear(todayLastYearMetric)
                 .lastMonth(lastMonthMetric)
                 .monthToDate(monthToDateMetric)
+                .monthToDateLastYear(monthToDateLastYearMetric)
                 .growthVsLastYearPercent(growthPercent(todayMetric.getAmount(), todayLastYearMetric.getAmount()))
+                .growthMonthToDateVsLastYearPercent(
+                        growthPercent(monthToDateMetric.getAmount(), monthToDateLastYearMetric.getAmount()))
+                .build();
+    }
+
+    /** Metrica de un rango del año anterior: monto en Q (0.00 si no hubo operacion), sin cantidad de ventas. */
+    private KioskPosManagerDashboardResponse.Metric historicMetric(
+            KioskSalesSourceResolver.SiteSales sales,
+            LocalDate startDate,
+            LocalDate endDate
+    ) {
+        BigDecimal amount = sales == null ? BigDecimal.ZERO : sales.totalBetween(startDate, endDate);
+        return KioskPosManagerDashboardResponse.Metric.builder()
+                .amount(amount.setScale(2, RoundingMode.HALF_UP))
+                .count(null)
                 .build();
     }
 
@@ -1790,11 +1818,17 @@ public class KioskPosService {
             }
         }
 
+        // TARJETAS = monto de factura + (voucher − factura). Si cobraron de más/menos en terminal, entra en DIFERENCIA.
+        cardsTotal = cardsTotal.add(sumCardVoucherDifferences(sales));
+
         List<KioskCashExpenseEntity> expenses = kioskCashExpenseRepository.findForReport(
                 startAt, endAtExclusive, kiosk.getId());
         BigDecimal expensesTotal = expenses.stream()
                 .map(expense -> safeAmount(expense.getAmount()))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // Sobrante/faltante de efectivo de todos los cierres del periodo (cualquier día del corte).
+        BigDecimal cashCloseVarianceTotal = sumCashCloseVariancesForPeriod(kiosk.getId(), startAt, endAtExclusive);
 
         totalSold = totalSold.setScale(2, RoundingMode.HALF_UP);
         cardsTotal = cardsTotal.setScale(2, RoundingMode.HALF_UP);
@@ -1802,7 +1836,9 @@ public class KioskPosService {
         expensesTotal = expensesTotal.setScale(2, RoundingMode.HALF_UP);
         BigDecimal reconciledTotal = cardsTotal.add(depositsTotal).add(expensesTotal)
                 .setScale(2, RoundingMode.HALF_UP);
-        BigDecimal difference = reconciledTotal.subtract(totalSold).setScale(2, RoundingMode.HALF_UP);
+        // DIFERENCIA = descuadre canales + diffs voucher (en TARJETAS) + variances de cierres del periodo.
+        BigDecimal difference = reconciledTotal.subtract(totalSold).add(cashCloseVarianceTotal)
+                .setScale(2, RoundingMode.HALF_UP);
 
         List<KioskMainSheetReportResponse.DailySaleRow> dailySales = dailyTotals.entrySet().stream()
                 .map(entry -> KioskMainSheetReportResponse.DailySaleRow.builder()
@@ -3386,7 +3422,7 @@ public class KioskPosService {
     }
 
     static boolean countsForManagerDashboard(KioskSaleEntity sale) {
-        if (sale == null || isVoidSale(sale)) {
+        if (sale == null || isVoidSale(sale) || Boolean.TRUE.equals(sale.getTestSale())) {
             return false;
         }
         String status = safeTrimStatic(sale.getStatus());
@@ -4584,6 +4620,26 @@ public class KioskPosService {
                 if (card2Diff != null) {
                     total = total.add(card2Diff);
                 }
+            }
+        }
+        return total.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /** Suma variance (contado − esperado) de cierres CLOSED del kiosko en la ventana del corte. */
+    private BigDecimal sumCashCloseVariancesForPeriod(
+            Long kioskLocationId,
+            LocalDateTime startAt,
+            LocalDateTime endAtExclusive
+    ) {
+        if (kioskLocationId == null || startAt == null || endAtExclusive == null) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        List<KioskCashSessionEntity> sessions = kioskCashSessionRepository.findClosedSessionsForHistory(
+                CASH_SESSION_CLOSED, startAt, endAtExclusive, List.of(kioskLocationId));
+        BigDecimal total = BigDecimal.ZERO;
+        for (KioskCashSessionEntity session : sessions) {
+            if (session.getVariance() != null) {
+                total = total.add(session.getVariance());
             }
         }
         return total.setScale(2, RoundingMode.HALF_UP);

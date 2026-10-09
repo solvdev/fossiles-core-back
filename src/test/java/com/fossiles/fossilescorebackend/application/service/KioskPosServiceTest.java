@@ -13,9 +13,11 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleRes
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskDailySalesHistEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionTierEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSiteEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductCategoryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
@@ -24,14 +26,17 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.RoleEn
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskDailySalesHistRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSaleRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSiteRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductInventoryLocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductCategoryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.RoleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -92,6 +97,12 @@ class KioskPosServiceTest {
 
     @Autowired
     private TaxInvoiceService taxInvoiceService;
+
+    @Autowired
+    private KioskSiteRepository kioskSiteRepository;
+
+    @Autowired
+    private KioskDailySalesHistRepository kioskDailySalesHistRepository;
 
     @MockBean
     private SecurityUtil securityUtil;
@@ -935,6 +946,43 @@ class KioskPosServiceTest {
         assertThat(dashboard.getToday().getAmount()).isEqualByComparingTo(sale.getTotalAmount());
         assertThat(dashboard.getMonthToDate().getCount()).isEqualTo(1);
         assertThat(dashboard.getMonthToDate().getAmount()).isEqualByComparingTo(sale.getTotalAmount());
+    }
+
+    @Test
+    void managerDashboard_compares_with_last_year_from_historic_sales() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        LocalDate today = GuatemalaDateTime.today();
+        LocalDate todayLastYear = today.minusYears(1);
+        LocalDate monthStartLastYear = today.withDayOfMonth(1).minusYears(1);
+        KioskSiteEntity site = kioskSiteRepository.save(KioskSiteEntity.builder()
+                .name("KIOSKO A").locationId(kioskA.getId()).build());
+        kioskDailySalesHistRepository.save(KioskDailySalesHistEntity.builder()
+                .siteId(site.getId()).saleDate(todayLastYear).amount(new BigDecimal("250.00")).build());
+        BigDecimal expectedMonthToDateLastYear = new BigDecimal("250.00");
+        if (!monthStartLastYear.equals(todayLastYear)) {
+            kioskDailySalesHistRepository.save(KioskDailySalesHistEntity.builder()
+                    .siteId(site.getId()).saleDate(monthStartLastYear).amount(new BigDecimal("100.00")).build());
+            expectedMonthToDateLastYear = new BigDecimal("350.00");
+        }
+
+        var dashboard = kioskPosService.getManagerDashboard(kioskA.getId());
+
+        assertThat(dashboard.getTodayLastYear().getAmount()).isEqualByComparingTo("250.00");
+        assertThat(dashboard.getTodayLastYear().getCount()).isNull();
+        assertThat(dashboard.getMonthToDateLastYear().getAmount()).isEqualByComparingTo(expectedMonthToDateLastYear);
+        // Sin ventas hoy: el dia sin operacion es 0.00 y la variacion contra 250.00 es -100 %.
+        assertThat(dashboard.getToday().getAmount()).isEqualByComparingTo("0.00");
+        assertThat(dashboard.getGrowthVsLastYearPercent()).isEqualByComparingTo("-100.0");
+    }
+
+    @Test
+    void managerDashboard_excludes_test_sales() {
+        KioskSaleEntity testSale = KioskSaleEntity.builder().status("COMPLETED").testSale(true).build();
+        KioskSaleEntity realSale = KioskSaleEntity.builder().status("COMPLETED").testSale(false).build();
+
+        assertThat(KioskPosService.countsForManagerDashboard(testSale)).isFalse();
+        assertThat(KioskPosService.countsForManagerDashboard(realSale)).isTrue();
     }
 
     @Test
