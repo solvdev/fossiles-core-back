@@ -119,6 +119,16 @@ class CustomerAccountCleanupScriptTest {
                         CONSTRAINT chk_customer_account_entry_status CHECK (status IN ('ACTIVE', 'VOID'))
                     )
                     """);
+            statement.execute("""
+                    CREATE TABLE production_order_partial_release (
+                        id BIGINT PRIMARY KEY
+                    )
+                    """);
+            statement.execute("""
+                    ALTER TABLE customer_account_entry
+                        ADD CONSTRAINT fk_cae_partial_release
+                        FOREIGN KEY (partial_release_id) REFERENCES production_order_partial_release (id)
+                    """);
         }
         Psql phase1 = psql("migration-customer-account-lf-phase1.sql");
         assertThat(phase1.exitCode).as(phase1.output).isZero();
@@ -135,7 +145,8 @@ class CustomerAccountCleanupScriptTest {
         assertThat(dry.output).contains("SIN_ORDEN", "5100", "PLAN", "CONSERVAR", "NUEVO");
         assertThat(dry.output).contains("REVIEW", "300", "cambiaria el saldo en -490.00");
         assertThat(dry.output).contains("OVERPAID", "400");
-        assertThat(dry.output).containsPattern("RESUMEN\\s+\\|\\s+4\\s+\\|\\s+8\\s+\\|\\s+1\\s+\\|\\s+ROLLBACK");
+        assertThat(dry.output).containsPattern("RESUMEN\\s+\\|\\s+4\\s+\\|\\s+9\\s+\\|\\s+1\\s+\\|\\s+ROLLBACK");
+        assertThat(dry.output).contains("ajuste existente distinto al costo de envio");
         assertThat(dry.output).contains("cambiaria el saldo en -40.00", "cambiaria el saldo en -20.00", "cambiaria el saldo en 20.00");
         assertThat(dry.output).contains("BALANCE_CHECK", "saldos sin cambio");
         assertPhase2Blockers(dry.output);
@@ -150,7 +161,7 @@ class CustomerAccountCleanupScriptTest {
         Psql applied = cleanup("aplicar=si");
         assertThat(applied.exitCode).as(applied.output).isZero();
         assertThat(applied.output).doesNotContain("NOMBRE_SECRETO");
-        assertThat(applied.output).containsPattern("RESUMEN\\s+\\|\\s+4\\s+\\|\\s+8\\s+\\|\\s+1\\s+\\|\\s+COMMIT");
+        assertThat(applied.output).containsPattern("RESUMEN\\s+\\|\\s+4\\s+\\|\\s+9\\s+\\|\\s+1\\s+\\|\\s+COMMIT");
         assertThat(applied.output).contains("OVERPAID");
         assertPhase2Blockers(applied.output);
 
@@ -172,6 +183,11 @@ class CustomerAccountCleanupScriptTest {
                 SELECT amount FROM customer_account_entry
                 WHERE production_order_id = 100 AND entry_type = 'CHARGE_ADJUSTMENT' AND status = 'ACTIVE'
                 """)).isEqualByComparingTo("40.00");
+        assertThat(text("""
+                SELECT partial_release_id::text FROM customer_account_entry
+                WHERE production_order_id = 100 AND entry_type = 'CHARGE_ADJUSTMENT' AND status = 'ACTIVE'
+                """)).isNull();
+        assertThat(moneyOf(customerDebit(10))).isEqualByComparingTo("148.00");
         assertThat(count("""
                 SELECT count(*) FROM customer_account_entry
                 WHERE production_order_id = 100 AND entry_type = 'CHARGE_ADJUSTMENT' AND status = 'ACTIVE'
@@ -320,6 +336,15 @@ class CustomerAccountCleanupScriptTest {
                 SELECT count(*) FROM customer_account_entry
                 WHERE production_order_id = 950 AND entry_type = 'CHARGE_ADJUSTMENT'
                 """)).isZero();
+        assertThat(applied.output).contains("ajuste existente distinto al costo de envio");
+        assertThat(status(9600)).isEqualTo("ACTIVE");
+        assertThat(money(9600)).isEqualByComparingTo("80.00");
+        assertThat(money(9601)).isEqualByComparingTo("5.00");
+        assertThat(count("""
+                SELECT count(*) FROM customer_account_entry
+                WHERE production_order_id = 960 AND entry_type = 'CHARGE_ADJUSTMENT' AND status = 'ACTIVE'
+                """)).isEqualTo(1);
+        assertThat(moneyOf(customerDebit(97))).isEqualByComparingTo("85.00");
 
         assertThat(count("""
                 SELECT count(*) FROM product_shipment ps
@@ -338,7 +363,10 @@ class CustomerAccountCleanupScriptTest {
 
         Psql second = cleanup("aplicar=si");
         assertThat(second.exitCode).as(second.output).isZero();
-        assertThat(second.output).containsPattern("RESUMEN\\s+\\|\\s+0\\s+\\|\\s+8\\s+\\|\\s+1\\s+\\|\\s+COMMIT");
+        assertThat(second.output).containsPattern("RESUMEN\\s+\\|\\s+0\\s+\\|\\s+9\\s+\\|\\s+1\\s+\\|\\s+COMMIT");
+        assertThat(second.output).contains("ajuste existente distinto al costo de envio");
+        assertThat(status(9600)).isEqualTo("ACTIVE");
+        assertThat(money(9601)).isEqualByComparingTo("5.00");
         assertPhase2Blockers(second.output);
         assertThat(second.output).contains("REVIEW", "300", "SIN_ORDEN", "5100", "OVERPAID", "400");
         assertThat(second.output).doesNotContain("CONSERVAR");
@@ -544,7 +572,8 @@ class CustomerAccountCleanupScriptTest {
                         (93, 'LEG-93', 'NOMBRE_SECRETO'),
                         (94, 'LEG-94', 'NOMBRE_SECRETO'),
                         (95, 'LEG-95', 'NOMBRE_SECRETO'),
-                        (96, 'LEG-96', 'NOMBRE_SECRETO')
+                        (96, 'LEG-96', 'NOMBRE_SECRETO'),
+                        (97, 'LEG-97', 'NOMBRE_SECRETO')
                     """);
             statement.execute("""
                     INSERT INTO production_order (id, code, order_type, customer_id, seller_name) VALUES
@@ -560,7 +589,8 @@ class CustomerAccountCleanupScriptTest {
                         (920, 'OP-920', 'NORMAL', 92, 'LUIS FELIPE'),
                         (930, 'OP-930', 'NORMAL', 93, 'LUIS FELIPE'),
                         (940, 'OP-940', 'NORMAL', 95, 'LUIS FELIPE'),
-                        (950, 'OP-950', 'NORMAL', 96, 'LUIS FELIPE')
+                        (950, 'OP-950', 'NORMAL', 96, 'LUIS FELIPE'),
+                        (960, 'OP-960', 'NORMAL', 97, 'LUIS FELIPE')
                     """);
             statement.execute("UPDATE production_order SET status = 'CANCELLED' WHERE id = 930");
             statement.execute("UPDATE production_order SET vendor_shipment_number = 'ENVP-200' WHERE id = 200");
@@ -578,7 +608,8 @@ class CustomerAccountCleanupScriptTest {
                         (920, 2, 50.00),
                         (930, 1, 50.00),
                         (940, 1, 40.00),
-                        (950, 1, 30.00)
+                        (950, 1, 30.00),
+                        (960, 1, 80.00)
                     """);
             statement.execute("""
                     INSERT INTO product_shipment (id, production_order_id, shipment_number, status, shipping_cost, sent_at) VALUES
@@ -596,9 +627,12 @@ class CustomerAccountCleanupScriptTest {
                         (9110, 910, 'S9110', 'SENT', 20.00, TIMESTAMP '2026-01-02'),
                         (9210, 920, 'S9210', 'SENT', 20.00, TIMESTAMP '2026-01-02'),
                         (9310, 930, 'S9310', 'SENT', 10.00, TIMESTAMP '2026-01-02'),
-                        (9510, 950, 'S9510', 'DRAFT', 5.00, NULL)
+                        (9510, 950, 'S9510', 'DRAFT', 5.00, NULL),
+                        (9610, 960, 'S9610', 'SENT', 12.00, TIMESTAMP '2026-01-02')
                     """);
+            statement.execute("INSERT INTO production_order_partial_release (id) VALUES (77)");
             statement.execute("UPDATE product_shipment SET partial_release_id = 77 WHERE id = 2001");
+            statement.execute("UPDATE product_shipment SET partial_release_id = 99999 WHERE id = 1001");
             statement.execute("""
                     INSERT INTO customer_account_entry
                         (id, customer_id, entry_type, entry_date, amount, production_order_id, status, order_kind)
@@ -626,7 +660,8 @@ class CustomerAccountCleanupScriptTest {
                         (9400, 94, 'CHARGE', DATE '2026-01-01', 20.00, 940, 'ACTIVE', 'OPV'),
                         (9401, 94, 'CHARGE', DATE '2026-01-02', 20.00, 940, 'ACTIVE', 'OPV'),
                         (9500, 96, 'CHARGE', DATE '2026-01-01', 30.00, 950, 'ACTIVE', 'OPV'),
-                        (9501, 96, 'CHARGE', DATE '2026-01-02', 5.00, 950, 'ACTIVE', 'OPV')
+                        (9501, 96, 'CHARGE', DATE '2026-01-02', 5.00, 950, 'ACTIVE', 'OPV'),
+                        (9600, 97, 'CHARGE', DATE '2026-01-01', 80.00, 960, 'ACTIVE', 'OPV')
                     """);
             statement.execute("""
                     UPDATE customer_account_entry
@@ -646,7 +681,9 @@ class CustomerAccountCleanupScriptTest {
                         (6101, 60, 'CHARGE_ADJUSTMENT', DATE '2026-01-02', 5.00, 'ya-bien',
                          600, 6001, 6100, 'OPV', 'ACTIVE'),
                         (9102, 91, 'CHARGE_ADJUSTMENT', DATE '2026-01-02', 20.00, 'ajuste-120',
-                         910, 9110, 9101, 'OPV', 'ACTIVE')
+                         910, 9110, 9101, 'OPV', 'ACTIVE'),
+                        (9601, 97, 'CHARGE_ADJUSTMENT', DATE '2026-01-02', 5.00, 'ajuste-distinto',
+                         960, 9610, 9600, 'OPV', 'ACTIVE')
                     """);
             statement.execute("""
                     INSERT INTO customer_account_entry

@@ -424,6 +424,15 @@ SELECT q.production_order_id,
            WHEN q.customer_n <> 1 THEN 'REVIEW'
            WHEN q.draft_unbilled THEN 'REVIEW'
            WHEN q.charge_sum + q.adj_sum <> q.products + q.adj_sum + q.missing_shipping THEN 'REVIEW'
+           WHEN EXISTS (
+               SELECT 1
+               FROM customer_account_entry a
+               JOIN product_shipment ps ON ps.id = a.product_shipment_id
+               WHERE a.production_order_id = q.production_order_id
+                 AND upper(a.entry_type) = 'CHARGE_ADJUSTMENT'
+                 AND upper(coalesce(a.status, '')) = 'ACTIVE'
+                 AND round(a.amount, 2) IS DISTINCT FROM round(ps.shipping_cost, 2)
+           ) THEN 'REVIEW'
            WHEN q.oldest_amount = q.products THEN 'CONSERVAR'
            ELSE 'NUEVO'
        END,
@@ -448,6 +457,15 @@ SELECT q.production_order_id,
            WHEN q.draft_unbilled THEN 'envio en borrador: no se decide si se cobra ahora o al despacho'
            WHEN q.charge_sum + q.adj_sum <> q.products + q.adj_sum + q.missing_shipping
                THEN 'cambiaria el saldo en ' || ((q.products + q.missing_shipping) - q.charge_sum)::text
+           WHEN EXISTS (
+               SELECT 1
+               FROM customer_account_entry a
+               JOIN product_shipment ps ON ps.id = a.product_shipment_id
+               WHERE a.production_order_id = q.production_order_id
+                 AND upper(a.entry_type) = 'CHARGE_ADJUSTMENT'
+                 AND upper(coalesce(a.status, '')) = 'ACTIVE'
+                 AND round(a.amount, 2) IS DISTINCT FROM round(ps.shipping_cost, 2)
+           ) THEN 'ajuste existente distinto al costo de envio'
            ELSE NULL
        END
 FROM quote q
@@ -589,7 +607,9 @@ WITH ins AS (
            p.production_order_id,
            ps.id,
            p.survivor_id,
-           ps.partial_release_id,
+           CASE WHEN EXISTS (
+               SELECT 1 FROM production_order_partial_release r WHERE r.id = ps.partial_release_id
+           ) THEN ps.partial_release_id END,
            p.order_kind,
            p.document_number,
            COALESCE((SELECT o.invoice_number FROM customer_account_entry o
