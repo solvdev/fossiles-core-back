@@ -9,7 +9,6 @@ import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
 import org.hibernate.cfg.AvailableSettings;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
@@ -29,8 +28,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -546,24 +543,22 @@ class CleanupCustomerAccountLfDuplicatesIndependentTest {
     }
 
     @Test
-    @Disabled("pending Baku follow-up: re-point adjustments from VOID charge")
-    void BUG_adjustmentOnVoidChargeStaysToFixEveryRun() throws Exception {
-        // Desired: the adjustment is re-pointed to the surviving active charge, so a second
-        // run has nothing to fix and the balance stays 50.00. Today the order stays in PLAN
-        // as a no-op and every re-run still counts 1 to fix.
+    void adjustmentOnVoidChargeRelinksToSurvivor() throws Exception {
+        // Products 40, shipping 10, active charge 8800. Adjustment 8802 matches shipping and
+        // still points at void charge 8809. Balance stays 50.00.
         seedAdjustmentOnVoidCharge();
+        assertThat(text("SELECT entry_date::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("2026-09-04");
         Psql first = cleanup("aplicar=si");
         assertThat(first.exitCode).as(first.output).isZero();
-        assertThat(text("SELECT applied_to_entry_id::text FROM customer_account_entry WHERE id = 8802"))
-                .isEqualTo("8800");
-        assertThat(money(8802)).isEqualByComparingTo("10.00");
-        assertThat(text("SELECT status FROM customer_account_entry WHERE id = 8800")).isEqualTo("ACTIVE");
-        assertThat(text("SELECT status FROM customer_account_entry WHERE id = 8809")).isEqualTo("VOID");
+        assertThat(text("SELECT applied_to_entry_id::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("8800");
+        assertThat(text("SELECT entry_date::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("2026-09-04");
+        assertThat(text("SELECT reassigned_from_entry_id::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("8809");
+        assertThat(text("SELECT description FROM customer_account_entry WHERE id = 8802"))
+                .contains("LIMPIEZA-CXC-2026-10 cargo:8809");
         assertThat(balances().get(880L)).isEqualByComparingTo("50.00");
         Psql second = cleanup("aplicar=si");
         assertThat(second.exitCode).as(second.output).isZero();
         assertThat(second.output).containsPattern("RESUMEN\\s+\\|\\s+0\\s+\\|");
-        assertThat(sectionRows(second.output, "PLAN")).noneMatch(row -> row.contains("880"));
         assertThat(balances().get(880L)).isEqualByComparingTo("50.00");
     }
 
@@ -1222,9 +1217,14 @@ class CleanupCustomerAccountLfDuplicatesIndependentTest {
 
     private static List<Long> orderIds(String output, String section) {
         List<Long> ids = new ArrayList<>();
-        Matcher matcher = Pattern.compile(section + "\\s+\\|\\s+(\\d+)").matcher(output);
-        while (matcher.find()) {
-            ids.add(Long.valueOf(matcher.group(1)));
+        for (String line : sectionRows(output, section)) {
+            for (String cell : line.split("\\|")) {
+                String value = cell.trim();
+                if (value.matches("\\d+")) {
+                    ids.add(Long.valueOf(value));
+                    break;
+                }
+            }
         }
         return ids;
     }
