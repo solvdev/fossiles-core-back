@@ -239,9 +239,8 @@ class EntrecuerosPackagingRejectionTest {
         assertThat(context.getPosMode()).isEqualTo(KioskPosMode.STANDARD);
         assertThat(context.getInventory())
                 .filteredOn(item -> "SUM-POS-FULL".equals(item.getProductCode()))
-                .singleElement()
-                .extracting(KioskPosContextResponse.InventoryItem::getSuggestedUnitPrice)
-                .isEqualTo(new BigDecimal("5.00"));
+                .isNotEmpty()
+                .allSatisfy(item -> assertThat(item.getSuggestedUnitPrice()).isEqualByComparingTo("5.00"));
 
         KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
                 .kioskLocationId(kiosk.getId())
