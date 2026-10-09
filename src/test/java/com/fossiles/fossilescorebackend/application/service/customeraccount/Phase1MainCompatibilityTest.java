@@ -33,7 +33,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * source-commit: 2de414f
+ * source-commit: 2de414f5e8b42ae03d046a3854218f68f396b87b
  *
  * Phase 1 ships before the receivables fix. Today's main still saves one CHARGE per shipment
  * and sometimes a CHARGE with no production order. After phase 1, both must still save.
@@ -68,6 +68,11 @@ class Phase1MainCompatibilityTest {
     void phase1AllowsMainPerShipmentChargesAndChargesWithoutAnOrder() throws Exception {
         applyPhase1();
         assertThat(constraintDefinition("chk_customer_account_entry_type")).contains("CHARGE_ADJUSTMENT");
+        assertThat(constraintDefinition("chk_customer_account_entry_adjustment_links"))
+                .contains("production_order_id")
+                .contains("product_shipment_id")
+                .contains("applied_to_entry_id");
+        assertThat(columnCount("customer_account_entry", "reassigned_from_entry_id")).isEqualTo(1);
         assertThat(indexCount("uq_cae_one_active_charge_per_order")).isZero();
 
         CustomerEntity customer = customers.save(CustomerEntity.builder()
@@ -163,6 +168,14 @@ class Phase1MainCompatibilityTest {
     private int indexCount(String indexName) {
         Integer count = jdbc.queryForObject(
                 "SELECT count(*) FROM pg_indexes WHERE indexname = ?", Integer.class, indexName);
+        return count == null ? 0 : count;
+    }
+
+    private int columnCount(String table, String column) {
+        Integer count = jdbc.queryForObject("""
+                SELECT count(*) FROM information_schema.columns
+                WHERE table_name = ? AND column_name = ?
+                """, Integer.class, table, column);
         return count == null ? 0 : count;
     }
 }
