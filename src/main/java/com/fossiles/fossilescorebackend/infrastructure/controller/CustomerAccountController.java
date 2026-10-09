@@ -90,6 +90,16 @@ public class CustomerAccountController {
                 regionCode, routeNumber, routeLocationCode, allOrderTypes, limit));
     }
 
+    /**
+     * Monto de cargo calculado en el servidor para una orden: productos de toda la orden
+     * más el envío real de cada parcial que ya tiene envío. No usa el monto del cliente.
+     */
+    @GetMapping("/production-orders/{productionOrderId}/charge-quote")
+    public ResponseEntity<OrderChargeQuoteResponse> quoteOrderCharge(@PathVariable Long productionOrderId)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(customerAccountService.quoteOrderCharge(productionOrderId));
+    }
+
     @GetMapping("/customers/{customerId}/balance")
     public ResponseEntity<CustomerAccountBalanceResponse> getBalance(@PathVariable Long customerId)
             throws ResourceNotFoundException {
