@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
@@ -131,6 +132,37 @@ class ProductionAutoPlannerDayPlanTest {
         verify(taskOrganizerService, never()).createAutoCentroTask(any());
         assertThat(result.getDeferredNoCapacity()).singleElement()
                 .satisfies(line -> assertThat(line.getRemainingQuantity()).isEqualTo(12));
+    }
+
+    @Test
+    void losCinchosSinMesaNoOcupanCupoDeCentro() throws Exception {
+        TaskEntity cincho = TaskEntity.builder().id(1L).status("PENDING").scheduledDate(day).build();
+        when(taskRepository.findByScheduledDate(day)).thenReturn(List.of(cincho));
+        when(taskDeskHoursService.baseHours(any(TaskEntity.class), anyMap())).thenReturn(8.0);
+        when(taskItemRepository.findByTaskIdIn(any())).thenReturn(List.of(
+                TaskItemEntity.builder().id(11L).taskId(1L).productId(77L).build()));
+        ProductEntity cinchoProduct = ProductEntity.builder().id(77L).code("CIN-1").name("Cincho").cinchoType("ADULTO").build();
+        ProductEntity billetera = ProductEntity.builder().id(9L).code("BIL-1").name("Billetera").prdTime(1.0).unitsPerTask(2).build();
+        when(productRepository.findAllById(any())).thenReturn(List.of(cinchoProduct, billetera));
+
+        service.planOrder(5L, day);
+
+        verify(taskOrganizerService, times(2)).createAutoCentroTask(any());
+    }
+
+    @Test
+    void regenerarConservaLoAgregadoConDelDia() throws Exception {
+        TaskEntity conExtra = TaskEntity.builder().id(1L).status("PENDING").observations("Auto-plan")
+                .productionOrderCode("OP-5").build();
+        when(taskRepository.findByStatus("PENDING")).thenReturn(List.of(conExtra));
+        when(taskItemRepository.findByTaskIdIn(any())).thenReturn(List.of(
+                TaskItemEntity.builder().id(11L).taskId(1L).daySaleExtra(true).build()));
+        when(productionOrderRepository.findActiveOrders()).thenReturn(List.of());
+
+        ProductionAutoPlanResult result = service.regenerate(null, day);
+
+        verify(taskRepository, never()).deleteById(anyLong());
+        assertThat(result.getKeptWithProgress()).isEqualTo(1);
     }
 
     @Test

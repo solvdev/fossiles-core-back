@@ -220,6 +220,9 @@ public class ProductionAutoPlannerService {
      */
     private static boolean hasProgress(TaskEntity task, List<TaskItemEntity> items, Set<Long> itemsWithPicks) {
         boolean cincho = String.valueOf(task.getObservations()).trim().startsWith("Auto-plan cinchos");
+        // En una tarea de OPL todo nace como venta del día; en las demás, una línea así la
+        // agregó alguien con «+ Del día».
+        boolean oplTask = ProductionPlanningConstants.isOnlineSaleOrder(null, task.getProductionOrderCode());
         if (task.getDesk() != null || Boolean.TRUE.equals(task.getMaterialsDelivered())) {
             return true;
         }
@@ -228,6 +231,9 @@ public class ProductionAutoPlannerService {
         }
         for (TaskItemEntity item : items) {
             if (itemsWithPicks.contains(item.getId()) || item.getDieCutPlannedDate() != null) {
+                return true;
+            }
+            if (!oplTask && Boolean.TRUE.equals(item.getDaySaleExtra())) {
                 return true;
             }
             if (!cincho && (Boolean.TRUE.equals(item.getLeatherDelivered()) || Boolean.TRUE.equals(item.getDieCutReady()))) {
@@ -673,13 +679,18 @@ public class ProductionAutoPlannerService {
                 .toList();
         Map<Long, Double> extra = taskDeskHoursService.daySaleExtraByTaskId(
                 sameDay.stream().map(TaskEntity::getId).toList());
+        Set<Long> cinchoTasks = cinchoOnlyTaskIds(sameDay.stream()
+                .filter(t -> t.getDesk() == null)
+                .map(TaskEntity::getId)
+                .toList());
         Map<Integer, Double> loads = new HashMap<>();
         List<Double> withoutDesk = new ArrayList<>();
         for (TaskEntity task : sameDay) {
             double hours = taskDeskHoursService.baseHours(task, extra);
             if (task.getDesk() != null) {
                 loads.merge(task.getDesk(), hours, Double::sum);
-            } else if (hours > 0) {
+            } else if (hours > 0 && !cinchoTasks.contains(task.getId())) {
+                // Las de cinchos sin mesa van a la mesa de cinchos, no al cupo de centro.
                 withoutDesk.add(hours);
             }
         }
@@ -695,6 +706,32 @@ public class ProductionAutoPlannerService {
             loads.merge(lightest, hours, Double::sum);
         }
         return loads;
+    }
+
+    /** Tareas cuyos productos son todos cincho: se trabajan aparte del centro. */
+    private Set<Long> cinchoOnlyTaskIds(List<Long> taskIds) {
+        if (taskIds.isEmpty()) {
+            return Set.of();
+        }
+        List<TaskItemEntity> items = taskItemRepository.findByTaskIdIn(taskIds);
+        Map<Long, ProductEntity> products = productRepository.findAllById(items.stream()
+                        .map(TaskItemEntity::getProductId)
+                        .filter(Objects::nonNull)
+                        .collect(java.util.stream.Collectors.toSet()))
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(ProductEntity::getId, p -> p, (a, b) -> a));
+        Map<Long, List<TaskItemEntity>> byTask = items.stream()
+                .filter(i -> i.getTaskId() != null)
+                .collect(java.util.stream.Collectors.groupingBy(TaskItemEntity::getTaskId));
+        Set<Long> out = new HashSet<>();
+        byTask.forEach((taskId, list) -> {
+            boolean allCincho = list.stream().allMatch(i -> i.getProductId() != null
+                    && CinchoProductUtils.isCinchoLineForProduction(products.get(i.getProductId())));
+            if (allCincho) {
+                out.add(taskId);
+            }
+        });
+        return out;
     }
 
     private void requestMaterials(Long productionOrderId) {

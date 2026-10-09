@@ -168,6 +168,68 @@ public class TaskController {
         return ResponseEntity.ok(productionAutoPlannerService.planPending(date));
     }
 
+    /**
+     * Cola del día: las OPs con prioridad manual (2..99), en su orden. Es la misma prioridad
+     * que usa «Planificar» en el Centro y «Distribuir» en el Organizador. Antes la cola vivía
+     * solo en el navegador y se guardaba al distribuir, que llega después del corte: para
+     * entonces el plan ya había decidido qué entraba en el día.
+     */
+    @GetMapping("/day-queue")
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<Map<String, Object>>> getDayQueue() {
+        return ResponseEntity.ok(dayQueueRows());
+    }
+
+    /**
+     * Reemplaza la cola entera: las OPs recibidas toman prioridad 2, 3, 4... en ese orden y las
+     * que tenían prioridad manual y ya no vienen vuelven a la de su tipo. Así quitar una OP de
+     * la cola no la deja adelantada para siempre.
+     */
+    @PutMapping("/day-queue")
+    @Transactional
+    public ResponseEntity<List<Map<String, Object>>> saveDayQueue(@RequestBody Map<String, List<Long>> body) {
+        // Mismo turno que los repartos: la prioridad decide el orden en que reparten.
+        productionPlanningLock.acquire();
+        List<Long> ids = body != null && body.get("orderIds") != null ? body.get("orderIds") : List.of();
+        Map<Long, Integer> nueva = new LinkedHashMap<>();
+        for (Long id : ids) {
+            if (id != null && !nueva.containsKey(id)) {
+                nueva.put(id, Math.min(MIN_MANUAL_SCHEDULING_PRIORITY + nueva.size(), MAX_MANUAL_SCHEDULING_PRIORITY));
+            }
+        }
+        List<ProductionOrderEntity> cambiadas = new ArrayList<>();
+        for (ProductionOrderEntity po : productionOrderRepository.findActiveOrders()) {
+            Integer actual = po.getSchedulingPriority();
+            boolean manual = actual != null
+                    && actual >= MIN_MANUAL_SCHEDULING_PRIORITY && actual <= MAX_MANUAL_SCHEDULING_PRIORITY;
+            if (manual && !nueva.containsKey(po.getId())) {
+                po.setSchedulingPriority(null);
+                cambiadas.add(po);
+            }
+        }
+        for (ProductionOrderEntity po : productionOrderRepository.findAllById(nueva.keySet())) {
+            po.setSchedulingPriority(nueva.get(po.getId()));
+            cambiadas.add(po);
+        }
+        productionOrderRepository.saveAll(cambiadas);
+        return ResponseEntity.ok(dayQueueRows());
+    }
+
+    private List<Map<String, Object>> dayQueueRows() {
+        return productionOrderRepository.findActiveOrders().stream()
+                .filter(po -> po.getSchedulingPriority() != null
+                        && po.getSchedulingPriority() >= MIN_MANUAL_SCHEDULING_PRIORITY
+                        && po.getSchedulingPriority() <= MAX_MANUAL_SCHEDULING_PRIORITY)
+                .sorted(ProductionOrderPlanPriority.comparator())
+                .map(po -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", po.getId());
+                    row.put("code", po.getCode());
+                    return row;
+                })
+                .collect(Collectors.toList());
+    }
+
     @GetMapping("/blocked-leather")
     public ResponseEntity<List<ProductionAutoPlanResult.BlockedLeatherLine>> blockedLeather() {
         return ResponseEntity.ok(productionAutoPlannerService.listBlockedLeather());
