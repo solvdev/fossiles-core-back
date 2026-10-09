@@ -88,6 +88,9 @@ END $$;
 
 COMMENT ON COLUMN customer_account_entry.reassigned_from_entry_id IS
     'Cargo original del que se traslado este movimiento. No se pisa si se traslada otra vez.';
+
+-- Column and FK in this same transaction, under the lock_timeout set above.
+ALTER TABLE customer_account_entry VALIDATE CONSTRAINT fk_customer_account_entry_reassigned_from;
 COMMIT;
 
 -- 4) Validate (SHARE UPDATE EXCLUSIVE: reads and writes keep working). No-op if already validated.
@@ -95,7 +98,6 @@ BEGIN;
 SET LOCAL lock_timeout = '5s';
 ALTER TABLE customer_account_entry VALIDATE CONSTRAINT chk_customer_account_entry_type;
 ALTER TABLE customer_account_entry VALIDATE CONSTRAINT chk_customer_account_entry_adjustment_links;
-ALTER TABLE customer_account_entry VALIDATE CONSTRAINT fk_customer_account_entry_reassigned_from;
 ALTER TABLE customer VALIDATE CONSTRAINT chk_customer_credit_days;
 COMMIT;
 

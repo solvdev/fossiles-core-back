@@ -2,8 +2,9 @@
 -- Usually NOT needed: current main runs fine with phase 1 in place. Run only if you must remove it, and only
 --   * after rollback-customer-account-lf-phase2.sql, and
 --   * after the database is back on current main (the #120 binary needs credit_days and CHARGE_ADJUSTMENT).
--- Aborts (nothing changed) if any CHARGE_ADJUSTMENT row exists, VOID ones included: the 5-value CHECK would
--- reject them, and deleting them would change balances. Saves credit_days to a CSV on YOUR machine first.
+-- Aborts (nothing changed) if any CHARGE_ADJUSTMENT row exists, VOID ones included, or if any row has
+-- reassigned_from_entry_id set: dropping that column would erase the move trace. Saves credit_days to a
+-- CSV on YOUR machine first. Runs cleanly when neither of those rows exists.
 -- Usage: psql -v ON_ERROR_STOP=1 -d fosstest -f rollback-customer-account-lf-phase1.sql
 \set ON_ERROR_STOP on
 SELECT current_database() AS base_destino;
@@ -20,6 +21,7 @@ LOCK TABLE customer_account_entry IN ACCESS EXCLUSIVE MODE;
 DO $$
 DECLARE
     adjustments bigint;
+    traced bigint;
 BEGIN
     IF to_regclass('uq_cae_one_active_charge_per_order') IS NOT NULL
        OR EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_customer_account_entry_charge_order') THEN
@@ -28,6 +30,17 @@ BEGIN
     SELECT count(*) INTO adjustments FROM customer_account_entry WHERE entry_type = 'CHARGE_ADJUSTMENT';
     IF adjustments > 0 THEN
         RAISE EXCEPTION 'ROLLBACK FASE 1 abortado: hay % filas CHARGE_ADJUSTMENT (incluidas anuladas). El CHECK de 5 tipos las rechazaria y borrarlas cambia saldos. No se cambio nada.', adjustments;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'customer_account_entry'
+          AND column_name = 'reassigned_from_entry_id'
+    ) THEN
+        EXECUTE 'SELECT count(*) FROM customer_account_entry WHERE reassigned_from_entry_id IS NOT NULL' INTO traced;
+        IF traced > 0 THEN
+            RAISE EXCEPTION 'ROLLBACK FASE 1 abortado: hay % filas con reassigned_from_entry_id. Borrar la columna pierde el rastro del traslado. No se cambio nada.', traced;
+        END IF;
     END IF;
 END $$;
 

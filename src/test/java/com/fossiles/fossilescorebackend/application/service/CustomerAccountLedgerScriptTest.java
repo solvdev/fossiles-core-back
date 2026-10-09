@@ -140,6 +140,59 @@ class CustomerAccountLedgerScriptTest {
                 """)).isEqualTo(1);
     }
 
+    @Test
+    void phase1RollbackRefusesWhileReassignedFromIsSetAndSucceedsWhenClear() throws Exception {
+        Psql phase1 = psql("migration-customer-account-lf-phase1.sql");
+        assertThat(phase1.exitCode).as(phase1.output).isZero();
+        assertThat(count("""
+                SELECT count(*) FROM pg_constraint
+                WHERE conname = 'fk_customer_account_entry_reassigned_from' AND convalidated
+                """)).isEqualTo(1);
+
+        try (Connection connection = open(); Statement statement = connection.createStatement()) {
+            statement.execute("INSERT INTO customer (legacy_code) VALUES ('CB3')");
+            statement.execute("UPDATE customer SET credit_days = 15 WHERE id = 1");
+            statement.execute("""
+                    INSERT INTO customer_account_entry
+                        (customer_id, entry_type, entry_date, amount, production_order_id, status)
+                    VALUES (1, 'CHARGE', CURRENT_DATE, 10.00, 41, 'ACTIVE')
+                    """);
+            statement.execute("""
+                    INSERT INTO customer_account_entry
+                        (customer_id, entry_type, entry_date, amount, production_order_id,
+                         applied_to_entry_id, reassigned_from_entry_id, status)
+                    VALUES (1, 'PAYMENT', CURRENT_DATE, 4.00, 41, 1, 1, 'ACTIVE')
+                    """);
+        }
+
+        Psql refused = psql("rollback-customer-account-lf-phase1.sql");
+        assertThat(refused.exitCode).as(refused.output).isNotZero();
+        assertThat(refused.output).contains("reassigned_from_entry_id");
+        assertThat(refused.output).contains("No se cambio nada");
+        assertThat(count("SELECT reassigned_from_entry_id FROM customer_account_entry WHERE entry_type = 'PAYMENT'")).isEqualTo(1);
+        assertThat(count("SELECT credit_days FROM customer WHERE id = 1")).isEqualTo(15);
+        assertThat(constraintDef("chk_customer_account_entry_type")).contains("CHARGE_ADJUSTMENT");
+        assertThat(count("""
+                SELECT count(*) FROM information_schema.columns
+                WHERE table_name = 'customer_account_entry' AND column_name = 'reassigned_from_entry_id'
+                """)).isEqualTo(1);
+
+        try (Connection connection = open(); Statement statement = connection.createStatement()) {
+            statement.execute("UPDATE customer_account_entry SET reassigned_from_entry_id = NULL");
+        }
+        Psql clean = psql("rollback-customer-account-lf-phase1.sql");
+        assertThat(clean.exitCode).as(clean.output).isZero();
+        assertThat(count("""
+                SELECT count(*) FROM information_schema.columns
+                WHERE table_name = 'customer_account_entry' AND column_name = 'reassigned_from_entry_id'
+                """)).isZero();
+        assertThat(count("""
+                SELECT count(*) FROM information_schema.columns
+                WHERE table_name = 'customer' AND column_name = 'credit_days'
+                """)).isZero();
+        assertThat(constraintDef("chk_customer_account_entry_type")).doesNotContain("CHARGE_ADJUSTMENT");
+    }
+
     private static Connection open() throws Exception {
         return DriverManager.getConnection(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
     }
