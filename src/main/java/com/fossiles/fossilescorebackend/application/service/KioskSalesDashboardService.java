@@ -271,7 +271,10 @@ public class KioskSalesDashboardService {
         return !header.saleDate().isBefore(goLive.get(site.getId()));
     }
 
-    /** Una fila por sitio seleccionado con venta distinta de cero en el periodo (importe de la fuente de Finanzas). */
+    /**
+     * Una fila por sitio seleccionado con venta distinta de cero en el periodo (importe de la fuente de Finanzas),
+     * con la categoría de ventas A/B/C del sitio (null = sin clasificar).
+     */
     private static List<BreakdownRow> byKiosk(
             List<KioskSiteEntity> selected,
             Map<Long, BigDecimal> periodBySite,
@@ -287,6 +290,7 @@ public class KioskSalesDashboardService {
                             .count(ticketsBySite.getOrDefault(site.getId(), 0))
                             .amount(money(amount))
                             .sharePercent(percent(amount, totalAmount))
+                            .category(normalizeSiteCategory(site.getSalesCategory()))
                             .build();
                 })
                 .sorted(Comparator.comparing(BreakdownRow::getAmount, Comparator.reverseOrder())
@@ -296,7 +300,8 @@ public class KioskSalesDashboardService {
 
     /**
      * Sitios con venta distinta de cero en el periodo, más el sitio pedido aunque no tenga venta. No aplica el
-     * filtro de kiosko (es la lista del selector) y sale ordenada por nombre.
+     * filtro de kiosko (es la lista del selector) y sale ordenada por nombre. Cada opción lleva la categoría de
+     * ventas A/B/C del sitio (null = sin clasificar).
      */
     private List<KioskOption> kioskOptions(
             List<KioskSiteEntity> included, Map<Long, BigDecimal> periodBySite, KioskSiteEntity requested) {
@@ -318,6 +323,7 @@ public class KioskSalesDashboardService {
                         .kioskId(site.getLocationId())
                         .kioskCode(locationCode(site.getLocationId() != null ? locations.get(site.getLocationId()) : null))
                         .kioskName(labelOrDefault(site.getName()))
+                        .category(normalizeSiteCategory(site.getSalesCategory()))
                         .build())
                 .sorted(Comparator.comparing(KioskOption::getKioskName, String.CASE_INSENSITIVE_ORDER)
                         .thenComparing(KioskOption::getSiteId))
