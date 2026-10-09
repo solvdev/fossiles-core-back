@@ -19,6 +19,7 @@ public final class EntrecuerosPriceLists {
         WALLET_LEATHER,
         WALLET_SYNTHETIC,
         CARDHOLDER_SYNTHETIC,
+        PACKAGING,
         PRODUCT
     }
 
@@ -40,8 +41,11 @@ public final class EntrecuerosPriceLists {
     }
 
     public static Kind kind(ProductEntity product, String hardware) {
-        if (product == null || KioscoInventoryInitRules.isPackagingProduct(product)) {
+        if (product == null) {
             return Kind.PRODUCT;
+        }
+        if (KioscoInventoryInitRules.isPackagingProduct(product)) {
+            return Kind.PACKAGING;
         }
         boolean cincho = KioscoInventoryInitRules.isCinchoProduct(product);
         if (cincho && "REVERSIBLE".equals(ProductCinchoType.normalizeCinchoType(product.getCinchoType()))) {
@@ -78,7 +82,7 @@ public final class EntrecuerosPriceLists {
 
     public static String volumeKey(Long productId, ProductEntity product, String hardware) {
         Kind kind = kind(product, hardware);
-        if (kind == Kind.PRODUCT) {
+        if (kind == Kind.PRODUCT || kind == Kind.PACKAGING) {
             return (productId != null ? productId : "") + "|" + kind.name();
         }
         return kind.name();
@@ -153,7 +157,7 @@ public final class EntrecuerosPriceLists {
             case WALLET_SYNTHETIC -> resolveSyntheticWallet(product, quantity, qty);
             case CARDHOLDER_SYNTHETIC -> nonCasual(product, quantity, qty >= 3 ? money("6") : money("10"));
             case CASUAL -> resolveCasual(product, quantity);
-            case PRODUCT -> EntrecuerosVolumePricing.resolveUnitPrice(product, quantity);
+            case PACKAGING, PRODUCT -> EntrecuerosVolumePricing.resolveUnitPrice(product, quantity);
         };
     }
 
@@ -169,6 +173,7 @@ public final class EntrecuerosPriceLists {
                     ? money("40")
                     : nonCasual(product, CONFIGURED_TOP_TIER_QTY, money("30"));
             case CARDHOLDER_SYNTHETIC -> nonCasual(product, CONFIGURED_TOP_TIER_QTY, money("6"));
+            case PACKAGING -> EntrecuerosVolumePricing.resolveUnitPrice(product, BigDecimal.ONE);
             case PRODUCT -> resolveUntypedCourtesyUnitPrice(product);
         };
     }

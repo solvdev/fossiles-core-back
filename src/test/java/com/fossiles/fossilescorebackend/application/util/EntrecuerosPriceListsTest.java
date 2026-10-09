@@ -109,6 +109,22 @@ class EntrecuerosPriceListsTest {
     }
 
     @Test
+    void packagingKindBeatsCinchoSignals() {
+        ProductEntity bag = ProductEntity.builder()
+                .code("SUM-BOLSA-CINCHO")
+                .name("Bolsa para cinchos")
+                .build();
+        ProductEntity box = ProductEntity.builder()
+                .code(" sum-caja ")
+                .name("Caja cincho")
+                .cinchoType("CASUAL")
+                .build();
+
+        assertThat(EntrecuerosPriceLists.kind(bag, null)).isEqualTo(EntrecuerosPriceLists.Kind.PACKAGING);
+        assertThat(EntrecuerosPriceLists.kind(box, "NINO")).isEqualTo(EntrecuerosPriceLists.Kind.PACKAGING);
+    }
+
+    @Test
     void cinchoForKidsDoesNotChangeCasualPricingYet() {
         ProductEntity kids = ProductEntity.builder()
                 .id(1L)
