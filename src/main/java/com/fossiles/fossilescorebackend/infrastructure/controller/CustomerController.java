@@ -59,6 +59,7 @@ public class CustomerController {
         validateRouteLocationCode(request.getRouteLocationCode());
         CustomerEntity entity = toEntity(request);
         entity.setNit(normalizeNit(request.getNit()));
+        applyCreditDays(entity, request.getCreditDays(), true);
         if (entity.getStatus() == null) {
             entity.setStatus("active");
         }
@@ -74,7 +75,8 @@ public class CustomerController {
         
         validateLegacyCode(entity.getId(), request.getLegacyCode());
         validateRouteLocationCode(request.getRouteLocationCode());
-        
+        applyCreditDays(entity, request.getCreditDays(), false);
+
         updateEntity(entity, request);
         CustomerEntity updated = customerRepository.save(entity);
         return ResponseEntity.ok(toResponse(updated));
@@ -100,6 +102,7 @@ public class CustomerController {
                 .address(entity.getAddress())
                 .routeLocationCode(entity.getRouteLocationCode())
                 .status(entity.getStatus())
+                .creditDays(entity.getCreditDays() == null ? 0 : entity.getCreditDays())
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
                 .updatedAt(entity.getUpdatedAt())
@@ -131,6 +134,20 @@ public class CustomerController {
         if (request.getAddress() != null) entity.setAddress(request.getAddress());
         entity.setRouteLocationCode(normalizeRouteCode(request.getRouteLocationCode()));
         if (request.getStatus() != null) entity.setStatus(request.getStatus());
+    }
+
+    private static void applyCreditDays(CustomerEntity entity, Integer creditDays, boolean creating)
+            throws BusinessException {
+        if (creditDays == null) {
+            if (creating || entity.getCreditDays() == null) {
+                entity.setCreditDays(0);
+            }
+            return;
+        }
+        if (creditDays < 0 || creditDays > 60) {
+            throw new BusinessException("Los días de crédito deben estar entre 0 y 60.");
+        }
+        entity.setCreditDays(creditDays);
     }
 
     private void validateRouteLocationCode(String code) throws BusinessException {

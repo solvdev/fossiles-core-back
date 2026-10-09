@@ -172,8 +172,8 @@ public class OpvShipmentCatalogService {
                 .documentLevel("ORDER")
                 .itemsSubtotal(pricing.itemsSubtotal)
                 .packingSubtotal(pricing.packingSubtotal)
-                .shippingCost(pricing.shippingCost)
-                .estimatedTotal(pricing.estimatedTotal)
+                .shippingCost(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
+                .estimatedTotal(pricing.itemsSubtotal.add(pricing.packingSubtotal).setScale(2, RoundingMode.HALF_UP))
                 .chargeStatus(charge.status)
                 .hasCharge(charge.hasCharge)
                 .lines(lines)
@@ -207,9 +207,9 @@ public class OpvShipmentCatalogService {
         BigDecimal packingSubtotal = sumLineTotals(lines.stream()
                 .filter(l -> "PACKING".equals(l.getLineType()))
                 .collect(Collectors.toList()));
-        BigDecimal shipping = (release == null || release.getSequenceNum() == null || release.getSequenceNum() == 1)
-                ? pricing.shippingCost
-                : BigDecimal.ZERO;
+        BigDecimal shipping = shipment.getShippingCost() != null && shipment.getShippingCost().signum() > 0
+                ? shipment.getShippingCost().setScale(2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
         BigDecimal estimated = itemsSubtotal.add(packingSubtotal).add(shipping).setScale(2, RoundingMode.HALF_UP);
 
         return OpvShipmentCatalogRowResponse.builder()
@@ -373,45 +373,9 @@ public class OpvShipmentCatalogService {
             Long productionOrderId,
             Long partialReleaseId,
             Long productShipmentId) {
-        if (entries == null || entries.isEmpty()) {
-            return new ChargeInfo("NONE", false);
-        }
-        Optional<CustomerAccountEntryEntity> charge = customerAccountEntryRepository.findActiveCharge(
-                entries.get(0).getCustomerId(),
-                productionOrderId,
-                partialReleaseId,
-                productShipmentId);
-        if (charge.isEmpty()) {
-            return new ChargeInfo("NONE", false);
-        }
-        BigDecimal balanceDue = computeChargeBalanceDue(charge.get(), entries);
-        String status;
-        if (balanceDue.compareTo(BigDecimal.ZERO) <= 0) {
-            status = "PAID";
-        } else if (balanceDue.compareTo(charge.get().getAmount()) < 0) {
-            status = "PARTIAL";
-        } else {
-            status = "CHARGED";
-        }
-        return new ChargeInfo(status, true);
-    }
-
-    private BigDecimal computeChargeBalanceDue(
-            CustomerAccountEntryEntity charge,
-            List<CustomerAccountEntryEntity> entries) {
-        BigDecimal applied = entries.stream()
-                .filter(e -> STATUS_ACTIVE.equalsIgnoreCase(e.getStatus()))
-                .filter(e -> charge.getId().equals(e.getAppliedToEntryId()))
-                .map(this::resolveAppliedCreditAmount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        return charge.getAmount().subtract(applied).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
-    }
-
-    private BigDecimal resolveAppliedCreditAmount(CustomerAccountEntryEntity entry) {
-        if (entry.getGrossCollectedAmount() != null && entry.getGrossCollectedAmount().compareTo(BigDecimal.ZERO) > 0) {
-            return entry.getGrossCollectedAmount().setScale(2, RoundingMode.HALF_UP);
-        }
-        return entry.getAmount() != null ? entry.getAmount().setScale(2, RoundingMode.HALF_UP) : BigDecimal.ZERO;
+        String status = customerAccountService.orderChargeStatus(
+                entries == null ? List.of() : entries, productionOrderId);
+        return new ChargeInfo(status, !"NONE".equals(status));
     }
 
     private BigDecimal resolveUnitPrice(ProductionOrderItemEntity item) {
