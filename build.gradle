@@ -61,6 +61,44 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
+def testH2Url = 'jdbc:h2:mem:fossiles_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE'
+def mainResourcesForTest = layout.buildDirectory.dir('resources/main-for-test')
+
+tasks.register('mainResourcesForTest', Copy) {
+    dependsOn tasks.named('processResources')
+    from(layout.buildDirectory.dir('resources/main')) {
+        exclude 'application.properties'
+    }
+    into mainResourcesForTest
+}
+
 tasks.named('test') {
     useJUnitPlatform()
+    dependsOn 'mainResourcesForTest'
+    environment 'SPRING_DATASOURCE_URL', testH2Url
+    environment 'SENTRY_DSN', ''
+    def mainResources = layout.buildDirectory.dir('resources/main')
+    classpath = files(mainResourcesForTest) + classpath.filter { File entry ->
+        entry != mainResources.get().asFile
+    }
+    doFirst {
+        def allowed = layout.buildDirectory.file('resources/test/application.properties').get().asFile.canonicalFile
+        def found = []
+        classpath.files.each { File entry ->
+            if (entry.isDirectory()) {
+                def candidate = new File(entry, 'application.properties')
+                if (candidate.isFile()) {
+                    found << candidate.canonicalFile
+                }
+            } else if (entry.name == 'application.properties' && entry.isFile()) {
+                found << entry.canonicalFile
+            }
+        }
+        def unexpected = found.findAll { it != allowed }
+        if (!allowed.isFile() || unexpected) {
+            throw new GradleException(
+                    "Test classpath must contain only ${allowed} as application.properties, found ${found}")
+        }
+        logger.lifecycle('Test classpath application.properties: ' + allowed)
+    }
 }
