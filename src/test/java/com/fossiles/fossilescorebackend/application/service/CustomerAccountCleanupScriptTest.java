@@ -145,7 +145,8 @@ class CustomerAccountCleanupScriptTest {
         assertThat(dry.output).contains("SIN_ORDEN", "5100", "PLAN", "CONSERVAR", "NUEVO");
         assertThat(dry.output).contains("REVIEW", "300", "cambiaria el saldo en -490.00");
         assertThat(dry.output).contains("OVERPAID", "400");
-        assertThat(dry.output).containsPattern("RESUMEN\\s+\\|\\s+4\\s+\\|\\s+9\\s+\\|\\s+1\\s+\\|\\s+ROLLBACK");
+        assertThat(dry.output).containsPattern("RESUMEN\\s+\\|\\s+5\\s+\\|\\s+9\\s+\\|\\s+1\\s+\\|\\s+ROLLBACK");
+        assertThat(dry.output).contains("estado después de aplicar", "REENLACE", "8802", "8801", "8800");
         assertThat(dry.output).contains("ajuste existente distinto al costo de envio");
         assertThat(dry.output).contains("cambiaria el saldo en -40.00", "cambiaria el saldo en -20.00", "cambiaria el saldo en 20.00");
         assertThat(dry.output).contains("BALANCE_CHECK", "saldos sin cambio");
@@ -161,7 +162,7 @@ class CustomerAccountCleanupScriptTest {
         Psql applied = cleanup("aplicar=si");
         assertThat(applied.exitCode).as(applied.output).isZero();
         assertThat(applied.output).doesNotContain("NOMBRE_SECRETO");
-        assertThat(applied.output).containsPattern("RESUMEN\\s+\\|\\s+4\\s+\\|\\s+9\\s+\\|\\s+1\\s+\\|\\s+COMMIT");
+        assertThat(applied.output).containsPattern("RESUMEN\\s+\\|\\s+5\\s+\\|\\s+9\\s+\\|\\s+1\\s+\\|\\s+COMMIT");
         assertThat(applied.output).contains("OVERPAID");
         assertPhase2Blockers(applied.output);
 
@@ -376,6 +377,46 @@ class CustomerAccountCleanupScriptTest {
     }
 
     @Test
+    void BUG_adjustmentOnVoidChargeStaysToFixEveryRun() throws Exception {
+        seed();
+        Psql first = cleanup("aplicar=si");
+        assertThat(first.exitCode).as(first.output).isZero();
+        assertThat(first.output).contains("REENLACE", "estado después de aplicar", "8802", "8801", "8800");
+        assertThat(first.output).contains("LIMPIEZA-CXC-2026-10", "reenlace de ajuste al cargo sobreviviente");
+        assertThat(text("SELECT applied_to_entry_id::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("8800");
+        assertThat(text("SELECT reassigned_from_entry_id::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("8801");
+        assertThat(text("SELECT entry_date::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("2026-01-03");
+        assertThat(text("SELECT description FROM customer_account_entry WHERE id = 8802"))
+                .isEqualTo("ajuste-original\nLIMPIEZA-CXC-2026-10 cargo:8801");
+        assertThat(money(8802)).isEqualByComparingTo("20.00");
+        assertThat(moneyOf(customerDebit(88))).isEqualByComparingTo("120.00");
+        assertThat(count("""
+                SELECT count(*) FROM customer_account_entry
+                WHERE production_order_id = 880 AND entry_type = 'CHARGE_ADJUSTMENT' AND status = 'ACTIVE'
+                """)).isEqualTo(1);
+
+        Psql second = cleanup("aplicar=si");
+        assertThat(second.exitCode).as(second.output).isZero();
+        assertThat(second.output).containsPattern("RESUMEN\\s+\\|\\s+0\\s+\\|");
+        assertThat(text("SELECT applied_to_entry_id::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("8800");
+        assertThat(text("SELECT entry_date::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("2026-01-03");
+
+        Psql rollback = psql("rollback-customer-account-lf-phase1.sql");
+        assertThat(rollback.exitCode).as(rollback.output).isNotZero();
+        assertThat(rollback.output).contains("ROLLBACK FASE 1 abortado");
+        assertThat(text("SELECT applied_to_entry_id::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("8801");
+        assertThat(text("SELECT reassigned_from_entry_id::text FROM customer_account_entry WHERE id = 8802")).isNull();
+        assertThat(text("SELECT description FROM customer_account_entry WHERE id = 8802")).isEqualTo("ajuste-original");
+        assertThat(text("SELECT entry_date::text FROM customer_account_entry WHERE id = 8802")).isEqualTo("2026-01-03");
+        assertThat(money(8802)).isEqualByComparingTo("20.00");
+        assertThat(moneyOf(customerDebit(88))).isEqualByComparingTo("120.00");
+        assertThat(count("""
+                SELECT count(*) FROM information_schema.columns
+                WHERE table_name = 'customer_account_entry' AND column_name = 'reassigned_from_entry_id'
+                """)).isEqualTo(1);
+    }
+
+    @Test
     void reconcileReturnsZeroRows() throws Exception {
         seed();
         Psql before = snapshot("cxc-antes.csv");
@@ -573,7 +614,8 @@ class CustomerAccountCleanupScriptTest {
                         (94, 'LEG-94', 'NOMBRE_SECRETO'),
                         (95, 'LEG-95', 'NOMBRE_SECRETO'),
                         (96, 'LEG-96', 'NOMBRE_SECRETO'),
-                        (97, 'LEG-97', 'NOMBRE_SECRETO')
+                        (97, 'LEG-97', 'NOMBRE_SECRETO'),
+                        (88, 'LEG-88', 'NOMBRE_SECRETO')
                     """);
             statement.execute("""
                     INSERT INTO production_order (id, code, order_type, customer_id, seller_name) VALUES
@@ -590,7 +632,8 @@ class CustomerAccountCleanupScriptTest {
                         (930, 'OP-930', 'NORMAL', 93, 'LUIS FELIPE'),
                         (940, 'OP-940', 'NORMAL', 95, 'LUIS FELIPE'),
                         (950, 'OP-950', 'NORMAL', 96, 'LUIS FELIPE'),
-                        (960, 'OP-960', 'NORMAL', 97, 'LUIS FELIPE')
+                        (960, 'OP-960', 'NORMAL', 97, 'LUIS FELIPE'),
+                        (880, 'OP-880', 'NORMAL', 88, 'LUIS FELIPE')
                     """);
             statement.execute("UPDATE production_order SET status = 'CANCELLED' WHERE id = 930");
             statement.execute("UPDATE production_order SET vendor_shipment_number = 'ENVP-200' WHERE id = 200");
@@ -609,7 +652,8 @@ class CustomerAccountCleanupScriptTest {
                         (930, 1, 50.00),
                         (940, 1, 40.00),
                         (950, 1, 30.00),
-                        (960, 1, 80.00)
+                        (960, 1, 80.00),
+                        (880, 2, 50.00)
                     """);
             statement.execute("""
                     INSERT INTO product_shipment (id, production_order_id, shipment_number, status, shipping_cost, sent_at) VALUES
@@ -628,7 +672,8 @@ class CustomerAccountCleanupScriptTest {
                         (9210, 920, 'S9210', 'SENT', 20.00, TIMESTAMP '2026-01-02'),
                         (9310, 930, 'S9310', 'SENT', 10.00, TIMESTAMP '2026-01-02'),
                         (9510, 950, 'S9510', 'DRAFT', 5.00, NULL),
-                        (9610, 960, 'S9610', 'SENT', 12.00, TIMESTAMP '2026-01-02')
+                        (9610, 960, 'S9610', 'SENT', 12.00, TIMESTAMP '2026-01-02'),
+                        (8810, 880, 'S8810', 'SENT', 20.00, TIMESTAMP '2026-01-04')
                     """);
             statement.execute("INSERT INTO production_order_partial_release (id) VALUES (77)");
             statement.execute("UPDATE product_shipment SET partial_release_id = 77 WHERE id = 2001");
@@ -661,7 +706,9 @@ class CustomerAccountCleanupScriptTest {
                         (9401, 94, 'CHARGE', DATE '2026-01-02', 20.00, 940, 'ACTIVE', 'OPV'),
                         (9500, 96, 'CHARGE', DATE '2026-01-01', 30.00, 950, 'ACTIVE', 'OPV'),
                         (9501, 96, 'CHARGE', DATE '2026-01-02', 5.00, 950, 'ACTIVE', 'OPV'),
-                        (9600, 97, 'CHARGE', DATE '2026-01-01', 80.00, 960, 'ACTIVE', 'OPV')
+                        (9600, 97, 'CHARGE', DATE '2026-01-01', 80.00, 960, 'ACTIVE', 'OPV'),
+                        (8800, 88, 'CHARGE', DATE '2026-01-01', 100.00, 880, 'ACTIVE', 'OPV'),
+                        (8801, 88, 'CHARGE', DATE '2026-01-02', 20.00, 880, 'VOID', 'OPV')
                     """);
             statement.execute("""
                     UPDATE customer_account_entry
@@ -683,7 +730,9 @@ class CustomerAccountCleanupScriptTest {
                         (9102, 91, 'CHARGE_ADJUSTMENT', DATE '2026-01-02', 20.00, 'ajuste-120',
                          910, 9110, 9101, 'OPV', 'ACTIVE'),
                         (9601, 97, 'CHARGE_ADJUSTMENT', DATE '2026-01-02', 5.00, 'ajuste-distinto',
-                         960, 9610, 9600, 'OPV', 'ACTIVE')
+                         960, 9610, 9600, 'OPV', 'ACTIVE'),
+                        (8802, 88, 'CHARGE_ADJUSTMENT', DATE '2026-01-03', 20.00, 'ajuste-original',
+                         880, 8810, 8801, 'OPV', 'ACTIVE')
                     """);
             statement.execute("""
                     INSERT INTO customer_account_entry

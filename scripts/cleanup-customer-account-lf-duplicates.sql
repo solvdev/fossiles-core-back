@@ -508,18 +508,20 @@ JOIN customer_account_entry c
  AND upper(coalesce(c.status, '')) = 'ACTIVE'
 WHERE p.accion IN ('CONSERVAR', 'NUEVO');
 
+-- Same row: point the live adjustment at the survivor. Includes adjustments that already
+-- sit on a VOID charge of this order (those made every later run look unfinished).
 INSERT INTO ajustes_reapuntados (entry_id, production_order_id, from_charge_id)
 SELECT a.id, p.production_order_id, a.applied_to_entry_id
 FROM plan p
-JOIN customer_account_entry ch
-  ON ch.production_order_id = p.production_order_id
- AND upper(ch.entry_type) = 'CHARGE'
- AND upper(coalesce(ch.status, '')) = 'ACTIVE'
- AND (p.accion = 'NUEVO' OR ch.id IS DISTINCT FROM p.survivor_id)
 JOIN customer_account_entry a
-  ON a.applied_to_entry_id = ch.id
+  ON a.production_order_id = p.production_order_id
  AND upper(a.entry_type) = 'CHARGE_ADJUSTMENT'
  AND upper(coalesce(a.status, '')) = 'ACTIVE'
+ AND a.applied_to_entry_id IS DISTINCT FROM p.survivor_id
+JOIN customer_account_entry ch
+  ON ch.id = a.applied_to_entry_id
+ AND upper(ch.entry_type) = 'CHARGE'
+ AND ch.production_order_id = p.production_order_id
 WHERE p.accion IN ('CONSERVAR', 'NUEVO');
 
 UPDATE customer_account_entry e
@@ -582,11 +584,22 @@ FROM creditos_movidos m
 JOIN plan p ON p.production_order_id = m.production_order_id
 WHERE c.id = m.entry_id;
 
+-- Only the charge link changes. entry_date stays, so the read-time due date stays.
+-- reassigned_from_entry_id keeps the first original charge. The marker records this
+-- re-link (old charge id) for rollback; it is not the new-adjustment description tag,
+-- so reconcile does not treat the existing amount as a new debit.
 UPDATE customer_account_entry a
 SET applied_to_entry_id = p.survivor_id,
     production_order_id = p.production_order_id,
     order_kind = p.order_kind,
     reassigned_from_entry_id = COALESCE(a.reassigned_from_entry_id, r.from_charge_id),
+    description = CASE
+        WHEN coalesce(a.description, '') LIKE ('%LIMPIEZA-CXC-2026-10 cargo:' || r.from_charge_id::text || '%')
+            THEN a.description
+        WHEN a.description IS NULL OR btrim(a.description) = ''
+            THEN 'LIMPIEZA-CXC-2026-10 cargo:' || r.from_charge_id::text
+        ELSE a.description || E'\n' || 'LIMPIEZA-CXC-2026-10 cargo:' || r.from_charge_id::text
+    END,
     updated_at = now()
 FROM ajustes_reapuntados r
 JOIN plan p ON p.production_order_id = r.production_order_id
@@ -698,7 +711,19 @@ LEFT JOIN saldo_despues sd ON sd.customer_id = p.customer_id
 WHERE p.accion IN ('CONSERVAR', 'NUEVO')
 ORDER BY p.production_order_id;
 
+SELECT 'REENLACE' AS seccion,
+       r.entry_id AS ajuste_id,
+       r.from_charge_id AS cargo_anterior,
+       p.survivor_id AS cargo_nuevo,
+       'LIMPIEZA-CXC-2026-10' AS quien,
+       transaction_timestamp() AS cuando,
+       'reenlace de ajuste al cargo sobreviviente' AS por_que
+FROM ajustes_reapuntados r
+JOIN plan p ON p.production_order_id = r.production_order_id
+ORDER BY r.entry_id;
+
 SELECT 'REVIEW' AS seccion,
+       'estado después de aplicar' AS estado,
        production_order_id,
        customer_id,
        (charge_sum + adj_sum) AS debito_antes,
@@ -719,6 +744,7 @@ WITH uno AS (
     HAVING count(*) = 1
 )
 SELECT 'OVERPAID' AS seccion,
+       'estado después de aplicar' AS estado,
        u.production_order_id,
        u.customer_id,
        ch.amount AS cargo,

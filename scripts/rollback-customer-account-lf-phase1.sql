@@ -2,12 +2,33 @@
 -- Usually NOT needed: current main runs fine with phase 1 in place. Run only if you must remove it, and only
 --   * after rollback-customer-account-lf-phase2.sql, and
 --   * after the database is back on current main (the #120 binary needs credit_days and CHARGE_ADJUSTMENT).
--- Aborts (nothing changed) if any CHARGE_ADJUSTMENT row exists, VOID ones included, or if any row has
--- reassigned_from_entry_id set: dropping that column would erase the move trace. Saves credit_days to a
--- CSV on YOUR machine first. Runs cleanly when neither of those rows exists.
+-- Aborts (nothing changed in phase 1 itself) if any CHARGE_ADJUSTMENT row exists, VOID ones included,
+-- or if any row has reassigned_from_entry_id set: dropping that column would erase the move trace.
+-- First, in its own transaction, it reverses cleanup re-links of adjustments marked
+-- LIMPIEZA-CXC-2026-10 cargo:<old charge id>: the adjustment points at that charge again and the
+-- marker is removed. That commit stands even if the phase-1 drop then aborts.
+-- Saves credit_days to a CSV on YOUR machine first. Runs cleanly when neither of those rows exists.
 -- Usage: psql -v ON_ERROR_STOP=1 -d fosstest -f rollback-customer-account-lf-phase1.sql
 \set ON_ERROR_STOP on
 SELECT current_database() AS base_destino;
+
+-- Reverse cleanup adjustment re-links before the phase-1 guards. Own transaction so the
+-- link is restored even when this file later aborts because CHARGE_ADJUSTMENT rows remain.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+UPDATE customer_account_entry
+SET applied_to_entry_id = (substring(description from 'LIMPIEZA-CXC-2026-10 cargo:([0-9]+)'))::bigint,
+    reassigned_from_entry_id = CASE
+        WHEN reassigned_from_entry_id::text = substring(description from 'LIMPIEZA-CXC-2026-10 cargo:([0-9]+)')
+            THEN NULL
+        ELSE reassigned_from_entry_id
+    END,
+    description = NULLIF(
+        btrim(regexp_replace(description, E'(^|\n)LIMPIEZA-CXC-2026-10 cargo:[0-9]+$', '')),
+        '')
+WHERE upper(entry_type) = 'CHARGE_ADJUSTMENT'
+  AND description ~ 'LIMPIEZA-CXC-2026-10 cargo:[0-9]+';
+COMMIT;
 
 SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'customer' AND column_name = 'credit_days') AS tiene_credit_days \gset
 \if :tiene_credit_days
