@@ -65,4 +65,6 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    environment 'SPRING_DATASOURCE_URL', 'jdbc:h2:mem:fossiles;MODE=PostgreSQL;DB_CLOSE_DELAY=-1'
+    environment 'SENTRY_DSN', ''
 }

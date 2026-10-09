@@ -63,3 +63,6 @@ src/main/resources/application-*.yaml
 !src/main/resources/application.example.properties
 !application.example.properties
 !application.example.yml
+
+# Test override disables Sentry. It has no secrets.
+!src/test/resources/application.properties
