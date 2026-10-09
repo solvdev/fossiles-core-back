@@ -73,10 +73,12 @@ class EntrecuerosPriceListsTest {
     @Test
     void dozenOrHalfDozenUnlocksLowestPriceOnOtherProducts() {
         ProductEntity cincho = ProductEntity.builder()
+                .id(1L)
                 .name("Cincho casual")
                 .cinchoType("CASUAL")
                 .build();
         ProductEntity wallet = ProductEntity.builder()
+                .id(2L)
                 .name("Billetera clasica")
                 .build();
 
@@ -87,14 +89,65 @@ class EntrecuerosPriceListsTest {
         assertThat(EntrecuerosPriceLists.unlocksWholesale(java.util.Map.of(
                 "CASUAL", new BigDecimal("5")))).isFalse();
 
-        BigDecimal walletQty = EntrecuerosPriceLists.quantityForPrice(BigDecimal.ONE, true);
-        assertThat(EntrecuerosPriceLists.resolveUnitPrice(wallet, "LEVIS", walletQty))
+        java.util.Map<String, BigDecimal> dozen = volume(cincho, "NUEVO", 12, wallet, "LEVIS", 1);
+        assertThat(EntrecuerosPriceLists.resolveChargedUnitPrice(cincho, "NUEVO", new BigDecimal("12"), dozen))
+                .isEqualByComparingTo("75.00");
+        assertThat(EntrecuerosPriceLists.resolveChargedUnitPrice(wallet, "LEVIS", BigDecimal.ONE, dozen))
                 .isEqualByComparingTo("55.00");
+
+        java.util.Map<String, BigDecimal> halfDozen = volume(cincho, "NUEVO", 6, wallet, "LEVIS", 1);
+        assertThat(EntrecuerosPriceLists.resolveChargedUnitPrice(cincho, "NUEVO", new BigDecimal("6"), halfDozen))
+                .isEqualByComparingTo("80.00");
+        assertThat(EntrecuerosPriceLists.resolveChargedUnitPrice(wallet, "LEVIS", BigDecimal.ONE, halfDozen))
+                .isEqualByComparingTo("55.00");
+
+        java.util.Map<String, BigDecimal> below = volume(cincho, "NUEVO", 5, wallet, "LEVIS", 1);
+        assertThat(EntrecuerosPriceLists.resolveChargedUnitPrice(wallet, "LEVIS", BigDecimal.ONE, below))
+                .isEqualByComparingTo("100.00");
         assertThat(EntrecuerosPriceLists.resolveUnitPrice(wallet, "LEVIS", BigDecimal.ONE))
                 .isEqualByComparingTo("100.00");
+    }
 
-        BigDecimal cinchoQty = EntrecuerosPriceLists.quantityForPrice(BigDecimal.ONE, true);
-        assertThat(EntrecuerosPriceLists.resolveUnitPrice(cincho, "NUEVO", cinchoQty))
-                .isEqualByComparingTo("75.00");
+    @Test
+    void cinchoForKidsDoesNotChangeCasualPricingYet() {
+        ProductEntity kids = ProductEntity.builder()
+                .id(1L)
+                .name("Cincho casual")
+                .cinchoType("CASUAL")
+                .cinchoForKids(true)
+                .build();
+
+        assertThat(EntrecuerosPriceLists.kind(kids, "NUEVO")).isEqualTo(EntrecuerosPriceLists.Kind.CASUAL);
+        assertThat(EntrecuerosPriceLists.resolveUnitPrice(kids, "NUEVO", BigDecimal.ONE))
+                .isEqualByComparingTo("100.00");
+    }
+
+    @Test
+    void b1CodeIsExactMatch() {
+        assertThat(EntrecuerosPriceLists.isExactB1Code(productCode("B-1"))).isTrue();
+        assertThat(EntrecuerosPriceLists.isExactB1Code(productCode(" b1 "))).isTrue();
+        assertThat(EntrecuerosPriceLists.isExactB1Code(productCode("B-10"))).isFalse();
+        assertThat(EntrecuerosPriceLists.isExactB1Code(productCode("B-19"))).isFalse();
+        assertThat(EntrecuerosPriceLists.isExactB1Code(productCode("B-100"))).isFalse();
+    }
+
+    private static ProductEntity productCode(String code) {
+        return ProductEntity.builder().code(code).name("Billetera").build();
+    }
+
+    private static java.util.Map<String, BigDecimal> volume(
+            ProductEntity first,
+            String firstHardware,
+            int firstQty,
+            ProductEntity second,
+            String secondHardware,
+            int secondQty
+    ) {
+        java.util.Map<String, BigDecimal> qty = new java.util.HashMap<>();
+        EntrecuerosPriceLists.addVolumeQuantity(
+                qty, first.getId(), first, firstHardware, new BigDecimal(firstQty));
+        EntrecuerosPriceLists.addVolumeQuantity(
+                qty, second.getId(), second, secondHardware, new BigDecimal(secondQty));
+        return qty;
     }
 }

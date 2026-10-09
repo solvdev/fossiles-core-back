@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRe
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionTierRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskBankDepositReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromotionEstimateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReportsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -17,6 +18,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskD
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionTierEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSiteEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductCategoryEntity;
@@ -1517,6 +1519,109 @@ class KioskPosServiceTest {
         assertThat(sale.getFelStatus()).isEqualTo("SKIPPED");
         assertThat(saleRepository.findById(sale.getId()).orElseThrow().getShippingSheetNumber())
                 .isEqualTo("1842");
+    }
+
+    @Test
+    void createSale_entrecuerosStoresServerPriceNotClientPrice() throws Exception {
+        kioskA.setPosMode("ENTRECUEROS");
+        kioskA = locationRepository.save(kioskA);
+        wallet.setEntrecuerosEnabled(true);
+        wallet = productRepository.save(wallet);
+
+        ProductEntity cincho = productRepository.save(ProductEntity.builder()
+                .code("CIN-CAS-1")
+                .name("Cincho casual")
+                .cinchoType("CASUAL")
+                .entrecuerosEnabled(true)
+                .salePrice(new BigDecimal("250.00"))
+                .build());
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kioskA.getId())
+                .productId(cincho.getId())
+                .colorId(negro.getId())
+                .currentStock(10)
+                .build());
+
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosPromotionEstimateResponse estimate = kioskPosService.estimatePromotionDiscount(
+                KioskPosPromotionEstimateRequest.builder()
+                        .kioskLocationId(kioskA.getId())
+                        .items(List.of(
+                                KioskPosPromotionEstimateRequest.ItemRequest.builder()
+                                        .productId(cincho.getId())
+                                        .colorId(negro.getId())
+                                        .size("34")
+                                        .quantity(new BigDecimal("6"))
+                                        .build(),
+                                KioskPosPromotionEstimateRequest.ItemRequest.builder()
+                                        .productId(wallet.getId())
+                                        .colorId(negro.getId())
+                                        .quantity(BigDecimal.ONE)
+                                        .build()))
+                        .build());
+        assertThat(estimate.getSubtotal()).isEqualByComparingTo("535.00");
+        assertThat(estimate.getDiscountAmount()).isEqualByComparingTo("0.00");
+        assertThat(estimate.getTotalAmount()).isEqualByComparingTo("535.00");
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("600.00"))
+                .requestInvoice(false)
+                .shippingSheetNumber("2001")
+                .items(List.of(
+                        KioskPosSaleRequest.ItemRequest.builder()
+                                .productId(cincho.getId())
+                                .colorId(negro.getId())
+                                .size("34")
+                                .quantity(new BigDecimal("6"))
+                                .unitPrice(new BigDecimal("1.00"))
+                                .build(),
+                        KioskPosSaleRequest.ItemRequest.builder()
+                                .productId(wallet.getId())
+                                .colorId(negro.getId())
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("999.99"))
+                                .build()))
+                .build());
+
+        assertThat(sale.getSubtotal()).isEqualByComparingTo("535.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("535.00");
+        assertThat(unitPrice(sale, cincho.getId())).isEqualByComparingTo("80.00");
+        assertThat(lineTotal(sale, cincho.getId())).isEqualByComparingTo("480.00");
+        assertThat(unitPrice(sale, wallet.getId())).isEqualByComparingTo("55.00");
+        assertThat(lineTotal(sale, wallet.getId())).isEqualByComparingTo("55.00");
+
+        KioskSaleEntity stored = saleRepository.findById(sale.getId()).orElseThrow();
+        assertThat(stored.getSubtotal()).isEqualByComparingTo("535.00");
+        assertThat(stored.getTotalAmount()).isEqualByComparingTo("535.00");
+        assertThat(storedUnitPrice(stored, cincho.getId())).isEqualByComparingTo("80.00");
+        assertThat(storedUnitPrice(stored, wallet.getId())).isEqualByComparingTo("55.00");
+    }
+
+    private static BigDecimal unitPrice(KioskPosSaleResponse sale, Long productId) {
+        return sale.getItems().stream()
+                .filter(item -> productId.equals(item.getProductId()))
+                .findFirst()
+                .orElseThrow()
+                .getUnitPrice();
+    }
+
+    private static BigDecimal lineTotal(KioskPosSaleResponse sale, Long productId) {
+        return sale.getItems().stream()
+                .filter(item -> productId.equals(item.getProductId()))
+                .findFirst()
+                .orElseThrow()
+                .getLineTotal();
+    }
+
+    private static BigDecimal storedUnitPrice(KioskSaleEntity sale, Long productId) {
+        return sale.getItems().stream()
+                .filter(item -> productId.equals(item.getProductId()))
+                .map(KioskSaleItemEntity::getUnitPrice)
+                .findFirst()
+                .orElseThrow();
     }
 
     private static KioskPosSaleRequest.ItemRequest item(Long productId, Long colorId, BigDecimal qty) {

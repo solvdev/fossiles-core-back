@@ -47,4 +47,28 @@ class EntrecuerosVolumePricingTest {
         assertThat(EntrecuerosVolumePricing.resolveUnitPrice(product, new BigDecimal("12")))
                 .isEqualByComparingTo("40.00");
     }
+
+    @Test
+    void topConfiguredTierWalks12Then6Then3ThenUnitThenSale() {
+        assertThat(EntrecuerosVolumePricing.resolveTopConfiguredTier(tiers("70", "80", "90", "100")))
+                .isEqualByComparingTo("70.00");
+        assertThat(EntrecuerosVolumePricing.resolveTopConfiguredTier(tiers(null, "80", "90", "100")))
+                .isEqualByComparingTo("80.00");
+        assertThat(EntrecuerosVolumePricing.resolveTopConfiguredTier(tiers(null, null, "90", "100")))
+                .isEqualByComparingTo("90.00");
+        assertThat(EntrecuerosVolumePricing.resolveTopConfiguredTier(tiers(null, null, null, "100")))
+                .isEqualByComparingTo("100.00");
+        assertThat(EntrecuerosVolumePricing.resolveTopConfiguredTier(ProductEntity.builder()
+                .salePrice(new BigDecimal("25.00"))
+                .build())).isEqualByComparingTo("25.00");
+    }
+
+    private static ProductEntity tiers(String qty12, String qty6, String qty3, String unit) {
+        return ProductEntity.builder()
+                .entrecuerosPriceQty12(qty12 == null ? null : new BigDecimal(qty12))
+                .entrecuerosPriceQty6(qty6 == null ? null : new BigDecimal(qty6))
+                .entrecuerosPriceQty3(qty3 == null ? null : new BigDecimal(qty3))
+                .entrecuerosPriceUnit(unit == null ? null : new BigDecimal(unit))
+                .build();
+    }
 }
