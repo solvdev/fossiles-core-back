@@ -350,7 +350,7 @@ public class ProductionAutoPlannerService {
                         continue;
                     }
                     double baseHours = online ? 0.0 : roundHours(qty * prd);
-                    DeskSlotFinder.Slot slot = DeskSlotFinder.findEarliest(schedule, numDesks, today, baseHours);
+                    DeskSlotFinder.Slot slot = DeskSlotFinder.findEarliest(schedule, numDesks, startDay, baseHours);
                     // Sin mesa: nace sin troquelar y a mesa solo baja lo cortado. Se conserva
                     // el dia del hueco, que es de donde sale la proyeccion de entrega; la mesa
                     // la pone el reparto cuando se marque el corte.
