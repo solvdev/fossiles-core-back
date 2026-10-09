@@ -63,3 +63,7 @@ src/main/resources/application-*.yaml
 !src/main/resources/application.example.properties
 !application.example.properties
 !application.example.yml
+
+# Test classpath replacement for src/main/resources/application.properties.
+# This file hides the main file during tests. Do not import the main file.
+!src/test/resources/application.properties
