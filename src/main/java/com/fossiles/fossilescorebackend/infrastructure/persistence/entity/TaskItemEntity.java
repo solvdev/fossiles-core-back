@@ -6,6 +6,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Entity
@@ -63,5 +64,17 @@ public class TaskItemEntity {
     @Column(name = "day_sale_extra", nullable = false, columnDefinition = "boolean default false")
     @Builder.Default
     private Boolean daySaleExtra = false;
+
+    /** El troquelado de la tarea es el Y-logico del de sus productos. */
+    @Column(name = "die_cut_ready", nullable = false, columnDefinition = "boolean default false")
+    @Builder.Default
+    private Boolean dieCutReady = false;
+
+    @Column(name = "die_cut_date")
+    private LocalDate dieCutDate;
+
+    /** Cuando toca troquelarlo. Distinta de {@code dieCutDate}, que dice cuando se marco. */
+    @Column(name = "die_cut_planned_date")
+    private LocalDate dieCutPlannedDate;
 }
 

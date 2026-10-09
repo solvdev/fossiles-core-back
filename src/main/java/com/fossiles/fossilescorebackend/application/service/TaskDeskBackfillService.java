@@ -56,6 +56,9 @@ public class TaskDeskBackfillService {
         List<TaskEntity> candidates = pool.stream()
                 .filter(t -> "PENDING".equals(t.getStatus()))
                 .filter(t -> t.getDesk() == null)
+                // Rellenar es dar mesa, y a mesa solo baja lo cortado. Los cinchos nacen
+                // marcados y siguen entrando igual.
+                .filter(t -> Boolean.TRUE.equals(t.getDieCutReady()))
                 .filter(t -> {
                     LocalDate sd = t.getScheduledDate();
                     return sd == null || sd.equals(anchorDate);
