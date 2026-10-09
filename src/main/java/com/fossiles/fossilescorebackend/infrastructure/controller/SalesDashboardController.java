@@ -1,10 +1,12 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.response.KioskHeatmapResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OpvShipmentCatalogRowResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.SalesConsolidatedResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.SalesDashboardResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.SalesSourceDetailResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.application.service.KioskHeatmapService;
 import com.fossiles.fossilescorebackend.application.service.KioskSalesDashboardService;
 import com.fossiles.fossilescorebackend.application.service.OnlineSalesDashboardService;
 import com.fossiles.fossilescorebackend.application.service.OpvShipmentCatalogService;
@@ -29,6 +31,7 @@ public class SalesDashboardController {
 
     private final SalesConsolidatedService salesConsolidatedService;
     private final KioskSalesDashboardService kioskSalesDashboardService;
+    private final KioskHeatmapService kioskHeatmapService;
     private final OnlineSalesDashboardService onlineSalesDashboardService;
     private final VendorSalesDashboardService vendorSalesDashboardService;
     private final SalesUnifiedService salesUnifiedService;
@@ -53,6 +56,16 @@ public class SalesDashboardController {
     ) throws BusinessException {
         return ResponseEntity.ok(kioskSalesDashboardService.getDashboard(
                 startDate, endDate, siteId, kioskLocationId, refresh));
+    }
+
+    /** Mapa de calor de TODOS los kioscos incluidos en reportes (sin filtro por kiosko); máximo 400 días. */
+    @GetMapping("/dashboard/kiosks/heatmap")
+    public ResponseEntity<KioskHeatmapResponse> getKiosksHeatmap(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(defaultValue = "false") boolean refresh
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskHeatmapService.getHeatmap(startDate, endDate, refresh));
     }
 
     @GetMapping("/dashboard/online")
