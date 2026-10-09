@@ -25,6 +25,7 @@ import com.fossiles.fossilescorebackend.application.service.ProductionTaskLifecy
 import com.fossiles.fossilescorebackend.application.service.TaskCodeGenerator;
 import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillService;
 import com.fossiles.fossilescorebackend.application.service.TaskDeskAssignerService;
+import com.fossiles.fossilescorebackend.application.service.ProductionCenterCache;
 import com.fossiles.fossilescorebackend.application.service.TaskOrganizerService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
@@ -80,6 +81,7 @@ public class TaskController {
     private final TaskOrganizerService taskOrganizerService;
     private final TaskDeskBackfillService taskDeskBackfillService;
     private final TaskDeskAssignerService taskDeskAssignerService;
+    private final ProductionCenterCache productionCenterCache;
     private final ProductionTaskLifecycleService productionTaskLifecycleService;
     private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
     private final ProductionDeskSupervisorRepository productionDeskSupervisorRepository;
@@ -232,13 +234,16 @@ public class TaskController {
 
     @GetMapping("/blocked-leather")
     public ResponseEntity<List<ProductionAutoPlanResult.BlockedLeatherLine>> blockedLeather() {
-        return ResponseEntity.ok(productionAutoPlannerService.listBlockedLeather());
+        return ResponseEntity.ok(productionCenterCache.panel("blocked-leather",
+                productionAutoPlannerService::listBlockedLeather));
     }
 
     @GetMapping("/day-sales-summary")
     public ResponseEntity<ProductionDaySalesSummaryResponse> daySalesSummary(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return ResponseEntity.ok(productionAutoPlannerService.daySalesSummary(date));
+        LocalDate day = date != null ? date : GuatemalaDateTime.today();
+        return ResponseEntity.ok(productionCenterCache.panel("day-sales|" + day,
+                () -> productionAutoPlannerService.daySalesSummary(day)));
     }
 
     /**
@@ -248,7 +253,9 @@ public class TaskController {
     @GetMapping("/opl-dispatch-summary")
     public ResponseEntity<OplDispatchSummaryResponse> oplDispatchSummary(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate dispatchDate) {
-        return ResponseEntity.ok(oplDispatchSummaryService.summaryForDispatchDate(dispatchDate));
+        LocalDate day = dispatchDate != null ? dispatchDate : GuatemalaDateTime.today();
+        return ResponseEntity.ok(productionCenterCache.panel("opl-dispatch|" + day,
+                () -> oplDispatchSummaryService.summaryForDispatchDate(day)));
     }
 
     /**

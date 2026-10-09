@@ -74,6 +74,7 @@ public class ProductionOrderController {
     private final DocumentSeriesRepository documentSeriesRepository;
     private final SmartMaterialRequestService smartMaterialRequestService;
     private final ProductionAutoPlannerService productionAutoPlannerService;
+    private final com.fossiles.fossilescorebackend.application.service.ProductionCenterCache productionCenterCache;
     private final ProductionOrderCodeService productionOrderCodeService;
     private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
@@ -117,13 +118,25 @@ public class ProductionOrderController {
      * que hay que correr ANTES de desplegar este cambio. {@link #getById} la conserva como
      * ultima red mientras ese relleno no haya corrido en produccion.
      */
+    /**
+     * @param cached {@code true} lo sirve desde la caché del Centro de Producción (hasta 2 min,
+     *               invalidada al escribir órdenes o planificar). Por defecto no: Bodega, Envíos
+     *               y las demás pantallas que usan este listado necesitan el dato al instante.
+     */
     @GetMapping
     @Transactional(readOnly = true)
-    public ResponseEntity<List<ProductionOrderResponse>> getAll() {
-        List<ProductionOrderResponse> orders = productionOrderRepository.findAll().stream()
+    public ResponseEntity<List<ProductionOrderResponse>> getAll(
+            @RequestParam(name = "cached", defaultValue = "false") boolean cached) {
+        if (cached) {
+            return ResponseEntity.ok(productionCenterCache.orders(this::listAllOrders));
+        }
+        return ResponseEntity.ok(listAllOrders());
+    }
+
+    private List<ProductionOrderResponse> listAllOrders() {
+        return productionOrderRepository.findAll().stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
-        return ResponseEntity.ok(orders);
     }
 
     /**
