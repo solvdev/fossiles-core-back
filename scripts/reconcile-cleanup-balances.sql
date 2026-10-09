@@ -1,13 +1,18 @@
 -- RECONCILE the duplicate-charge cleanup per customer (agreed check):
 --   saldo_despues = saldo_antes - anulado_por_limpieza + ajustes_por_limpieza + cargos_nuevos_por_limpieza
 --   (the last term is 0 when the cleanup keeps an existing charge unchanged instead of creating a new one)
--- Inputs: two CSVs written by snapshot-saldos-cxc.sql (this folder) with the SAME -v void_tag / -v adj_tag,
--- the "antes" right before the cleanup and the "despues" right after, with no app traffic in between.
+-- The three sums come from snapshot-saldos-cxc.sql, which selects rows by the cleanup script's fixed tags:
+--   -v void_tag='LIMPIEZA-CXC-DUPLICADOS-2026-10'
+--   -v adj_tag='LIMPIEZA-CXC-AJUSTE-ENVIO-2026-10'
+--   -v charge_tag='LIMPIEZA-CXC-CARGO-NUEVO-2026-10'
+-- Take BOTH snapshots with those same three -v values (antes right before the cleanup, despues right after).
+-- An empty tag matches nothing, so a despues snapshot without them reconciles only when the balance did not move.
 -- Writes nothing to project tables: the CSVs go into TEMP tables of this session only.
 -- Usage: copy/rename the two files to cxc-antes.csv and cxc-despues.csv in the current folder, then
 --   psql -d fosstest -f reconcile-cleanup-balances.sql
 -- Result: 0 rows = every customer reconciles. Any row = stop and investigate before phase 2.
 \set ON_ERROR_STOP on
+\echo 'Snapshots must use void_tag=LIMPIEZA-CXC-DUPLICADOS-2026-10 adj_tag=LIMPIEZA-CXC-AJUSTE-ENVIO-2026-10 charge_tag=LIMPIEZA-CXC-CARGO-NUEVO-2026-10'
 BEGIN;
 CREATE TEMP TABLE snap_antes (customer_id bigint, legacy_code text, movimientos_activos bigint, cargos numeric, abonos numeric,
     notas_credito numeric, devoluciones numeric, saldo numeric, neto_opv numeric, neto_opc numeric,
