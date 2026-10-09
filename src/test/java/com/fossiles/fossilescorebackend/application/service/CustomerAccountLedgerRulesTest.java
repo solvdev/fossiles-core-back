@@ -307,12 +307,33 @@ class CustomerAccountLedgerRulesTest {
         assertThat(movedPayment.getAppliedToEntryId()).isEqualTo(keeper.getId());
         assertThat(movedPayment.getProductionOrderId()).isEqualTo(order.getId());
         assertThat(movedPayment.getOrderKind()).isEqualTo("OPV");
+        assertThat(movedPayment.getReassignedFromEntryId()).isEqualTo(mistaken.getId());
+        assertThat(movedPayment.getDescription()).isEqualTo("cargo equivocado");
+        assertThat(line(customer, payment.getId()).getReassignedFromEntryId()).isEqualTo(mistaken.getId());
         CustomerAccountEntryEntity movedAdjustment = entries.findByCustomerIdOrderByEntryDateAscIdAsc(customer.getId()).stream()
                 .filter(entry -> "CHARGE_ADJUSTMENT".equals(entry.getEntryType()))
                 .findFirst().orElseThrow();
         assertThat(movedAdjustment.getAppliedToEntryId()).isEqualTo(keeper.getId());
         assertThat(movedAdjustment.getProductShipmentId()).isEqualTo(shipment.getId());
         assertThat(accounts.getBalance(customer.getId()).getBalance()).isEqualByComparingTo(before.subtract(new BigDecimal("60.00")));
+
+        CustomerAccountEntryEntity next = entries.save(CustomerAccountEntryEntity.builder()
+                .customerId(customer.getId())
+                .entryType("CHARGE")
+                .status("ACTIVE")
+                .entryDate(LocalDate.of(2026, 9, 3))
+                .amount(new BigDecimal("100.00"))
+                .productionOrderId(order.getId())
+                .orderKind("OPV")
+                .build());
+        CustomerAccountEntryVoidRequest second = voidRequest(next.getId());
+        second.setVoidReason("segundo traslado");
+        accounts.voidEntry(keeper.getId(), second);
+        movedPayment = entries.findById(payment.getId()).orElseThrow();
+        assertThat(movedPayment.getAppliedToEntryId()).isEqualTo(next.getId());
+        assertThat(movedPayment.getReassignedFromEntryId()).isEqualTo(mistaken.getId());
+        assertThat(movedPayment.getDescription()).isEqualTo("cargo equivocado\nsegundo traslado");
+        assertThat(line(customer, payment.getId()).getReassignedFromEntryId()).isEqualTo(mistaken.getId());
 
         ProductionOrderEntity opv = order(customer, "OPV", "80.00");
         ProductionOrderEntity opc = order(customer, "MARCAS", "200.00");

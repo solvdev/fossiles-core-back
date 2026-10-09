@@ -339,6 +339,7 @@ public class CustomerAccountService {
                     .paymentDiscountAmount(entry.getPaymentDiscountAmount())
                     .status(entry.getStatus())
                     .appliedToEntryId(entry.getAppliedToEntryId())
+                    .reassignedFromEntryId(entry.getReassignedFromEntryId())
                     .chargeBalanceDue(chargeMeta != null ? chargeMeta.balanceDue() : null)
                     .dueDate(allocation != null ? allocation.dueDate() : null)
                     .allocatedCredit(allocation != null ? allocation.allocatedCredit() : null)
@@ -707,7 +708,7 @@ public class CustomerAccountService {
             throw new BusinessException("El movimiento ya está anulado.");
         }
         if (TYPE_CHARGE.equalsIgnoreCase(entry.getEntryType())) {
-            reassignVoidedChargeDependents(entry, request.getReassignToChargeId());
+            reassignVoidedChargeDependents(entry, request.getReassignToChargeId(), request.getVoidReason());
         }
         entry.setStatus(STATUS_VOID);
         entry.setVoidedAt(LocalDateTime.now());
@@ -721,7 +722,8 @@ public class CustomerAccountService {
      * Pagos, notas de crédito y devoluciones del cargo anulado pasan a otro cargo activo.
      * Los ajustes de envío solo pasan si el destino es de la misma orden. Nada se escribe si la validación falla.
      */
-    private void reassignVoidedChargeDependents(CustomerAccountEntryEntity charge, Long reassignToChargeId)
+    private void reassignVoidedChargeDependents(
+            CustomerAccountEntryEntity charge, Long reassignToChargeId, String voidReason)
             throws BusinessException {
         List<CustomerAccountEntryEntity> active = loadActiveEntries(charge.getCustomerId());
         List<CustomerAccountEntryEntity> credits = active.stream()
@@ -774,6 +776,7 @@ public class CustomerAccountService {
             credit.setAppliedToEntryId(target.getId());
             credit.setProductionOrderId(target.getProductionOrderId());
             credit.setOrderKind(kind);
+            traceReassignment(credit, charge.getId(), voidReason);
             credit.setUpdatedBy(userId);
             entryRepository.save(credit);
         }
@@ -781,9 +784,23 @@ public class CustomerAccountService {
             adjustment.setAppliedToEntryId(target.getId());
             adjustment.setProductionOrderId(target.getProductionOrderId());
             adjustment.setOrderKind(kind);
+            traceReassignment(adjustment, charge.getId(), voidReason);
             adjustment.setUpdatedBy(userId);
             entryRepository.save(adjustment);
         }
+    }
+
+    /** Keeps the first original charge. Later moves only append the void reason. */
+    private static void traceReassignment(CustomerAccountEntryEntity row, Long originalChargeId, String voidReason) {
+        if (row.getReassignedFromEntryId() == null) {
+            row.setReassignedFromEntryId(originalChargeId);
+        }
+        String reason = trimToNull(voidReason);
+        if (reason == null) {
+            return;
+        }
+        String description = trimToNull(row.getDescription());
+        row.setDescription(description == null ? reason : description + "\n" + reason);
     }
 
     @Transactional(readOnly = true)
@@ -2498,6 +2515,7 @@ public class CustomerAccountService {
                 .paymentDiscountPercent(entity.getPaymentDiscountPercent())
                 .grossCollectedAmount(entity.getGrossCollectedAmount())
                 .appliedToEntryId(entity.getAppliedToEntryId())
+                .reassignedFromEntryId(entity.getReassignedFromEntryId())
                 .invoiceNumber(entity.getInvoiceNumber())
                 .documentNumber(entity.getDocumentNumber())
                 .returnVoucherNumber(entity.getReturnVoucherNumber())

@@ -39,6 +39,8 @@ public class CustomerAccountStatementLineResponse {
     private BigDecimal runningBalance;
     /** Cargo al que aplica este movimiento (descarga, descuento, devolución). */
     private Long appliedToEntryId;
+    /** Primer cargo del que se trasladó este movimiento, si se anuló y se reasignó. */
+    private Long reassignedFromEntryId;
     /** Saldo pendiente del cargo, incluidos sus ajustes de envío activos (solo filas CHARGE activas). */
     private BigDecimal chargeBalanceDue;
     /** Vencimiento calculado al leer. Null = corriente (aún no hay fecha de envío). */

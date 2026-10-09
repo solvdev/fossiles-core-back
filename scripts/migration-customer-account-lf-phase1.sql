@@ -67,6 +67,27 @@ COMMENT ON COLUMN customer_account_entry.entry_type IS
     'CHARGE | PAYMENT | CREDIT_NOTE | OPENING_BALANCE | RETURN | CHARGE_ADJUSTMENT';
 COMMENT ON COLUMN customer_account_entry.applied_to_entry_id IS
     'Cargo CHARGE al que aplica PAYMENT, CREDIT_NOTE, RETURN o CHARGE_ADJUSTMENT';
+
+-- 3b) Trace of a row moved by void-and-reassign. Nullable, no default: metadata-only.
+--     Keeps the first original charge; the service does not overwrite it.
+ALTER TABLE customer_account_entry
+    ADD COLUMN IF NOT EXISTS reassigned_from_entry_id BIGINT;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'customer_account_entry'::regclass
+          AND conname = 'fk_customer_account_entry_reassigned_from'
+    ) THEN
+        ALTER TABLE customer_account_entry
+            ADD CONSTRAINT fk_customer_account_entry_reassigned_from
+            FOREIGN KEY (reassigned_from_entry_id) REFERENCES customer_account_entry (id) NOT VALID;
+    END IF;
+END $$;
+
+COMMENT ON COLUMN customer_account_entry.reassigned_from_entry_id IS
+    'Cargo original del que se traslado este movimiento. No se pisa si se traslada otra vez.';
 COMMIT;
 
 -- 4) Validate (SHARE UPDATE EXCLUSIVE: reads and writes keep working). No-op if already validated.
@@ -74,6 +95,7 @@ BEGIN;
 SET LOCAL lock_timeout = '5s';
 ALTER TABLE customer_account_entry VALIDATE CONSTRAINT chk_customer_account_entry_type;
 ALTER TABLE customer_account_entry VALIDATE CONSTRAINT chk_customer_account_entry_adjustment_links;
+ALTER TABLE customer_account_entry VALIDATE CONSTRAINT fk_customer_account_entry_reassigned_from;
 ALTER TABLE customer VALIDATE CONSTRAINT chk_customer_credit_days;
 COMMIT;
 
@@ -86,7 +108,12 @@ CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_cae_one_active_adjustment_per_
 -- 6) Checks (read only): every row must say t.
 SELECT conname, convalidated
 FROM pg_constraint
-WHERE conname IN ('chk_customer_account_entry_type', 'chk_customer_account_entry_adjustment_links', 'chk_customer_credit_days')
+WHERE conname IN (
+    'chk_customer_account_entry_type',
+    'chk_customer_account_entry_adjustment_links',
+    'chk_customer_credit_days',
+    'fk_customer_account_entry_reassigned_from'
+)
 ORDER BY conname;
 SELECT COALESCE(bool_and(i.indisvalid), false) AS indice_ajuste_valido
 FROM pg_catalog.pg_index i

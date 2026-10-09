@@ -134,6 +134,10 @@ class CustomerAccountLedgerScriptTest {
         assertThat(count("SELECT credit_days FROM customer WHERE id = 1")).isEqualTo(30);
         assertThat(constraintDef("chk_customer_account_entry_type")).contains("CHARGE_ADJUSTMENT");
         assertThat(count("SELECT count(*) FROM pg_class WHERE relname = 'uq_cae_one_active_adjustment_per_shipment'")).isEqualTo(1);
+        assertThat(count("""
+                SELECT count(*) FROM information_schema.columns
+                WHERE table_name = 'customer_account_entry' AND column_name = 'reassigned_from_entry_id'
+                """)).isEqualTo(1);
     }
 
     private static Connection open() throws Exception {
