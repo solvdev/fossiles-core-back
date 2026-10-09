@@ -60,3 +60,6 @@ src/main/resources/application-*.yaml
 !src/main/resources/application.example.properties
 !application.example.properties
 !application.example.yml
+
+# Test-only Sentry overlay. Kept because the bare application.properties pattern ignores it.
+!src/test/resources/config/application.properties
