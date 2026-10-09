@@ -31,7 +31,6 @@ final class LfReceivablesFixture {
     static final String PARTIAL_HAS_NO_CHARGE = "El cargo es de la orden completa. Un parcial no tiene cargo propio.";
     static final String DUPLICATE_ORDER_CHARGE = "Ya existe un cargo activo para esta orden de producción.";
     static final String CREDIT_MUST_APPLY = "El pago, la nota de crédito o la devolución debe aplicarse al cargo de la orden.";
-    static final String VOID_BLOCKED = "No se puede anular el cargo porque tiene pagos, notas de crédito, devoluciones o ajustes de envío activos.";
     static final String ADJUSTMENT_NEEDS_SHIPMENT = "El ajuste de envío requiere un envío real del parcial.";
 
     private final CustomerRepository customerRepository;
@@ -189,6 +188,10 @@ final class LfReceivablesFixture {
                 .productionOrderId(order.getId())
                 .partialReleaseId(release != null ? release.getId() : null)
                 .productShipmentId(shipment != null ? shipment.getId() : null);
+    }
+
+    List<CustomerAccountEntryEntity> entries(CustomerEntity customer) {
+        return entryRepository.findByCustomerIdOrderByEntryDateAscIdAsc(customer.getId());
     }
 
     List<CustomerAccountEntryEntity> activeCharges(CustomerEntity customer) {

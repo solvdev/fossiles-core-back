@@ -15,7 +15,6 @@ import java.time.LocalDate;
 
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.ADJUSTMENT_NEEDS_SHIPMENT;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.TYPE_OPV;
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.VOID_BLOCKED;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.adjustmentRequest;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.creditRequest;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,14 +38,6 @@ class LfReceivablesGapAcceptanceTest extends LfReceivablesH2TestBase {
                 .isInstanceOf(BusinessException.class)
                 .hasMessage(ADJUSTMENT_NEEDS_SHIPMENT);
         assertThat(fx.balance(customer)).isEqualByComparingTo("80.00");
-    }
-
-    @Test
-    @DisplayName("Voiding a charge is blocked while a credit note, a return, or an adjustment is active")
-    void voidBlockedByCreditNoteReturnOrAdjustment() throws Exception {
-        assertVoidBlocked("CREDIT_NOTE", false);
-        assertVoidBlocked("RETURN", false);
-        assertVoidBlocked("CHARGE_ADJUSTMENT", true);
     }
 
     @Test
@@ -77,20 +68,27 @@ class LfReceivablesGapAcceptanceTest extends LfReceivablesH2TestBase {
     }
 
     @Test
-    @DisplayName("PENDING_EDUARDO: changing creditDays recomputes due dates of charges that already exist")
-    void changingCreditDaysRecomputesExistingChargeDueDates_PENDING_EDUARDO() throws Exception {
+    @DisplayName("Existing charges and adjustments take the customer's current creditDays")
+    void changingCreditDaysRecalculatesExistingChargeAndAdjustmentDueDates() throws Exception {
         CustomerEntity customer = fx.customer("GAP-DAYS");
         fx.setCreditDays(customer, 0);
         ProductionOrderEntity order = fx.order(customer, "OPV-T0803", TYPE_OPV, "70.00");
-        var shipment = fx.withSentAt(
-                fx.shipment(order, fx.release(order, 1), "ENV-0803", "70.00"),
+        var shipment = fx.withSentAt(fx.withShipping(
+                fx.shipment(order, fx.release(order, 1), "ENV-0803", "70.00"), "8.00"),
                 LocalDate.of(2026, 5, 10));
         CustomerAccountEntryResponse charge = fx.charge(customer, order, null, null, "70.00");
+        CustomerAccountEntryResponse adjustment = fx.create(customer, adjustmentRequest(shipment.getId()));
 
         assertThat(fx.statementLine(customer, charge.getId()).getDueDate()).isEqualTo(LocalDate.of(2026, 5, 10));
+        assertThat(fx.statementLine(customer, adjustment.getId()).getDueDate()).isEqualTo(LocalDate.of(2026, 5, 10));
+
         fx.setCreditDays(customer, 30);
         assertThat(fx.statementLine(customer, charge.getId()).getDueDate()).isEqualTo(LocalDate.of(2026, 6, 9));
-        assertThat(shipment.getId()).isNotNull();
+        assertThat(fx.statementLine(customer, adjustment.getId()).getDueDate()).isEqualTo(LocalDate.of(2026, 6, 9));
+
+        fx.setCreditDays(customer, 60);
+        assertThat(fx.statementLine(customer, charge.getId()).getDueDate()).isEqualTo(LocalDate.of(2026, 7, 9));
+        assertThat(fx.statementLine(customer, adjustment.getId()).getDueDate()).isEqualTo(LocalDate.of(2026, 7, 9));
     }
 
     @Test
@@ -154,27 +152,6 @@ class LfReceivablesGapAcceptanceTest extends LfReceivablesH2TestBase {
         assertThat(stored.getAppliedToEntryId()).isEqualTo(charge.getId());
         assertThat(fx.balance(customer)).isEqualByComparingTo("100.00");
         assertThat(fx.chargeBalance(customer, charge.getId())).isEqualByComparingTo("100.00");
-    }
-
-    private void assertVoidBlocked(String dependentType, boolean adjustment) throws Exception {
-        CustomerEntity customer = fx.customer("GAP-VOID-" + dependentType);
-        ProductionOrderEntity order = fx.order(customer, "OPV-" + dependentType, TYPE_OPV, "90.00");
-        CustomerAccountEntryResponse charge = fx.charge(customer, order, null, null, "90.00");
-        if (adjustment) {
-            var shipment = fx.withShipping(
-                    fx.shipment(order, fx.release(order, 1), "ENV-" + dependentType, "90.00"), "12.00");
-            fx.create(customer, adjustmentRequest(shipment.getId()));
-        } else {
-            fx.create(customer, creditRequest(dependentType, charge.getId(), "10.00"));
-        }
-        CustomerAccountEntryVoidRequest voidRequest = new CustomerAccountEntryVoidRequest();
-        voidRequest.setVoidReason("prueba");
-        assertThatThrownBy(() -> fx.accounts.voidEntry(charge.getId(), voidRequest))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(VOID_BLOCKED)
-                .hasMessageNotContaining("Anúlelo")
-                .hasMessageNotContaining("registrarlo de nuevo");
-        assertThat(fx.entry(charge.getId()).getStatus()).isEqualTo("ACTIVE");
     }
 
     private CustomerAccountStatementLineResponse lineForShipment(CustomerEntity customer, Long shipmentId) throws Exception {

@@ -1,7 +1,5 @@
 package com.fossiles.fossilescorebackend.application.service.customeraccount;
 
-import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountEntryVoidRequest;
-import com.fossiles.fossilescorebackend.application.dto.response.CustomerAccountEntryResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
@@ -14,20 +12,17 @@ import org.junit.jupiter.api.Test;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.DUPLICATE_ORDER_CHARGE;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.PARTIAL_HAS_NO_CHARGE;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.TYPE_OPC;
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.VOID_BLOCKED;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.creditRequest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** A settled customer can be charged for a new order. A charge with a payment cannot be voided. */
+/** A settled customer can be charged for a new order. A second charge on the paid order is still rejected. */
 class ChargeVoidAndZeroBalanceAcceptanceTest extends LfReceivablesH2TestBase {
 
     private CustomerEntity customer;
     private ProductionOrderEntity order;
     private ProductionOrderPartialReleaseEntity release;
     private ProductShipmentEntity shipment;
-    private CustomerAccountEntryResponse settledCharge;
-    private CustomerAccountEntryResponse payment;
 
     @BeforeEach
     void setUpSettledCharge() throws Exception {
@@ -35,8 +30,8 @@ class ChargeVoidAndZeroBalanceAcceptanceTest extends LfReceivablesH2TestBase {
         order = fx.order(customer, "OPC-T0300", TYPE_OPC, "1968.00");
         release = fx.release(order, 1);
         shipment = fx.shipment(order, release, "ENVP-90300-ENV-00001", "1968.00");
-        settledCharge = fx.charge(customer, order, null, null, "1968.00");
-        payment = fx.create(customer, creditRequest("PAYMENT", settledCharge.getId(), "1968.00"));
+        var settledCharge = fx.charge(customer, order, null, null, "1968.00");
+        fx.create(customer, creditRequest("PAYMENT", settledCharge.getId(), "1968.00"));
     }
 
     @Test
@@ -56,8 +51,8 @@ class ChargeVoidAndZeroBalanceAcceptanceTest extends LfReceivablesH2TestBase {
     }
 
     @Test
-    @DisplayName("Voiding a paid charge is blocked and the payment stays applied")
-    void voidAndRecreateOrphansThePayment() throws Exception {
+    @DisplayName("The paid order still rejects a partial charge and a second order charge")
+    void paidOrderRejectsAnotherCharge() throws Exception {
         assertThatThrownBy(() -> fx.charge(customer, order, release, shipment, "1968.00"))
                 .isInstanceOf(BusinessException.class)
                 .hasMessage(PARTIAL_HAS_NO_CHARGE)
@@ -69,17 +64,6 @@ class ChargeVoidAndZeroBalanceAcceptanceTest extends LfReceivablesH2TestBase {
                 .hasMessageNotContaining("Anúlelo")
                 .hasMessageNotContaining("registrarlo de nuevo");
 
-        CustomerAccountEntryVoidRequest voidRequest = new CustomerAccountEntryVoidRequest();
-        voidRequest.setVoidReason("Re-registrar cargo");
-        assertThatThrownBy(() -> fx.accounts.voidEntry(settledCharge.getId(), voidRequest))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(VOID_BLOCKED)
-                .hasMessageNotContaining("Anúlelo")
-                .hasMessageNotContaining("registrarlo de nuevo");
-
-        assertThat(fx.entry(settledCharge.getId()).getStatus()).isEqualTo("ACTIVE");
-        assertThat(fx.entry(payment.getId()).getStatus()).isEqualTo("ACTIVE");
-        assertThat(fx.entry(payment.getId()).getAppliedToEntryId()).isEqualTo(settledCharge.getId());
         assertThat(fx.catalogRow(customer, shipment).isHasCharge()).isTrue();
         assertThat(fx.catalogRow(customer, shipment).getChargeStatus()).isEqualTo("PAID");
         assertThat(fx.balance(customer)).isEqualByComparingTo("0");

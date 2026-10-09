@@ -24,7 +24,7 @@ class LegacyReregisterPhraseAbsenceTest {
                 }
                 try {
                     String text = Files.readString(path);
-                    if (text.contains("Anúlelo") || text.contains("registrarlo de nuevo")) {
+                    if (containsOldVoidPhrase(text)) {
                         hits.add(path.toString());
                     }
                 } catch (Exception ex) {
@@ -33,5 +33,25 @@ class LegacyReregisterPhraseAbsenceTest {
             });
         }
         assertThat(hits).isEmpty();
+    }
+
+    /** "Anúlelos primero" is the new shipping-adjustment instruction. The old singular phrase is not. */
+    private static boolean containsOldVoidPhrase(String text) {
+        if (text.contains("registrarlo de nuevo")) {
+            return true;
+        }
+        int from = 0;
+        while (from < text.length()) {
+            int at = text.indexOf("Anúlelo", from);
+            if (at < 0) {
+                return false;
+            }
+            int after = at + "Anúlelo".length();
+            if (after >= text.length() || text.charAt(after) != 's') {
+                return true;
+            }
+            from = after;
+        }
+        return false;
     }
 }
