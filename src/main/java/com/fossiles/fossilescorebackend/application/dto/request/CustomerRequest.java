@@ -36,5 +36,8 @@ public class CustomerRequest {
 
     @Size(max = 20, message = "Status must not exceed 20 characters")
     private String status;
+
+    /** Días de crédito, 0 a 60. Null en un PUT conserva el valor guardado. */
+    private Integer creditDays;
 }
 
