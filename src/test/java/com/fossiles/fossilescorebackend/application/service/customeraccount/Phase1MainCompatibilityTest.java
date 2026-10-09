@@ -18,25 +18,27 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.Container.ExecResult;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.MountableFile;
 
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.Statement;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
+ * source-commit: 04fc545
+ *
  * Phase 1 ships before the receivables fix. Today's main still saves one CHARGE per shipment
  * and sometimes a CHARGE with no production order. After phase 1, both must still save.
- * Skipped when Docker is unavailable.
+ * The classpath script is a byte-identical copy of scripts/migration-customer-account-lf-phase1.sql
+ * at that commit and is applied with psql. Skipped when Docker is unavailable.
  */
 @Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest
@@ -134,22 +136,22 @@ class Phase1MainCompatibilityTest {
     }
 
     private void applyPhase1() throws Exception {
-        String sql = new ClassPathResource("db/migration-customer-account-lf-phase1.sql")
-                .getContentAsString(StandardCharsets.UTF_8);
-        for (String statement : split(sql)) {
-            jdbc.execute((Connection connection) -> {
-                try (Statement command = connection.createStatement()) {
-                    if (command.execute(statement)) {
-                        try (ResultSet rows = command.getResultSet()) {
-                            while (rows != null && rows.next()) {
-                                // Phase 1 ends with a read-only balance query.
-                            }
-                        }
-                    }
-                }
-                return null;
-            });
+        Path host = Files.createTempFile("phase1-", ".sql");
+        Files.write(host, new ClassPathResource("db/migration-customer-account-lf-phase1.sql").getContentAsByteArray());
+        String remote = "/tmp/migration-customer-account-lf-phase1.sql";
+        POSTGRES.copyFileToContainer(MountableFile.forHostPath(host), remote);
+        String command = "PGPASSWORD=" + shellQuote(POSTGRES.getPassword())
+                + " psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -U " + shellQuote(POSTGRES.getUsername())
+                + " -d " + shellQuote(POSTGRES.getDatabaseName())
+                + " -f " + shellQuote(remote);
+        ExecResult result = POSTGRES.execInContainer("sh", "-c", command);
+        if (result.getExitCode() != 0) {
+            throw new IllegalStateException(result.getStdout() + result.getStderr());
         }
+    }
+
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "'\\''") + "'";
     }
 
     private String constraintDefinition(String name) {
@@ -162,61 +164,5 @@ class Phase1MainCompatibilityTest {
         Integer count = jdbc.queryForObject(
                 "SELECT count(*) FROM pg_indexes WHERE indexname = ?", Integer.class, indexName);
         return count == null ? 0 : count;
-    }
-
-    private static List<String> split(String sql) {
-        List<String> statements = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean dollarQuote = false;
-        boolean singleQuote = false;
-        for (int i = 0; i < sql.length(); i++) {
-            char c = sql.charAt(i);
-            if (!dollarQuote && !singleQuote && c == '-' && i + 1 < sql.length() && sql.charAt(i + 1) == '-') {
-                int start = i;
-                while (i < sql.length() && sql.charAt(i) != '\n') {
-                    i++;
-                }
-                current.append(sql, start, i);
-                if (i < sql.length()) {
-                    current.append('\n');
-                }
-                continue;
-            }
-            if (!singleQuote && c == '$' && i + 1 < sql.length() && sql.charAt(i + 1) == '$') {
-                dollarQuote = !dollarQuote;
-                current.append("$$");
-                i++;
-                continue;
-            }
-            if (!dollarQuote && c == '\'') {
-                if (singleQuote && i + 1 < sql.length() && sql.charAt(i + 1) == '\'') {
-                    current.append("''");
-                    i++;
-                    continue;
-                }
-                singleQuote = !singleQuote;
-            }
-            if (c == ';' && !dollarQuote && !singleQuote) {
-                addIfExecutable(statements, current);
-                continue;
-            }
-            current.append(c);
-        }
-        addIfExecutable(statements, current);
-        return statements;
-    }
-
-    private static void addIfExecutable(List<String> statements, StringBuilder current) {
-        String statement = current.toString().trim();
-        current.setLength(0);
-        if (statement.isEmpty()) {
-            return;
-        }
-        boolean executable = statement.lines()
-                .map(String::trim)
-                .anyMatch(line -> !line.isEmpty() && !line.startsWith("--"));
-        if (executable) {
-            statements.add(statement);
-        }
     }
 }
