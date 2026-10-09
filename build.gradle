@@ -61,6 +61,40 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
+def resolveTestDatasourceUrl() {
+    def propsFile = file('src/test/resources/application.properties')
+    if (!propsFile.isFile()) {
+        throw new GradleException('Refusing to run tests: src/test/resources/application.properties is missing.')
+    }
+    def text = propsFile.getText('UTF-8')
+    if (text.contains('spring.config.import')) {
+        throw new GradleException('Refusing to run tests: test application.properties must not import another config.')
+    }
+    def lowered = text.toLowerCase(Locale.ROOT)
+    if (lowered.contains('rds.amazonaws.com') || lowered.contains('jdbc:postgresql')) {
+        throw new GradleException('Refusing to run tests: test application.properties points at a remote database.')
+    }
+    String url = null
+    text.readLines().each { line ->
+        def trimmed = line.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith('#')) {
+            return
+        }
+        def key = 'spring.datasource.url='
+        if (trimmed.startsWith(key)) {
+            url = trimmed.substring(key.length()).trim()
+        }
+    }
+    if (url == null || url.isEmpty()) {
+        throw new GradleException('Refusing to run tests: test application.properties has no spring.datasource.url.')
+    }
+    def envUrl = System.getenv('SPRING_DATASOURCE_URL')
+    if (envUrl != null && !envUrl.trim().isEmpty()) {
+        url = envUrl.trim()
+    }
+    return url
+}
+
 tasks.named('test') {
     useJUnitPlatform()
     // Pin the test JVM so a parent environment cannot point tests at production.
@@ -70,4 +104,14 @@ tasks.named('test') {
     environment 'SPRING_DATASOURCE_PASSWORD', 'sa'
     environment 'SPRING_DATASOURCE_DRIVER_CLASS_NAME', 'org.h2.Driver'
     environment 'SENTRY_DSN', ''
+    doFirst {
+        def resolved = resolveTestDatasourceUrl()
+        def normalized = resolved.toLowerCase(Locale.ROOT)
+        if (!normalized.startsWith('jdbc:h2:mem')
+                || normalized.contains('rds.amazonaws.com')
+                || normalized.contains('jdbc:postgresql')) {
+            throw new GradleException(
+                    'Refusing to run tests: resolved datasource URL is not an in-memory H2 database.')
+        }
+    }
 }
