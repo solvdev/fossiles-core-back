@@ -1,92 +1,46 @@
 package com.fossiles.fossilescorebackend.application.service.customeraccount;
 
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.testcontainers.containers.Container;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.utility.MountableFile;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.Statement;
-import java.util.ArrayList;
-import java.util.List;
 
-/** Runs the LF receivables SQL scripts, keeping {@code DO $$ ... $$} blocks intact. */
+/**
+ * Runs the LF ledger scripts with {@code psql -v ON_ERROR_STOP=1 -f} inside the
+ * PostgreSQL container. The Index scripts are psql programs ({@code \set}, {@code \gset},
+ * {@code \if}, {@code \copy}, {@code CREATE INDEX CONCURRENTLY}); a JDBC splitter would
+ * not keep their transactions or stop on the first error.
+ */
 final class LfMigrationScripts {
 
     private LfMigrationScripts() {
     }
 
-    static void apply(JdbcTemplate jdbc, String relativePath) throws Exception {
-        String sql = Files.readString(Path.of(relativePath));
-        for (String statement : split(sql)) {
-            jdbc.execute((Connection connection) -> {
-                try (Statement command = connection.createStatement()) {
-                    if (command.execute(statement)) {
-                        try (ResultSet rows = command.getResultSet()) {
-                            while (rows != null && rows.next()) {
-                                // The phase 1 script ends with a read-only balance query.
-                            }
-                        }
-                    }
-                }
-                return null;
-            });
+    static void apply(PostgreSQLContainer<?> postgres, String relativePath) throws Exception {
+        PsqlResult result = run(postgres, relativePath);
+        if (result.exitCode() != 0) {
+            throw new IllegalStateException(
+                    "psql " + relativePath + " exited " + result.exitCode() + ": " + result.output());
         }
     }
 
-    static List<String> split(String sql) {
-        List<String> statements = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean dollarQuote = false;
-        boolean singleQuote = false;
-        for (int i = 0; i < sql.length(); i++) {
-            char c = sql.charAt(i);
-            if (!dollarQuote && !singleQuote && c == '-' && i + 1 < sql.length() && sql.charAt(i + 1) == '-') {
-                int start = i;
-                while (i < sql.length() && sql.charAt(i) != '\n') {
-                    i++;
-                }
-                current.append(sql, start, i);
-                if (i < sql.length()) {
-                    current.append('\n');
-                }
-                continue;
-            }
-            if (!singleQuote && c == '$' && i + 1 < sql.length() && sql.charAt(i + 1) == '$') {
-                dollarQuote = !dollarQuote;
-                current.append("$$");
-                i++;
-                continue;
-            }
-            if (!dollarQuote && c == '\'') {
-                if (singleQuote && i + 1 < sql.length() && sql.charAt(i + 1) == '\'') {
-                    current.append("''");
-                    i++;
-                    continue;
-                }
-                singleQuote = !singleQuote;
-            }
-            if (c == ';' && !dollarQuote && !singleQuote) {
-                addIfExecutable(statements, current);
-                continue;
-            }
-            current.append(c);
-        }
-        addIfExecutable(statements, current);
-        return statements;
+    static PsqlResult run(PostgreSQLContainer<?> postgres, String relativePath) throws Exception {
+        String remote = "/tmp/" + Path.of(relativePath).getFileName();
+        postgres.copyFileToContainer(
+                MountableFile.forHostPath(Path.of(relativePath).toAbsolutePath()), remote);
+        String command = "cd /tmp && PGPASSWORD=" + shellQuote(postgres.getPassword())
+                + " psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -U " + shellQuote(postgres.getUsername())
+                + " -d " + shellQuote(postgres.getDatabaseName())
+                + " -f " + shellQuote(remote);
+        Container.ExecResult result = postgres.execInContainer("sh", "-c", command);
+        return new PsqlResult(result.getExitCode(), result.getStdout() + result.getStderr());
     }
 
-    private static void addIfExecutable(List<String> statements, StringBuilder current) {
-        String statement = current.toString().trim();
-        current.setLength(0);
-        if (statement.isEmpty()) {
-            return;
-        }
-        boolean executable = statement.lines()
-                .map(String::trim)
-                .anyMatch(line -> !line.isEmpty() && !line.startsWith("--"));
-        if (executable) {
-            statements.add(statement);
-        }
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "'\\''") + "'";
+    }
+
+    record PsqlResult(int exitCode, String output) {
     }
 }

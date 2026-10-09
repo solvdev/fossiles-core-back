@@ -70,7 +70,7 @@ class ConcurrentDuplicateChargeAcceptanceTest {
     @Test
     @DisplayName("Phase 1 only: the customer lock leaves one charge; phase 2 then rejects a duplicate insert")
     void concurrentIdenticalChargesAreBothInserted() throws Exception {
-        LfMigrationScripts.apply(jdbc, PHASE1);
+        LfMigrationScripts.apply(POSTGRES, PHASE1);
         assertThat(indexCount("uq_cae_one_active_charge_per_order")).isZero();
 
         LfReceivablesFixture fx = new LfReceivablesFixture(context);
@@ -116,7 +116,7 @@ class ConcurrentDuplicateChargeAcceptanceTest {
         assertThatCode(() -> fx.catalogRows(customer)).doesNotThrowAnyException();
         assertThat(fx.catalogRow(customer, shipment).isHasCharge()).isTrue();
 
-        LfMigrationScripts.apply(jdbc, PHASE2);
+        LfMigrationScripts.apply(POSTGRES, PHASE2);
         assertThat(indexCount("uq_cae_one_active_charge_per_order")).isEqualTo(1);
         assertThatThrownBy(() -> jdbc.update("""
                 INSERT INTO customer_account_entry
