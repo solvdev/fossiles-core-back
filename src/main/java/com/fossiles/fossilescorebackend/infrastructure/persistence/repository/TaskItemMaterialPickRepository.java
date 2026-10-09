@@ -4,6 +4,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskIt
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -11,6 +12,8 @@ import java.util.Optional;
 public interface TaskItemMaterialPickRepository extends JpaRepository<TaskItemMaterialPickEntity, Long> {
 
     List<TaskItemMaterialPickEntity> findByTaskItemId(Long taskItemId);
+
+    List<TaskItemMaterialPickEntity> findByTaskItemIdIn(Collection<Long> taskItemIds);
 
     Optional<TaskItemMaterialPickEntity> findByTaskItemIdAndMaterialId(Long taskItemId, Long materialId);
 

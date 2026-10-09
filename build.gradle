@@ -42,8 +42,11 @@ dependencies {
     implementation 'io.sentry:sentry-async-profiler:8.53.0'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-cache'
+    implementation 'com.github.ben-manes.caffeine:caffeine'
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'software.amazon.awssdk:s3:2.27.18'
+    implementation 'org.apache.poi:poi-ooxml:5.4.0'
     // JWT dependencies
     implementation 'io.jsonwebtoken:jjwt-api:0.12.3'
     implementation 'io.jsonwebtoken:jjwt-impl:0.12.3'
@@ -54,10 +57,67 @@ dependencies {
     annotationProcessor 'org.projectlombok:lombok'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.security:spring-security-test'
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:postgresql'
     testRuntimeOnly 'com.h2database:h2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
+def resolveTestDatasourceUrl() {
+    def propsFile = file('src/test/resources/application.properties')
+    if (!propsFile.isFile()) {
+        throw new GradleException('Refusing to run tests: src/test/resources/application.properties is missing.')
+    }
+    def text = propsFile.getText('UTF-8')
+    if (text.contains('spring.config.import')) {
+        throw new GradleException('Refusing to run tests: test application.properties must not import another config.')
+    }
+    def lowered = text.toLowerCase(Locale.ROOT)
+    if (lowered.contains('rds.amazonaws.com') || lowered.contains('jdbc:postgresql')) {
+        throw new GradleException('Refusing to run tests: test application.properties points at a remote database.')
+    }
+    String url = null
+    text.readLines().each { line ->
+        def trimmed = line.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith('#')) {
+            return
+        }
+        def key = 'spring.datasource.url='
+        if (trimmed.startsWith(key)) {
+            url = trimmed.substring(key.length()).trim()
+        }
+    }
+    if (url == null || url.isEmpty()) {
+        throw new GradleException('Refusing to run tests: test application.properties has no spring.datasource.url.')
+    }
+    def envUrl = System.getenv('SPRING_DATASOURCE_URL')
+    if (envUrl != null && !envUrl.trim().isEmpty()) {
+        url = envUrl.trim()
+    }
+    return url
+}
+
 tasks.named('test') {
     useJUnitPlatform()
+    // -Dsentry.* on the Gradle command is the Gradle JVM only. Forward it into
+    // the test worker, and default to off so a run cannot report to production.
+    systemProperty 'sentry.enabled', System.getProperty('sentry.enabled', 'false')
+    systemProperty 'sentry.dsn', System.getProperty('sentry.dsn', '')
+    environment 'SPRING_DATASOURCE_URL', 'jdbc:h2:mem:fossiles;MODE=PostgreSQL;DB_CLOSE_DELAY=-1'
+    environment 'SENTRY_DSN', ''
+    doFirst {
+        def fromEnv = System.getenv('SPRING_DATASOURCE_URL')
+        def resolved = (fromEnv != null && !fromEnv.isBlank()) ? fromEnv : testResourceDatasourceUrl()
+        if (resolved == null || !resolved.startsWith('jdbc:h2:mem')) {
+            throw new GradleException(
+                    'Refusing to run tests: datasource URL must start with jdbc:h2:mem')
+        }
+        logger.lifecycle('Test datasource URL: ' + resolved)
+    }
+}
+
+def testResourceDatasourceUrl() {
+    def props = new java.util.Properties()
+    file('src/test/resources/application.properties').withInputStream { props.load(it) }
+    return props.getProperty('spring.datasource.url')
 }

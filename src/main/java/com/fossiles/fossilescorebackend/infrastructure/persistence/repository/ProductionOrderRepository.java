@@ -21,6 +21,41 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
     List<ProductionOrderEntity> findByStatus(String status);
     List<ProductionOrderEntity> findByCustomerId(Long customerId);
 
+    /**
+     * OP del dashboard: COALESCE(start_date, created_at::date) en rango.
+     * Incluye filas sin fecha (mismo criterio que isDateInRange del controller).
+     */
+    @Query(value = """
+            SELECT * FROM production_order po
+            WHERE (
+              COALESCE(po.start_date, po.created_at::date) IS NULL
+              OR (
+                COALESCE(po.start_date, po.created_at::date) >= :fromDate
+                AND COALESCE(po.start_date, po.created_at::date) <= :toDate
+              )
+            )
+            """, nativeQuery = true)
+    List<ProductionOrderEntity> findForDashboardDateRange(
+            @Param("fromDate") java.time.LocalDate fromDate,
+            @Param("toDate") java.time.LocalDate toDate);
+
+    /**
+     * Órdenes del vendedor LF para el dashboard de ventas: fecha COALESCE(start_date, created_at::date)
+     * en rango (aprovecha idx_po_dashboard_date), no canceladas y sin envío anulado.
+     * El servicio aplica además isLfVendorOrder (excluye INTERNA / CLIENTE_KIOSKO).
+     */
+    @Query(value = """
+            SELECT * FROM production_order po
+            WHERE COALESCE(po.start_date, po.created_at::date) >= :fromDate
+              AND COALESCE(po.start_date, po.created_at::date) <= :toDate
+              AND UPPER(po.seller_name) LIKE '%LUIS FELIPE%'
+              AND po.status NOT IN ('CANCELLED')
+              AND po.vendor_shipment_voided_at IS NULL
+            """, nativeQuery = true)
+    List<ProductionOrderEntity> findVendorSalesDashboardOrders(
+            @Param("fromDate") java.time.LocalDate fromDate,
+            @Param("toDate") java.time.LocalDate toDate);
+
     @Query("""
             SELECT po FROM ProductionOrderEntity po
             WHERE UPPER(COALESCE(po.sellerName, '')) LIKE '%LUIS FELIPE%'
@@ -44,6 +79,14 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
 
     @Query("SELECT po FROM ProductionOrderEntity po WHERE po.status NOT IN ('CANCELLED') ORDER BY po.createdAt DESC")
     List<ProductionOrderEntity> findActiveOrders();
+
+    @Query("""
+            SELECT po FROM ProductionOrderEntity po
+            WHERE UPPER(COALESCE(po.orderType, '')) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              AND UPPER(COALESCE(po.status, '')) NOT IN ('CANCELLED', 'COMPLETED')
+            ORDER BY po.deliveryDate ASC NULLS LAST, po.id DESC
+            """)
+    List<ProductionOrderEntity> findOpenCinchoOrders();
 
     @Query("SELECT po.vendorShipmentNumber FROM ProductionOrderEntity po WHERE po.vendorShipmentNumber IS NOT NULL")
     List<String> findAllVendorShipmentNumbers();

@@ -1224,11 +1224,49 @@ public class KioscoInventoryService {
             Long userId,
             String physicalSlipNumber
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarCambioMulti(
+                locationId,
+                List.of(CambioReturnedLine.builder()
+                        .productId(returnedProductId)
+                        .colorId(returnedColorId)
+                        .quantity(returnedQuantity)
+                        .sizeKey(returnedSize)
+                        .hardwareCondition(returnedHardwareCondition)
+                        .build()),
+                givenLines,
+                referenceId,
+                reason,
+                userId,
+                physicalSlipNumber
+        );
+    }
+
+    /**
+     * N ingresos de los productos devueltos ({@code CAMBIO +}) + M egresos de los entregados ({@code CAMBIO −}).
+     * Los ingresos se registran primero para que el stock devuelto ya esté disponible al entregar.
+     */
+    public CambioResult registrarCambioMulti(
+            Long locationId,
+            List<CambioReturnedLine> returnedLines,
+            List<CambioGivenLine> givenLines,
+            Long referenceId,
+            String reason,
+            Long userId,
+            String physicalSlipNumber
+    ) throws BusinessException, ResourceNotFoundException {
         Long resolvedUserId = resolveUserIdRequired(userId);
         validateLocationIsKiosk(locationId);
-        validateProduct(returnedProductId);
-        validateColor(returnedColorId);
-        validateQuantity(returnedQuantity);
+        if (returnedLines == null || returnedLines.isEmpty()) {
+            throw new BusinessException("Debes indicar al menos un producto que ingresa.");
+        }
+        for (CambioReturnedLine line : returnedLines) {
+            if (line == null || line.getProductId() == null) {
+                throw new BusinessException("Cada producto que ingresa debe indicar productId.");
+            }
+            validateProduct(line.getProductId());
+            validateColor(line.getColorId());
+            validateQuantity(line.getQuantity());
+        }
         if (givenLines == null || givenLines.isEmpty()) {
             throw new BusinessException("Debes indicar al menos un producto a entregar.");
         }
@@ -1244,29 +1282,36 @@ public class KioscoInventoryService {
 
         String trimmedReason = safeTrim(reason);
         String reasonOrNull = trimmedReason.isEmpty() ? null : trimmedReason;
-        String returnedHardware = resolveLocationHardware(
-                locationId, returnedProductId, returnedHardwareCondition, false);
 
-        // syncLegacy=false: el cambio no debe fallar por inventario legacy desfasado.
-        KioscoMovementWithStock returnedMovement = applyStockMovementWithMovement(
-                locationId,
-                returnedProductId,
-                returnedColorId,
-                returnedQuantity,
-                referenceId,
-                null,
-                null,
-                resolvedUserId,
-                KioscoMovementType.CAMBIO,
-                returnedQuantity,
-                true,
-                reasonOrNull,
-                returnedSize,
-                false,
-                physicalSlipNumber,
-                null,
-                returnedHardware
-        );
+        List<Long> returnedMovementIds = new ArrayList<>();
+        KioscoStockResponse lastReturnedStock = null;
+        for (CambioReturnedLine line : returnedLines) {
+            String returnedHardware = resolveLocationHardware(
+                    locationId, line.getProductId(), line.getHardwareCondition(), false);
+
+            // syncLegacy=false: el cambio no debe fallar por inventario legacy desfasado.
+            KioscoMovementWithStock returnedMovement = applyStockMovementWithMovement(
+                    locationId,
+                    line.getProductId(),
+                    line.getColorId(),
+                    line.getQuantity(),
+                    referenceId,
+                    null,
+                    null,
+                    resolvedUserId,
+                    KioscoMovementType.CAMBIO,
+                    line.getQuantity(),
+                    true,
+                    reasonOrNull,
+                    line.getSizeKey(),
+                    false,
+                    physicalSlipNumber,
+                    null,
+                    returnedHardware
+            );
+            returnedMovementIds.add(returnedMovement.movement().getId());
+            lastReturnedStock = returnedMovement.stockResponse();
+        }
 
         List<Long> givenMovementIds = new ArrayList<>();
         KioscoStockResponse lastGivenStock = null;
@@ -1309,9 +1354,10 @@ public class KioscoInventoryService {
         }
 
         return CambioResult.builder()
-                .returnedStock(returnedMovement.stockResponse())
+                .returnedStock(lastReturnedStock)
                 .givenStock(lastGivenStock)
-                .returnedMovementId(returnedMovement.movement().getId())
+                .returnedMovementId(returnedMovementIds.get(0))
+                .returnedMovementIds(returnedMovementIds)
                 .givenMovementId(firstGivenMovementId)
                 .givenMovementIds(givenMovementIds)
                 .build();
@@ -2013,10 +2059,19 @@ public class KioscoInventoryService {
             String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
-        String hardware = ProductHardwareCondition.normalize(hardwareCondition);
-        if (hardware != null) {
+        // POS EntreCueros manda NINO/DAMA/SINTETICO:MARCA, no solo NUEVO/VIEJO.
+        // normalize() los descarta y descuenta la fila NUEVO (stock 0) aunque el catálogo sí tenía unidades.
+        if (hardwareCondition != null && !hardwareCondition.isBlank()) {
             return registrarVentaInternal(
-                    locationId, productId, colorId, qty, invoiceId, userId, false, sizeKey, hardware);
+                    locationId,
+                    productId,
+                    colorId,
+                    qty,
+                    invoiceId,
+                    userId,
+                    false,
+                    sizeKey,
+                    ProductHardwareCondition.normalizeStockDimension(hardwareCondition));
         }
         if (shouldSplitVentaByHardware(productId, null)) {
             return registrarVentaFifoByHardware(
@@ -4967,11 +5022,26 @@ public class KioscoInventoryService {
     public static class CambioResult {
         private KioscoStockResponse returnedStock;
         private KioscoStockResponse givenStock;
+        /** Primer ingreso (compat 1→1). */
         private Long returnedMovementId;
+        /** Todos los ingresos del devuelto (CAMBIO +) cuando hay N líneas devueltas. */
+        private java.util.List<Long> returnedMovementIds;
         /** Primer egreso (compat 1→1). */
         private Long givenMovementId;
         /** Todos los egresos del entregado (CAMBIO − o VENTA) cuando hay 1→N. */
         private java.util.List<Long> givenMovementIds;
+    }
+
+    @lombok.Data
+    @lombok.Builder
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    public static class CambioReturnedLine {
+        private Long productId;
+        private Long colorId;
+        private Integer quantity;
+        private String sizeKey;
+        private String hardwareCondition;
     }
 
     @lombok.Data

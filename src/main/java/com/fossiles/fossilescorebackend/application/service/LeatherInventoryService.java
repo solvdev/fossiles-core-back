@@ -33,12 +33,14 @@ public class LeatherInventoryService {
 
     // ─── Inventario ──────────────────────────────────────────────────
 
+    @Transactional(readOnly = true)
     public List<LeatherInventoryResponse> getAllInventory() {
         return inventoryRepository.findAll().stream()
                 .map(this::toInventoryResponse)
                 .toList();
     }
 
+    @Transactional(readOnly = true)
     public LeatherInventoryResponse getInventoryByMaterial(Long materialId) throws ResourceNotFoundException {
         LeatherInventoryEntity inv = inventoryRepository.findByMaterialId(materialId)
                 .orElseThrow(() -> new ResourceNotFoundException(
@@ -401,8 +403,9 @@ public class LeatherInventoryService {
     private LeatherInventoryResponse toInventoryResponse(LeatherInventoryEntity e) {
         String materialName = null;
         String materialSku = null;
-        MaterialEntity m = e.getMaterial() != null ? e.getMaterial()
-                : materialRepository.findById(e.getMaterialId()).orElse(null);
+        MaterialEntity m = e.getMaterialId() != null
+                ? materialRepository.findById(e.getMaterialId()).orElse(null)
+                : null;
         if (m != null) {
             materialName = m.getName();
             materialSku = m.getSku();

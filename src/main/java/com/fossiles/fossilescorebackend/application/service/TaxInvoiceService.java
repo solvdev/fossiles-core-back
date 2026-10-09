@@ -320,6 +320,31 @@ public class TaxInvoiceService {
         return voidInvoiceCore(invoiceId, reason);
     }
 
+    /**
+     * Si la factura ya está anulada o no está certificada, no toca INFILE.
+     * Así el POS puede devolver inventario aunque FEL ya se haya anulado en Contabilidad.
+     */
+    @Transactional
+    public void voidInvoiceFromPosIfCertified(Long invoiceId, String reason)
+            throws BusinessException, ResourceNotFoundException {
+        if (invoiceId == null) {
+            return;
+        }
+        TaxInvoiceEntity invoice = taxInvoiceRepository.findById(invoiceId).orElse(null);
+        if (invoice == null) {
+            return;
+        }
+        if ("VOID".equalsIgnoreCase(safe(invoice.getStatus()))) {
+            return;
+        }
+        if (!"CERTIFIED".equalsIgnoreCase(safe(invoice.getStatus()))
+                || invoice.getFelUuid() == null
+                || invoice.getFelUuid().isBlank()) {
+            return;
+        }
+        voidInvoiceCore(invoiceId, reason);
+    }
+
     private TaxInvoiceResponse voidInvoiceCore(Long invoiceId, String reason)
             throws BusinessException, ResourceNotFoundException {
         if (reason == null || reason.trim().isEmpty()) {
@@ -348,7 +373,6 @@ public class TaxInvoiceService {
         FelCredentials credentials = properties.resolveCredentials(resolveSandboxMode(invoice));
         validateEmitterConfig(credentials);
         String originalEmission = FelEmissionDateResolver.resolveAnnulmentEmissionDateTime(invoice);
-        FelSatReceptorRules.assertDirectAnnulmentAllowed(invoice, GuatemalaDateTime.today());
 
         String transactionId = "VOID-" + invoice.getId() + "-" + System.currentTimeMillis();
         String unsignedXml = anulacionXmlBuilder.buildUnsignedAnulacionXml(
@@ -861,9 +885,10 @@ public class TaxInvoiceService {
                 default -> { }
             }
         }
-        long unsigned = failed + draft + skipped;
+        // Sin firmar = borrador/omitida. Con error (FAILED) es categoría aparte.
+        long unsigned = draft + skipped;
         return TaxInvoiceSummaryResponse.builder()
-                .total(certified + unsigned + voided)
+                .total(certified + unsigned + failed + voided)
                 .certified(certified)
                 .unsigned(unsigned)
                 .failed(failed)
@@ -1602,11 +1627,7 @@ public class TaxInvoiceService {
                 .collect(Collectors.toList());
 
         boolean consumidorFinal = FelSatReceptorRules.isConsumidorFinal(invoice.getCustomerTaxId());
-        LocalDate emissionDate = FelSatReceptorRules.resolveEmissionDateGt(invoice);
-        LocalDate deadline = consumidorFinal && FelSatReceptorRules.isFacturaType(invoice.getDocumentType())
-                ? FelSatReceptorRules.directAnnulmentDeadlineDate(emissionDate)
-                : null;
-        boolean directVoidAllowed = FelSatReceptorRules.isDirectFelVoidAllowed(invoice, GuatemalaDateTime.today());
+        boolean directVoidAllowed = FelSatReceptorRules.isDirectFelVoidAllowed(invoice);
 
         return TaxInvoiceResponse.builder()
                 .id(invoice.getId())
@@ -1636,7 +1657,7 @@ public class TaxInvoiceService {
                 .hasCertifiedXml(hasCertifiedXml(invoice))
                 .consumidorFinal(consumidorFinal)
                 .felDirectVoidAllowed(directVoidAllowed)
-                .felDirectVoidDeadlineDate(deadline)
+                .felDirectVoidDeadlineDate(null)
                 .notes(invoice.getNotes())
                 .createdAt(invoice.getCreatedAt())
                 .createdBy(invoice.getCreatedBy())

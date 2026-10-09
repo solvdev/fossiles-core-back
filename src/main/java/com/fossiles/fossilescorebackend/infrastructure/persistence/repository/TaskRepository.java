@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -18,6 +19,7 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     Optional<TaskEntity> findByCode(String code);
     boolean existsByCode(String code);
     List<TaskEntity> findByProductionOrderId(Long productionOrderId);
+    List<TaskEntity> findByProductionOrderIdIn(Collection<Long> productionOrderIds);
     List<TaskEntity> findByDesk(Integer desk);
     @Query("SELECT t FROM TaskEntity t WHERE t.scheduledDate = :scheduledDate ORDER BY COALESCE(t.priority, 9999), t.deliveryDate, t.desk, t.id")
     List<TaskEntity> findByScheduledDate(@Param("scheduledDate") LocalDate scheduledDate);
@@ -26,6 +28,24 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
 
     /** Tareas sin mesa pero con fecha (cola / pendiente de asignar). */
     List<TaskEntity> findByDeskIsNullAndScheduledDate(LocalDate scheduledDate);
+
+    /**
+     * Tareas del dashboard: COALESCE(scheduled_date, completed_at::date, created_at::date) en rango.
+     * Incluye sin fecha (mismo criterio que isDateInRange del controller).
+     */
+    @Query(value = """
+            SELECT * FROM task t
+            WHERE (
+              COALESCE(t.scheduled_date, t.completed_at::date, t.created_at::date) IS NULL
+              OR (
+                COALESCE(t.scheduled_date, t.completed_at::date, t.created_at::date) >= :fromDate
+                AND COALESCE(t.scheduled_date, t.completed_at::date, t.created_at::date) <= :toDate
+              )
+            )
+            """, nativeQuery = true)
+    List<TaskEntity> findForDashboardDateRange(
+            @Param("fromDate") LocalDate fromDate,
+            @Param("toDate") LocalDate toDate);
 
     /**
      * OPs que tienen alguna tarea cuyo código contiene el texto buscado.

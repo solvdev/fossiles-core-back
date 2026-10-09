@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountE
 import com.fossiles.fossilescorebackend.application.dto.response.*;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.CustomerAccountPortfolioReportService;
 import com.fossiles.fossilescorebackend.application.service.CustomerAccountService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +24,7 @@ import java.util.List;
 public class CustomerAccountController {
 
     private final CustomerAccountService customerAccountService;
+    private final CustomerAccountPortfolioReportService portfolioReportService;
 
     @GetMapping("/summary")
     public ResponseEntity<List<CustomerAccountSummaryResponse>> getSummary(
@@ -51,6 +53,26 @@ public class CustomerAccountController {
                 search, luisFelipeOnly, positiveBalanceOnly, from, to, regionCode, routeNumber, routeLocationCode));
     }
 
+    /**
+     * Cartera por documento (cargos, pagos, créditos, saldo) para la impresión RUTAS CxC.
+     * Solo incluye documentos y clientes con saldo: lo saldado (cero) no forma parte de la cartera.
+     */
+    @GetMapping("/portfolio-report")
+    public ResponseEntity<CustomerAccountPortfolioReportResponse> getPortfolioReport(
+            @RequestParam(required = false) String search,
+            @RequestParam(defaultValue = "OPV") String orderKind,
+            @RequestParam(required = false) String regionCode,
+            @RequestParam(required = false) Integer routeNumber,
+            @RequestParam(required = false) String routeLocationCode,
+            @RequestParam(defaultValue = "false") boolean includeMovements,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate movementsFrom,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate movementsTo)
+            throws BusinessException {
+        return ResponseEntity.ok(portfolioReportService.buildReport(
+                search, orderKind, regionCode, routeNumber, routeLocationCode,
+                includeMovements, movementsFrom, movementsTo));
+    }
+
     @GetMapping("/receivable-search")
     public ResponseEntity<List<CustomerAccountReceivableSearchResponse>> searchReceivables(
             @RequestParam(required = false) String search,
@@ -66,6 +88,16 @@ public class CustomerAccountController {
         return ResponseEntity.ok(customerAccountService.searchReceivables(
                 search, orderKind, chargeStatus, hasCharge, hasPayment,
                 regionCode, routeNumber, routeLocationCode, allOrderTypes, limit));
+    }
+
+    /**
+     * Monto de cargo calculado en el servidor para una orden: productos de toda la orden
+     * más el envío real de cada parcial que ya tiene envío. No usa el monto del cliente.
+     */
+    @GetMapping("/production-orders/{productionOrderId}/charge-quote")
+    public ResponseEntity<OrderChargeQuoteResponse> quoteOrderCharge(@PathVariable Long productionOrderId)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(customerAccountService.quoteOrderCharge(productionOrderId));
     }
 
     @GetMapping("/customers/{customerId}/balance")

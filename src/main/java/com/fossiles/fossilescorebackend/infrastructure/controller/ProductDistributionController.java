@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductDistribut
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentDestinationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentObservationsRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentShippingCostRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockPreviewResponse;
@@ -150,6 +151,14 @@ public class ProductDistributionController {
             @RequestBody List<ProductShipmentRequest.PackingItemRequest> packingItems)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(distributionService.updateShipmentPackingItems(id, packingItems));
+    }
+
+    @PutMapping("/shipments/{id}/shipping-cost")
+    public ResponseEntity<ProductShipmentResponse> updateShipmentShippingCost(
+            @PathVariable Long id,
+            @RequestBody(required = false) ProductShipmentShippingCostRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.updateShipmentShippingCost(id, request));
     }
 
     @DeleteMapping("/shipments/{id}")

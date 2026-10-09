@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.MaterialRequestItemRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.MaterialRequestRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialRequestResponse;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
@@ -143,6 +144,43 @@ public class SmartMaterialRequestService {
         }
 
         return generatedRequests;
+    }
+
+    /**
+     * Misma regla que llamar línea por línea: solo la primera receta de la orden genera solicitud.
+     * Se detiene ahí para no repetir la consulta por cada producto.
+     */
+    public void checkAndGenerateFirstRequestForProductionOrder(
+            Long productionOrderId,
+            List<ProductionOrderItemRequest> items) {
+        if (productionOrderId == null || items == null || items.isEmpty()) {
+            return;
+        }
+        if (!isAutoGenerateEnabled() || hasRequestForProductionOrder(productionOrderId)) {
+            return;
+        }
+        for (ProductionOrderItemRequest item : items) {
+            if (item == null || item.getProductId() == null) {
+                continue;
+            }
+            int totalQuantity = 0;
+            if (item.getSizes() != null && !item.getSizes().isEmpty()) {
+                totalQuantity = item.getSizes().values().stream()
+                        .mapToInt(v -> v != null ? Math.max(v, 0) : 0)
+                        .sum();
+            }
+            if (totalQuantity <= 0 && item.getQuantity() != null) {
+                totalQuantity = item.getQuantity();
+            }
+            if (totalQuantity <= 0) {
+                continue;
+            }
+            List<MaterialRequestResponse> created = checkAndGenerateRequestsForProductionOrder(
+                    productionOrderId, item.getProductId(), BigDecimal.valueOf(totalQuantity));
+            if (!created.isEmpty() || hasRequestForProductionOrder(productionOrderId)) {
+                return;
+            }
+        }
     }
 
     /**

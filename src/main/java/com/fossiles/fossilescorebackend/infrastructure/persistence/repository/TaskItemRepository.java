@@ -81,6 +81,14 @@ public interface TaskItemRepository extends JpaRepository<TaskItemEntity, Long> 
     @Query("SELECT DISTINCT t.taskId FROM TaskItemEntity t WHERE t.productionOrderItemId IN :productionOrderItemIds")
     List<Long> findDistinctTaskIdsByProductionOrderItemIdIn(@Param("productionOrderItemIds") List<Long> productionOrderItemIds);
 
+    @Query("""
+            SELECT ti.taskId, poi.productionOrderId
+            FROM TaskItemEntity ti, ProductionOrderItemEntity poi
+            WHERE ti.productionOrderItemId = poi.id
+              AND poi.productionOrderId IN :orderIds
+            """)
+    List<Object[]> findTaskLinksByProductionOrderIdIn(@Param("orderIds") Collection<Long> orderIds);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM TaskItemEntity t WHERE t.taskId = :taskId")

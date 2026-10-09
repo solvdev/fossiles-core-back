@@ -13,7 +13,8 @@ import java.util.Map;
 
 public class TaxInvoiceRepositoryImpl implements TaxInvoiceRepositoryCustom {
 
-    private static final List<String> UNSIGNED_STATUSES = List.of("FAILED", "SKIPPED", "DRAFT");
+    /** Pendientes de firma (sin error FEL). FAILED va en filtro ERROR. */
+    private static final List<String> UNSIGNED_STATUSES = List.of("SKIPPED", "DRAFT");
 
     @PersistenceContext
     private EntityManager entityManager;
