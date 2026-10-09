@@ -1,6 +1,6 @@
 -- PHASE 2. Index-revised copy of PR #120 scripts/migration-customer-account-lf-phase2.sql.
 -- Run on a database ONLY when (a) every backend writing to it runs the PR #120 code, and (b) the duplicate-charge
--- cleanup (separate script, not in the PR yet) has run and its balance check passed.
+-- cleanup (scripts/cleanup-customer-account-lf-duplicates.sql) has run and its balance check passed.
 --   fosstest:   right after #120 is deployed to develop.   fossilesgt: right after #120 is promoted to main.
 -- Changes vs the PR: ON_ERROR_STOP (the PR file has none, so after the guard's exception psql kept going and
 -- could still add the CHECK); guard + CHECK + index in ONE transaction under an explicit lock, so nothing can be

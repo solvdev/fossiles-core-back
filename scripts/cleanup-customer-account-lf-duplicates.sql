@@ -33,9 +33,13 @@
 -- Dry run by default (ROLLBACK). Apply only with -v aplicar=si (COMMIT).
 -- Usage:
 --   psql -v ON_ERROR_STOP=1 -d fosstest -f cleanup-customer-account-lf-duplicates.sql
---   review PLAN, REVIEW, OVERPAID and SIN_ORDEN (customer_id only; no names)
+--   review PLAN, REVIEW, OVERPAID, SIN_ORDEN and PHASE2_BLOCKERS (customer_id only; no names)
 --   psql -v ON_ERROR_STOP=1 -v aplicar=si -d fosstest -f cleanup-customer-account-lf-duplicates.sql
+-- PHASE2_BLOCKERS is the last section in both modes. It counts what phase 2 still refuses after these
+-- statements: orders with more than one active charge, and active charges or adjustments with no order.
+-- A dry run rolls those statements back, so that list is what would remain if you then apply.
 -- Then snapshot with the three tags and run reconcile-cleanup-balances.sql (0 rows) before phase 2.
+-- Phase 2 aborts while either blocker count is above zero.
 \set ON_ERROR_STOP on
 
 \if :{?aplicar}
@@ -655,6 +659,61 @@ SELECT 'RESUMEN' AS seccion,
            ), 0)
        ) AS sobrepago,
        CASE WHEN :'aplicar' = 'si' THEN 'COMMIT' ELSE 'ROLLBACK' END AS cierre;
+
+-- Same predicates as migration-customer-account-lf-phase2.sql. Printed after the writes and before
+-- COMMIT/ROLLBACK, so a dry run shows what would still block phase 2 if this run were applied.
+SELECT 'PHASE2_BLOCKERS' AS seccion,
+       dup.ordenes,
+       sin.cargos AS cargos_sin_orden,
+       CASE
+           WHEN dup.ordenes = 0 AND sin.cargos = 0 THEN
+               'Fase 2: ningun bloqueo. 0 ordenes con cargos duplicados y 0 cargos activos sin orden.'
+           ELSE format(
+               'Fase 2 sigue bloqueada: %s orden(es) con mas de un cargo activo y %s cargo(s) activo(s) sin orden.',
+               dup.ordenes, sin.cargos)
+       END AS detalle
+FROM (
+    SELECT count(*) AS ordenes
+    FROM (
+        SELECT production_order_id
+        FROM customer_account_entry
+        WHERE entry_type = 'CHARGE'
+          AND status <> 'VOID'
+          AND production_order_id IS NOT NULL
+        GROUP BY production_order_id
+        HAVING count(*) > 1
+    ) d
+) dup
+CROSS JOIN (
+    SELECT count(*) AS cargos
+    FROM customer_account_entry
+    WHERE entry_type IN ('CHARGE', 'CHARGE_ADJUSTMENT')
+      AND status <> 'VOID'
+      AND production_order_id IS NULL
+) sin;
+
+SELECT 'PHASE2_BLOCKERS_ORDEN' AS seccion,
+       production_order_id,
+       string_agg(DISTINCT customer_id::text, ',' ORDER BY customer_id::text) AS customer_id,
+       count(*) AS cargos,
+       string_agg(id::text, ',' ORDER BY id) AS entry_ids
+FROM customer_account_entry
+WHERE entry_type = 'CHARGE'
+  AND status <> 'VOID'
+  AND production_order_id IS NOT NULL
+GROUP BY production_order_id
+HAVING count(*) > 1
+ORDER BY production_order_id;
+
+SELECT 'PHASE2_BLOCKERS_SIN_ORDEN' AS seccion,
+       id AS entry_id,
+       customer_id,
+       entry_type
+FROM customer_account_entry
+WHERE entry_type IN ('CHARGE', 'CHARGE_ADJUSTMENT')
+  AND status <> 'VOID'
+  AND production_order_id IS NULL
+ORDER BY id;
 
 \if :limpieza_commit
 COMMIT;

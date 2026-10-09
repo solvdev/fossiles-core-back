@@ -129,6 +129,7 @@ class CustomerAccountCleanupScriptTest {
         assertThat(dry.output).contains("REVIEW", "300", "diferencia mayor que el envio");
         assertThat(dry.output).contains("OVERPAID", "400");
         assertThat(dry.output).containsPattern("RESUMEN\\s+\\|\\s+5\\s+\\|\\s+1\\s+\\|\\s+1\\s+\\|\\s+ROLLBACK");
+        assertPhase2Blockers(dry.output);
         assertThat(fingerprint()).isEqualTo(before);
         assertThat(count("SELECT count(*) FROM customer_account_entry WHERE void_reason = '" + VOID_TAG + "'")).isZero();
         Files.writeString(WORK.resolve("dry-run.txt"), dry.output);
@@ -142,6 +143,7 @@ class CustomerAccountCleanupScriptTest {
         assertThat(applied.output).doesNotContain("NOMBRE_SECRETO");
         assertThat(applied.output).containsPattern("RESUMEN\\s+\\|\\s+5\\s+\\|\\s+1\\s+\\|\\s+1\\s+\\|\\s+COMMIT");
         assertThat(applied.output).contains("OVERPAID");
+        assertPhase2Blockers(applied.output);
 
         assertThat(status(1100)).isEqualTo("ACTIVE");
         assertThat(money(1100)).isEqualByComparingTo("200.00");
@@ -283,6 +285,7 @@ class CustomerAccountCleanupScriptTest {
         Psql second = cleanup("aplicar=si");
         assertThat(second.exitCode).as(second.output).isZero();
         assertThat(second.output).containsPattern("RESUMEN\\s+\\|\\s+0\\s+\\|\\s+1\\s+\\|\\s+0\\s+\\|\\s+COMMIT");
+        assertPhase2Blockers(second.output);
         assertThat(second.output).contains("REVIEW", "300", "SIN_ORDEN", "5100");
         assertThat(second.output).doesNotContain("CONSERVAR");
         assertThat(second.output).doesNotContain("NUEVO");
@@ -316,6 +319,107 @@ class CustomerAccountCleanupScriptTest {
                 ), 0), 2)
                 FROM customer_account_entry WHERE customer_id = 80
                 """)).isEqualByComparingTo("125.00");
+    }
+
+    @Test
+    void phase2AbortsWhileReviewOrderAndNoOrderChargeRemain() throws Exception {
+        seed();
+        Psql applied = cleanup("aplicar=si");
+        assertThat(applied.exitCode).as(applied.output).isZero();
+        assertPhase2Blockers(applied.output);
+        assertThat(count("""
+                SELECT count(*) FROM (
+                    SELECT production_order_id
+                    FROM customer_account_entry
+                    WHERE entry_type = 'CHARGE' AND status <> 'VOID' AND production_order_id IS NOT NULL
+                    GROUP BY production_order_id
+                    HAVING count(*) > 1
+                ) d
+                """)).isEqualTo(1);
+        assertThat(count("""
+                SELECT count(*) FROM customer_account_entry
+                WHERE entry_type IN ('CHARGE', 'CHARGE_ADJUSTMENT')
+                  AND status <> 'VOID' AND production_order_id IS NULL
+                """)).isEqualTo(1);
+
+        Psql phase2 = psql("migration-customer-account-lf-phase2.sql");
+        assertThat(phase2.exitCode).as(phase2.output).isNotZero();
+        assertThat(phase2.output).contains(
+                "FASE 2 abortada: 1 ordenes con mas de un CHARGE activo y 1 cargos/ajustes activos sin orden. No se cambio nada.");
+        assertThat(count("SELECT count(*) FROM pg_class WHERE relname = 'uq_cae_one_active_charge_per_order'")).isZero();
+        assertThat(count("""
+                SELECT count(*) FROM pg_constraint WHERE conname = 'chk_customer_account_entry_charge_order'
+                """)).isZero();
+        assertThat(status(3100)).isEqualTo("ACTIVE");
+        assertThat(status(3101)).isEqualTo("ACTIVE");
+        assertThat(status(5100)).isEqualTo("ACTIVE");
+        assertThat(text("SELECT production_order_id::text FROM customer_account_entry WHERE id = 5100")).isNull();
+    }
+
+    @Test
+    void phase2AppliesAfterVoidingTheExtraAndAssigningTheNoOrderCharge() throws Exception {
+        seed();
+        Psql applied = cleanup("aplicar=si");
+        assertThat(applied.exitCode).as(applied.output).isZero();
+        exec("""
+                INSERT INTO production_order (id, code, order_type, customer_id, seller_name)
+                VALUES (500, 'OP-500', 'NORMAL', 50, 'LUIS FELIPE')
+                """);
+        exec("UPDATE customer_account_entry SET status = 'VOID', void_reason = 'manual' WHERE id = 3101");
+        exec("UPDATE customer_account_entry SET production_order_id = 500 WHERE id = 5100");
+
+        Psql phase2 = psql("migration-customer-account-lf-phase2.sql");
+        assertThat(phase2.exitCode).as(phase2.output).isZero();
+        assertPhase2Applied();
+        assertThat(status(3100)).isEqualTo("ACTIVE");
+        assertThat(status(3101)).isEqualTo("VOID");
+        assertThat(status(5100)).isEqualTo("ACTIVE");
+        assertThat(text("SELECT production_order_id::text FROM customer_account_entry WHERE id = 5100")).isEqualTo("500");
+    }
+
+    @Test
+    void phase2AppliesAfterVoidingTheExtraAndTheNoOrderCharge() throws Exception {
+        seed();
+        Psql applied = cleanup("aplicar=si");
+        assertThat(applied.exitCode).as(applied.output).isZero();
+        exec("""
+                UPDATE customer_account_entry
+                SET status = 'VOID', void_reason = 'manual'
+                WHERE id IN (3101, 5100)
+                """);
+
+        Psql phase2 = psql("migration-customer-account-lf-phase2.sql");
+        assertThat(phase2.exitCode).as(phase2.output).isZero();
+        assertPhase2Applied();
+        assertThat(status(3100)).isEqualTo("ACTIVE");
+        assertThat(status(3101)).isEqualTo("VOID");
+        assertThat(status(5100)).isEqualTo("VOID");
+        assertThat(text("SELECT production_order_id::text FROM customer_account_entry WHERE id = 5100")).isNull();
+    }
+
+    private static void assertPhase2Blockers(String output) {
+        assertThat(output).contains(
+                "Fase 2 sigue bloqueada: 1 orden(es) con mas de un cargo activo y 1 cargo(s) activo(s) sin orden.");
+        assertThat(output).containsPattern("PHASE2_BLOCKERS\\s+\\|\\s+1\\s+\\|\\s+1\\s+\\|");
+        assertThat(output).contains("PHASE2_BLOCKERS_ORDEN");
+        assertThat(output).contains("3100,3101");
+        assertThat(output).contains("PHASE2_BLOCKERS_SIN_ORDEN");
+        assertThat(output).contains("5100");
+        assertThat(output).doesNotContain("NOMBRE_SECRETO");
+    }
+
+    private static void assertPhase2Applied() throws Exception {
+        assertThat(count("SELECT count(*) FROM pg_class WHERE relname = 'uq_cae_one_active_charge_per_order'")).isEqualTo(1);
+        assertThat(count("""
+                SELECT count(*) FROM pg_constraint
+                WHERE conname = 'chk_customer_account_entry_charge_order' AND convalidated
+                """)).isEqualTo(1);
+    }
+
+    private static void exec(String sql) throws Exception {
+        try (Connection connection = open(); Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+        }
     }
 
     private void assertMovedCredit(long entryId, String survivorId, String originalChargeId) throws Exception {
