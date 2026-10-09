@@ -60,3 +60,7 @@ src/main/resources/application-*.yaml
 !src/main/resources/application.example.properties
 !application.example.properties
 !application.example.yml
+
+# Test-only overrides. classpath:/config/ loads after classpath:/ so these
+# keys win without hiding src/main/resources/application.properties.
+!src/test/resources/config/application.properties
