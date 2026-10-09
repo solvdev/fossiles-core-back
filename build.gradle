@@ -63,6 +63,10 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // -Dsentry.* on the Gradle command is the Gradle JVM only. Forward it into
+    // the test worker, and default to off so a run cannot report to production.
+    systemProperty 'sentry.enabled', System.getProperty('sentry.enabled', 'false')
+    systemProperty 'sentry.dsn', System.getProperty('sentry.dsn', '')
     environment 'SPRING_DATASOURCE_URL', 'jdbc:h2:mem:fossiles;MODE=PostgreSQL;DB_CLOSE_DELAY=-1'
     environment 'SENTRY_DSN', ''
 }
