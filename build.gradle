@@ -63,4 +63,11 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // Pin the test JVM so a parent environment cannot point tests at production.
+    def h2Url = 'jdbc:h2:mem:fossiles_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE'
+    environment 'SPRING_DATASOURCE_URL', h2Url
+    environment 'SPRING_DATASOURCE_USERNAME', 'sa'
+    environment 'SPRING_DATASOURCE_PASSWORD', 'sa'
+    environment 'SPRING_DATASOURCE_DRIVER_CLASS_NAME', 'org.h2.Driver'
+    environment 'SENTRY_DSN', ''
 }
