@@ -467,6 +467,9 @@ public class CustomerAccountService {
         if (!entryRepository.findNonVoidAdjustmentsByProductShipmentId(shipment.getId()).isEmpty()) {
             throw new BusinessException("Ya existe un ajuste de envío activo para este parcial.");
         }
+        if (charge.getId() == null || order.getId() == null || shipment.getId() == null) {
+            throw new BusinessException("El ajuste de envío requiere la orden, el envío y el cargo al que aplica.");
+        }
         Long userId = securityUtil.getCurrentUserId();
         CustomerAccountEntryEntity saved = saveLedgerEntry(CustomerAccountEntryEntity.builder()
                 .customerId(customer.getId())
@@ -476,7 +479,7 @@ public class CustomerAccountService {
                 .reference(trimToNull(request.getReference()))
                 .description(trimToNull(request.getDescription()))
                 .appliedToEntryId(charge.getId())
-                .productionOrderId(charge.getProductionOrderId())
+                .productionOrderId(order.getId())
                 .partialReleaseId(shipment.getPartialReleaseId())
                 .productShipmentId(shipment.getId())
                 .vendorShipmentNumber(trimToNull(firstNonBlank(charge.getVendorShipmentNumber(), order.getVendorShipmentNumber())))
@@ -2184,6 +2187,9 @@ public class CustomerAccountService {
             }
             if (detail.contains("uq_cae_one_active_adjustment_per_shipment")) {
                 throw new BusinessException("Ya existe un ajuste de envío activo para este parcial.");
+            }
+            if (detail.contains("chk_customer_account_entry_adjustment_links")) {
+                throw new BusinessException("El ajuste de envío requiere la orden, el envío y el cargo al que aplica.");
             }
             throw ex;
         }

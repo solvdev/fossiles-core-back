@@ -182,12 +182,46 @@ class CustomerAccountLedgerRulesTest {
         assertThat(row.getAmount()).isEqualByComparingTo("25.00");
         assertThat(row.getAppliedToEntryId()).isEqualTo(charge.getId());
         assertThat(row.getProductionOrderId()).isEqualTo(opc.getId());
+        assertThat(row.getProductShipmentId()).isEqualTo(shipment.getId());
         assertThat(row.getOrderKind()).isEqualTo("OPC");
         assertThat(accounts.getBalance(customer.getId()).getBalance()).isEqualByComparingTo("105.00");
 
         assertThatThrownBy(() -> accounts.createEntry(customer.getId(), adjustment))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("ajuste");
+    }
+
+    @Test
+    void adjustmentMissingOrderShipmentOrChargeIsRejected() throws Exception {
+        CustomerEntity customer = customer();
+        ProductionOrderEntity order = order(customer, "OPV", "40.00");
+        ProductShipmentEntity shipped = shipment(order, release(order, 1), "40.00", "12.00");
+
+        CustomerAccountEntryRequest noShipment = base("CHARGE_ADJUSTMENT", "12.00");
+        assertThatThrownBy(() -> accounts.createEntry(customer.getId(), noShipment))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("envío");
+
+        ProductShipmentEntity noOrder = shipments.save(ProductShipmentEntity.builder()
+                .shipmentNumber("ENV-SUELTO-" + SEQ.incrementAndGet())
+                .status("SENT")
+                .shippingCost(new BigDecimal("12.00"))
+                .build());
+        CustomerAccountEntryRequest noOrderRequest = base("CHARGE_ADJUSTMENT", "12.00");
+        noOrderRequest.setProductShipmentId(noOrder.getId());
+        assertThatThrownBy(() -> accounts.createEntry(customer.getId(), noOrderRequest))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("orden");
+
+        CustomerAccountEntryRequest noCharge = base("CHARGE_ADJUSTMENT", "12.00");
+        noCharge.setProductShipmentId(shipped.getId());
+        assertThatThrownBy(() -> accounts.createEntry(customer.getId(), noCharge))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("cargo");
+
+        assertThat(entries.findByCustomerIdOrderByEntryDateAscIdAsc(customer.getId()).stream()
+                .filter(entry -> "CHARGE_ADJUSTMENT".equals(entry.getEntryType()))
+                .count()).isZero();
     }
 
     @Test
