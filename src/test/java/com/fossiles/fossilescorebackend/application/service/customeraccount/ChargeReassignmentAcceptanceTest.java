@@ -76,7 +76,9 @@ class ChargeReassignmentAcceptanceTest extends LfReceivablesH2TestBase {
         CustomerAccountEntryResponse note = fx.create(customer, creditRequest("CREDIT_NOTE", source.getId(), "15.00"));
         CustomerAccountEntryResponse returned = fx.create(customer, creditRequest("RETURN", source.getId(), "10.00"));
         BigDecimal moved = new BigDecimal("65.00");
+        BigDecimal voidedCharge = new BigDecimal("200.00");
         BigDecimal balanceBefore = fx.balance(customer);
+        BigDecimal creditsBefore = activeCreditTotal(customer);
         BigDecimal targetOpenBefore = fx.chargeBalance(customer, target.getId());
 
         mvc.perform(put("/api/customer-accounts/entries/{id}/void", source.getId())
@@ -96,9 +98,13 @@ class ChargeReassignmentAcceptanceTest extends LfReceivablesH2TestBase {
             assertThat(movedRow.getDescription()).contains(REASON);
         }
         assertThat(fx.chargeBalance(customer, target.getId())).isEqualByComparingTo(targetOpenBefore.subtract(moved));
+        assertThat(activeCreditTotal(customer))
+                .as("active credit total")
+                .isEqualByComparingTo(creditsBefore)
+                .isEqualByComparingTo(moved);
         assertThat(fx.balance(customer))
                 .as("customer total balance")
-                .isEqualByComparingTo(balanceBefore);
+                .isEqualByComparingTo(balanceBefore.subtract(voidedCharge));
     }
 
     @Test
@@ -284,6 +290,34 @@ class ChargeReassignmentAcceptanceTest extends LfReceivablesH2TestBase {
             return "{\"voidReason\":\"" + reason + "\"}";
         }
         return "{\"voidReason\":\"" + reason + "\",\"reassignToChargeId\":" + reassignToChargeId + "}";
+    }
+
+    private BigDecimal activeCreditTotal(CustomerEntity customer) {
+        BigDecimal total = BigDecimal.ZERO;
+        for (CustomerAccountEntryEntity entry : fx.entries(customer)) {
+            if (!"ACTIVE".equalsIgnoreCase(entry.getStatus()) || !isCredit(entry.getEntryType())) {
+                continue;
+            }
+            total = total.add(appliedCredit(entry));
+        }
+        return total;
+    }
+
+    private static boolean isCredit(String entryType) {
+        return "PAYMENT".equalsIgnoreCase(entryType)
+                || "CREDIT_NOTE".equalsIgnoreCase(entryType)
+                || "RETURN".equalsIgnoreCase(entryType);
+    }
+
+    private static BigDecimal appliedCredit(CustomerAccountEntryEntity entry) {
+        if (entry.getGrossCollectedAmount() != null && entry.getGrossCollectedAmount().compareTo(BigDecimal.ZERO) > 0) {
+            return entry.getGrossCollectedAmount();
+        }
+        BigDecimal amount = entry.getAmount() == null ? BigDecimal.ZERO : entry.getAmount();
+        if (entry.getPaymentDiscountAmount() != null && entry.getPaymentDiscountAmount().compareTo(BigDecimal.ZERO) > 0) {
+            return amount.add(entry.getPaymentDiscountAmount());
+        }
+        return amount;
     }
 
     private List<String> ledger(CustomerEntity customer) {
