@@ -24,6 +24,7 @@ import com.fossiles.fossilescorebackend.application.service.ProductionTaskGenera
 import com.fossiles.fossilescorebackend.application.service.ProductionTaskLifecycleService;
 import com.fossiles.fossilescorebackend.application.service.TaskCodeGenerator;
 import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillService;
+import com.fossiles.fossilescorebackend.application.service.TaskDeskAssignerService;
 import com.fossiles.fossilescorebackend.application.service.TaskOrganizerService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
@@ -78,6 +79,7 @@ public class TaskController {
     private final TaskCodeGenerator taskCodeGenerator;
     private final TaskOrganizerService taskOrganizerService;
     private final TaskDeskBackfillService taskDeskBackfillService;
+    private final TaskDeskAssignerService taskDeskAssignerService;
     private final ProductionTaskLifecycleService productionTaskLifecycleService;
     private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
     private final ProductionDeskSupervisorRepository productionDeskSupervisorRepository;
@@ -1232,6 +1234,9 @@ public class TaskController {
                 Boolean.TRUE.equals(hermana.getMaterialsDelivered()) ? LocalDateTime.now() : null);
         taskRepository.save(hermana);
 
+        // La de origen quedo toda cortada: es la que baja a mesa.
+        taskDeskAssignerService.assignIfReady(sourceTask.getId());
+
         body.put("split", true);
         body.put("movedItems", sinCortar.size());
         body.put("siblingTaskId", hermana.getId());
@@ -1417,6 +1422,10 @@ public class TaskController {
         entity.setDieCutReady(areTaskItemsDieCut(entity));
         entity.setDieCutDate(Boolean.TRUE.equals(entity.getDieCutReady()) ? LocalDate.now() : null);
         TaskEntity updated = taskRepository.save(entity);
+        // Con el último producto cortado la tarea baja a mesa sola.
+        if (ready) {
+            updated = taskDeskAssignerService.assignIfReady(updated.getId()).orElse(updated);
+        }
         return ResponseEntity.ok(toResponse(updated));
     }
 
@@ -1588,6 +1597,16 @@ public class TaskController {
         TaskResponse response = toResponse(updated);
         response.setLastItemMaterialsConsumed(consumedLines);
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Asigna mesa con la regla única del sistema (menor carga con cupo, desempate al azar).
+     * Reemplaza el cálculo que hacía el navegador, que no conocía el cupo ni el troquelado.
+     */
+    @PostMapping("/{id:\\d+}/auto-desk")
+    public ResponseEntity<TaskResponse> autoAssignDesk(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(toResponse(taskDeskAssignerService.assignOrExplain(id)));
     }
 
     @PutMapping("/{id:\\d+}/schedule")
@@ -1838,6 +1857,9 @@ public class TaskController {
         entity.setDieCutDate(ready ? GuatemalaDateTime.today() : null);
 
         TaskEntity updated = taskRepository.save(entity);
+        if (ready) {
+            updated = taskDeskAssignerService.assignIfReady(updated.getId()).orElse(updated);
+        }
         return ResponseEntity.ok(toResponse(updated));
     }
 
@@ -1861,7 +1883,11 @@ public class TaskController {
                 }
                 task.setDieCutReady(ready);
                 task.setDieCutDate(dieCutDate);
-                responses.add(toResponse(taskRepository.save(task)));
+                TaskEntity saved = taskRepository.save(task);
+                if (ready) {
+                    saved = taskDeskAssignerService.assignIfReady(saved.getId()).orElse(saved);
+                }
+                responses.add(toResponse(saved));
             }
         }
         return ResponseEntity.ok(responses);

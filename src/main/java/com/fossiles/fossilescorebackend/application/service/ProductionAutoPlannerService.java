@@ -11,6 +11,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
@@ -112,8 +113,11 @@ public class ProductionAutoPlannerService {
     }
 
     /**
-     * Borra tareas PENDING de auto-plan (sin arrancar) del día elegido y vuelve a planificar
-     * desde esa fecha para reagrupar productos bajo el cupo de horas.
+     * Libera las tareas de auto-plan que todavía no tienen ningún avance (de cualquier fecha) y
+     * planifica solo el día elegido, por prioridad y hasta el cupo de mesas. Lo que no cabe
+     * queda en la OP para el siguiente día que se planifique.
+     *
+     * <p>Las que ya tienen avance (cuero, corte, materiales, mesa) se conservan donde están.
      */
     @Transactional
     public ProductionAutoPlanResult regenerate(Long productionOrderId)
@@ -125,9 +129,9 @@ public class ProductionAutoPlannerService {
     public ProductionAutoPlanResult regenerate(Long productionOrderId, LocalDate planDate)
             throws BusinessException, ResourceNotFoundException {
         LocalDate from = resolvePlanStart(planDate);
-        int cleared;
+        ReleaseResult released;
         try {
-            cleared = clearPendingAutoPlanTasks(productionOrderId, from);
+            released = clearPendingAutoPlanTasks(productionOrderId);
         } catch (RuntimeException ex) {
             log.error("No se pudieron liberar tareas auto-plan del {}: {}", from, ex.getMessage(), ex);
             throw new BusinessException(
@@ -137,30 +141,51 @@ public class ProductionAutoPlannerService {
         ProductionAutoPlanResult result = productionOrderId != null
                 ? planOrder(productionOrderId, from)
                 : planPending(from);
-        result.setClearedAutoPlanTasks(cleared);
+        result.setClearedAutoPlanTasks(released.cleared());
+        result.setKeptWithProgress(released.kept());
         result.setPlanDate(from);
-        if (cleared > 0) {
-            result.getNotes().add("Se liberaron " + cleared
-                    + " tarea(s) auto-plan pendientes del " + from + " para reagrupar productos.");
+        if (released.cleared() > 0) {
+            result.getNotes().add("Se liberaron " + released.cleared()
+                    + " tarea(s) auto-plan sin avance para reagrupar productos.");
+        }
+        if (released.kept() > 0) {
+            result.getNotes().add(released.kept()
+                    + " tarea(s) auto-plan con avance (cuero, corte, materiales o mesa) se conservaron.");
         }
         return result;
     }
 
     private static LocalDate resolvePlanStart(LocalDate planDate) {
-        LocalDate base = planDate != null ? planDate : GuatemalaDateTime.today();
+        LocalDate today = GuatemalaDateTime.today();
+        // Un día pasado no se planifica: la tarea nacería atrasada.
+        LocalDate base = planDate != null && !planDate.isBefore(today) ? planDate : today;
         return DeskSlotFinder.nextWorkday(base);
     }
 
-    private int clearPendingAutoPlanTasks(Long productionOrderId, LocalDate planDate) {
-        List<TaskEntity> candidates = taskRepository.findByStatus("PENDING").stream()
+    private record ReleaseResult(int cleared, int kept) {
+    }
+
+    private ReleaseResult clearPendingAutoPlanTasks(Long productionOrderId) {
+        List<TaskEntity> autoPlan = taskRepository.findByStatus("PENDING").stream()
                 .filter(t -> t.getStartedAt() == null && t.getCompletedAt() == null)
                 .filter(t -> isAutoPlanObservation(t.getObservations()))
                 .filter(t -> productionOrderId == null
                         || Objects.equals(productionOrderId, t.getProductionOrderId()))
-                .filter(t -> planDate == null
-                        || planDate.equals(t.getScheduledDate())
-                        || t.getScheduledDate() == null)
                 .toList();
+        Map<Long, List<TaskItemEntity>> itemsByTask = autoPlan.isEmpty() ? Map.of()
+                : taskItemRepository.findByTaskIdIn(autoPlan.stream().map(TaskEntity::getId).toList()).stream()
+                        .filter(i -> i.getTaskId() != null)
+                        .collect(java.util.stream.Collectors.groupingBy(TaskItemEntity::getTaskId));
+        List<Long> allItemIds = itemsByTask.values().stream().flatMap(List::stream)
+                .map(TaskItemEntity::getId).filter(Objects::nonNull).toList();
+        Set<Long> itemsWithPicks = allItemIds.isEmpty() ? Set.of()
+                : taskItemMaterialPickRepository.findByTaskItemIdIn(allItemIds).stream()
+                        .map(pick -> pick.getTaskItemId())
+                        .collect(java.util.stream.Collectors.toSet());
+        List<TaskEntity> candidates = autoPlan.stream()
+                .filter(t -> !hasProgress(t, itemsByTask.getOrDefault(t.getId(), List.of()), itemsWithPicks))
+                .toList();
+        int kept = autoPlan.size() - candidates.size();
         Set<Long> orderIds = new HashSet<>();
         for (TaskEntity task : candidates) {
             if (task.getId() == null) {
@@ -185,7 +210,31 @@ public class ProductionAutoPlannerService {
         for (Long poId : orderIds) {
             productionTaskLifecycleService.syncProductionOrderStatusFromTasks(poId);
         }
-        return candidates.size();
+        return new ReleaseResult(candidates.size(), kept);
+    }
+
+    /**
+     * Regenerar borra y vuelve a crear; una tarea que ya tiene trabajo encima no se puede
+     * borrar sin perderlo. Las de cinchos nacen con cuero y corte marcados, así que en ellas
+     * esas dos marcas no cuentan como avance.
+     */
+    private static boolean hasProgress(TaskEntity task, List<TaskItemEntity> items, Set<Long> itemsWithPicks) {
+        boolean cincho = String.valueOf(task.getObservations()).trim().startsWith("Auto-plan cinchos");
+        if (task.getDesk() != null || Boolean.TRUE.equals(task.getMaterialsDelivered())) {
+            return true;
+        }
+        if (!cincho && (Boolean.TRUE.equals(task.getLeatherDelivered()) || Boolean.TRUE.equals(task.getDieCutReady()))) {
+            return true;
+        }
+        for (TaskItemEntity item : items) {
+            if (itemsWithPicks.contains(item.getId()) || item.getDieCutPlannedDate() != null) {
+                return true;
+            }
+            if (!cincho && (Boolean.TRUE.equals(item.getLeatherDelivered()) || Boolean.TRUE.equals(item.getDieCutReady()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String rootMessage(Throwable ex) {
@@ -262,7 +311,7 @@ public class ProductionAutoPlannerService {
         LocalDate startDay = resolvePlanStart(planDate);
         result.setPlanDate(startDay);
         int numDesks = productionDeskCountService.getDay(startDay).getNumDesks();
-        Map<LocalDate, Map<Integer, Double>> schedule = loadSchedule();
+        Map<Integer, Double> dayLoads = loadDayLoads(startDay, numDesks);
         Map<Long, BigDecimal> reserved = new HashMap<>(leatherRequirementService.committedFt2ByMaterial());
         Set<Long> materialRequestOrders = new HashSet<>();
 
@@ -349,27 +398,9 @@ public class ProductionAutoPlannerService {
                         leftoverProductByItemId.put(item.getId(), product);
                         continue;
                     }
-                    double baseHours = online ? 0.0 : roundHours(qty * prd);
-                    DeskSlotFinder.Slot slot = DeskSlotFinder.findEarliest(schedule, numDesks, startDay, baseHours);
-                    // Sin mesa: nace sin troquelar y a mesa solo baja lo cortado. Se conserva
-                    // el dia del hueco, que es de donde sale la proyeccion de entrega; la mesa
-                    // la pone el reparto cuando se marque el corte.
-                    TaskEntity created = taskOrganizerService.createAutoCentroTask(
-                            CreateManualTaskRequest.builder()
-                                    .productionOrderId(po.getId())
-                                    .desk(null)
-                                    .scheduledDate(slot.date())
-                                    .observations("Auto-plan")
-                                    .items(List.of(CreateManualTaskRequest.ManualTaskItemRequest.builder()
-                                            .productionOrderItemId(item.getId())
-                                            .quantity(qty)
-                                            .daySaleExtra(online)
-                                            .build()))
-                                    .build());
-                    // El hueco se carga igual: es lo que reparte los dias dentro de la corrida.
-                    // Entre corridas no se ve, porque loadSchedule() solo cuenta tareas con
-                    // mesa, asi que el dia calculado es optimista.
-                    DeskSlotFinder.addLoad(schedule, slot, baseHours);
+                    // Reserva tentativa ya: al empaquetar varios chunks no se debe
+                    // revalidar contra el mismo cupo libre. Si el grupo no cabe en el día,
+                    // se devuelve abajo.
                     if (!need.noneRequired()) {
                         reserved.merge(need.materialId(), need.qtyFt2(), BigDecimal::add);
                     }
@@ -378,10 +409,28 @@ public class ProductionAutoPlannerService {
                 }
             }
 
+            Map<Long, Integer> noCapacityQty = new HashMap<>();
+            Map<Long, ProductEntity> noCapacityProduct = new HashMap<>();
             for (List<CentroPackChunk> group : packCentroChunks(centroChunks)) {
-                double groupHours = group.stream().mapToDouble(CentroPackChunk::hours).sum();
-                DeskSlotFinder.Slot slot = DeskSlotFinder.findEarliest(
-                        schedule, numDesks, startDay, online ? 0.0 : groupHours);
+                double groupHours = online ? 0.0 : group.stream().mapToDouble(CentroPackChunk::hours).sum();
+                // Solo el día elegido: lo que no cabe no se convierte en tarea de días
+                // siguientes, se queda en la OP y entra cuando se planifique ese día.
+                // Las OPL no ocupan cupo: entran siempre.
+                Integer virtualDesk = groupHours <= 0 ? Integer.valueOf(0)
+                        : DeskSlotFinder.pickDeskOnDay(dayLoads, numDesks, groupHours);
+                if (virtualDesk == null) {
+                    for (CentroPackChunk chunk : group) {
+                        noCapacityQty.merge(chunk.item().getId(), chunk.qty(), Integer::sum);
+                        noCapacityProduct.put(chunk.item().getId(), chunk.product());
+                        if (!chunk.need().noneRequired()) {
+                            reserved.merge(chunk.need().materialId(), chunk.need().qtyFt2().negate(), BigDecimal::add);
+                        }
+                    }
+                    continue;
+                }
+                if (groupHours > 0) {
+                    dayLoads.merge(virtualDesk, groupHours, Double::sum);
+                }
 
                 Map<Long, CreateManualTaskRequest.ManualTaskItemRequest> linesByItemId = new HashMap<>();
                 for (CentroPackChunk chunk : group) {
@@ -400,18 +449,32 @@ public class ProductionAutoPlannerService {
                                     .build());
                 }
 
+                // Sin mesa: nace sin troquelar y a mesa solo baja lo cortado. La mesa la pone
+                // TaskDeskAssignerService cuando se marca el corte.
                 TaskEntity created = taskOrganizerService.createAutoCentroTask(
                         CreateManualTaskRequest.builder()
                                 .productionOrderId(po.getId())
-                                .desk(slot.desk())
-                                .scheduledDate(slot.date())
+                                .desk(null)
+                                .scheduledDate(startDay)
                                 .observations("Auto-plan")
                                 .items(new ArrayList<>(linesByItemId.values()))
                                 .build());
-                DeskSlotFinder.addLoad(schedule, slot, online ? 0.0 : groupHours);
                 result.setCentroTasksCreated(result.getCentroTasksCreated() + 1);
                 result.getCreatedTaskIds().add(created.getId());
                 materialRequestOrders.add(po.getId());
+            }
+
+            for (Map.Entry<Long, Integer> entry : noCapacityQty.entrySet()) {
+                ProductEntity product = noCapacityProduct.get(entry.getKey());
+                result.getDeferredNoCapacity().add(ProductionAutoPlanResult.BlockedLeatherLine.builder()
+                        .productionOrderId(po.getId())
+                        .productionOrderCode(po.getCode())
+                        .productionOrderItemId(entry.getKey())
+                        .productCode(product != null ? product.getCode() : null)
+                        .productName(product != null ? product.getName() : null)
+                        .remainingQuantity(entry.getValue())
+                        .reason("Sin cupo de mesa el " + startDay + "; entra al planificar el siguiente día.")
+                        .build());
             }
 
             for (Map.Entry<Long, Integer> entry : leatherLeftoverQty.entrySet()) {
@@ -497,9 +560,10 @@ public class ProductionAutoPlannerService {
                     .toList();
             List<Long> itemIds = items.stream().map(ProductionOrderItemEntity::getId).toList();
             Map<Long, Integer> assigned = taskItemRepository.assignedQuantityMap(itemIds);
+            Map<Long, ProductEntity> productsById = loadProducts(items);
             for (ProductionOrderItemEntity item : items) {
                 ProductEntity product = item.getProductId() != null
-                        ? productRepository.findById(item.getProductId()).orElse(null)
+                        ? productsById.get(item.getProductId())
                         : null;
                 if (product == null || ProductCinchoType.isPackagingProductCode(product.getCode())) {
                     continue;
@@ -541,12 +605,13 @@ public class ProductionAutoPlannerService {
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(po.getId());
         List<Long> itemIds = items.stream().map(ProductionOrderItemEntity::getId).toList();
         Map<Long, Integer> assigned = itemIds.isEmpty() ? Map.of() : taskItemRepository.assignedQuantityMap(itemIds);
+        Map<Long, ProductEntity> productsById = loadProducts(items);
         boolean leatherBlocked = false;
         String leatherReason = null;
         int assignedCentro = 0;
         for (ProductionOrderItemEntity item : items) {
             ProductEntity product = item.getProductId() != null
-                    ? productRepository.findById(item.getProductId()).orElse(null)
+                    ? productsById.get(item.getProductId())
                     : null;
             if (product == null || ProductCinchoType.isPackagingProductCode(product.getCode())) {
                 continue;
@@ -594,19 +659,42 @@ public class ProductionAutoPlannerService {
         return totals;
     }
 
-    private Map<LocalDate, Map<Integer, Double>> loadSchedule() {
-        Map<LocalDate, Map<Integer, Double>> schedule = new HashMap<>();
-        for (TaskEntity task : taskRepository.findPendingAndInProgressOrdered()) {
-            if (task.getScheduledDate() == null || task.getDesk() == null) {
-                continue;
+    /**
+     * Carga del día por mesa, contando también las tareas que todavía no tienen mesa.
+     *
+     * <p>Antes solo se sumaban las tareas con mesa. Como el autoplan las crea sin mesa (esperan
+     * el troquel), una segunda corrida veía el día vacío y lo volvía a llenar. Las que no tienen
+     * mesa se acomodan aquí en una mesa virtual, la menos cargada, igual que haría el reparto
+     * al cortarlas; así el cupo del día es el mismo antes y después del troquelado.
+     */
+    private Map<Integer, Double> loadDayLoads(LocalDate day, int numDesks) {
+        List<TaskEntity> sameDay = taskRepository.findByScheduledDate(day).stream()
+                .filter(t -> !"CANCELLED".equals(t.getStatus()) && !"COMPLETED".equals(t.getStatus()))
+                .toList();
+        Map<Long, Double> extra = taskDeskHoursService.daySaleExtraByTaskId(
+                sameDay.stream().map(TaskEntity::getId).toList());
+        Map<Integer, Double> loads = new HashMap<>();
+        List<Double> withoutDesk = new ArrayList<>();
+        for (TaskEntity task : sameDay) {
+            double hours = taskDeskHoursService.baseHours(task, extra);
+            if (task.getDesk() != null) {
+                loads.merge(task.getDesk(), hours, Double::sum);
+            } else if (hours > 0) {
+                withoutDesk.add(hours);
             }
-            // Antes calculaba las horas aquí con estimatedHours crudo, sin descontar los
-            // ítems de venta del día: la misma mesa se veía con un número aquí y con otro
-            // en plan-window. Ahora los dos leen del mismo sitio.
-            schedule.computeIfAbsent(task.getScheduledDate(), d -> new HashMap<>())
-                    .merge(task.getDesk(), taskDeskHoursService.baseHours(task), Double::sum);
         }
-        return schedule;
+        withoutDesk.sort(Comparator.reverseOrder());
+        int desks = Math.max(numDesks, 1);
+        for (double hours : withoutDesk) {
+            int lightest = 1;
+            for (int desk = 2; desk <= desks; desk++) {
+                if (loads.getOrDefault(desk, 0.0) < loads.getOrDefault(lightest, 0.0)) {
+                    lightest = desk;
+                }
+            }
+            loads.merge(lightest, hours, Double::sum);
+        }
+        return loads;
     }
 
     private void requestMaterials(Long productionOrderId) {

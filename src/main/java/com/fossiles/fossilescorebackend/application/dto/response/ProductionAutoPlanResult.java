@@ -24,6 +24,11 @@ public class ProductionAutoPlanResult {
     private List<Long> createdTaskIds = new ArrayList<>();
     @Builder.Default
     private List<BlockedLeatherLine> blockedNoLeather = new ArrayList<>();
+    /** Líneas con cuero que no cupieron en el día planificado: siguen en la OP, sin tarea. */
+    @Builder.Default
+    private List<BlockedLeatherLine> deferredNoCapacity = new ArrayList<>();
+    /** Tareas auto-plan que no se liberaron al regenerar porque ya tenían avance. */
+    private int keptWithProgress;
     @Builder.Default
     private List<String> notes = new ArrayList<>();
 
