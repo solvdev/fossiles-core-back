@@ -61,5 +61,5 @@ src/main/resources/application-*.yaml
 !application.example.properties
 !application.example.yml
 
-# Test application.properties replaces main's file. The bare name is ignored above.
+# Test override disables Sentry. It has no secrets.
 !src/test/resources/application.properties
