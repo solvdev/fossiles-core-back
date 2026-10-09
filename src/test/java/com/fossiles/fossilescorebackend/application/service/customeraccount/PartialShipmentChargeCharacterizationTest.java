@@ -62,6 +62,44 @@ class PartialShipmentChargeCharacterizationTest extends LfReceivablesH2TestBase 
     }
 
     @Test
+    @DisplayName("CURRENT BEHAVIOR (bug): partial 1 charged and partly paid, then partial 2 ships -> every read model "
+            + "offers partial 2 a charge and a second CHARGE is accepted; payments stay capped per charge — target: "
+            + "one charge per order plus a linked debit adjustment per real partial, payments linked to the order's "
+            + "charge and capped at charge + adjustments - credits")
+    void partiallyPaidFirstPartialThenSecondPartialShips() throws Exception {
+        CustomerAccountEntryResponse charge1 = fx.charge(customer, order, release1, shipment1, "15184.00");
+        fx.create(customer, creditRequest("PAYMENT", charge1.getId(), "5000.00"));
+
+        OpvShipmentCatalogRowResponse catalogPartial2 = fx.catalogRow(customer, shipment2);
+        assertThat(catalogPartial2.isHasCharge()).isFalse();
+        assertThat(catalogPartial2.getChargeStatus()).isEqualTo("NONE");
+        assertThat(fx.receivableRows(customer, shipment2)).singleElement().satisfies(r -> {
+            assertThat(r.getChargeStatus()).isEqualTo("NONE");
+            assertThat(r.isHasCharge()).isFalse();
+            assertThat(r.getEstimatedTotal()).isEqualByComparingTo("947.00");
+        });
+        LfSalesDocumentResponse document = lfDocument();
+        assertThat(partialDoc(document, release1).getChargeStatus()).isEqualTo("COVERED");
+        assertThat(partialDoc(document, release1).getShipments())
+                .extracting(LfShipmentDocumentResponse::getChargeStatus)
+                .containsExactly("PARTIAL");
+        assertThat(partialDoc(document, release2).getChargeStatus()).isEqualTo("NONE");
+        assertThat(partialDoc(document, release2).getShipments())
+                .extracting(LfShipmentDocumentResponse::getChargeStatus)
+                .containsExactly("NONE");
+
+        CustomerAccountEntryResponse charge2 = fx.charge(customer, order, release2, shipment2, "947.00");
+
+        assertThat(fx.activeCharges(customer)).hasSize(2);
+        assertThat(fx.balance(customer)).isEqualByComparingTo("11131.00");
+        assertThat(fx.chargeBalance(customer, charge1.getId())).isEqualByComparingTo("10184.00");
+        assertThat(fx.chargeBalance(customer, charge2.getId())).isEqualByComparingTo("947.00");
+        assertThatThrownBy(() -> fx.create(customer, creditRequest("PAYMENT", charge1.getId(), "11131.00")))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("El monto excede el saldo pendiente del documento (Q 10184.00).");
+    }
+
+    @Test
     @DisplayName("CURRENT BEHAVIOR (matches target): a second charge on partial 1 is rejected")
     void secondChargeOnFirstPartialIsRejected() throws Exception {
         fx.charge(customer, order, release1, shipment1, "15184.00");
@@ -111,10 +149,7 @@ class PartialShipmentChargeCharacterizationTest extends LfReceivablesH2TestBase 
             assertThat(r.getProductShipmentId()).isNull();
         });
 
-        LfSalesDocumentResponse document = fx.accounts.getLfDocuments(customer.getId(), true).stream()
-                .filter(d -> d.getProductionOrderId().equals(order.getId()))
-                .findFirst()
-                .orElseThrow();
+        LfSalesDocumentResponse document = lfDocument();
         assertThat(document.getChargeStatus()).isEqualTo("CHARGED");
         assertThat(document.getChargeEntryId()).isEqualTo(orderCharge.getId());
         assertThat(document.getPartialReleases())
@@ -145,5 +180,20 @@ class PartialShipmentChargeCharacterizationTest extends LfReceivablesH2TestBase 
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("ya está cubierto");
         assertThat(fx.activeCharges(customer)).hasSize(1);
+    }
+
+    private LfSalesDocumentResponse lfDocument() throws Exception {
+        return fx.accounts.getLfDocuments(customer.getId(), true).stream()
+                .filter(d -> d.getProductionOrderId().equals(order.getId()))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private static LfPartialReleaseDocumentResponse partialDoc(
+            LfSalesDocumentResponse document, ProductionOrderPartialReleaseEntity release) {
+        return document.getPartialReleases().stream()
+                .filter(p -> release.getId().equals(p.getPartialReleaseId()))
+                .findFirst()
+                .orElseThrow();
     }
 }
