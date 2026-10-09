@@ -63,6 +63,40 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
+def resolveTestDatasourceUrl() {
+    def propsFile = file('src/test/resources/application.properties')
+    if (!propsFile.isFile()) {
+        throw new GradleException('Refusing to run tests: src/test/resources/application.properties is missing.')
+    }
+    def text = propsFile.getText('UTF-8')
+    if (text.contains('spring.config.import')) {
+        throw new GradleException('Refusing to run tests: test application.properties must not import another config.')
+    }
+    def lowered = text.toLowerCase(Locale.ROOT)
+    if (lowered.contains('rds.amazonaws.com') || lowered.contains('jdbc:postgresql')) {
+        throw new GradleException('Refusing to run tests: test application.properties points at a remote database.')
+    }
+    String url = null
+    text.readLines().each { line ->
+        def trimmed = line.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith('#')) {
+            return
+        }
+        def key = 'spring.datasource.url='
+        if (trimmed.startsWith(key)) {
+            url = trimmed.substring(key.length()).trim()
+        }
+    }
+    if (url == null || url.isEmpty()) {
+        throw new GradleException('Refusing to run tests: test application.properties has no spring.datasource.url.')
+    }
+    def envUrl = System.getenv('SPRING_DATASOURCE_URL')
+    if (envUrl != null && !envUrl.trim().isEmpty()) {
+        url = envUrl.trim()
+    }
+    return url
+}
+
 tasks.named('test') {
     useJUnitPlatform()
     // -Dsentry.* on the Gradle command is the Gradle JVM only. Forward it into
