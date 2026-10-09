@@ -277,9 +277,11 @@ public class KioskPosService {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
-        appendMissingPackagingCatalogItems(rawInventory, productsById, categoriesById, kiosk);
         if (KioskPosMode.isEntrecueros(kiosk)) {
+            rawInventory.removeIf(item -> isPackagingInventoryItem(item, productsById));
             rawInventory.removeIf(item -> !Boolean.TRUE.equals(item.getEntrecuerosEnabled()));
+        } else {
+            appendMissingPackagingCatalogItems(rawInventory, productsById, categoriesById, kiosk);
         }
 
         List<KioskPosContextResponse.InventoryItem> inventory = rawInventory.stream()
@@ -363,6 +365,9 @@ public class KioskPosService {
         }
 
         Map<String, BigDecimal> aggregatedQty = aggregateItemQuantities(request.getItems());
+        if (entrecueros) {
+            rejectEntrecuerosPackagingSaleItems(request.getItems());
+        }
         // Cambio: no valida/descuenta stock aquí (lo mueve la boleta: CAMBIO + y CAMBIO −).
         if (!exchangeSale) {
             lockAndValidateStock(kiosk.getId(), aggregatedQty);
@@ -399,6 +404,7 @@ public class KioskPosService {
 
             ProductEntity product = productRepository.findById(itemRequest.getProductId())
                     .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
+            rejectEntrecuerosPackaging(entrecueros, product);
             if (entrecueros && !Boolean.TRUE.equals(product.getEntrecuerosEnabled())) {
                 throw new BusinessException(
                         "El producto " + product.getCode() + " no está habilitado para venta Entrecueros.");
@@ -662,6 +668,7 @@ public class KioskPosService {
 
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
+        boolean entrecueros = KioskPosMode.isEntrecueros(kiosk);
 
         String saleNumber = safeTrim(request.getSaleNumber());
         if (saleNumber.isBlank()) {
@@ -702,6 +709,7 @@ public class KioskPosService {
 
             ProductEntity product = productRepository.findById(itemRequest.getProductId())
                     .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
+            rejectEntrecuerosPackaging(entrecueros, product);
 
             ColorEntity color = null;
             if (itemRequest.getColorId() != null) {
@@ -2676,6 +2684,7 @@ public class KioskPosService {
             }
             ProductEntity product = productRepository.findById(itemRequest.getProductId())
                     .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
+            rejectEntrecuerosPackaging(entrecueros, product);
             ColorEntity color = null;
             if (itemRequest.getColorId() != null) {
                 color = colorRepository.findById(itemRequest.getColorId())
@@ -3164,6 +3173,45 @@ public class KioskPosService {
             return false;
         }
         return product.getCode().trim().toUpperCase(Locale.ROOT).startsWith(PACKAGING_PRODUCT_CODE_PREFIX);
+    }
+
+    private boolean isPackagingInventoryItem(
+            KioskPosContextResponse.InventoryItem item,
+            Map<Long, ProductEntity> productsById
+    ) {
+        if (item == null) {
+            return false;
+        }
+        ProductEntity product = item.getProductId() != null && productsById != null
+                ? productsById.get(item.getProductId())
+                : null;
+        if (product != null) {
+            return isPackagingProduct(product);
+        }
+        return ProductCinchoType.isPackagingProductCode(item.getProductCode());
+    }
+
+    private void rejectEntrecuerosPackaging(boolean entrecueros, ProductEntity product) throws BusinessException {
+        if (!entrecueros || !isPackagingProduct(product)) {
+            return;
+        }
+        throw new BusinessException("Entrecueros no vende empaque: " + product.getName() + ".");
+    }
+
+    private void rejectEntrecuerosPackagingSaleItems(List<KioskPosSaleRequest.ItemRequest> items)
+            throws BusinessException {
+        if (items == null) {
+            return;
+        }
+        for (KioskPosSaleRequest.ItemRequest itemRequest : items) {
+            if (itemRequest == null || itemRequest.getProductId() == null) {
+                continue;
+            }
+            ProductEntity product = productRepository.findById(itemRequest.getProductId()).orElse(null);
+            if (product != null) {
+                rejectEntrecuerosPackaging(true, product);
+            }
+        }
     }
 
     private boolean isInactiveProduct(ProductEntity product) {
