@@ -1,7 +1,9 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerEntity;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -20,4 +22,9 @@ public interface CustomerRepository extends JpaRepository<CustomerEntity, Long> 
     boolean existsByLegacyCode(String legacyCode);
 
     Optional<CustomerEntity> findByLegacyCode(String legacyCode);
+
+    /** Serializa altas del libro de este cliente (un cargo activo por orden, un ajuste por parcial). */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT c FROM CustomerEntity c WHERE c.id = :id")
+    Optional<CustomerEntity> findByIdForUpdate(@Param("id") Long id);
 }

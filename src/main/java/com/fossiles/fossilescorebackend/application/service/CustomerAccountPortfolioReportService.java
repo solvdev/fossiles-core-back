@@ -55,6 +55,7 @@ public class CustomerAccountPortfolioReportService {
     private static final String TYPE_PAYMENT = "PAYMENT";
     private static final String TYPE_CREDIT_NOTE = "CREDIT_NOTE";
     private static final String TYPE_OPENING_BALANCE = "OPENING_BALANCE";
+    private static final String TYPE_CHARGE_ADJUSTMENT = "CHARGE_ADJUSTMENT";
     private static final String TYPE_RETURN = "RETURN";
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(2);
     /** Por debajo de medio centavo un saldo es cero (los montos se guardan a 2 decimales). */
@@ -231,6 +232,20 @@ public class CustomerAccountPortfolioReportService {
         }
 
         List<CustomerAccountEntryEntity> orphanCredits = new ArrayList<>();
+        List<CustomerAccountEntryEntity> looseAdjustments = new ArrayList<>();
+        for (CustomerAccountEntryEntity entry : active) {
+            if (!TYPE_CHARGE_ADJUSTMENT.equalsIgnoreCase(entry.getEntryType())) {
+                continue;
+            }
+            ChargeGroup group = entry.getAppliedToEntryId() == null
+                    ? null
+                    : groupByChargeId.get(entry.getAppliedToEntryId());
+            if (group != null) {
+                group.adjustments.add(entry);
+            } else {
+                looseAdjustments.add(entry);
+            }
+        }
         for (CustomerAccountEntryEntity entry : active) {
             if (!isCredit(entry.getEntryType()) || entry.getAppliedToEntryId() == null) {
                 continue;
@@ -260,6 +275,11 @@ public class CustomerAccountPortfolioReportService {
                 .toList();
         if (!kindOrphans.isEmpty()) {
             rows.add(orphanCreditRow(summary, kindOrphans, kind));
+        }
+        for (CustomerAccountEntryEntity adjustment : looseAdjustments) {
+            if (kind.equals(kindOf(adjustment, ordersById))) {
+                rows.add(adjustmentRow(summary, adjustment, kind));
+            }
         }
 
         rows.sort(Comparator
@@ -292,6 +312,9 @@ public class CustomerAccountPortfolioReportService {
                 ProductShipmentEntity shipment = shipmentsById.get(charge.getProductShipmentId());
                 shipmentNumber = shipment != null ? shipment.getShipmentNumber() : null;
             }
+        }
+        for (CustomerAccountEntryEntity adjustment : group.adjustments) {
+            charged = charged.add(nz(adjustment.getAmount()));
         }
         ProductionOrderEntity order = head.getProductionOrderId() != null
                 ? ordersById.get(head.getProductionOrderId())
@@ -334,6 +357,23 @@ public class CustomerAccountPortfolioReportService {
                 .chargeCount(1)
                 .documentNumber("SALDO INICIAL")
                 .chargeDate(opening.getEntryDate())
+                .chargedAmount(amount)
+                .paymentsApplied(ZERO)
+                .creditsApplied(ZERO)
+                .balanceDue(amount)
+                .status("OPEN")
+                .build();
+    }
+
+    private CustomerAccountPortfolioRowResponse adjustmentRow(
+            CustomerAccountSummaryResponse summary, CustomerAccountEntryEntity adjustment, String kind) {
+        BigDecimal amount = nz(adjustment.getAmount()).setScale(2, RoundingMode.HALF_UP);
+        return baseRow(summary, ROW_DOCUMENT, kind)
+                .chargeEntryId(adjustment.getId())
+                .chargeEntryIds(List.of(adjustment.getId()))
+                .chargeCount(1)
+                .documentNumber("AJUSTE ENVIO " + adjustment.getId())
+                .chargeDate(adjustment.getEntryDate())
                 .chargedAmount(amount)
                 .paymentsApplied(ZERO)
                 .creditsApplied(ZERO)
@@ -576,6 +616,7 @@ public class CustomerAccountPortfolioReportService {
         private final CustomerAccountEntryEntity head;
         private final List<CustomerAccountEntryEntity> charges = new ArrayList<>();
         private final List<CustomerAccountEntryEntity> credits = new ArrayList<>();
+        private final List<CustomerAccountEntryEntity> adjustments = new ArrayList<>();
 
         private ChargeGroup(CustomerAccountEntryEntity head) {
             this.head = head;
@@ -611,7 +652,9 @@ public class CustomerAccountPortfolioReportService {
     }
 
     private static boolean isDebit(String type) {
-        return TYPE_CHARGE.equalsIgnoreCase(type) || TYPE_OPENING_BALANCE.equalsIgnoreCase(type);
+        return TYPE_CHARGE.equalsIgnoreCase(type)
+                || TYPE_OPENING_BALANCE.equalsIgnoreCase(type)
+                || TYPE_CHARGE_ADJUSTMENT.equalsIgnoreCase(type);
     }
 
     private static boolean isCredit(String type) {
