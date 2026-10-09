@@ -349,6 +349,43 @@ class CustomerAccountLedgerRulesTest {
     }
 
     @Test
+    void voidReassignFitsOnlyBecauseTheAdjustmentMoves() throws Exception {
+        CustomerEntity customer = customer();
+        ProductionOrderEntity order = order(customer, "OPV", "60.00");
+        CustomerAccountEntryResponse target = charge(customer, order, null, null, "60.00");
+        CustomerAccountEntryEntity source = entries.save(CustomerAccountEntryEntity.builder()
+                .customerId(customer.getId())
+                .entryType("CHARGE")
+                .status("ACTIVE")
+                .entryDate(LocalDate.of(2026, 9, 1))
+                .amount(new BigDecimal("100.00"))
+                .productionOrderId(order.getId())
+                .orderKind("OPV")
+                .build());
+        ProductShipmentEntity shipment = shipment(order, release(order, 1), "40.00", "40.00");
+        entries.save(CustomerAccountEntryEntity.builder()
+                .customerId(customer.getId())
+                .entryType("CHARGE_ADJUSTMENT")
+                .status("ACTIVE")
+                .entryDate(LocalDate.of(2026, 9, 2))
+                .amount(new BigDecimal("40.00"))
+                .productionOrderId(order.getId())
+                .productShipmentId(shipment.getId())
+                .appliedToEntryId(source.getId())
+                .orderKind("OPV")
+                .build());
+        CustomerAccountEntryResponse payment = accounts.createEntry(customer.getId(), payment(source.getId(), "90.00"));
+
+        accounts.voidEntry(source.getId(), voidRequest(target.getId()));
+
+        assertThat(entries.findById(source.getId()).orElseThrow().getStatus()).isEqualTo("VOID");
+        assertThat(entries.findById(payment.getId()).orElseThrow().getAppliedToEntryId()).isEqualTo(target.getId());
+        assertThat(entries.findByCustomerIdOrderByEntryDateAscIdAsc(customer.getId()).stream()
+                .filter(entry -> "CHARGE_ADJUSTMENT".equals(entry.getEntryType()))
+                .findFirst().orElseThrow().getAppliedToEntryId()).isEqualTo(target.getId());
+    }
+
+    @Test
     void voidReassignRejectsBadTargetsAndLeavesRowsUntouched() throws Exception {
         CustomerEntity customer = customer();
         CustomerEntity other = customer();

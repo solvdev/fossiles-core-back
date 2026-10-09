@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountEntryRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.CustomerAccountEntryVoidRequest;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerAccountEntryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -69,6 +71,7 @@ class CustomerAccountLedgerConcurrencyTest {
     @Autowired ProductRepository products;
     @Autowired CustomerAccountEntryRepository entries;
     @Autowired JdbcTemplate jdbc;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     @Test
     void twoConcurrentChargesAndAdjustmentsLeaveOneOfEach() throws Exception {
@@ -129,6 +132,44 @@ class CustomerAccountLedgerConcurrencyTest {
                 VALUES (?, 'CHARGE', CURRENT_DATE, 100.00, ?, 'ACTIVE')
                 """, customerId, orderId))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void voidLoadsTheChargeAfterTheCustomerLock() throws Exception {
+        CustomerEntity customer = customers.save(CustomerEntity.builder().name("Lock").status("active").build());
+        Long chargeId = chargeOf(customer, "OP-LOCK", "40.00");
+        CountDownLatch holding = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Future<?> holder = pool.submit(() -> new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            customers.findByIdForUpdate(customer.getId()).orElseThrow();
+            CustomerAccountEntryEntity row = entries.findById(chargeId).orElseThrow();
+            row.setInvoiceNumber("KEEP-ME");
+            entries.saveAndFlush(row);
+            holding.countDown();
+            try {
+                if (!release.await(20, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("lock holder timed out");
+                }
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(ex);
+            }
+        }));
+        assertThat(holding.await(15, TimeUnit.SECONDS)).isTrue();
+        Future<?> voided = pool.submit(() -> {
+            accounts.voidEntry(chargeId, voidOf(null));
+            return null;
+        });
+        Thread.sleep(1000);
+        assertThat(voided.isDone()).isFalse();
+        release.countDown();
+        holder.get(20, TimeUnit.SECONDS);
+        voided.get(20, TimeUnit.SECONDS);
+        pool.shutdown();
+        CustomerAccountEntryEntity after = entries.findById(chargeId).orElseThrow();
+        assertThat(after.getStatus()).isEqualTo("VOID");
+        assertThat(after.getInvoiceNumber()).isEqualTo("KEEP-ME");
     }
 
     @Test

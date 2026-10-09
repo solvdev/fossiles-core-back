@@ -22,6 +22,9 @@ public interface CustomerAccountEntryRepository extends JpaRepository<CustomerAc
     @Query("SELECT e.status FROM CustomerAccountEntryEntity e WHERE e.id = :id")
     Optional<String> findStatusById(@Param("id") Long id);
 
+    @Query("SELECT e.customerId FROM CustomerAccountEntryEntity e WHERE e.id = :id")
+    Optional<Long> findCustomerIdById(@Param("id") Long id);
+
     @Query("""
             SELECT e FROM CustomerAccountEntryEntity e
             WHERE e.productionOrderId = :productionOrderId

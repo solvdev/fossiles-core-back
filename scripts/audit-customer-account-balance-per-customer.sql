@@ -2,10 +2,10 @@
 -- Read-only balance per customer. Run before and after phase 1.
 -- Phase 1 does not change ledger rows, so the two results must match.
 -- CHARGE_ADJUSTMENT is included so the same query is valid before (no such rows) and after.
+-- No customer names. Identity is customer_id (legacy_code is the same optional key as the snapshot).
 
-SELECT c.id,
+SELECT c.id AS customer_id,
        c.legacy_code,
-       c.name,
        COALESCE(SUM(CASE
            WHEN e.entry_type IN ('CHARGE', 'OPENING_BALANCE', 'CHARGE_ADJUSTMENT') THEN e.amount
            ELSE 0 END), 0)
@@ -22,5 +22,5 @@ SELECT c.id,
 FROM customer c
 LEFT JOIN customer_account_entry e
     ON e.customer_id = c.id AND e.status = 'ACTIVE'
-GROUP BY c.id, c.legacy_code, c.name
+GROUP BY c.id, c.legacy_code
 ORDER BY c.id;

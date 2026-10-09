@@ -699,12 +699,12 @@ public class CustomerAccountService {
 
     public CustomerAccountEntryResponse voidEntry(Long entryId, CustomerAccountEntryVoidRequest request)
             throws ResourceNotFoundException, BusinessException {
+        Long customerId = entryRepository.findCustomerIdById(entryId)
+                .orElseThrow(() -> new ResourceNotFoundException("CustomerAccountEntry", entryId));
+        lockCustomer(customerId);
         CustomerAccountEntryEntity entry = entryRepository.findById(entryId)
                 .orElseThrow(() -> new ResourceNotFoundException("CustomerAccountEntry", entryId));
-        lockCustomer(entry.getCustomerId());
-        String statusNow = entryRepository.findStatusById(entryId)
-                .orElseThrow(() -> new ResourceNotFoundException("CustomerAccountEntry", entryId));
-        if (STATUS_VOID.equalsIgnoreCase(statusNow)) {
+        if (STATUS_VOID.equalsIgnoreCase(entry.getStatus())) {
             throw new BusinessException("El movimiento ya está anulado.");
         }
         if (TYPE_CHARGE.equalsIgnoreCase(entry.getEntryType())) {
@@ -765,10 +765,10 @@ public class CustomerAccountService {
         BigDecimal moved = credits.stream()
                 .map(this::resolveAppliedCreditAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal open = computeChargeBalanceDue(target, active);
-        if (moved.compareTo(open) > 0) {
+        BigDecimal available = reassignmentRoom(target, active, adjustments);
+        if (moved.compareTo(available) > 0) {
             throw new BusinessException("El monto a trasladar (Q " + moved.setScale(2, RoundingMode.HALF_UP)
-                    + ") supera el saldo pendiente del cargo destino (Q " + open.setScale(2, RoundingMode.HALF_UP) + ").");
+                    + ") supera el saldo pendiente del cargo destino (Q " + available.setScale(2, RoundingMode.HALF_UP) + ").");
         }
         String kind = kindCopiedFromCharge(target);
         Long userId = securityUtil.getCurrentUserId();
@@ -788,6 +788,31 @@ public class CustomerAccountService {
             adjustment.setUpdatedBy(userId);
             entryRepository.save(adjustment);
         }
+    }
+
+    /**
+     * Room on the target after the adjustments that move with this void:
+     * target charge + its adjustments + moved adjustments − credits already on the target.
+     */
+    private BigDecimal reassignmentRoom(
+            CustomerAccountEntryEntity target,
+            List<CustomerAccountEntryEntity> active,
+            List<CustomerAccountEntryEntity> movedAdjustments) {
+        BigDecimal room = target.getAmount() != null ? target.getAmount() : BigDecimal.ZERO;
+        for (CustomerAccountEntryEntity entry : active) {
+            if (isActiveAdjustmentOf(target, entry) && entry.getAmount() != null) {
+                room = room.add(entry.getAmount());
+            }
+            if (target.getId().equals(entry.getAppliedToEntryId()) && isCreditType(entry.getEntryType())) {
+                room = room.subtract(resolveAppliedCreditAmount(entry));
+            }
+        }
+        for (CustomerAccountEntryEntity adjustment : movedAdjustments) {
+            if (adjustment.getAmount() != null) {
+                room = room.add(adjustment.getAmount());
+            }
+        }
+        return room.setScale(2, RoundingMode.HALF_UP);
     }
 
     /** Keeps the first original charge. Later moves only append the void reason. */
