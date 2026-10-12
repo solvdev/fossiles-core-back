@@ -1840,15 +1840,8 @@ public class CustomerAccountService {
             String status) {}
 
     private BigDecimal computeChargeBalanceDue(CustomerAccountEntryEntity charge) {
-        List<CustomerAccountEntryEntity> visible = loadVisibleEntries(charge.getCustomerId());
-        CustomerAccountEntryEntity effective = visible.stream()
-                .filter(e -> Objects.equals(e.getId(), charge.getId()))
-                .findFirst()
-                .orElse(null);
-        if (effective == null) {
-            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
-        }
-        return computeChargeBalanceDue(effective, visible);
+        // Tope de un abono: el cargo real, no el recortado a lo despachado (un cliente puede pagar por adelantado).
+        return computeChargeBalanceDue(charge, loadActiveEntries(charge.getCustomerId()));
     }
 
     private BigDecimal computeAppliedCredits(CustomerAccountEntryEntity charge, List<CustomerAccountEntryEntity> entries) {
@@ -2480,7 +2473,8 @@ public class CustomerAccountService {
      * <ul>
      *   <li>Un cargo o ajuste ligado a un envío no despachado (borrador, confirmado, cancelado) no aparece.</li>
      *   <li>Un cargo por orden completa (modelo anterior, sin envío) se recorta a lo despachado de esa orden: lo
-     *       que aún no salió no se debe.</li>
+     *       que aún no salió no se debe. El recorte nunca baja de lo que el cargo ya tiene aplicado en pagos, notas
+     *       de crédito y devoluciones (menos sus ajustes de envío): recortar no crea crédito a favor.</li>
      *   <li>Los movimientos anulados y los demás tipos (pagos, notas, saldo inicial) pasan sin cambio.</li>
      * </ul>
      */
@@ -2490,6 +2484,7 @@ public class CustomerAccountService {
         }
         Map<Long, Optional<ProductShipmentEntity>> shipmentCache = new HashMap<>();
         Map<Long, Optional<BigDecimal>> capByOrder = new HashMap<>();
+        Map<Integer, BigDecimal> clippedAt = new LinkedHashMap<>();
         List<CustomerAccountEntryEntity> visible = new ArrayList<>(entries.size());
         for (CustomerAccountEntryEntity entry : entries) {
             boolean charge = TYPE_CHARGE.equalsIgnoreCase(entry.getEntryType());
@@ -2510,14 +2505,39 @@ public class CustomerAccountService {
                 Optional<BigDecimal> cap = capByOrder.computeIfAbsent(
                         entry.getProductionOrderId(), id -> Optional.ofNullable(dispatchedProductsValue(id)));
                 if (cap.isPresent() && cap.get().compareTo(entry.getAmount()) < 0) {
-                    CustomerAccountEntryEntity copy = new CustomerAccountEntryEntity();
-                    BeanUtils.copyProperties(entry, copy);
-                    copy.setAmount(cap.get());
-                    visible.add(copy);
-                    continue;
+                    clippedAt.put(visible.size(), cap.get());
                 }
             }
             visible.add(entry);
+        }
+        if (clippedAt.isEmpty()) {
+            return visible;
+        }
+        // Lo ya pagado es piso del recorte: sin esto, un cargo pagado por adelantado quedaría en crédito a favor.
+        Map<Long, BigDecimal> creditsByCharge = new HashMap<>();
+        Map<Long, BigDecimal> adjustmentsByCharge = new HashMap<>();
+        for (CustomerAccountEntryEntity entry : visible) {
+            if (!STATUS_ACTIVE.equalsIgnoreCase(entry.getStatus()) || entry.getAppliedToEntryId() == null) {
+                continue;
+            }
+            if (isCreditType(entry.getEntryType())) {
+                creditsByCharge.merge(entry.getAppliedToEntryId(), resolveAppliedCreditAmount(entry), BigDecimal::add);
+            } else if (TYPE_CHARGE_ADJUSTMENT.equalsIgnoreCase(entry.getEntryType())) {
+                adjustmentsByCharge.merge(entry.getAppliedToEntryId(), nz(entry.getAmount()), BigDecimal::add);
+            }
+        }
+        for (Map.Entry<Integer, BigDecimal> clipped : clippedAt.entrySet()) {
+            CustomerAccountEntryEntity original = visible.get(clipped.getKey());
+            BigDecimal paidFloor = creditsByCharge.getOrDefault(original.getId(), BigDecimal.ZERO)
+                    .subtract(adjustmentsByCharge.getOrDefault(original.getId(), BigDecimal.ZERO));
+            BigDecimal target = clipped.getValue().max(paidFloor).setScale(2, RoundingMode.HALF_UP);
+            if (target.compareTo(original.getAmount()) >= 0) {
+                continue;
+            }
+            CustomerAccountEntryEntity copy = new CustomerAccountEntryEntity();
+            BeanUtils.copyProperties(original, copy);
+            copy.setAmount(target);
+            visible.set(clipped.getKey(), copy);
         }
         return visible;
     }

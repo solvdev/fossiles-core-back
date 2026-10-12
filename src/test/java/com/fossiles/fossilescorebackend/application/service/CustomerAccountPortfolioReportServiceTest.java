@@ -242,7 +242,7 @@ class CustomerAccountPortfolioReportServiceTest {
     }
 
     @Test
-    void overpaidDocument_isStillListedAsCreditInFavor() throws Exception {
+    void overpaidDocument_isNotListedBecauseNothingIsOwed() throws Exception {
         long cust = customer("Cliente Con Credito");
         long order = order(cust, "OPV-4C", "NORMAL", "ENVP-4C");
         long charge = charge(cust, order, null, null, "100.00", "ENVP-4C", D1);
@@ -250,9 +250,10 @@ class CustomerAccountPortfolioReportServiceTest {
 
         CustomerAccountPortfolioReportResponse report = run("OPV");
 
-        assertThat(report.getRows()).hasSize(1);
-        assertThat(report.getRows().get(0).getBalanceDue()).isEqualByComparingTo("-50.00");
-        assertThat(report.getCustomers().get(0).getCreditBalance()).isEqualByComparingTo("50.00");
+        // La cartera es lo que se debe: un documento a favor del cliente no se lista.
+        assertThat(report.getRows()).isEmpty();
+        assertThat(report.getCustomers()).isEmpty();
+        assertReconciled(report);
     }
 
     @Test
@@ -292,7 +293,7 @@ class CustomerAccountPortfolioReportServiceTest {
     }
 
     @Test
-    void creditAppliedToVoidedCharge_isExplicitAdjustment_andStillReconciles() throws Exception {
+    void creditAppliedToVoidedCharge_isNotListed_andStillReconciles() throws Exception {
         long cust = customer("Cliente Cargo Anulado");
         long order = order(cust, "OPV-7", "NORMAL", "ENVP-7");
         long voided = charge(cust, order, null, null, "800.00", "ENVP-7", D1);
@@ -302,14 +303,16 @@ class CustomerAccountPortfolioReportServiceTest {
 
         CustomerAccountPortfolioReportResponse report = run("OPV");
 
+        // "ABONOS A CARGO ANULADO" no es cartera: solo se lista el documento que sí se debe.
         assertThat(report.getRows()).extracting(CustomerAccountPortfolioRowResponse::getRowType)
-                .containsExactlyInAnyOrder("DOCUMENT", "ORPHAN_CREDIT");
+                .containsExactly("DOCUMENT");
         CustomerAccountPortfolioCustomerResponse totals = report.getCustomers().get(0);
-        assertThat(totals.getNetBalance()).isEqualByComparingTo("-100.00");
-        assertThat(totals.getBalanceDue()).isEqualByComparingTo("0.00");
-        assertThat(totals.getCreditBalance()).isEqualByComparingTo("100.00");
+        assertThat(totals.getBalanceDue()).isEqualByComparingTo("200.00");
+        assertThat(totals.getCreditBalance()).isEqualByComparingTo("0.00");
         assertThat(report.getDocumentCount()).isEqualTo(1);
-        assertReconciled(report);
+        // La conciliación sigue contando los abonos que no se listan (el total del sistema los resta).
+        assertThat(report.isReconciled()).isTrue();
+        assertThat(report.getDifference()).isEqualByComparingTo("0.00");
         assertThat(live).isNotNull();
     }
 

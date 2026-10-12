@@ -177,6 +177,27 @@ class ShipmentChargeDetectionAcceptanceTest extends LfReceivablesH2TestBase {
         assertThat(fx.balance(customer)).isEqualByComparingTo("1968.00");
     }
 
+    @Test
+    @DisplayName("Clipping a whole-order charge never creates a credit in favor: what is already paid is its floor")
+    void clippedChargeNeverGoesBelowWhatIsAlreadyPaid() throws Exception {
+        ProductionOrderEntity big = fx.order(customer, "OPC-T0031", TYPE_OPC, "1000.00", "968.00");
+        fx.shipment(big, fx.release(big, 1), "ENVP-90031-ENV-00001", "1000.00");
+        ProductShipmentEntity second = fx.shipment(big, fx.release(big, 2), "ENVP-90031-ENV-00002", "968.00");
+        fx.withStatus(second, "CONFIRMED");
+        CustomerAccountEntryResponse charge = fx.charge(customer, big, null, null, "1968.00");
+        pay(charge.getId(), "1500.00");
+
+        assertThat(fx.balance(customer)).isEqualByComparingTo("0");
+        assertThat(fx.accounts.getBalance(customer.getId()).getCreditBalance()).isEqualByComparingTo("0");
+
+        ProductionOrderEntity none = fx.order(customer, "OPC-T0032", TYPE_OPC, "500.00");
+        ProductShipmentEntity unsent = fx.shipment(none, fx.release(none, 1), "ENVP-90032-ENV-00001", "500.00");
+        fx.withStatus(unsent, "CONFIRMED");
+        CustomerAccountEntryResponse paidAhead = fx.charge(customer, none, null, null, "500.00");
+        pay(paidAhead.getId(), "500.00");
+        assertThat(fx.accounts.getBalance(customer.getId()).getCreditBalance()).isEqualByComparingTo("0");
+    }
+
     private void pay(Long chargeId, String amount) throws Exception {
         fx.create(customer, creditRequest("PAYMENT", chargeId, amount));
     }
