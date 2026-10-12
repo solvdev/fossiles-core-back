@@ -75,7 +75,6 @@ import java.util.stream.Collectors;
 public class KioscoInventoryCountService {
 
     private static final List<String> COUNT_LOCATION_KEYS = List.of("V1", "V2", "V3", "V4", "V5", "V6", "V7", "E", "BO");
-    private static final List<String> CINCHO_SIZE_LOCATION_KEYS = List.of("E", "BO");
     private static final String UNCATEGORIZED_LABEL = "Sin categoría";
     private static final String PACKAGING_CATEGORY_KEY = "PACKAGING";
     private static final String PACKAGING_CATEGORY_NAME = "Empaques";
@@ -860,9 +859,9 @@ public class KioscoInventoryCountService {
         }
         for (Map.Entry<String, Map<String, Integer>> locEntry : raw.entrySet()) {
             String locKey = locEntry.getKey() == null ? "" : locEntry.getKey().trim().toUpperCase(Locale.ROOT);
-            if (!CINCHO_SIZE_LOCATION_KEYS.contains(locKey)) {
+            if (!COUNT_LOCATION_KEYS.contains(locKey)) {
                 throw new BusinessException("Ubicacion de cincho invalida: " + locEntry.getKey()
-                        + ". Solo se admite E (vitrina) o BO (bodega).");
+                        + ". Solo se admite V1..V7, E (vitrinas) o BO (bodega).");
             }
             Map<String, BigDecimal> sizes = normalizePhysicalSizes(locEntry.getValue());
             normalized.put(locKey, sizes);
@@ -1855,13 +1854,12 @@ public class KioscoInventoryCountService {
         Map<String, Integer> counts = new LinkedHashMap<>();
         boolean foss = CinchoProductUtils.isFossCinchoProduct(product);
 
-        if (foss && base.getPhysicalSizesByLocation() != null) {
-            for (String loc : CINCHO_SIZE_LOCATION_KEYS) {
+        // FOSS (E/BO) y Entre Cueros (V1..V7, E) guardan el conteo por talla desglosado por ubicación.
+        if (base.getPhysicalSizesByLocation() != null
+                && (foss || hasSizesByLocation(base.getPhysicalSizesByLocation()))) {
+            for (String loc : COUNT_LOCATION_KEYS) {
                 Map<String, Integer> locSizes = base.getPhysicalSizesByLocation().get(loc);
                 counts.put(loc, locSizes != null ? locSizes.getOrDefault(size, 0) : 0);
-            }
-            for (String key : COUNT_LOCATION_KEYS) {
-                counts.putIfAbsent(key, 0);
             }
             return counts;
         }
@@ -1889,19 +1887,26 @@ public class KioscoInventoryCountService {
         return counts;
     }
 
+    private static boolean hasSizesByLocation(Map<String, Map<String, Integer>> byLocation) {
+        return byLocation != null && !byLocation.isEmpty();
+    }
+
     private int resolvePhysicalTotalForSize(
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
             ProductEntity product,
             String size,
             Map<String, Integer> counts
     ) {
-        if (CinchoProductUtils.isFossCinchoProduct(product) && base.getPhysicalSizesByLocation() != null) {
-            int vitrine = Optional.ofNullable(base.getPhysicalSizesByLocation().get("E"))
-                    .map(m -> m.getOrDefault(size, 0)).orElse(0);
-            int warehouse = Optional.ofNullable(base.getPhysicalSizesByLocation().get("BO"))
-                    .map(m -> m.getOrDefault(size, 0)).orElse(0);
-            if (vitrine + warehouse > 0) {
-                return vitrine + warehouse;
+        if (base.getPhysicalSizesByLocation() != null
+                && (CinchoProductUtils.isFossCinchoProduct(product)
+                        || hasSizesByLocation(base.getPhysicalSizesByLocation()))) {
+            int byLocationTotal = 0;
+            for (String loc : COUNT_LOCATION_KEYS) {
+                byLocationTotal += Optional.ofNullable(base.getPhysicalSizesByLocation().get(loc))
+                        .map(m -> m.getOrDefault(size, 0)).orElse(0);
+            }
+            if (byLocationTotal > 0) {
+                return byLocationTotal;
             }
         }
         if (base.getPhysicalSizes() != null) {
@@ -1921,7 +1926,7 @@ public class KioscoInventoryCountService {
             return null;
         }
         Map<String, Map<String, Integer>> result = new LinkedHashMap<>();
-        for (String loc : CINCHO_SIZE_LOCATION_KEYS) {
+        for (String loc : COUNT_LOCATION_KEYS) {
             Map<String, Integer> locSizes = byLocation.get(loc);
             if (locSizes != null && locSizes.containsKey(size)) {
                 int qty = locSizes.get(size);

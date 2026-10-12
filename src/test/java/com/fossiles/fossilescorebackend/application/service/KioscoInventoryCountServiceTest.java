@@ -334,6 +334,53 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
+    void upsertItems_guardaCinchoPorTallaEnVitrinasV1aV7() throws Exception {
+        KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
+                .id(countId)
+                .locationId(locationId)
+                .periodFrom(from)
+                .periodTo(to)
+                .status(KioscoPhysicalCountStatus.DRAFT)
+                .generatedBy(userId)
+                .build();
+        when(countRepository.findById(countId)).thenReturn(Optional.of(count));
+        stubPrincipalKardex(List.of(kardexRow(10)));
+
+        AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
+        when(itemRepository.findByCountIdAndProductIdAndColorIdAndHardwareCondition(countId, productId, colorId, "NUEVO")).thenReturn(Optional.empty());
+        when(itemRepository.save(any(KioscoPhysicalCountItemEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountItemEntity item = inv.getArgument(0);
+            if (item.getId() == null) {
+                item.setId(901L);
+            }
+            savedItemRef.set(item);
+            return item;
+        });
+        when(itemRepository.findByCountId(countId)).thenAnswer(inv -> {
+            KioscoPhysicalCountItemEntity saved = savedItemRef.get();
+            return saved != null ? List.of(saved) : List.of();
+        });
+
+        java.util.Map<String, java.util.Map<String, Integer>> byLocation = new java.util.LinkedHashMap<>();
+        byLocation.put("V1", java.util.Map.of("28", 2));
+        byLocation.put("V3", java.util.Map.of("28", 1, "30", 4));
+        byLocation.put("E", java.util.Map.of("30", 1));
+
+        KioscoPhysicalCountItemUpsertRequest request = KioscoPhysicalCountItemUpsertRequest.builder()
+                .productId(productId)
+                .colorId(colorId)
+                .counts(java.util.Map.of("V1", 2, "V3", 5, "E", 1))
+                .physicalSizes(java.util.Map.of("28", 3, "30", 5))
+                .physicalSizesByLocation(byLocation)
+                .build();
+
+        service.upsertItems(countId, List.of(request));
+
+        String stored = savedItemRef.get().getSizeLocationCountsData();
+        assertThat(stored).contains("V1").contains("V3").contains("E");
+    }
+
+    @Test
     void upsertItems_falla_siTallaNegativa() {
         KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder().id(countId).locationId(locationId).build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
