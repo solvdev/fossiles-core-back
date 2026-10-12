@@ -149,10 +149,11 @@ class ShipmentDispatchChargeWiringTest {
                 .quantity(3).unitPrice(new BigDecimal("100.00")).build());
         entries.save(CustomerAccountEntryEntity.builder()
                 .customerId(customer.getId()).entryType("CHARGE").status("ACTIVE")
-                .entryDate(LocalDate.of(2026, 6, 16)).amount(new BigDecimal("330.00"))
+                .entryDate(LocalDate.of(2026, 6, 16)).amount(new BigDecimal("300.00"))
                 .productionOrderId(old.getId()).orderKind("OPV").build());
         ProductShipmentEntity historical = shipments.save(ProductShipmentEntity.builder()
                 .productionOrderId(old.getId()).shipmentNumber("ENVP-00024").status("CONFIRMED")
+                .shippingCost(new BigDecimal("30.00"))
                 .notes(CustomerAccountService.HISTORICAL_SHIPMENT_NOTE + ": orden anterior a Preparar envios").build());
 
         // Confirmado = no despachado: el cargo viejo no cuenta todavía.
@@ -163,7 +164,7 @@ class ShipmentDispatchChargeWiringTest {
         ProductShipmentEntity sent = shipments.findById(historical.getId()).orElseThrow();
         assertThat(sent.getStatus()).isEqualTo("SENT");
         assertThat(sent.getSentAt()).isNotNull();
-        // El cargo viejo (productos Q300 + Q30 de envío) se ve completo: el histórico despachado no lo recorta.
+        // El cargo viejo (productos Q300) se ve completo, más los Q30 de envío del envío histórico.
         assertThat(accounts.getBalance(customer.getId()).getBalance()).isEqualByComparingTo("330.00");
         assertThat(activeEntries("CHARGE")).hasSize(1);
         assertThat(inventory.findAll().stream().mapToInt(row -> row.getQuantity().intValue()).sum()).isEqualTo(100);

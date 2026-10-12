@@ -2563,7 +2563,10 @@ public class CustomerAccountService {
                             .filter(shipping -> !adjustedShipmentIds.contains(shipping.getKey()))
                             .map(Map.Entry::getValue)
                             .reduce(BigDecimal.ZERO, BigDecimal::add);
-                    BigDecimal visibleAmount = dispatched.get().products().min(entry.getAmount())
+                    BigDecimal productsShown = dispatched.get().products() == null
+                            ? entry.getAmount()
+                            : dispatched.get().products().min(entry.getAmount());
+                    BigDecimal visibleAmount = productsShown
                             .add(shippingWithoutAdjustment)
                             .setScale(2, RoundingMode.HALF_UP);
                     if (visibleAmount.compareTo(entry.getAmount()) != 0) {
@@ -2605,7 +2608,10 @@ public class CustomerAccountService {
         return visible;
     }
 
-    /** Lo despachado de una orden: valor de sus productos y el costo de envío de cada envío despachado. */
+    /**
+     * Lo despachado de una orden: valor de sus productos (null = salió toda la orden, el cargo no se recorta) y el
+     * costo de envío de cada envío despachado.
+     */
     private record DispatchedOrder(BigDecimal products, Map<Long, BigDecimal> shippingByShipment) {}
 
     /**
@@ -2622,10 +2628,17 @@ public class CustomerAccountService {
         if (orderShipments.isEmpty()) {
             return null;
         }
-        // Un envío histórico despachado dice que salió TODA la orden: el cargo se deja tal cual (con el envío que ya
-        // trae), sin recortarlo ni sumarle nada.
+        // Un envío histórico despachado dice que salió TODA la orden: el cargo no se recorta. Si el envío trae costo
+        // de envío y no tiene ajuste, ese costo sí se suma (el cargo viejo solo trae productos).
         if (orderShipments.stream().anyMatch(s -> isDispatched(s) && isHistoricalShipment(s))) {
-            return null;
+            Map<Long, BigDecimal> historicalShipping = new LinkedHashMap<>();
+            for (ProductShipmentEntity shipment : orderShipments) {
+                BigDecimal shipping = isDispatched(shipment) ? actualShippingCost(shipment) : null;
+                if (shipping != null) {
+                    historicalShipping.put(shipment.getId(), shipping);
+                }
+            }
+            return new DispatchedOrder(null, historicalShipping);
         }
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
         BigDecimal total = BigDecimal.ZERO;
