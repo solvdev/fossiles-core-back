@@ -134,6 +134,7 @@ public class KioskPosService {
     );
     static final String DEPOSIT_BANK_GT_CONTINENTAL = "GT_CONTINENTAL";
     static final String DEPOSIT_BANK_INDUSTRIAL = "INDUSTRIAL";
+    static final String DEPOSIT_BANK_BANRURAL = "BANRURAL";
 
     private final SecurityUtil securityUtil;
     private final UserRepository userRepository;
@@ -1214,7 +1215,7 @@ public class KioskPosService {
         String depositBank = normalizeDepositBankCode(request.getDepositBank());
         if (depositBank == null) {
             throw new BusinessException(
-                    "Debes indicar el banco del depósito (Banco G&T Continental o Banco Industrial).");
+                    "Debes indicar el banco del depósito (Banco G&T Continental, Banco Industrial o BANRURAL).");
         }
         UserEntity user = getCurrentUserOrThrow();
         boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
@@ -5147,6 +5148,10 @@ public class KioskPosService {
                 || "BI".equals(normalized)) {
             return DEPOSIT_BANK_INDUSTRIAL;
         }
+        if (DEPOSIT_BANK_BANRURAL.equals(normalized)
+                || "BANCO_BANRURAL".equals(normalized)) {
+            return DEPOSIT_BANK_BANRURAL;
+        }
         return null;
     }
 
@@ -5156,6 +5161,10 @@ public class KioskPosService {
             String name = safeTrim(depositReportProperties.getIndustrialBankName());
             return name.isBlank() ? "Banco Industrial" : name;
         }
+        if (DEPOSIT_BANK_BANRURAL.equals(code)) {
+            String name = safeTrim(depositReportProperties.getBanruralBankName());
+            return name.isBlank() ? "BANRURAL" : name;
+        }
         String name = safeTrim(depositReportProperties.getBankName());
         return name.isBlank() ? "Banco G&T Continental" : name;
     }
@@ -5164,6 +5173,9 @@ public class KioskPosService {
         String code = normalizeDepositBankCode(bankCode);
         if (DEPOSIT_BANK_INDUSTRIAL.equals(code)) {
             return safeTrim(depositReportProperties.getIndustrialBankAccount());
+        }
+        if (DEPOSIT_BANK_BANRURAL.equals(code)) {
+            return safeTrim(depositReportProperties.getBanruralBankAccount());
         }
         return safeTrim(depositReportProperties.getBankAccount());
     }

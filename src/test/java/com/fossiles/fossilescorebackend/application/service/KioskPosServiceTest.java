@@ -1421,6 +1421,14 @@ class KioskPosServiceTest {
     }
 
     @Test
+    void normalizeDepositBankCode_recognizesBanrural() {
+        assertThat(KioskPosService.normalizeDepositBankCode("BANRURAL")).isEqualTo("BANRURAL");
+        assertThat(KioskPosService.normalizeDepositBankCode("Banrural")).isEqualTo("BANRURAL");
+        assertThat(KioskPosService.normalizeDepositBankCode("Banco Industrial")).isEqualTo("INDUSTRIAL");
+        assertThat(KioskPosService.normalizeDepositBankCode("otro")).isNull();
+    }
+
+    @Test
     void createSale_appliesCinchoSizeSurcharge() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
 

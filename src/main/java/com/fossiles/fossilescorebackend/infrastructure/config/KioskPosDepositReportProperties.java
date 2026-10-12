@@ -13,7 +13,11 @@ public class KioskPosDepositReportProperties {
     private String accountName = "CUEROGLAM, S.A.";
     private String bankName = "Banco G&T Continental";
 
-    /** Cuenta de Banco Industrial (configurar en application.properties). */
-    private String industrialBankAccount = "";
+    /** Cuenta de Banco Industrial (se puede sobreescribir en application.properties). */
+    private String industrialBankAccount = "7490110553";
     private String industrialBankName = "Banco Industrial";
+
+    /** Cuenta de BANRURAL (se puede sobreescribir en application.properties). */
+    private String banruralBankAccount = "3139064720";
+    private String banruralBankName = "BANRURAL";
 }
