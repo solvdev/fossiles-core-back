@@ -137,6 +137,15 @@ final class LfReceivablesFixture {
         }
     }
 
+    /** A SENT shipment with no product lines (the document of the whole order). */
+    ProductShipmentEntity shipmentWithoutLines(ProductionOrderEntity order, String number) {
+        return shipmentRepository.save(ProductShipmentEntity.builder()
+                .productionOrderId(order.getId())
+                .shipmentNumber(number)
+                .status("SENT")
+                .build());
+    }
+
     ProductShipmentEntity withStatus(ProductShipmentEntity shipment, String status) {
         shipment.setStatus(status);
         return shipmentRepository.save(shipment);

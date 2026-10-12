@@ -1946,6 +1946,22 @@ public class ProductDistributionService {
             throw new BusinessException("El envío debe estar confirmado para poder enviarse. Estado actual: " + currentStatus);
         }
 
+        if (CustomerAccountService.isHistoricalShipment(shipment)) {
+            // Envío histórico (orden anterior a Preparar envíos): no tiene productos, destino ni inventario que mover.
+            // Solo se marca como despachado, con su fecha original, y entra a cuentas por cobrar.
+            shipment.setStatus("SENT");
+            shipment.setSentAt(shipment.getCreatedAt() != null ? shipment.getCreatedAt() : LocalDateTime.now());
+            shipment.setSentBy(securityUtil.getCurrentUserId());
+            shipment.setUpdatedBy(securityUtil.getCurrentUserId());
+            ProductShipmentEntity historical = shipmentRepository.save(shipment);
+            try {
+                customerAccountService.createChargeForDispatchedShipment(shipmentId);
+            } catch (BusinessException ex) {
+                log.warn("Envío histórico {} sin cargo de cuentas por cobrar: {}", historical.getShipmentNumber(), ex.getMessage());
+            }
+            return toShipmentResponse(historical);
+        }
+
         Long shipmentLocationId = shipment.getLocationId();
         Optional<ProductionOrderEntity> linkedPoOpt = shipment.getProductionOrderId() == null
                 ? Optional.empty()

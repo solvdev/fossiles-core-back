@@ -140,6 +140,39 @@ class ShipmentDispatchChargeWiringTest {
     }
 
     @Test
+    void historicalShipmentOnlyCountsOnceItIsMovedToSentAndMovesNoInventory() throws Exception {
+        ProductionOrderEntity old = orders.save(ProductionOrderEntity.builder()
+                .code("OPV-OLD-1").orderType("OPV").customerId(customer.getId()).sellerName("LUIS FELIPE")
+                .vendorShipmentNumber("ENVP-00024").status("COMPLETED").startDate(LocalDate.of(2026, 6, 1)).build());
+        items.save(ProductionOrderItemEntity.builder()
+                .productionOrderId(old.getId()).productId(product.getId()).colorId(color.getId())
+                .quantity(3).unitPrice(new BigDecimal("100.00")).build());
+        entries.save(CustomerAccountEntryEntity.builder()
+                .customerId(customer.getId()).entryType("CHARGE").status("ACTIVE")
+                .entryDate(LocalDate.of(2026, 6, 16)).amount(new BigDecimal("330.00"))
+                .productionOrderId(old.getId()).orderKind("OPV").build());
+        ProductShipmentEntity historical = shipments.save(ProductShipmentEntity.builder()
+                .productionOrderId(old.getId()).shipmentNumber("ENVP-00024").status("CONFIRMED")
+                .notes(CustomerAccountService.HISTORICAL_SHIPMENT_NOTE + ": orden anterior a Preparar envios").build());
+
+        // Confirmado = no despachado: el cargo viejo no cuenta todavía.
+        assertThat(accounts.getBalance(customer.getId()).getBalance()).isEqualByComparingTo("0");
+
+        distribution.sendShipment(historical.getId());
+
+        ProductShipmentEntity sent = shipments.findById(historical.getId()).orElseThrow();
+        assertThat(sent.getStatus()).isEqualTo("SENT");
+        assertThat(sent.getSentAt()).isNotNull();
+        // El cargo viejo (productos Q300 + Q30 de envío) se ve completo: el histórico despachado no lo recorta.
+        assertThat(accounts.getBalance(customer.getId()).getBalance()).isEqualByComparingTo("330.00");
+        assertThat(activeEntries("CHARGE")).hasSize(1);
+        assertThat(inventory.findAll().stream().mapToInt(row -> row.getQuantity().intValue()).sum()).isEqualTo(100);
+
+        distribution.revertSentShipment(historical.getId());
+        assertThat(accounts.getBalance(customer.getId()).getBalance()).isEqualByComparingTo("0");
+    }
+
+    @Test
     void aShipmentWithPaymentsCannotBeCancelledOrReverted() throws Exception {
         distribution.sendShipment(shipment.getId());
         CustomerAccountEntryEntity charge = activeEntries("CHARGE").get(0);
