@@ -198,6 +198,71 @@ class ShipmentChargeDetectionAcceptanceTest extends LfReceivablesH2TestBase {
         assertThat(fx.accounts.getBalance(customer.getId()).getCreditBalance()).isEqualByComparingTo("0");
     }
 
+    @Test
+    @DisplayName("A whole-order charge also carries the shipping of its dispatched shipments, once")
+    void legacyOrderChargeIncludesShippingOfDispatchedShipmentsWithoutAdjustment() throws Exception {
+        fx.withShipping(shipment, "30.00");
+        CustomerAccountEntryResponse charge = fx.charge(customer, order, null, null, "1968.00");
+
+        assertThat(fx.entry(charge.getId()).getAmount()).isEqualByComparingTo("1968.00");
+        assertThat(fx.balance(customer)).isEqualByComparingTo("1998.00");
+        pay(charge.getId(), "1998.00");
+        assertThat(fx.balance(customer)).isEqualByComparingTo("0");
+
+        // Con el ajuste de envío ya registrado el costo no se cuenta dos veces.
+        ProductionOrderEntity other = fx.order(customer, "OPC-T0033", TYPE_OPC, "500.00");
+        ProductShipmentEntity otherShipment = fx.withShipping(
+                fx.shipment(other, fx.release(other, 1), "ENVP-90033-ENV-00001", "500.00"), "20.00");
+        fx.charge(customer, other, null, null, "500.00");
+        assertThat(fx.balance(customer)).isEqualByComparingTo("520.00");
+        fx.create(customer, LfReceivablesFixture.adjustmentRequest(otherShipment.getId()));
+        assertThat(fx.balance(customer)).isEqualByComparingTo("520.00");
+    }
+
+    @Test
+    @DisplayName("An order that never entered the shipment flow (no product_shipment rows) keeps its whole charge")
+    void orderWithoutAnyShipmentRowKeepsItsCharge() throws Exception {
+        ProductionOrderEntity old = fx.order(customer, "OPV-T0040", TYPE_OPC, "3145.00");
+        CustomerAccountEntryEntity charge = fx.insert(LfReceivablesFixture
+                .legacyCharge(customer, old, null, null, "3145.00")
+                .vendorShipmentNumber(old.getVendorShipmentNumber())
+                .invoiceNumber(old.getVendorShipmentNumber())
+                .orderKind("OPC")
+                .build());
+        pay(charge.getId(), "3145.00");
+
+        assertThat(fx.balance(customer)).isEqualByComparingTo("0");
+        ProductionOrderEntity open = fx.order(customer, "OPV-T0041", TYPE_OPC, "800.00");
+        fx.insert(LfReceivablesFixture.legacyCharge(customer, open, null, null, "800.00")
+                .vendorShipmentNumber(open.getVendorShipmentNumber())
+                .orderKind("OPC")
+                .build());
+
+        assertThat(fx.balance(customer)).isEqualByComparingTo("800.00");
+        assertThat(fx.receivableRows(customer))
+                .filteredOn(row -> open.getId().equals(row.getProductionOrderId()))
+                .singleElement()
+                .satisfies(row -> assertThat(row.getChargedAmount()).isEqualByComparingTo("800.00"));
+    }
+
+    @Test
+    @DisplayName("A shipment with no product lines that is the only one of its order is charged as the whole order")
+    void shipmentWithoutLinesIsTheWholeOrder() throws Exception {
+        ProductionOrderEntity whole = fx.order(customer, "OPC-T0050", TYPE_OPC, "1140.00");
+        ProductShipmentEntity bare = fx.shipmentWithoutLines(whole, "ENVP-90050");
+
+        CustomerAccountEntryEntity charge = fx.dispatch(bare).orElseThrow();
+
+        assertThat(charge.getAmount()).isEqualByComparingTo("1140.00");
+        assertThat(fx.balance(customer)).isEqualByComparingTo("1140.00");
+
+        // Con otro envío activo en la orden, uno sin líneas no se puede asumir como toda la orden.
+        ProductionOrderEntity split = fx.order(customer, "OPC-T0051", TYPE_OPC, "500.00");
+        ProductShipmentEntity first = fx.shipmentWithoutLines(split, "ENVP-90051");
+        fx.shipmentWithoutLines(split, "ENVP-90051-B");
+        assertThat(fx.dispatch(first)).isEmpty();
+    }
+
     private void pay(Long chargeId, String amount) throws Exception {
         fx.create(customer, creditRequest("PAYMENT", chargeId, amount));
     }

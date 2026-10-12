@@ -49,6 +49,12 @@ public class CustomerAccountService {
      * false: el cargo vence en la fecha del cargo + días de crédito.
      */
     static final boolean CHARGE_DUE_FROM_FIRST_SHIPMENT = true;
+    /**
+     * Marca en {@code product_shipment.notes} de un envío histórico: lo crea el script
+     * backfill-historical-shipments-for-receivables.sql para una orden anterior a "Preparar envíos" (solo tenía su
+     * ENVP). Se crea en CONFIRMED y no trae líneas de producto: al pasarlo a SENT cuenta como que salió toda la orden.
+     */
+    public static final String HISTORICAL_SHIPMENT_NOTE = "ENVIO HISTORICO";
     private static final String CONCEPT_DISCHARGE = "11";
     private static final String CONCEPT_CREDIT_NOTE = "2";
     private static final String OPV_PACKING_TAG = "__OPV_PACKING__:";
@@ -407,7 +413,13 @@ public class CustomerAccountService {
             return false;
         }
         String normalized = status.trim().toUpperCase(Locale.ROOT);
-        return "SENT".equals(normalized) || "DELIVERED".equals(normalized);
+        return "SENT".equals(normalized) || "DELIVERED".equals(normalized)
+                || "COMPLETED".equals(normalized) || "RECEIVED".equals(normalized);
+    }
+
+    /** Envío histórico creado por el script de relleno: sin líneas de producto ni inventario, cuenta como toda la orden. */
+    public static boolean isHistoricalShipment(ProductShipmentEntity shipment) {
+        return shipment != null && shipment.getNotes() != null && shipment.getNotes().contains(HISTORICAL_SHIPMENT_NOTE);
     }
 
     private static boolean isDispatched(ProductShipmentEntity shipment) {
@@ -492,7 +504,31 @@ public class CustomerAccountService {
         ProductionOrderPartialReleaseEntity release = shipment.getPartialReleaseId() == null
                 ? null
                 : partialReleaseRepository.findById(shipment.getPartialReleaseId()).orElse(null);
-        return estimateShipmentProductsSubtotal(order, items, release, shipment, false);
+        BigDecimal products = estimateShipmentProductsSubtotal(order, items, release, shipment, false);
+        if (products.signum() <= 0 && carriesWholeOrder(shipment)) {
+            return estimateOrderItemsSubtotal(items, isLfReceivableOrder(order));
+        }
+        return products;
+    }
+
+    /**
+     * Envío sin líneas de producto, sin empaques y sin parcial que es el único activo de su orden: es el documento de
+     * toda la orden (así lo estima la cartera). No aplica a un envío solo de empaques ni a un parcial.
+     */
+    private boolean carriesWholeOrder(ProductShipmentEntity shipment) {
+        if (shipment == null || shipment.getId() == null || shipment.getProductionOrderId() == null
+                || shipment.getPartialReleaseId() != null) {
+            return false;
+        }
+        if (shipment.getPackingItems() != null && !shipment.getPackingItems().isBlank()) {
+            return false;
+        }
+        if (!shipmentDetailRepository.findByShipmentId(shipment.getId()).isEmpty()) {
+            return false;
+        }
+        return productShipmentRepository.findByProductionOrderId(shipment.getProductionOrderId()).stream()
+                .filter(other -> !shipment.getId().equals(other.getId()))
+                .allMatch(other -> "CANCELLED".equalsIgnoreCase(other.getStatus()));
     }
 
     private CustomerAccountEntryEntity saveDispatchCharge(
@@ -1840,8 +1876,17 @@ public class CustomerAccountService {
             String status) {}
 
     private BigDecimal computeChargeBalanceDue(CustomerAccountEntryEntity charge) {
-        // Tope de un abono: el cargo real, no el recortado a lo despachado (un cliente puede pagar por adelantado).
-        return computeChargeBalanceDue(charge, loadActiveEntries(charge.getCustomerId()));
+        // Tope de un abono: el mayor entre el cargo real (un cliente puede pagar por adelantado, aunque no se haya
+        // despachado todo) y el visible (que suma el costo de envío de lo despachado).
+        List<CustomerAccountEntryEntity> active = loadActiveEntries(charge.getCustomerId());
+        BigDecimal real = computeChargeBalanceDue(charge, active);
+        List<CustomerAccountEntryEntity> visible = visibleEntries(active);
+        BigDecimal shown = visible.stream()
+                .filter(e -> Objects.equals(e.getId(), charge.getId()))
+                .findFirst()
+                .map(effective -> computeChargeBalanceDue(effective, visible))
+                .orElse(BigDecimal.ZERO);
+        return real.max(shown).setScale(2, RoundingMode.HALF_UP);
     }
 
     private BigDecimal computeAppliedCredits(CustomerAccountEntryEntity charge, List<CustomerAccountEntryEntity> entries) {
@@ -2472,9 +2517,12 @@ public class CustomerAccountService {
      * para guardar: lo que cambia son copias; el libro no se toca.
      * <ul>
      *   <li>Un cargo o ajuste ligado a un envío no despachado (borrador, confirmado, cancelado) no aparece.</li>
-     *   <li>Un cargo por orden completa (modelo anterior, sin envío) se recorta a lo despachado de esa orden: lo
-     *       que aún no salió no se debe. El recorte nunca baja de lo que el cargo ya tiene aplicado en pagos, notas
+     *   <li>Un cargo por orden completa (modelo anterior, sin envío) de una orden que ya tiene envíos se recorta a
+     *       lo despachado de esa orden: lo que aún no salió no se debe. Una orden sin ningún envío registrado
+     *       (anterior a "Preparar envíos") no se recorta. El recorte nunca baja de lo que el cargo ya tiene aplicado en pagos, notas
      *       de crédito y devoluciones (menos sus ajustes de envío): recortar no crea crédito a favor.</li>
+     *   <li>Ese cargo por orden completa solo trae productos: el costo de envío de cada envío despachado que no
+     *       tiene su ajuste de envío se suma al cargo visible (si ya hay ajuste no se cuenta dos veces).</li>
      *   <li>Los movimientos anulados y los demás tipos (pagos, notas, saldo inicial) pasan sin cambio.</li>
      * </ul>
      */
@@ -2483,8 +2531,14 @@ public class CustomerAccountService {
             return entries == null ? List.of() : entries;
         }
         Map<Long, Optional<ProductShipmentEntity>> shipmentCache = new HashMap<>();
-        Map<Long, Optional<BigDecimal>> capByOrder = new HashMap<>();
+        Map<Long, Optional<DispatchedOrder>> capByOrder = new HashMap<>();
         Map<Integer, BigDecimal> clippedAt = new LinkedHashMap<>();
+        Set<Long> adjustedShipmentIds = entries.stream()
+                .filter(e -> TYPE_CHARGE_ADJUSTMENT.equalsIgnoreCase(e.getEntryType()))
+                .filter(e -> STATUS_ACTIVE.equalsIgnoreCase(e.getStatus()))
+                .map(CustomerAccountEntryEntity::getProductShipmentId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
         List<CustomerAccountEntryEntity> visible = new ArrayList<>(entries.size());
         for (CustomerAccountEntryEntity entry : entries) {
             boolean charge = TYPE_CHARGE.equalsIgnoreCase(entry.getEntryType());
@@ -2502,10 +2556,19 @@ public class CustomerAccountService {
                 continue;
             }
             if (charge && entry.getProductionOrderId() != null && entry.getAmount() != null) {
-                Optional<BigDecimal> cap = capByOrder.computeIfAbsent(
-                        entry.getProductionOrderId(), id -> Optional.ofNullable(dispatchedProductsValue(id)));
-                if (cap.isPresent() && cap.get().compareTo(entry.getAmount()) < 0) {
-                    clippedAt.put(visible.size(), cap.get());
+                Optional<DispatchedOrder> dispatched = capByOrder.computeIfAbsent(
+                        entry.getProductionOrderId(), id -> Optional.ofNullable(dispatchedOrder(id)));
+                if (dispatched.isPresent()) {
+                    BigDecimal shippingWithoutAdjustment = dispatched.get().shippingByShipment().entrySet().stream()
+                            .filter(shipping -> !adjustedShipmentIds.contains(shipping.getKey()))
+                            .map(Map.Entry::getValue)
+                            .reduce(BigDecimal.ZERO, BigDecimal::add);
+                    BigDecimal visibleAmount = dispatched.get().products().min(entry.getAmount())
+                            .add(shippingWithoutAdjustment)
+                            .setScale(2, RoundingMode.HALF_UP);
+                    if (visibleAmount.compareTo(entry.getAmount()) != 0) {
+                        clippedAt.put(visible.size(), visibleAmount);
+                    }
                 }
             }
             visible.add(entry);
@@ -2531,7 +2594,7 @@ public class CustomerAccountService {
             BigDecimal paidFloor = creditsByCharge.getOrDefault(original.getId(), BigDecimal.ZERO)
                     .subtract(adjustmentsByCharge.getOrDefault(original.getId(), BigDecimal.ZERO));
             BigDecimal target = clipped.getValue().max(paidFloor).setScale(2, RoundingMode.HALF_UP);
-            if (target.compareTo(original.getAmount()) >= 0) {
+            if (target.compareTo(original.getAmount()) == 0) {
                 continue;
             }
             CustomerAccountEntryEntity copy = new CustomerAccountEntryEntity();
@@ -2542,24 +2605,49 @@ public class CustomerAccountService {
         return visible;
     }
 
-    /** Valor de los productos de los envíos despachados de la orden; null si la orden no existe (sin recorte). */
-    private BigDecimal dispatchedProductsValue(Long productionOrderId) {
+    /** Lo despachado de una orden: valor de sus productos y el costo de envío de cada envío despachado. */
+    private record DispatchedOrder(BigDecimal products, Map<Long, BigDecimal> shippingByShipment) {}
+
+    /**
+     * Lo despachado de la orden. Null (sin recorte) si la orden no existe o si nunca entró al flujo de envíos: una
+     * orden sin ninguna fila en product_shipment es anterior a "Preparar envíos" y no hay dato para saber si salió,
+     * así que su cargo se deja completo.
+     */
+    private DispatchedOrder dispatchedOrder(Long productionOrderId) {
         ProductionOrderEntity order = productionOrderRepository.findById(productionOrderId).orElse(null);
         if (order == null) {
             return null;
         }
+        List<ProductShipmentEntity> orderShipments = productShipmentRepository.findByProductionOrderId(productionOrderId);
+        if (orderShipments.isEmpty()) {
+            return null;
+        }
+        // Un envío histórico despachado dice que salió TODA la orden: el cargo se deja tal cual (con el envío que ya
+        // trae), sin recortarlo ni sumarle nada.
+        if (orderShipments.stream().anyMatch(s -> isDispatched(s) && isHistoricalShipment(s))) {
+            return null;
+        }
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
         BigDecimal total = BigDecimal.ZERO;
-        for (ProductShipmentEntity shipment : productShipmentRepository.findByProductionOrderId(productionOrderId)) {
+        Map<Long, BigDecimal> shippingByShipment = new LinkedHashMap<>();
+        for (ProductShipmentEntity shipment : orderShipments) {
             if (!isDispatched(shipment)) {
                 continue;
             }
             ProductionOrderPartialReleaseEntity release = shipment.getPartialReleaseId() == null
                     ? null
                     : partialReleaseRepository.findById(shipment.getPartialReleaseId()).orElse(null);
-            total = total.add(estimateShipmentProductsSubtotal(order, items, release, shipment, false));
+            BigDecimal shipmentProducts = estimateShipmentProductsSubtotal(order, items, release, shipment, false);
+            if (shipmentProducts.signum() <= 0 && carriesWholeOrder(shipment)) {
+                shipmentProducts = estimateOrderItemsSubtotal(items, isLfReceivableOrder(order));
+            }
+            total = total.add(shipmentProducts);
+            BigDecimal shipping = actualShippingCost(shipment);
+            if (shipping != null) {
+                shippingByShipment.put(shipment.getId(), shipping);
+            }
         }
-        return total.setScale(2, RoundingMode.HALF_UP);
+        return new DispatchedOrder(total.setScale(2, RoundingMode.HALF_UP), shippingByShipment);
     }
 
     private BigDecimal computeBalance(List<CustomerAccountEntryEntity> entries) {
