@@ -30,7 +30,9 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 /**
@@ -79,9 +81,11 @@ class CustomerAccountPortfolioReportServiceTest {
             return shipments.stream().filter(s -> wanted.contains(s.getId())).collect(Collectors.toList());
         });
 
-        CustomerAccountService accountService = new CustomerAccountService(
+        // La visibilidad por despacho (solo lo despachado cuenta) se prueba aparte; aquí el reporte lee el libro tal cual.
+        CustomerAccountService accountService = spy(new CustomerAccountService(
                 entryRepository, customerRepository, productionOrderRepository,
-                null, null, null, productShipmentRepository, null, null, null, null, null);
+                null, null, null, productShipmentRepository, null, null, null, null, null));
+        doAnswer(inv -> inv.getArgument(0)).when(accountService).visibleEntries(any());
         reportService = new CustomerAccountPortfolioReportService(
                 accountService, entryRepository, productionOrderRepository, productShipmentRepository);
     }
@@ -486,9 +490,11 @@ class CustomerAccountPortfolioReportServiceTest {
     private void assertReconciled(CustomerAccountPortfolioReportResponse report) throws Exception {
         assertThat(report.isReconciled()).as("reconciled (difference=%s)", report.getDifference()).isTrue();
         assertThat(report.getDifference()).isEqualByComparingTo("0.00");
-        CustomerAccountService accountService = new CustomerAccountService(
+        // La visibilidad por despacho (solo lo despachado cuenta) se prueba aparte; aquí el reporte lee el libro tal cual.
+        CustomerAccountService accountService = spy(new CustomerAccountService(
                 entryRepository, customerRepository, productionOrderRepository,
-                null, null, null, productShipmentRepository, null, null, null, null, null);
+                null, null, null, productShipmentRepository, null, null, null, null, null));
+        doAnswer(inv -> inv.getArgument(0)).when(accountService).visibleEntries(any());
         List<CustomerAccountSummaryResponse> summaries = accountService.getSummary(null, true, false);
         BigDecimal expected = BigDecimal.ZERO;
         for (CustomerAccountPortfolioCustomerResponse customer : report.getCustomers()) {

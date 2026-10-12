@@ -37,6 +37,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -59,6 +60,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional
@@ -110,6 +112,7 @@ public class ProductDistributionService {
     private final SecurityUtil securityUtil;
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final ProductionOrderPartialReleaseRepository partialReleaseRepository;
+    private final CustomerAccountService customerAccountService;
     private final ObjectMapper objectMapper;
 
     // ========== DISTRIBUTION ==========
@@ -1341,6 +1344,7 @@ public class ProductDistributionService {
     /**
      * Asigna o limpia el costo de envío del documento (Preparar envíos / parciales).
      */
+    @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse updateShipmentShippingCost(
             Long shipmentId,
             ProductShipmentShippingCostRequest request)
@@ -1354,7 +1358,9 @@ public class ProductDistributionService {
             shipment.setShippingCost(normalizeShippingCost(request.getShippingCost()));
         }
         shipment.setUpdatedBy(securityUtil.getCurrentUserId());
-        return toShipmentResponse(shipmentRepository.save(shipment));
+        ProductShipmentEntity saved = shipmentRepository.save(shipment);
+        customerAccountService.syncShipmentEntries(shipmentId);
+        return toShipmentResponse(saved);
     }
 
     /**
@@ -1468,7 +1474,8 @@ public class ProductDistributionService {
      * Actualiza los productos de un envío (borrador, confirmado o en tránsito).
      * Si el envío ya salió de PT, revierte la salida anterior y aplica la nueva composición.
      */
-    public ProductShipmentResponse updateShipmentProducts(Long shipmentId, List<ProductShipmentRequest.ProductShipmentDetailRequest> products) 
+    @Transactional(rollbackFor = Exception.class)
+    public ProductShipmentResponse updateShipmentProducts(Long shipmentId, List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
@@ -1523,6 +1530,8 @@ public class ProductDistributionService {
 
         shipment.setUpdatedBy(securityUtil.getCurrentUserId());
         shipmentRepository.save(shipment);
+        // Si el envío ya está despachado, su cargo sigue lo realmente enviado.
+        customerAccountService.syncShipmentEntries(shipmentId);
         return toShipmentResponse(shipment);
     }
 
@@ -1619,6 +1628,7 @@ public class ProductDistributionService {
      * Revierte un envío en tránsito (SENT) a confirmado y devuelve el inventario a PT/Devoluciones.
      * No aplica si el kiosko ya recibió el envío (DELIVERED u otros estados finales).
      */
+    @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse revertSentShipment(Long shipmentId)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
@@ -1628,6 +1638,9 @@ public class ProductDistributionService {
             throw new BusinessException(
                     "Solo se puede regresar a bodega un envío en tránsito (SENT). Estado actual: " + currentStatus);
         }
+        // Lo que ya no salió no se cobra: se anula el cargo del despacho (o se rechaza si ya tiene pagos).
+        customerAccountService.voidEntriesForShipment(shipmentId,
+                "Despacho revertido del envío " + shipment.getShipmentNumber());
 
         if (shipmentDispatchesFromPtWarehouses(shipment)) {
             reverseSentShipmentDispatchInventory(shipment);
@@ -1656,6 +1669,7 @@ public class ProductDistributionService {
      * En SENT revierte primero la salida de Bodega PT/Devoluciones.
      * No aplica a envíos ya recibidos en kiosko (DELIVERED u otros finales).
      */
+    @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse cancelShipment(Long shipmentId)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
@@ -1671,6 +1685,9 @@ public class ProductDistributionService {
                     "Solo se puede anular un envío en borrador, confirmado o en tránsito (antes de recibir en kiosko). Estado actual: "
                             + currentStatus);
         }
+        // Un envío anulado no se cobra: se anula el cargo del despacho (o se rechaza si ya tiene pagos).
+        customerAccountService.voidEntriesForShipment(shipmentId,
+                "Envío anulado " + shipment.getShipmentNumber());
 
         boolean wasConfirmedOrSent = "CONFIRMED".equals(currentStatus) || "SENT".equals(currentStatus);
         if ("SENT".equals(currentStatus) && shipmentDispatchesFromPtWarehouses(shipment)) {
@@ -2068,6 +2085,14 @@ public class ProductDistributionService {
 
         if (saved.getDistributionId() != null) {
             markDistributionDispatchedIfAllSent(saved.getDistributionId());
+        }
+
+        // El cargo de cuentas por cobrar nace al despachar. Si no corresponde o falla una validación, no se
+        // bloquea la salida física: el envío queda visible en cartera como despachado sin cargo.
+        try {
+            customerAccountService.createChargeForDispatchedShipment(shipmentId);
+        } catch (BusinessException ex) {
+            log.warn("Envío {} despachado sin cargo de cuentas por cobrar: {}", saved.getShipmentNumber(), ex.getMessage());
         }
 
         return toShipmentResponse(saved);

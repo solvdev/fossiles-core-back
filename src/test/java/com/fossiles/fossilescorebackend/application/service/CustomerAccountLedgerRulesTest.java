@@ -78,28 +78,6 @@ class CustomerAccountLedgerRulesTest {
     }
 
     @Test
-    void perPartialChargeIsRejectedAndASecondChargeIsRejected() throws Exception {
-        CustomerEntity customer = customer();
-        ProductionOrderEntity order = order(customer, "OPV", "1000.00", "500.00");
-        ProductionOrderPartialReleaseEntity partial2 = release(order, 2);
-        ProductShipmentEntity shipment2 = shipment(order, partial2, "40.00", null);
-
-        assertThatThrownBy(() -> charge(customer, order, partial2, shipment2, "500.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("parcial");
-
-        CustomerAccountEntryResponse created = charge(customer, order, null, null, "1500.00");
-        assertThat(created.getAmount()).isEqualByComparingTo("1500.00");
-        assertThat(created.getPartialReleaseId()).isNull();
-        assertThat(created.getProductShipmentId()).isNull();
-
-        assertThatThrownBy(() -> charge(customer, order, null, null, "1500.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("Ya existe un cargo activo");
-        assertThat(activeCharges(customer)).hasSize(1);
-    }
-
-    @Test
     void chargeWithoutOrderIsRejected() throws Exception {
         CustomerEntity customer = customer();
         assertThatThrownBy(() -> charge(customer, null, null, null, "10.00"))
@@ -108,12 +86,11 @@ class CustomerAccountLedgerRulesTest {
     }
 
     @Test
-    void chargeAboveOrderTotalIsRejectedAndServerStoresProductsOnly() throws Exception {
+    void orderQuoteAddsProductsAndEachShipmentShipping() throws Exception {
         CustomerEntity customer = customer();
         ProductionOrderEntity order = order(customer, "OPV", "1000.00", "500.00");
         shipment(order, release(order, 1), "1000.00", "75.00");
         shipment(order, release(order, 2), "500.00", "40.00");
-        ProductionOrderPartialReleaseEntity planned = release(order, 3);
         order.setObservations("__OPV_SHIPPING__:50.00");
         orders.save(order);
 
@@ -122,18 +99,6 @@ class CustomerAccountLedgerRulesTest {
         assertThat(quote.getShippingTotal()).isEqualByComparingTo("115.00");
         assertThat(quote.getOrderTotal()).isEqualByComparingTo("1615.00");
         assertThat(quote.getAmount()).isEqualByComparingTo("1500.00");
-
-        assertThatThrownBy(() -> charge(customer, order, null, null, "5000.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("supera el total");
-
-        CustomerAccountEntryResponse created = charge(customer, order, null, null, "1.00");
-        assertThat(entries.findById(created.getId()).orElseThrow().getAmount()).isEqualByComparingTo("1500.00");
-        assertThat(accounts.getBalance(customer.getId()).getBalance()).isEqualByComparingTo("1500.00");
-
-        assertThat(accounts.searchReceivables(null, null, null, null, null, null, null, null, false, 50).stream()
-                .filter(row -> planned.getId().equals(row.getPartialReleaseId()))
-                .findFirst().orElseThrow().getEstimatedTotal()).isNull();
     }
 
     @Test
@@ -429,10 +394,10 @@ class CustomerAccountLedgerRulesTest {
         customers.update(customer.getId(), creditDays(0));
         ProductionOrderEntity order = order(customer, "OPV", "100.00");
         CustomerAccountEntryResponse charge = charge(customer, order, null, null, "100.00");
-        ProductShipmentEntity later = shipment(order, release(order, 1), "30.00", "30.00");
+        ProductShipmentEntity later = shipment(order, release(order, 1), "60.00", "30.00");
         later.setSentAt(LocalDateTime.of(2026, 3, 1, 8, 0));
         shipments.save(later);
-        ProductShipmentEntity earlier = shipment(order, release(order, 2), "50.00", "50.00");
+        ProductShipmentEntity earlier = shipment(order, release(order, 2), "40.00", "50.00");
         earlier.setSentAt(LocalDateTime.of(2026, 1, 15, 8, 0));
         shipments.save(earlier);
         accounts.createEntry(customer.getId(), adjustment(later.getId()));
@@ -547,9 +512,55 @@ class CustomerAccountLedgerRulesTest {
         return shipment;
     }
 
+    /** The visible cartera only counts what shipped: give an order with no shipments one SENT shipment with everything. */
+    private void dispatchWholeOrderIfNoShipments(ProductionOrderEntity order) {
+        if (!shipments.findByProductionOrderId(order.getId()).isEmpty()) {
+            return;
+        }
+        BigDecimal total = items.findByProductionOrderId(order.getId()).stream()
+                .map(ProductionOrderItemEntity::getUnitPrice)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        ProductShipmentEntity shipment = shipments.save(ProductShipmentEntity.builder()
+                .productionOrderId(order.getId())
+                .shipmentNumber("ENV-FULL-" + SEQ.incrementAndGet())
+                .status("SENT")
+                .build());
+        details.save(ProductShipmentDetailEntity.builder()
+                .shipmentId(shipment.getId())
+                .productId(product.getId())
+                .sizeLabel("")
+                .quantity(BigDecimal.ONE)
+                .unitPrice(total)
+                .build());
+    }
+
     private CustomerAccountEntryResponse charge(
             CustomerEntity customer, ProductionOrderEntity order, ProductionOrderPartialReleaseEntity release,
             ProductShipmentEntity shipment, String amount) throws Exception {
+        if (order != null && release == null && shipment == null) {
+            // Cargo por orden completa del modelo anterior: la API ya no lo crea (el cargo nace al despachar).
+            dispatchWholeOrderIfNoShipments(order);
+            CustomerAccountEntryEntity saved = entries.save(CustomerAccountEntryEntity.builder()
+                    .customerId(customer.getId())
+                    .entryType("CHARGE")
+                    .status("ACTIVE")
+                    .entryDate(LocalDate.of(2026, 9, 1))
+                    .amount(new BigDecimal(amount))
+                    .productionOrderId(order.getId())
+                    .vendorShipmentNumber(order.getVendorShipmentNumber())
+                    .invoiceNumber(order.getVendorShipmentNumber())
+                    .documentNumber(order.getCode())
+                    .orderKind(accounts.resolveReceivableOrderKind(order))
+                    .build());
+            return CustomerAccountEntryResponse.builder()
+                    .id(saved.getId())
+                    .customerId(saved.getCustomerId())
+                    .entryType(saved.getEntryType())
+                    .amount(saved.getAmount())
+                    .productionOrderId(saved.getProductionOrderId())
+                    .status(saved.getStatus())
+                    .build();
+        }
         CustomerAccountEntryRequest request = base("CHARGE", amount);
         request.setProductionOrderId(order == null ? null : order.getId());
         request.setPartialReleaseId(release == null ? null : release.getId());

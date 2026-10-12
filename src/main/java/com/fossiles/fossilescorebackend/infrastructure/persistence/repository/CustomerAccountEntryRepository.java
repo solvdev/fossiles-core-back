@@ -34,6 +34,16 @@ public interface CustomerAccountEntryRepository extends JpaRepository<CustomerAc
     List<CustomerAccountEntryEntity> findNonVoidChargesByProductionOrderId(
             @Param("productionOrderId") Long productionOrderId);
 
+    /** Cargo(s) activos de un envío (el cargo por despacho). */
+    @Query("""
+            SELECT e FROM CustomerAccountEntryEntity e
+            WHERE e.productShipmentId = :productShipmentId
+              AND e.entryType = 'CHARGE'
+              AND e.status <> 'VOID'
+            """)
+    List<CustomerAccountEntryEntity> findNonVoidChargesByProductShipmentId(
+            @Param("productShipmentId") Long productShipmentId);
+
     @Query("""
             SELECT e FROM CustomerAccountEntryEntity e
             WHERE e.productShipmentId = :productShipmentId
