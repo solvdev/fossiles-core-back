@@ -94,6 +94,11 @@ public class SalesSourceDetailResponse {
         private int count;
         private BigDecimal amount;
         private BigDecimal sharePercent;
+        /**
+         * Categoría de ventas del kiosko ("A", "B", "C" o null = sin clasificar). Solo la llena
+         * {@code breakdowns.byKiosk}; en los demás desgloses y canales siempre es null.
+         */
+        private String category;
     }
 
     @Data
@@ -124,5 +129,7 @@ public class SalesSourceDetailResponse {
         private String kioskCode;
         /** Nombre del sitio. */
         private String kioskName;
+        /** Categoría de ventas del sitio ("A", "B", "C" o null = sin clasificar). */
+        private String category;
     }
 }

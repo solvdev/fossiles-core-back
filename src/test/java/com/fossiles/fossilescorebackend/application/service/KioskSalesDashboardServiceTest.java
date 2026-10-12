@@ -511,6 +511,51 @@ class KioskSalesDashboardServiceTest {
         assertThat(result.getEndDate()).isEqualTo(RANGE.to());
     }
 
+    @Test
+    void byKioskRowsAndKioskOptionsCarryTheNormalizedSiteCategory() throws Exception {
+        // Los sitios del dataset son, en orden: Miraflores, Majadas historico, Zona 10 y Sin ventas.
+        includedSites.get(0).setSalesCategory("A");
+        includedSites.get(1).setSalesCategory(" b ");   // se normaliza: recorta y pasa a mayúscula
+        includedSites.get(2).setSalesCategory("D");     // valor fuera de A/B/C: sin clasificar
+        includedSites.get(3).setSalesCategory("c");
+
+        SalesSourceDetailResponse result = service.build(RANGE, null, null);
+
+        // byKiosk (importe desc): Miraflores 400, Zona 10 270, Majadas 100. Los demás campos no cambian.
+        List<BreakdownRow> byKiosk = result.getBreakdowns().get("byKiosk");
+        assertThat(byKiosk).extracting(BreakdownRow::getKey).containsExactly("1", "3", "2");
+        assertThat(byKiosk).extracting(BreakdownRow::getCategory).containsExactly("A", null, "B");
+        assertThat(byKiosk).extracting(r -> r.getAmount().toPlainString()).containsExactly("400.00", "270.00", "100.00");
+        assertThat(byKiosk).extracting(BreakdownRow::getCount).containsExactly(2, 2, 0);
+        // kioskOptions (por nombre): Majadas historico, Miraflores, Zona 10.
+        assertThat(result.getKioskOptions()).extracting(KioskOption::getKioskName)
+                .containsExactly("Majadas historico", "Miraflores", "Zona 10");
+        assertThat(result.getKioskOptions()).extracting(KioskOption::getCategory).containsExactly("B", "A", null);
+        assertThat(result.getKioskOptions()).extracting(KioskOption::getSiteId).containsExactly(MAJADAS, MIRAFLORES, ZONA_10);
+        // La forma de pago es solo POS y no lleva categoría (solo byKiosk la lleva).
+        assertThat(result.getBreakdowns().get("byPaymentMethod")).isNotEmpty()
+                .noneMatch(row -> row.getCategory() != null);
+
+        // Con filtro por sitio: la fila de byKiosk y la lista del selector siguen llevando la categoría, y el sitio
+        // pedido sin ventas aparece en las opciones con la suya.
+        SalesSourceDetailResponse filtered = service.build(RANGE, SIN_VENTAS, null);
+        assertThat(filtered.getBreakdowns().get("byKiosk")).isEmpty();
+        assertThat(filtered.getKioskOptions()).extracting(KioskOption::getCategory).containsExactly("B", "A", "C", null);
+        assertThat(service.build(RANGE, MIRAFLORES, null).getBreakdowns().get("byKiosk"))
+                .extracting(BreakdownRow::getCategory).containsExactly("A");
+    }
+
+    @Test
+    void sitesWithoutACategoryAreUnclassified() throws Exception {
+        // El dataset base no clasifica ningún sitio (sales_category null): category sale null, no vacío ni "Sin dato".
+        SalesSourceDetailResponse result = service.build(RANGE, null, null);
+
+        assertThat(result.getBreakdowns().get("byKiosk")).hasSize(3)
+                .allSatisfy(row -> assertThat(row.getCategory()).isNull());
+        assertThat(result.getKioskOptions()).hasSize(3)
+                .allSatisfy(option -> assertThat(option.getCategory()).isNull());
+    }
+
     // ------------------------------------------------------------ consultas y robustez
 
     @Test

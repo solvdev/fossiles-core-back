@@ -255,6 +255,19 @@ final class SalesDashboardSupport {
         return value != null && !value.isBlank() ? value.trim() : NO_DATA;
     }
 
+    /**
+     * Categoría de ventas de un sitio de Finanzas kioscos ({@code kiosk_site.sales_category}) tal como la expone el
+     * dashboard: solo "A", "B" o "C" (sin importar mayúsculas ni espacios); vacío o cualquier otro valor = null
+     * (sin clasificar). Es solo lectura: no valida ni rechaza, a diferencia de la edición en Finanzas.
+     */
+    static String normalizeSiteCategory(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String category = raw.trim().toUpperCase(Locale.ROOT);
+        return category.equals("A") || category.equals("B") || category.equals("C") ? category : null;
+    }
+
     /** Etiqueta "Billetera +2 más" solo con terminados; si solo hay empaques, "Solo empaque". */
     static String productLabel(List<String> finishedNames, boolean hasAnyItem, String emptyFallback) {
         if (finishedNames.isEmpty()) {

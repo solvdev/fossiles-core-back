@@ -589,6 +589,37 @@ class SalesDashboardServicesTest {
     // ----------------------------------------------------------------- común
 
     @Test
+    void onlyTheKioskByKioskRowsCarryACategoryEveryOtherBreakdownLeavesItNull() throws Exception {
+        stubKioskData();
+        stubOnlineData();
+        stubVendorData();
+        KioskSiteEntity norte = KioskSalesTestFixtures.site(1L, "Kiosko Norte", 10L);
+        norte.setSalesCategory("A");
+        KioskSiteEntity sur = KioskSalesTestFixtures.site(2L, "Kiosko Sur", 11L);
+        sur.setSalesCategory(" b ");
+        when(kioskSiteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc())
+                .thenReturn(List.of(norte, sur));
+
+        SalesSourceDetailResponse kiosko = kioskService.build(range, null, null);
+
+        // byKiosk (importe desc: Norte 300, Sur 100) lleva la categoría normalizada del sitio.
+        assertThat(kiosko.getBreakdowns().get("byKiosk")).extracting(BreakdownRow::getLabel)
+                .containsExactly("Kiosko Norte", "Kiosko Sur");
+        assertThat(kiosko.getBreakdowns().get("byKiosk")).extracting(BreakdownRow::getCategory)
+                .containsExactly("A", "B");
+        assertThat(kiosko.getKioskOptions()).extracting(SalesSourceDetailResponse.KioskOption::getCategory)
+                .containsExactly("A", "B");
+        // El resto de los desgloses del canal y los de los demás canales dejan category en null.
+        assertThat(kiosko.getBreakdowns().get("byPaymentMethod")).isNotEmpty()
+                .noneMatch(row -> row.getCategory() != null);
+        for (SalesSourceDetailResponse other : List.of(onlineService.build(range), vendorService.build(range))) {
+            assertThat(other.getBreakdowns()).isNotEmpty();
+            other.getBreakdowns().forEach((name, rows) -> assertThat(rows)
+                    .as("desglose %s", name).isNotEmpty().noneMatch(row -> row.getCategory() != null));
+        }
+    }
+
+    @Test
     void rejectsInvertedRange() {
         org.junit.jupiter.api.Assertions.assertThrows(
                 com.fossiles.fossilescorebackend.application.exception.BusinessException.class,

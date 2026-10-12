@@ -166,3 +166,51 @@ De esa fuente salen, para el canal KIOSKO: `kpis.totalAmount`, `previousTotalAmo
 ## Frontend (comportamiento esperado)
 - Pestaña Kioskos: selector de kiosko por `siteId`; barra de composición con 4º segmento "Histórico (sin desglose)" cuando `historicalAmount > 0`; tarjetas "Tickets (POS)", "Unidades terminadas (POS)", "Ticket promedio (POS)"; forma de pago y productos más vendidos rotulados "solo POS"; aviso cuando `historicalAmount > 0`: "Q X vienen del histórico de Finanzas kioscos (sin tickets ni productos)".
 - Consolidado: composición y tabla "Producto terminado por fuente" suman la columna/segmento "Histórico" (solo se muestra si `historicalAmount > 0`); ticket promedio con la definición nueva.
+
+---
+
+# Addendum 3 — Mapa de calor de kioscos (insights, tendencias y clasificación A/B/C)
+
+Pedido del usuario: en la pestaña Kioskos, un mapa de calor "como el de Online pero dirigido a los kioscos", con insights de los días de más venta, tendencias entre kioscos y la clasificación del kiosco (A, B o C), que sale de `kiosk_site.sales_category` (manual, la fija Finanzas kioscos; `null` = sin clasificar; `KioskFinancialsConfigService.normalizeSalesCategory` solo admite A, B, C o vacío).
+
+## Endpoint nuevo
+`GET /api/sales/dashboard/kiosks/heatmap?startDate&endDate&refresh=false`
+- Mismos defaults/validación de rango que el resto (`resolveRange`); máximo 400 días (si no, `BusinessException("El mapa de calor admite un máximo de 400 días.")`).
+- NO tiene filtro por kiosko: siempre compara TODOS los sitios incluidos (`exclude_from_reports = false`), porque sirve para encontrar tendencias entre kioscos.
+- Misma fuente de dinero que Finanzas (Addendum 2): `KioskSalesSourceResolver.goLiveEffective(sites)` una vez + `resolve(sites, previousStart, endDate, goLive)` una vez (el rango cubre periodo anterior + actual). Incluye empaque. Sin consultas POS de detalle (solo el agregado diario del resolver).
+- Caché de 60 s (`SalesDashboardCache`), clave `("KIOSK_HEATMAP", start, end, null, null)`; `refresh=true` la omite.
+
+## Respuesta `KioskHeatmapResponse`
+```
+{
+  startDate, endDate, previousStartDate, previousEndDate,
+  days: ["2026-10-01", ...],                 // cada día del rango actual, en orden
+  sites: [ {
+    siteId, name,
+    category,                                // "A" | "B" | "C" | null
+    locationId,                              // id de location POS o null (sitio histórico)
+    source,                                  // "HIST" | "POS" | "MIXED" | "NONE" (según SiteSales.source(); NONE si no hay datos en el rango)
+    total,                                   // Σ en el periodo actual, 2 decimales
+    previousTotal,                           // Σ en el periodo anterior
+    growthPercent,                           // % ya escalado (12.4 = +12.4 %), mismo criterio que SalesDashboardSupport.growthPercent
+    daysWithSales,                           // días con venta > 0 en el periodo actual
+    daily: [ number ]                        // un monto por día, alineado índice a índice con `days` (0.00 si no hubo venta)
+  } ],                                       // solo sitios con total != 0 o previousTotal != 0; orden: categoría A, B, C, sin categoría; dentro, total desc, luego nombre
+  categories: [ {
+    category,                                // "A" | "B" | "C" | null
+    kioskCount,                              // sitios de `sites` con esa categoría
+    total, previousTotal, growthPercent,
+    sharePercent                             // % del total de todos los sitios en el periodo actual (0 si el total es 0)
+  } ]                                        // una fila por categoría presente en `sites`, orden A, B, C, null
+}
+```
+
+## Cambios a respuestas existentes (Addendum 2)
+- `kioskOptions[]` agrega `category` (String, A/B/C o null).
+- `breakdowns.byKiosk[]` (`BreakdownRow`) agrega `category` (String o null; se deja null en los demás desgloses y canales). Los demás campos no cambian.
+
+## Frontend (comportamiento esperado)
+- Sección nueva en la pestaña Kioskos, "Mapa de calor de kioscos", que carga su propio endpoint (carga diferida, estados vacío/error propios).
+- Calendario de calor del total de kioscos (o del kiosco elegido en el selector, usando `dailySeries` de `/dashboard/kiosks`) reutilizando `OnlineHeatmap` con la paleta de kioscos.
+- Matriz kiosco × día y matriz kiosco × día de la semana (promedio), sombreadas contra la mediana/promedio de cada kiosco, con insignia de clasificación A/B/C y filtro por clasificación.
+- Resumen por clasificación y panel de insights (días con más venta, día de la semana más fuerte, kiosco líder, mayor crecimiento/caída, peso de la categoría A, patrón común entre kioscos).
