@@ -85,8 +85,11 @@ public class CustomerAccountPortfolioReportService {
                 .collect(Collectors.toSet());
 
         // Una sola lectura del libro (sin joins ni paginación): cada movimiento aparece una vez.
-        Map<Long, List<CustomerAccountEntryEntity>> entriesByCustomer = entryRepository.findAll().stream()
-                .filter(e -> customerIds.contains(e.getCustomerId()))
+        // Solo lo despachado cuenta como cartera (copias para leer; el libro no se toca).
+        Map<Long, List<CustomerAccountEntryEntity>> entriesByCustomer = accountService.visibleEntries(
+                entryRepository.findAll().stream()
+                        .filter(e -> customerIds.contains(e.getCustomerId()))
+                        .toList()).stream()
                 .collect(Collectors.groupingBy(CustomerAccountEntryEntity::getCustomerId));
 
         Map<Long, ProductionOrderEntity> ordersById = loadOrders(entriesByCustomer);

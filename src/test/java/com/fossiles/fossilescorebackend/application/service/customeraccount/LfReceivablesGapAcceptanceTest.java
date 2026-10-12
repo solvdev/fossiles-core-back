@@ -98,10 +98,10 @@ class LfReceivablesGapAcceptanceTest extends LfReceivablesH2TestBase {
         fx.setCreditDays(customer, 0);
         ProductionOrderEntity order = fx.order(customer, "OPV-T0804", TYPE_OPV, "100.00");
         var dated = fx.withSentAt(fx.withShipping(
-                fx.shipment(order, fx.release(order, 1), "ENV-0804-1", "40.00"), "40.00"),
+                fx.shipment(order, fx.release(order, 1), "ENV-0804-1", "60.00"), "40.00"),
                 LocalDate.of(2026, 1, 15));
         var undated = fx.withShipping(
-                fx.shipment(order, fx.release(order, 2), "ENV-0804-2", "40.00"), "40.00");
+                fx.shipment(order, fx.release(order, 2), "ENV-0804-2", "60.00"), "40.00");
         CustomerAccountEntryResponse charge = fx.charge(customer, order, null, null, "100.00");
         fx.create(customer, adjustmentRequest(dated.getId()));
         fx.create(customer, adjustmentRequest(undated.getId()));

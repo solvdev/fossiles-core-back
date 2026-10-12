@@ -1,10 +1,10 @@
 package com.fossiles.fossilescorebackend.application.service.customeraccount;
 
-import com.fossiles.fossilescorebackend.application.dto.response.CustomerAccountEntryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.LfPartialReleaseDocumentResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.LfSalesDocumentResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.LfShipmentDocumentResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerAccountEntryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
@@ -13,18 +13,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.DUPLICATE_ORDER_CHARGE;
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.PARTIAL_HAS_NO_CHARGE;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.TYPE_OPV;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.creditRequest;
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.legacyCharge;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * CB116-like order: products Q16,131 across two partial shipments. One active charge for the order.
+ * CB116-like order: products Q16,131 across two partial shipments. Each shipment is charged when it is dispatched,
+ * for what it carries; the customer owes the sum of the shipments that left.
  */
 class PartialShipmentChargeAcceptanceTest extends LfReceivablesH2TestBase {
 
@@ -41,171 +37,133 @@ class PartialShipmentChargeAcceptanceTest extends LfReceivablesH2TestBase {
         order = fx.order(customer, "OPV-T0124", TYPE_OPV, "15184.00", "947.00");
         release1 = fx.release(order, 1);
         shipment1 = fx.shipment(order, release1, "ENVP-90124-ENV-00001", "15184.00");
-    }
-
-    private void shipPartial2() {
         release2 = fx.release(order, 2);
         shipment2 = fx.shipment(order, release2, "ENVP-90124-ENV-00002", "947.00");
+        fx.withStatus(shipment2, "CONFIRMED");
+    }
+
+    private void dispatchSecondPartial() throws Exception {
+        fx.withStatus(shipment2, "SENT");
+        fx.dispatch(shipment2).orElseThrow();
     }
 
     @Test
-    @DisplayName("A charge on partial 2 is rejected; the order charge covers both shipments")
-    void chargeOnSecondPartialIsAccepted() throws Exception {
-        shipPartial2();
-        assertThatThrownBy(() -> fx.charge(customer, order, release1, shipment1, "15184.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE);
-        assertThatThrownBy(() -> fx.charge(customer, order, release2, shipment2, "947.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE);
+    @DisplayName("Only the dispatched partial is owed; the confirmed one adds nothing until it leaves")
+    void secondPartialOnlyCountsOnceItIsDispatched() throws Exception {
+        CustomerAccountEntryEntity charge1 = fx.dispatch(shipment1).orElseThrow();
+        assertThat(fx.dispatch(shipment2)).isEmpty();
 
-        CustomerAccountEntryResponse charge = fx.charge(customer, order, null, null, "16131.00");
+        assertThat(charge1.getAmount()).isEqualByComparingTo("15184.00");
+        assertThat(fx.balance(customer)).isEqualByComparingTo("15184.00");
+        assertThat(fx.receivableRows(customer, shipment2)).isEmpty();
+        assertThat(fx.receivableRows(customer, shipment1)).singleElement()
+                .satisfies(row -> assertThat(row.getChargeEntryId()).isEqualTo(charge1.getId()));
 
-        assertThat(fx.entry(charge.getId()).getAmount()).isEqualByComparingTo("16131.00");
-        assertThat(fx.catalogRow(customer, shipment1).isHasCharge()).isTrue();
-        assertThat(fx.catalogRow(customer, shipment1).getChargeStatus()).isEqualTo("CHARGED");
-        assertThat(fx.catalogRow(customer, shipment2).isHasCharge()).isTrue();
-        assertThat(fx.catalogRow(customer, shipment2).getChargeStatus()).isEqualTo("CHARGED");
-        assertThat(fx.activeCharges(customer)).hasSize(1);
-    }
+        dispatchSecondPartial();
 
-    @Test
-    @DisplayName("After a partial payment, a later shipment stays on the same charge and a second charge is rejected")
-    void partiallyPaidFirstPartialThenSecondPartialShips() throws Exception {
-        CustomerAccountEntryResponse charge = fx.charge(customer, order, null, null, "15184.00");
-        assertThat(fx.entry(charge.getId()).getAmount()).isEqualByComparingTo("16131.00");
-        fx.create(customer, creditRequest("PAYMENT", charge.getId(), "5000.00"));
-        shipPartial2();
-
-        assertThat(fx.catalogRow(customer, shipment2).isHasCharge()).isTrue();
-        assertThat(fx.catalogRow(customer, shipment2).getChargeStatus()).isEqualTo("PARTIAL");
+        assertThat(fx.balance(customer)).isEqualByComparingTo("16131.00");
+        assertThat(fx.activeCharges(customer)).hasSize(2)
+                .extracting(CustomerAccountEntryEntity::getProductShipmentId)
+                .containsExactlyInAnyOrder(shipment1.getId(), shipment2.getId());
         assertThat(fx.receivableRows(customer, shipment2)).singleElement().satisfies(row -> {
             assertThat(row.isHasCharge()).isTrue();
-            assertThat(row.getChargeStatus()).isEqualTo("PARTIAL");
-            assertThat(row.getChargeEntryId()).isEqualTo(charge.getId());
+            assertThat(row.getChargeStatus()).isEqualTo("CHARGED");
+            assertThat(row.getChargedAmount()).isEqualByComparingTo("947.00");
         });
+    }
+
+    @Test
+    @DisplayName("A payment on the first partial stays on it; the later partial adds its own charge to the balance")
+    void paymentOnFirstPartialDoesNotTouchTheSecond() throws Exception {
+        CustomerAccountEntryEntity charge1 = fx.dispatch(shipment1).orElseThrow();
+        fx.create(customer, creditRequest("PAYMENT", charge1.getId(), "5000.00"));
+        assertThat(fx.balance(customer)).isEqualByComparingTo("10184.00");
+
+        dispatchSecondPartial();
+
+        assertThat(fx.balance(customer)).isEqualByComparingTo("11131.00");
+        assertThat(fx.catalogRow(customer, shipment1).getChargeStatus()).isEqualTo("PARTIAL");
+        assertThat(fx.catalogRow(customer, shipment2).getChargeStatus()).isEqualTo("CHARGED");
+        assertThat(fx.chargeBalance(customer, charge1.getId())).isEqualByComparingTo("10184.00");
+
         LfSalesDocumentResponse document = lfDocument();
         assertThat(partialDoc(document, release1).getChargeStatus()).isEqualTo("PARTIAL");
         assertThat(partialDoc(document, release1).getShipments())
                 .extracting(LfShipmentDocumentResponse::getChargeStatus)
                 .containsExactly("PARTIAL");
-        assertThat(partialDoc(document, release2).getChargeStatus()).isEqualTo("PARTIAL");
-        assertThat(partialDoc(document, release2).getShipments())
-                .extracting(LfShipmentDocumentResponse::getChargeStatus)
-                .containsExactly("PARTIAL");
-        assertThat(document.getPartialReleases())
-                .extracting(LfPartialReleaseDocumentResponse::getChargeStatus)
-                .doesNotContain("COVERED", "NONE");
+        assertThat(partialDoc(document, release2).getChargeStatus()).isEqualTo("CHARGED");
+        assertThat(document.getChargedAmount()).isEqualByComparingTo("16131.00");
+        assertThat(document.getBalanceDue()).isEqualByComparingTo("11131.00");
 
-        assertThatThrownBy(() -> fx.charge(customer, order, release2, shipment2, "947.00"))
+        assertThatThrownBy(() -> fx.create(customer, creditRequest("PAYMENT", charge1.getId(), "10185.00")))
                 .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE);
-        assertThatThrownBy(() -> fx.create(customer, creditRequest("PAYMENT", charge.getId(), "11132.00")))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage("El monto excede el saldo pendiente del documento (Q 11131.00).");
-        assertThat(fx.activeCharges(customer)).hasSize(1);
-        assertThat(fx.balance(customer)).isEqualByComparingTo("11131.00");
-        assertThat(fx.chargeBalance(customer, charge.getId())).isEqualByComparingTo("11131.00");
+                .hasMessage("El monto excede el saldo pendiente del documento (Q 10184.00).");
     }
 
     @Test
-    @DisplayName("A second charge on partial 1 is rejected")
-    void secondChargeOnFirstPartialIsRejected() throws Exception {
-        fx.charge(customer, order, null, null, "15184.00");
+    @DisplayName("Shipping becomes an adjustment on the shipment's own charge and follows later edits")
+    void shippingAdjustmentFollowsTheShipment() throws Exception {
+        fx.withShipping(shipment1, "75.00");
+        CustomerAccountEntryEntity charge = fx.dispatch(shipment1).orElseThrow();
 
-        assertThatThrownBy(() -> fx.charge(customer, order, release1, shipment1, "15184.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE)
-                .hasMessageNotContaining("ya está cubierto")
-                .hasMessageNotContaining("Anúlelo");
-        assertThatThrownBy(() -> fx.charge(customer, order, null, null, "15184.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(DUPLICATE_ORDER_CHARGE);
-        assertThat(fx.activeCharges(customer)).hasSize(1);
-    }
-
-    @Test
-    @DisplayName("A partial cannot carry the whole-order amount; the order charge is the product total")
-    void partialChargeAmountIsNotValidatedAgainstEstimate() throws Exception {
-        shipPartial2();
-        assertThatThrownBy(() -> fx.charge(customer, order, release1, shipment1, "16131.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE);
-
-        CustomerAccountEntryResponse charge = fx.charge(customer, order, null, null, "16131.00");
-        assertThat(charge.getAmount()).isEqualByComparingTo("16131.00");
-        assertThat(fx.catalogRow(customer, shipment2).isHasCharge()).isTrue();
-        assertThat(fx.receivableRows(customer, shipment2)).singleElement().satisfies(row -> {
-            assertThat(row.isHasCharge()).isTrue();
-            assertThat(row.getChargeStatus()).isNotEqualTo("COVERED");
+        assertThat(fx.activeAdjustments(customer)).singleElement().satisfies(adjustment -> {
+            assertThat(adjustment.getAmount()).isEqualByComparingTo("75.00");
+            assertThat(adjustment.getAppliedToEntryId()).isEqualTo(charge.getId());
+            assertThat(adjustment.getProductShipmentId()).isEqualTo(shipment1.getId());
         });
-        assertThatThrownBy(() -> fx.charge(customer, order, release2, shipment2, "947.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE);
-        assertThat(fx.balance(customer)).isEqualByComparingTo("16131.00");
-        assertThat(fx.activeCharges(customer)).hasSize(1);
+        assertThat(fx.balance(customer)).isEqualByComparingTo("15259.00");
+
+        fx.withShipping(shipment1, "90.00");
+        fx.accounts.syncShipmentEntries(shipment1.getId());
+        assertThat(fx.balance(customer)).isEqualByComparingTo("15274.00");
+
+        fx.withShipping(shipment1, null);
+        fx.accounts.syncShipmentEntries(shipment1.getId());
+        assertThat(fx.activeAdjustments(customer)).isEmpty();
+        assertThat(fx.balance(customer)).isEqualByComparingTo("15184.00");
     }
 
     @Test
-    @DisplayName("With an order charge, catalog, cartera and lf-documents all report that charge")
-    void orderLevelCharge_partialRowsPerReadModel() throws Exception {
-        shipPartial2();
-        CustomerAccountEntryResponse orderCharge = fx.charge(customer, order, null, null, "16131.00");
+    @DisplayName("Editing a dispatched shipment re-prices its charge, unless payments already exceed the new total")
+    void editingTheShipmentUpdatesItsCharge() throws Exception {
+        CustomerAccountEntryEntity charge = fx.dispatch(shipment1).orElseThrow();
+        fx.setLinePrice(shipment1, "10000.00");
+        fx.accounts.syncShipmentEntries(shipment1.getId());
 
-        for (ProductShipmentEntity shipment : List.of(shipment1, shipment2)) {
-            assertThat(fx.catalogRow(customer, shipment).isHasCharge()).isTrue();
-            assertThat(fx.catalogRow(customer, shipment).getChargeStatus()).isEqualTo("CHARGED");
-            assertThat(fx.receivableRows(customer, shipment)).singleElement().satisfies(row -> {
-                assertThat(row.isHasCharge()).isTrue();
-                assertThat(row.getChargeEntryId()).isEqualTo(orderCharge.getId());
-                assertThat(row.getChargeStatus()).isEqualTo("CHARGED");
-            });
-        }
+        assertThat(fx.entry(charge.getId()).getAmount()).isEqualByComparingTo("10000.00");
+        assertThat(fx.balance(customer)).isEqualByComparingTo("10000.00");
 
-        LfSalesDocumentResponse document = lfDocument();
-        assertThat(document.getChargeStatus()).isEqualTo("CHARGED");
-        assertThat(document.getChargeEntryId()).isEqualTo(orderCharge.getId());
-        assertThat(document.getPartialReleases()).hasSize(2).allSatisfy(partial -> {
-            assertThat(partial.getChargeStatus()).isEqualTo("CHARGED");
-            assertThat(partial.getChargeEntryId()).isEqualTo(orderCharge.getId());
-            assertThat(partial.getShipments())
-                    .extracting(LfShipmentDocumentResponse::getChargeStatus)
-                    .containsOnly("CHARGED");
-        });
+        fx.create(customer, creditRequest("PAYMENT", charge.getId(), "9000.00"));
+        fx.setLinePrice(shipment1, "8000.00");
+        assertThatThrownBy(() -> fx.accounts.syncShipmentEntries(shipment1.getId()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("pagos o créditos aplicados");
+        assertThat(fx.entry(charge.getId()).getAmount()).isEqualByComparingTo("10000.00");
     }
 
     @Test
-    @DisplayName("An order charge blocks further charges on the same order")
-    void orderLevelCharge_blocksFurtherCharges() throws Exception {
-        shipPartial2();
-        fx.charge(customer, order, null, null, "16131.00");
+    @DisplayName("Cancelling or reverting a dispatch voids its charge and shipping; with payments it is refused")
+    void reversingTheDispatchVoidsTheCharge() throws Exception {
+        fx.withShipping(shipment1, "75.00");
+        CustomerAccountEntryEntity charge1 = fx.dispatch(shipment1).orElseThrow();
+        dispatchSecondPartial();
+        assertThat(fx.balance(customer)).isEqualByComparingTo("16206.00");
 
-        assertThatThrownBy(() -> fx.charge(customer, order, release1, shipment1, "15184.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE);
-        assertThatThrownBy(() -> fx.charge(customer, order, release2, shipment2, "947.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE);
-        assertThatThrownBy(() -> fx.charge(customer, order, null, null, "16131.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(DUPLICATE_ORDER_CHARGE);
-        assertThat(fx.activeCharges(customer)).hasSize(1);
-    }
+        fx.accounts.voidEntriesForShipment(shipment1.getId(), "Envío anulado");
 
-    @Test
-    @DisplayName("Legacy per-shipment charges still block an order-level charge")
-    void orderLevelNullShipmentNextToPerShipmentChargesIsRejected() throws Exception {
-        shipPartial2();
-        fx.insert(legacyCharge(customer, order, release1, shipment1, "15184.00").build());
-        fx.insert(legacyCharge(customer, order, release2, shipment2, "947.00").build());
+        assertThat(fx.entry(charge1.getId()).getStatus()).isEqualTo("VOID");
+        assertThat(fx.activeAdjustments(customer)).isEmpty();
+        assertThat(fx.activeCharges(customer)).singleElement()
+                .extracting(CustomerAccountEntryEntity::getProductShipmentId).isEqualTo(shipment2.getId());
+        assertThat(fx.balance(customer)).isEqualByComparingTo("947.00");
 
-        assertThatThrownBy(() -> fx.charge(customer, order, null, null, "16131.00"))
+        CustomerAccountEntryEntity charge2 = fx.activeCharges(customer).get(0);
+        fx.create(customer, creditRequest("PAYMENT", charge2.getId(), "100.00"));
+        assertThatThrownBy(() -> fx.accounts.voidEntriesForShipment(shipment2.getId(), "Envío anulado"))
                 .isInstanceOf(BusinessException.class)
-                .hasMessage(DUPLICATE_ORDER_CHARGE)
-                .hasMessageNotContaining("Anúlelo");
-        assertThat(fx.activeCharges(customer)).hasSize(2);
-        assertThat(fx.activeCharges(customer))
-                .allSatisfy(charge -> assertThat(charge.getProductShipmentId()).isNotNull());
+                .hasMessageContaining("pagos, notas de crédito o devoluciones");
+        assertThat(fx.entry(charge2.getId()).getStatus()).isEqualTo("ACTIVE");
+        assertThat(fx.balance(customer)).isEqualByComparingTo("847.00");
     }
 
     private LfSalesDocumentResponse lfDocument() throws Exception {

@@ -28,8 +28,11 @@ final class LfReceivablesFixture {
     static final String TYPE_OPC = "MARCAS";
     static final String TYPE_OPV = "OPV";
     static final String CHARGE_REQUIRES_ORDER = "El cargo requiere una orden de producción.";
-    static final String PARTIAL_HAS_NO_CHARGE = "El cargo es de la orden completa. Un parcial no tiene cargo propio.";
-    static final String DUPLICATE_ORDER_CHARGE = "Ya existe un cargo activo para esta orden de producción.";
+    static final String CHARGE_NEEDS_SHIPMENT = "El cargo se genera por envío despachado. Indique el envío.";
+    static final String SHIPMENT_NOT_DISPATCHED = "Solo un envío despachado genera cargo. Estado actual: ";
+    static final String ORDER_ALREADY_CHARGED = "La orden ya tiene un cargo por orden completa; su saldo se limita a lo "
+            + "despachado. Anule ese cargo si debe cobrarse por envío.";
+    static final String DUPLICATE_SHIPMENT_CHARGE = "Ya existe un cargo activo para este envío.";
     static final String CREDIT_MUST_APPLY = "El pago, la nota de crédito o la devolución debe aplicarse al cargo de la orden.";
     static final String ADJUSTMENT_NEEDS_SHIPMENT = "El ajuste de envío requiere un envío real del parcial.";
 
@@ -121,13 +124,83 @@ final class LfReceivablesFixture {
         return shipment;
     }
 
+    /** What happens when a shipment is dispatched: its charge (and shipping adjustment) is born. Empty if none applies. */
+    java.util.Optional<CustomerAccountEntryEntity> dispatch(ProductShipmentEntity shipment) throws Exception {
+        return accounts.createChargeForDispatchedShipment(shipment.getId());
+    }
+
+    /** Re-prices the single line of a fixture shipment (what an edit of the shipment products does). */
+    void setLinePrice(ProductShipmentEntity shipment, String unitPrice) {
+        for (ProductShipmentDetailEntity detail : detailRepository.findByShipmentId(shipment.getId())) {
+            detail.setUnitPrice(q(unitPrice));
+            detailRepository.save(detail);
+        }
+    }
+
+    ProductShipmentEntity withStatus(ProductShipmentEntity shipment, String status) {
+        shipment.setStatus(status);
+        return shipmentRepository.save(shipment);
+    }
+
+    List<CustomerAccountEntryEntity> activeAdjustments(CustomerEntity customer) {
+        return entryRepository.findByCustomerIdAndStatusOrderByEntryDateAscIdAsc(customer.getId(), "ACTIVE").stream()
+                .filter(e -> "CHARGE_ADJUSTMENT".equals(e.getEntryType()))
+                .toList();
+    }
+
     CustomerAccountEntryResponse create(CustomerEntity customer, CustomerAccountEntryRequest request) throws Exception {
         return accounts.createEntry(customer.getId(), request);
     }
 
+    /**
+     * Charge of the pre-dispatch model: one CHARGE for the whole order. The API no longer creates it (a charge is born
+     * when a shipment is dispatched), so it is inserted directly, like the legacy rows it stands for. The order is
+     * fully dispatched first so the visible cartera does not clip it. A call that names a release or a shipment goes
+     * through the API, which now only accepts a dispatched shipment.
+     */
     CustomerAccountEntryResponse charge(CustomerEntity customer, ProductionOrderEntity order,
             ProductionOrderPartialReleaseEntity release, ProductShipmentEntity shipment, String amount) throws Exception {
-        return create(customer, chargeRequest(order, release, shipment, amount));
+        if (release != null || shipment != null) {
+            return create(customer, chargeRequest(order, release, shipment, amount));
+        }
+        dispatchWholeOrder(order);
+        CustomerAccountEntryEntity saved = insert(legacyCharge(customer, order, null, null, amount)
+                .vendorShipmentNumber(order.getVendorShipmentNumber())
+                .invoiceNumber(order.getVendorShipmentNumber())
+                .documentNumber(order.getCode())
+                .orderKind(accounts.resolveReceivableOrderKind(order))
+                .build());
+        return CustomerAccountEntryResponse.builder()
+                .id(saved.getId())
+                .customerId(saved.getCustomerId())
+                .entryType(saved.getEntryType())
+                .amount(saved.getAmount())
+                .productionOrderId(saved.getProductionOrderId())
+                .status(saved.getStatus())
+                .build();
+    }
+
+    /** A SENT shipment holding the whole order (one line priced at the sum of the items), unless it already has one. */
+    void dispatchWholeOrder(ProductionOrderEntity order) {
+        if (!shipmentRepository.findByProductionOrderId(order.getId()).isEmpty()) {
+            return;
+        }
+        BigDecimal total = itemRepository.findByProductionOrderId(order.getId()).stream()
+                .map(ProductionOrderItemEntity::getUnitPrice)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        ProductShipmentEntity shipment = shipmentRepository.save(ProductShipmentEntity.builder()
+                .productionOrderId(order.getId())
+                .shipmentNumber("ENVP-FULL-" + order.getCode())
+                .status("SENT")
+                .build());
+        detailRepository.save(ProductShipmentDetailEntity.builder()
+                .shipmentId(shipment.getId())
+                .productId(product().getId())
+                .sizeLabel("")
+                .quantity(BigDecimal.ONE)
+                .unitPrice(total)
+                .build());
     }
 
     static CustomerAccountEntryRequest chargeRequest(ProductionOrderEntity order,
@@ -245,7 +318,7 @@ final class LfReceivablesFixture {
     }
 
     ProductShipmentEntity withShipping(ProductShipmentEntity shipment, String shippingCost) {
-        shipment.setShippingCost(q(shippingCost));
+        shipment.setShippingCost(shippingCost == null ? null : q(shippingCost));
         return shipmentRepository.save(shipment);
     }
 
