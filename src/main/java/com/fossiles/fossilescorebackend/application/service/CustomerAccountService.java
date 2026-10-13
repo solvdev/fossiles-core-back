@@ -2615,7 +2615,7 @@ public class CustomerAccountService {
     private record DispatchedOrder(BigDecimal products, Map<Long, BigDecimal> shippingByShipment) {}
 
     /**
-     * Lo despachado de la orden. Null (sin recorte) si la orden no existe o si nunca entró al flujo de envíos: una
+     * Lo despachado de la orden (productos null = no se recorta el cargo). Null si la orden no existe o si nunca entró al flujo de envíos: una
      * orden sin ninguna fila en product_shipment es anterior a "Preparar envíos" y no hay dato para saber si salió,
      * así que su cargo se deja completo.
      */
@@ -2643,10 +2643,12 @@ public class CustomerAccountService {
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
         BigDecimal total = BigDecimal.ZERO;
         Map<Long, BigDecimal> shippingByShipment = new LinkedHashMap<>();
+        boolean anyDispatched = false;
         for (ProductShipmentEntity shipment : orderShipments) {
             if (!isDispatched(shipment)) {
                 continue;
             }
+            anyDispatched = true;
             ProductionOrderPartialReleaseEntity release = shipment.getPartialReleaseId() == null
                     ? null
                     : partialReleaseRepository.findById(shipment.getPartialReleaseId()).orElse(null);
@@ -2660,7 +2662,10 @@ public class CustomerAccountService {
                 shippingByShipment.put(shipment.getId(), shipping);
             }
         }
-        return new DispatchedOrder(total.setScale(2, RoundingMode.HALF_UP), shippingByShipment);
+        BigDecimal products = total.setScale(2, RoundingMode.HALF_UP);
+        // Si lo despachado no se puede valorar (envíos sin precio en sus líneas y orden sin ítems), no hay base para
+        // recortar: el cargo se deja completo y solo se le suma el costo de envío.
+        return new DispatchedOrder(anyDispatched && products.signum() <= 0 ? null : products, shippingByShipment);
     }
 
     private BigDecimal computeBalance(List<CustomerAccountEntryEntity> entries) {

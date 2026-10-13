@@ -44,6 +44,7 @@ class ShipmentDispatchChargeWiringTest {
     @Autowired private InventoryLocationTypeRepository locationTypes;
     @Autowired private LocationRepository locations;
     @Autowired private CustomerAccountEntryRepository entries;
+    @Autowired private com.fossiles.fossilescorebackend.infrastructure.controller.ProductionOrderController orderController;
 
     @MockBean private SecurityUtil securityUtil;
 
@@ -171,6 +172,44 @@ class ShipmentDispatchChargeWiringTest {
 
         distribution.revertSentShipment(historical.getId());
         assertThat(accounts.getBalance(customer.getId()).getBalance()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void pricesForAnOrderWithoutItemsAreSavedOnTheShipmentLinesAndTheChargeFollows() throws Exception {
+        ProductionOrderEntity noItems = orders.save(ProductionOrderEntity.builder()
+                .code("OPV-NOITEMS").orderType("OPV").customerId(customer.getId()).sellerName("LUIS FELIPE")
+                .vendorShipmentNumber("ENVP-00078").status("COMPLETED").startDate(LocalDate.of(2026, 9, 1)).build());
+        ProductShipmentEntity sentShipment = shipments.save(ProductShipmentEntity.builder()
+                .productionOrderId(noItems.getId()).shipmentNumber("ENVP-00078-ENV-00001").status("CONFIRMED")
+                .locationId(locations.findAll().get(1).getId()).build());
+        details.save(ProductShipmentDetailEntity.builder()
+                .shipmentId(sentShipment.getId()).productId(product.getId()).colorId(color.getId())
+                .sizeLabel("42").quantity(BigDecimal.valueOf(2)).unitPrice(new BigDecimal("0.01")).build());
+        distribution.sendShipment(sentShipment.getId());
+
+        com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemPricesRequest request =
+                new com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemPricesRequest();
+        com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemPricesRequest.ItemPrice price =
+                new com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemPricesRequest.ItemPrice();
+        price.setProductId(product.getId());
+        price.setColorId(color.getId());
+        price.setUnitPrice(new BigDecimal("131.00"));
+        request.setItems(List.of(price));
+
+        orderController.updateItemPrices(noItems.getId(), request);
+
+        assertThat(details.findByShipmentId(sentShipment.getId()).get(0).getUnitPrice()).isEqualByComparingTo("131.00");
+        assertThat(entries.findNonVoidChargesByProductShipmentId(sentShipment.getId())).singleElement()
+                .satisfies(charge -> assertThat(charge.getAmount()).isEqualByComparingTo("262.00"));
+
+        com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemPricesRequest.ItemPrice unknown =
+                new com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemPricesRequest.ItemPrice();
+        unknown.setProductId(999999L);
+        unknown.setUnitPrice(new BigDecimal("10.00"));
+        request.setItems(List.of(unknown));
+        assertThatThrownBy(() -> orderController.updateItemPrices(noItems.getId(), request))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("No se guardó ningún precio");
     }
 
     @Test
