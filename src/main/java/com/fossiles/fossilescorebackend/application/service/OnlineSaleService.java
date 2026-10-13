@@ -894,6 +894,13 @@ public class OnlineSaleService {
 
         onlineSaleShipmentNumberService.assignIfMissing(original);
 
+        if (req != null && req.getTargetOnlineSaleId() != null) {
+            OnlineSaleEntity target = addExchangeItemsToExistingShipment(original, req, exchangeLines);
+            creditExchangeLinesToReturns(original, exchangeLines, exchangeReason(req));
+            noteOriginalSaleExchange(original, target.getShipmentNumber());
+            return toResponse(target);
+        }
+
         OnlineSaleEntity exchange = new OnlineSaleEntity();
         exchange.setSkipAmountCalculation(true);
         exchange.setStatus("PENDIENTE");
@@ -964,6 +971,73 @@ public class OnlineSaleService {
         noteOriginalSaleExchange(original, saved.getShipmentNumber());
 
         return toResponse(saved);
+    }
+
+    /**
+     * Agrega las líneas del CAMBIO (precio 0) a un envío ya existente, sin crear venta ni ENVL nuevos.
+     * Los montos del envío destino no se modifican.
+     */
+    private OnlineSaleEntity addExchangeItemsToExistingShipment(
+            OnlineSaleEntity original,
+            OnlineSaleExchangeRequest req,
+            List<ExchangeLine> exchangeLines)
+            throws ResourceNotFoundException, BusinessException {
+        OnlineSaleEntity target = saleRepository.findById(req.getTargetOnlineSaleId())
+                .orElseThrow(() -> new ResourceNotFoundException("Online Sale", req.getTargetOnlineSaleId()));
+
+        String targetStatus = target.getStatus();
+        if (List.of("ENVIADO", "ENTREGADO", "ANULADA", "CANCELADO", "DEVOLUCION").contains(targetStatus)) {
+            throw new BusinessException("No se pueden agregar items al envío "
+                    + (target.getShipmentNumber() != null ? target.getShipmentNumber() : "#" + target.getId())
+                    + " porque está en estado " + targetStatus);
+        }
+
+        for (ExchangeLine line : exchangeLines) {
+            OnlineSaleItemEntity source = line.source();
+            OnlineSaleItemEntity item = OnlineSaleItemEntity.builder()
+                    .onlineSaleId(target.getId())
+                    .productId(source.getProductId())
+                    .colorId(source.getColorId())
+                    .size(source.getSize())
+                    .quantity(line.quantity())
+                    .unitPrice(BigDecimal.ZERO)
+                    .build();
+            enrichItemWithProductAndColor(item);
+            itemRepository.save(item);
+        }
+
+        String rel = original.getShipmentNumber() != null
+                ? ("ENVIO_REL=" + original.getShipmentNumber())
+                : ("VENTA_REL=" + original.getId());
+        String extra = (req.getObservations() != null && !req.getObservations().isBlank())
+                ? " " + req.getObservations().trim()
+                : "";
+        String tag = "CAMBIO_Q0(" + rel + ")" + extra;
+        String currentObs = target.getObservations();
+        target.setObservations((currentObs == null || currentObs.isBlank()) ? tag : currentObs + " | " + tag);
+
+        if (req.getGuideNumber() != null && !req.getGuideNumber().isBlank()) {
+            target.setGuideNumber(req.getGuideNumber().trim());
+        }
+        if ((target.getShippingCarrier() == null || target.getShippingCarrier().isBlank())
+                && req.getShippingCarrier() != null && !req.getShippingCarrier().isBlank()) {
+            target.setShippingCarrier(req.getShippingCarrier().trim());
+        }
+
+        onlineSaleShipmentNumberService.assignIfMissing(target);
+        target.setSkipAmountCalculation(true);
+        target.setUpdatedBy(securityUtil.getCurrentUserId());
+        saleRepository.save(target);
+        return target;
+    }
+
+    /** Envíos (ventas con ENVL) para elegir como destino de un CAMBIO. */
+    @Transactional(readOnly = true)
+    public List<OnlineSaleResponse> searchShipments(String query) {
+        String q = query != null ? query.trim() : "";
+        return saleRepository.searchShipments(q, org.springframework.data.domain.PageRequest.of(0, 30)).stream()
+                .map(this::toResponse)
+                .collect(Collectors.toList());
     }
 
     private List<ExchangeLine> resolveExchangeLines(OnlineSaleEntity original, OnlineSaleExchangeRequest req)

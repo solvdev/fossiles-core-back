@@ -12,6 +12,8 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 public class OnlineSaleExchangeRequest {
+    /** Si viene, los items se agregan a este envío existente en vez de crear uno nuevo. */
+    private Long targetOnlineSaleId;
     private List<ExchangeItemRequest> items;
     private String shippingCarrier;
     private String guideNumber;
