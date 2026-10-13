@@ -472,7 +472,8 @@ public class KioskPosService {
                     quantity,
                     unitPrice,
                     lineTotal,
-                    finalUnitPrice
+                    finalUnitPrice,
+                    hardware
             ));
             subtotal = subtotal.add(lineTotal);
             totalItems = totalItems.add(quantity);
@@ -620,6 +621,7 @@ public class KioskPosService {
                     .productName(displayName)
                     .colorId(line.color() != null ? line.color().getId() : null)
                     .colorName(line.color() != null ? line.color().getName() : "")
+                    .hardwareCondition(line.hardware())
                     .quantity(line.quantity())
                     .unitPrice(line.unitPrice())
                     .lineTotal(line.lineTotal())
@@ -734,7 +736,8 @@ public class KioskPosService {
                     quantity,
                     unitPrice,
                     lineTotal,
-                    false
+                    false,
+                    null
             ));
             subtotal = subtotal.add(lineTotal);
             totalItems = totalItems.add(quantity);
@@ -813,6 +816,7 @@ public class KioskPosService {
                     .productName(displayName)
                     .colorId(line.color() != null ? line.color().getId() : null)
                     .colorName(line.color() != null ? line.color().getName() : "")
+                    .hardwareCondition(line.hardware())
                     .quantity(line.quantity())
                     .unitPrice(line.unitPrice())
                     .lineTotal(line.lineTotal())
@@ -2690,7 +2694,8 @@ public class KioskPosService {
                     quantity,
                     unitPrice,
                     lineTotal,
-                    false
+                    false,
+                    hardware
             ));
         }
         return preparedLines;
@@ -3643,6 +3648,10 @@ public class KioskPosService {
                         .colorId(row.getColorId())
                         .colorName(row.getColorName())
                         .categoryName(categoryNameByProductId.get(row.getProductId()))
+                        .hardwareCondition(row.getHardwareCondition())
+                        .hardwareLabel(row.getHardwareCondition() != null && !row.getHardwareCondition().isBlank()
+                                ? ProductHardwareCondition.label(row.getHardwareCondition())
+                                : null)
                         .quantity(row.getQuantity())
                         .unitPrice(row.getUnitPrice())
                         .lineTotal(row.getLineTotal())
@@ -5204,7 +5213,9 @@ public class KioskPosService {
             BigDecimal unitPrice,
             BigDecimal lineTotal,
             /** Precio editado (Miraflores): no recibe descuento POS/promo sobre esa línea. */
-            boolean finalUnitPrice
+            boolean finalUnitPrice,
+            /** Dimensión de stock de la línea (marca, NINO/DAMA, NUEVO/VIEJO); null al restaurar ventas. */
+            String hardware
     ) {}
 
     record PaymentSnapshot(

@@ -621,11 +621,18 @@ public class KioscoInventoryCountService {
 
             String productColorKey = itemKey(kardexRow.getProductId(), kardexRow.getColorId());
             String rowDimension = ProductBrandNames.resolveDistinctDimension(kardexRow.getHardwareCondition());
-            List<KioscoStockEntity> stocksForRow = stocksByProductColor.getOrDefault(productColorKey, List.of())
-                    .stream()
-                    .filter(s -> rowDimension == null
-                            || rowDimension.equals(ProductBrandNames.resolveDistinctDimension(s.getHardwareCondition())))
+            List<KioscoStockEntity> productColorStocks = stocksByProductColor.getOrDefault(productColorKey, List.of());
+            // Solo los stocks de la MISMA dimensión (NUEVO+VIEJO comparten dimensión nula). Si la fila sin
+            // dimensión tomara también los stocks NINO/DAMA/marca, heredaría sus tallas y movimientos y
+            // saldría repetida y sin contar junto a la fila de la dimensión (cinchos Niño Entre Cueros).
+            List<KioscoStockEntity> stocksForRow = productColorStocks.stream()
+                    .filter(s -> Objects.equals(
+                            rowDimension, ProductBrandNames.resolveDistinctDimension(s.getHardwareCondition())))
                     .collect(Collectors.toList());
+            if (rowDimension == null && item == null && isEmptyStockWithDimensionedSiblings(
+                    kardexRow, stocksForRow, productColorStocks)) {
+                continue;
+            }
             KioscoStockEntity stock = stocksForRow.isEmpty() ? stockByKey.get(productColorKey) : stocksForRow.get(0);
             Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardexForStock = mergeSizeKardexForStocks(
                     stocksForRow, kardexByStockAndSize);
@@ -919,6 +926,31 @@ public class KioscoInventoryCountService {
             return stock.getHardwareCondition();
         }
         return null;
+    }
+
+    /**
+     * Fila sin dimensión (herraje NUEVO/VIEJO) totalmente vacía mientras el mismo producto/color ya tiene
+     * filas por dimensión (NINO/DAMA/marca): es un stock residual en 0 que solo ensuciaría el conteo.
+     */
+    private boolean isEmptyStockWithDimensionedSiblings(
+            KioscoKardexReportResponse.KioscoKardexRow kardexRow,
+            List<KioscoStockEntity> stocksForRow,
+            List<KioscoStockEntity> productColorStocks
+    ) {
+        boolean hasDimensionedSibling = productColorStocks.stream()
+                .anyMatch(s -> ProductBrandNames.resolveDistinctDimension(s.getHardwareCondition()) != null);
+        if (!hasDimensionedSibling) {
+            return false;
+        }
+        boolean noActivity = !hasKardexActivity(kardexRow)
+                && safeInt(kardexRow.getSalidaDevolucion()) == 0
+                && safeInt(kardexRow.getCambioIn()) == 0
+                && safeInt(kardexRow.getCambioOut()) == 0;
+        boolean noStock = stocksForRow.stream()
+                .allMatch(s -> safeInt(s.getCurrentStock()) == 0
+                        && resolveSystemSizesForStocks(List.of(s)).values().stream()
+                                .allMatch(q -> q == null || q == 0));
+        return noActivity && noStock;
     }
 
     private boolean shouldIncludeInPhysicalCount(KioscoKardexReportResponse.KioscoKardexRow kardexRow) {

@@ -138,6 +138,10 @@ public class KioskPosSaleResponse {
         private String colorName;
         /** Categoría / material para reportes (ej. Cuero, Empaque). */
         private String categoryName;
+        /** Dimensión de stock vendida (marca, SINTETICO:MARCA, NINO/DAMA, NUEVO/VIEJO). Null en ventas históricas sin dato. */
+        private String hardwareCondition;
+        /** Etiqueta legible de la dimensión (ej. "LEVIS", "Sintética · LEVIS"). */
+        private String hardwareLabel;
         private BigDecimal quantity;
         private BigDecimal unitPrice;
         private BigDecimal lineTotal;

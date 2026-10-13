@@ -975,7 +975,8 @@ public class OnlineSaleService {
 
     /**
      * Agrega las líneas del CAMBIO (precio 0) a un envío ya existente, sin crear venta ni ENVL nuevos.
-     * Los montos del envío destino no se modifican.
+     * Los montos del envío destino no se modifican. Si el envío ya salió (ENVIADO/ENTREGADO) solo se
+     * registra el cambio en él: no se re-despacha ni se descuenta inventario de PT.
      */
     private OnlineSaleEntity addExchangeItemsToExistingShipment(
             OnlineSaleEntity original,
@@ -986,7 +987,7 @@ public class OnlineSaleService {
                 .orElseThrow(() -> new ResourceNotFoundException("Online Sale", req.getTargetOnlineSaleId()));
 
         String targetStatus = target.getStatus();
-        if (List.of("ENVIADO", "ENTREGADO", "ANULADA", "CANCELADO", "DEVOLUCION").contains(targetStatus)) {
+        if (List.of("ANULADA", "CANCELADO", "DEVOLUCION").contains(targetStatus)) {
             throw new BusinessException("No se pueden agregar items al envío "
                     + (target.getShipmentNumber() != null ? target.getShipmentNumber() : "#" + target.getId())
                     + " porque está en estado " + targetStatus);
