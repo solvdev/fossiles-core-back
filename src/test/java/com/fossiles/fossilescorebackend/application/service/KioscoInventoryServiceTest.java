@@ -681,6 +681,68 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
+    void anulacion_devuelveLaUnidadAlStockDeLaMarcaQueSeVendio() throws Exception {
+        // Entre Cueros: la venta salió del stock NAUTICA; la anulación no puede caer en la fila NUEVO.
+        when(kioscoMovementRepository.sumPosReferenceQuantityByHardware(
+                locationId, productId, colorId, 900L, KioscoMovementType.VENTA, null))
+                .thenReturn(java.util.Collections.singletonList(new Object[] {"NAUTICA", 1L}));
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(10, 0)));
+
+        service.anularFactura(900L, locationId, productId, colorId, 1, "error", false, userId);
+
+        verify(kioscoStockProvisioningService).ensureStockRow(
+                eq(locationId), eq(productId), eq(colorId), eq(userId), eq("NAUTICA"));
+        verify(kioscoStockProvisioningService, never()).ensureStockRow(
+                anyLong(), anyLong(), any(), anyLong(), eq("NUEVO"));
+    }
+
+    @Test
+    void anulacion_repartePorStockCuandoLaVentaSalioDeVarios() throws Exception {
+        when(kioscoMovementRepository.sumPosReferenceQuantityByHardware(
+                locationId, productId, colorId, 900L, KioscoMovementType.VENTA, null))
+                .thenReturn(List.of(new Object[] {"NUEVO", 1L}, new Object[] {"VIEJO", 2L}));
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(10, 0)));
+        ArgumentCaptor<KioscoMovementEntity> captor = ArgumentCaptor.forClass(KioscoMovementEntity.class);
+
+        service.anularFactura(900L, locationId, productId, colorId, 3, "error", false, userId);
+
+        verify(kioscoStockProvisioningService).ensureStockRow(
+                eq(locationId), eq(productId), eq(colorId), eq(userId), eq("NUEVO"));
+        verify(kioscoStockProvisioningService).ensureStockRow(
+                eq(locationId), eq(productId), eq(colorId), eq(userId), eq("VIEJO"));
+        verify(kioscoMovementRepository, org.mockito.Mockito.times(2)).save(captor.capture());
+        assertThat(captor.getAllValues().stream().mapToInt(KioscoMovementEntity::getQuantity).sum()).isEqualTo(3);
+    }
+
+    @Test
+    void anulacion_sinMovimientoVentaOriginal_usaLaMarcaDeLaLineaDeVenta() throws Exception {
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(10, 0)));
+
+        service.anularFacturaDesdeIntegracion(
+                900L, locationId, productId, colorId, new BigDecimal("1"), "error", userId, null, "LEVIS");
+
+        verify(kioscoStockProvisioningService).ensureStockRow(
+                eq(locationId), eq(productId), eq(colorId), eq(userId), eq("LEVIS"));
+    }
+
+    @Test
+    void devolucionCliente_aptoRegresaAlStockDeLaMarcaVendida() throws Exception {
+        when(kioscoMovementRepository.sumPosReferenceQuantityByHardware(
+                locationId, productId, colorId, 900L, KioscoMovementType.VENTA, null))
+                .thenReturn(java.util.Collections.singletonList(new Object[] {"NINO", 1L}));
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(10, 0)));
+
+        service.registrarDevolucionCliente(locationId, productId, colorId, 1, 900L, true, userId);
+
+        verify(kioscoStockProvisioningService).ensureStockRow(
+                eq(locationId), eq(productId), eq(colorId), eq(userId), eq("NINO"));
+    }
+
+    @Test
     void anulacion_noModificaStock_siProductoSiSalio() throws Exception {
         when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
                 .thenReturn(Optional.of(stockEntity(10, 0)));

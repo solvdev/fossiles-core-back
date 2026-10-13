@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotionEstimateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
@@ -255,6 +256,45 @@ class KioskPosServiceTest {
 
         KioskPosSaleResponse.Item defaultLine = sale.getItems().get(1);
         assertThat(defaultLine.getHardwareCondition()).isEqualTo("NUEVO");
+    }
+
+    @Test
+    void voidSale_returnsUnitsToTheBrandStockTheyWereSoldFrom() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kioskA.getId())
+                .productId(wallet.getId())
+                .colorId(negro.getId())
+                .hardwareCondition("LEVIS")
+                .currentStock(4)
+                .build());
+
+        // Dos líneas de la misma marca: se descuentan juntas y deben regresar juntas.
+        KioskPosSaleRequest.ItemRequest first = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        first.setHardwareCondition("LEVIS");
+        KioskPosSaleRequest.ItemRequest second = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        second.setHardwareCondition("LEVIS");
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .items(List.of(first, second))
+                .build());
+
+        kioskPosService.voidSale(
+                sale.getId(), kioskA.getId(), KioskSaleVoidRequest.builder().reason("error de venta").build());
+
+        KioscoStockEntity levis = kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        kioskA.getId(), wallet.getId(), negro.getId(), "LEVIS")
+                .orElseThrow();
+        KioscoStockEntity nuevo = kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        kioskA.getId(), wallet.getId(), negro.getId(), "NUEVO")
+                .orElseThrow();
+        assertThat(levis.getCurrentStock()).isEqualTo(4);
+        // La fila genérica NUEVO no debe recibir unidades fantasma de la anulación.
+        assertThat(nuevo.getCurrentStock()).isEqualTo(5);
     }
 
     @Test
