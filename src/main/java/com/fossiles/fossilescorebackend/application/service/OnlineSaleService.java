@@ -882,6 +882,10 @@ public class OnlineSaleService {
             throw new BusinessException("Debe especificar al menos un item para el CAMBIO");
         }
 
+        if (req != null && req.getTargetOnlineSaleId() != null) {
+            return addExchangeItemsToExistingShipment(original, req, normalizedItems);
+        }
+
         OnlineSaleEntity exchange = new OnlineSaleEntity();
         exchange.setSkipAmountCalculation(true);
         exchange.setStatus("PENDIENTE");
@@ -951,6 +955,72 @@ public class OnlineSaleService {
         saleRepository.save(saved);
 
         return toResponse(saved);
+    }
+
+    /**
+     * Agrega los items del CAMBIO (precio 0) a un envío ya existente, sin crear venta ni ENVL nuevos.
+     * Los montos del envío destino no se modifican.
+     */
+    private OnlineSaleResponse addExchangeItemsToExistingShipment(
+            OnlineSaleEntity original,
+            OnlineSaleExchangeRequest req,
+            List<OnlineSaleExchangeRequest.ExchangeItemRequest> normalizedItems)
+            throws ResourceNotFoundException, BusinessException {
+        OnlineSaleEntity target = saleRepository.findById(req.getTargetOnlineSaleId())
+                .orElseThrow(() -> new ResourceNotFoundException("Online Sale", req.getTargetOnlineSaleId()));
+
+        String targetStatus = target.getStatus();
+        if (List.of("ENVIADO", "ENTREGADO", "ANULADA", "CANCELADO", "DEVOLUCION").contains(targetStatus)) {
+            throw new BusinessException("No se pueden agregar items al envío "
+                    + (target.getShipmentNumber() != null ? target.getShipmentNumber() : "#" + target.getId())
+                    + " porque está en estado " + targetStatus);
+        }
+
+        for (OnlineSaleExchangeRequest.ExchangeItemRequest ir : normalizedItems) {
+            OnlineSaleItemEntity item = OnlineSaleItemEntity.builder()
+                    .onlineSaleId(target.getId())
+                    .productId(ir.getProductId())
+                    .colorId(ir.getColorId())
+                    .size(ir.getSize())
+                    .quantity(ir.getQuantity() != null ? ir.getQuantity() : 1)
+                    .unitPrice(BigDecimal.ZERO)
+                    .build();
+            enrichItemWithProductAndColor(item);
+            itemRepository.save(item);
+        }
+
+        String rel = original.getShipmentNumber() != null
+                ? ("ENVIO_REL=" + original.getShipmentNumber())
+                : ("VENTA_REL=" + original.getId());
+        String extra = (req.getObservations() != null && !req.getObservations().isBlank())
+                ? " " + req.getObservations().trim()
+                : "";
+        String tag = "CAMBIO_Q0(" + rel + ")" + extra;
+        String currentObs = target.getObservations();
+        target.setObservations((currentObs == null || currentObs.isBlank()) ? tag : currentObs + " | " + tag);
+
+        if (req.getGuideNumber() != null && !req.getGuideNumber().isBlank()) {
+            target.setGuideNumber(req.getGuideNumber().trim());
+        }
+        if ((target.getShippingCarrier() == null || target.getShippingCarrier().isBlank())
+                && req.getShippingCarrier() != null && !req.getShippingCarrier().isBlank()) {
+            target.setShippingCarrier(req.getShippingCarrier().trim());
+        }
+
+        onlineSaleShipmentNumberService.assignIfMissing(target);
+        target.setSkipAmountCalculation(true);
+        target.setUpdatedBy(securityUtil.getCurrentUserId());
+        saleRepository.save(target);
+        return toResponse(target);
+    }
+
+    /** Envíos (ventas con ENVL) para elegir como destino de un CAMBIO. */
+    @Transactional(readOnly = true)
+    public List<OnlineSaleResponse> searchShipments(String query) {
+        String q = query != null ? query.trim() : "";
+        return saleRepository.searchShipments(q, org.springframework.data.domain.PageRequest.of(0, 30)).stream()
+                .map(this::toResponse)
+                .collect(Collectors.toList());
     }
 
     private void enrichItemWithProductAndColor(OnlineSaleItemEntity item) {

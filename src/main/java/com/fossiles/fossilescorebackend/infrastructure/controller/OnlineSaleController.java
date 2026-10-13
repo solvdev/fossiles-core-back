@@ -166,6 +166,12 @@ public class OnlineSaleController {
         return ResponseEntity.ok(saleService.registerShipment(id, guideNumber, shippingCarrier, observations));
     }
 
+    @GetMapping("/shipments/search")
+    public ResponseEntity<List<OnlineSaleResponse>> searchShipments(
+            @RequestParam(required = false) String q) {
+        return ResponseEntity.ok(saleService.searchShipments(q));
+    }
+
     @PostMapping("/{id}/exchange")
     public ResponseEntity<OnlineSaleResponse> createExchange(
             @PathVariable Long id,

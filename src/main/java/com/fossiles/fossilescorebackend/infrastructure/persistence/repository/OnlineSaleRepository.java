@@ -70,5 +70,14 @@ public interface OnlineSaleRepository extends JpaRepository<OnlineSaleEntity, Lo
 
     @Query("SELECT s.shipmentNumber FROM OnlineSaleEntity s WHERE s.shipmentNumber IS NOT NULL ORDER BY s.id DESC")
     List<String> findAllShipmentNumbers();
+
+    /** Búsqueda de envíos (ventas con ENVL) por número de envío, cliente o número de pedido. */
+    @Query("SELECT s FROM OnlineSaleEntity s WHERE s.shipmentNumber IS NOT NULL " +
+           "AND (:q = '' " +
+           "OR LOWER(s.shipmentNumber) LIKE LOWER(CONCAT('%', :q, '%')) " +
+           "OR LOWER(s.customerName) LIKE LOWER(CONCAT('%', :q, '%')) " +
+           "OR s.saleNumber = :q) " +
+           "ORDER BY s.id DESC")
+    List<OnlineSaleEntity> searchShipments(@Param("q") String q, org.springframework.data.domain.Pageable pageable);
 }
 
