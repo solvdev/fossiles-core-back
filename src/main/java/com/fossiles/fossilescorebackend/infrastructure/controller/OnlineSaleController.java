@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.OnlineSaleRespo
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.OnlineSaleProductionOrderService;
+import com.fossiles.fossilescorebackend.application.service.OnlineSalesReadCache;
 import com.fossiles.fossilescorebackend.application.service.OnlineSaleService;
 import com.fossiles.fossilescorebackend.application.service.ProductionTaskGenerationService;
 import com.fossiles.fossilescorebackend.application.service.SmartMaterialRequestService;
@@ -38,6 +39,7 @@ public class OnlineSaleController {
     private final OnlineSaleProductionOrderService onlineSaleProductionOrderService;
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final SmartMaterialRequestService smartMaterialRequestService;
+    private final OnlineSalesReadCache readCache;
     private final ProductionTaskGenerationService productionTaskGenerationService;
 
     // ─── CRUD ───────────────────────────────────────────────────────
@@ -74,7 +76,8 @@ public class OnlineSaleController {
     @GetMapping("/by-date")
     public ResponseEntity<List<OnlineSaleResponse>> getByDate(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return ResponseEntity.ok(saleService.getByDate(date));
+        return ResponseEntity.ok(readCache.sales(
+                OnlineSalesReadCache.key("by-date", date), () -> saleService.getByDate(date)));
     }
 
     @GetMapping("/by-salesperson")
@@ -94,14 +97,18 @@ public class OnlineSaleController {
     public ResponseEntity<List<OnlineSaleResponse>> getEligibleForProduction(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate) {
-        return ResponseEntity.ok(saleService.getEligibleForProduction(startDate, endDate));
+        return ResponseEntity.ok(readCache.sales(
+                OnlineSalesReadCache.key("eligible", startDate, endDate),
+                () -> saleService.getEligibleForProduction(startDate, endDate)));
     }
 
     @GetMapping("/by-date-range")
     public ResponseEntity<List<OnlineSaleResponse>> getByDateRange(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate) {
-        return ResponseEntity.ok(saleService.getByDateRange(startDate, endDate));
+        return ResponseEntity.ok(readCache.sales(
+                OnlineSalesReadCache.key("by-date-range", startDate, endDate),
+                () -> saleService.getByDateRange(startDate, endDate)));
     }
 
     @GetMapping("/by-shipment")
@@ -127,10 +134,14 @@ public class OnlineSaleController {
         if (startDate != null || endDate != null) {
             LocalDate from = startDate != null ? startDate : endDate;
             LocalDate to = endDate != null ? endDate : startDate;
-            return ResponseEntity.ok(saleService.getSummaryForDateRange(from, to));
+            return ResponseEntity.ok(readCache.salesChecked(
+                    OnlineSalesReadCache.key("summary", from, to),
+                    () -> saleService.getSummaryForDateRange(from, to)));
         }
         LocalDate target = date != null ? date : java.time.LocalDate.now();
-        return ResponseEntity.ok(saleService.getDailySummary(target));
+        return ResponseEntity.ok(readCache.salesChecked(
+                OnlineSalesReadCache.key("summary", target, target),
+                () -> saleService.getDailySummary(target)));
     }
 
     // ─── Devolver / Anular ──────────────────────────────────────────
@@ -188,7 +199,9 @@ public class OnlineSaleController {
     public ResponseEntity<List<ReturnInventoryEntity>> getReturnInventory(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate) {
-        return ResponseEntity.ok(saleService.getReturnInventory(startDate, endDate));
+        return ResponseEntity.ok(readCache.sales(
+                OnlineSalesReadCache.key("returns", startDate, endDate),
+                () -> saleService.getReturnInventory(startDate, endDate)));
     }
 
     @GetMapping("/return-events")
@@ -196,19 +209,20 @@ public class OnlineSaleController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate) {
         // Respuesta ligera para listado (evita exponer entidad completa)
-        var events = saleService.getReturnEvents(startDate, endDate);
-        var rows = events.stream().map(e -> {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("id", e.getId());
-            row.put("onlineSaleId", e.getOnlineSaleId());
-            row.put("relatedShipmentNumber", e.getRelatedShipmentNumber());
-            row.put("exchangeShipmentNumber", e.getExchangeShipmentNumber());
-            row.put("returnReason", e.getReturnReason());
-            row.put("itemCondition", e.getItemCondition());
-            row.put("createdAt", e.getCreatedAt());
-            row.put("createdBy", e.getCreatedBy());
-            return row;
-        }).sorted(Comparator.comparing(r -> (Long) r.get("id"), Comparator.reverseOrder())).toList();
+        List<Map<String, Object>> rows = readCache.sales(
+                OnlineSalesReadCache.key("return-events", startDate, endDate),
+                () -> saleService.getReturnEvents(startDate, endDate).stream().map(e -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", e.getId());
+                    row.put("onlineSaleId", e.getOnlineSaleId());
+                    row.put("relatedShipmentNumber", e.getRelatedShipmentNumber());
+                    row.put("exchangeShipmentNumber", e.getExchangeShipmentNumber());
+                    row.put("returnReason", e.getReturnReason());
+                    row.put("itemCondition", e.getItemCondition());
+                    row.put("createdAt", e.getCreatedAt());
+                    row.put("createdBy", e.getCreatedBy());
+                    return row;
+                }).sorted(Comparator.comparing(r -> (Long) r.get("id"), Comparator.reverseOrder())).toList());
         return ResponseEntity.ok(rows);
     }
 
