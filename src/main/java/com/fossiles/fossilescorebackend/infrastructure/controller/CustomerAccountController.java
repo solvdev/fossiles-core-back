@@ -53,12 +53,14 @@ public class CustomerAccountController {
                 search, luisFelipeOnly, positiveBalanceOnly, from, to, regionCode, routeNumber, routeLocationCode));
     }
 
-    /** Cartera por documento (cargos, pagos, créditos, saldo) para la impresión RUTAS CxC. */
+    /**
+     * Cartera por documento (cargos, pagos, créditos, saldo) para la impresión RUTAS CxC.
+     * Solo incluye documentos y clientes con saldo: lo saldado (cero) no forma parte de la cartera.
+     */
     @GetMapping("/portfolio-report")
     public ResponseEntity<CustomerAccountPortfolioReportResponse> getPortfolioReport(
             @RequestParam(required = false) String search,
             @RequestParam(defaultValue = "OPV") String orderKind,
-            @RequestParam(defaultValue = "false") boolean onlyOpen,
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) Integer routeNumber,
             @RequestParam(required = false) String routeLocationCode,
@@ -67,7 +69,7 @@ public class CustomerAccountController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate movementsTo)
             throws BusinessException {
         return ResponseEntity.ok(portfolioReportService.buildReport(
-                search, orderKind, onlyOpen, regionCode, routeNumber, routeLocationCode,
+                search, orderKind, regionCode, routeNumber, routeLocationCode,
                 includeMovements, movementsFrom, movementsTo));
     }
 
@@ -86,6 +88,26 @@ public class CustomerAccountController {
         return ResponseEntity.ok(customerAccountService.searchReceivables(
                 search, orderKind, chargeStatus, hasCharge, hasPayment,
                 regionCode, routeNumber, routeLocationCode, allOrderTypes, limit));
+    }
+
+    /**
+     * Monto de cargo calculado en el servidor para una orden: productos de toda la orden
+     * más el envío real de cada parcial que ya tiene envío. No usa el monto del cliente.
+     */
+    @GetMapping("/production-orders/{productionOrderId}/charge-quote")
+    public ResponseEntity<OrderChargeQuoteResponse> quoteOrderCharge(@PathVariable Long productionOrderId)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(customerAccountService.quoteOrderCharge(productionOrderId));
+    }
+
+    /**
+     * Cargo por despacho de un envío, calculado en el servidor: productos realmente enviados más su costo de envío.
+     * No usa el monto del cliente.
+     */
+    @GetMapping("/shipments/{productShipmentId}/charge-quote")
+    public ResponseEntity<OrderChargeQuoteResponse> quoteShipmentCharge(@PathVariable Long productShipmentId)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(customerAccountService.quoteShipmentCharge(productShipmentId));
     }
 
     @GetMapping("/customers/{customerId}/balance")

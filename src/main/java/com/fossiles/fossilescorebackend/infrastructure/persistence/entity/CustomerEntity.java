@@ -44,6 +44,11 @@ public class CustomerEntity {
     @Column(length = 20)
     private String status;
 
+    /** Días de crédito del cliente (0–60). El vencimiento del cargo se calcula al leer. */
+    @Column(name = "credit_days", nullable = false)
+    @Builder.Default
+    private Integer creditDays = 0;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -60,6 +65,9 @@ public class CustomerEntity {
     protected void onCreate() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
+        if (creditDays == null) {
+            creditDays = 0;
+        }
     }
 
     @PreUpdate

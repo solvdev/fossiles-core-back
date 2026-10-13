@@ -72,6 +72,13 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             LocalDate endDate
     );
 
+    /** Ventas de varios kioskos en un rango de fechas (panel agregado de supervisora). */
+    List<KioskSaleEntity> findByKioskLocationIdInAndSaleDateBetween(
+            List<Long> kioskLocationIds,
+            LocalDate startDate,
+            LocalDate endDate
+    );
+
     /** Ventas del kiosko en [fromInclusive, toExclusive) por soldAt (wall-clock Guatemala). */
     @Query("""
             SELECT s FROM KioskSaleEntity s
@@ -100,6 +107,21 @@ public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long
             @Param("endDate") LocalDate endDate
     );
     List<KioskSaleEntity> findBySaleDateBetweenOrderBySoldAtDesc(LocalDate startDate, LocalDate endDate);
+
+    /** Cabeceras ligeras de todos los kioskos en el rango; los filtros de venta válida se aplican en el servicio. */
+    @Query("""
+            SELECT new com.fossiles.fossilescorebackend.infrastructure.persistence.projection.KioskSaleHeaderRow(
+                s.id, s.saleNumber, s.kioskLocationId, s.saleDate, s.soldAt,
+                s.paymentMethod, s.status, s.totalItems, s.totalAmount, s.testSale)
+            FROM KioskSaleEntity s
+            WHERE s.saleDate >= :startDate AND s.saleDate <= :endDate
+            ORDER BY s.soldAt DESC, s.id DESC
+            """)
+    List<com.fossiles.fossilescorebackend.infrastructure.persistence.projection.KioskSaleHeaderRow>
+            findHeaderRowsBySaleDateBetween(
+                    @Param("startDate") LocalDate startDate,
+                    @Param("endDate") LocalDate endDate
+            );
     List<KioskSaleEntity> findByCashSessionIdOrderBySoldAtAsc(Long cashSessionId);
 
     @Query("""

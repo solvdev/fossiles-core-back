@@ -39,6 +39,23 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
             @Param("fromDate") java.time.LocalDate fromDate,
             @Param("toDate") java.time.LocalDate toDate);
 
+    /**
+     * Órdenes del vendedor LF para el dashboard de ventas: fecha COALESCE(start_date, created_at::date)
+     * en rango (aprovecha idx_po_dashboard_date), no canceladas y sin envío anulado.
+     * El servicio aplica además isLfVendorOrder (excluye INTERNA / CLIENTE_KIOSKO).
+     */
+    @Query(value = """
+            SELECT * FROM production_order po
+            WHERE COALESCE(po.start_date, po.created_at::date) >= :fromDate
+              AND COALESCE(po.start_date, po.created_at::date) <= :toDate
+              AND UPPER(po.seller_name) LIKE '%LUIS FELIPE%'
+              AND po.status NOT IN ('CANCELLED')
+              AND po.vendor_shipment_voided_at IS NULL
+            """, nativeQuery = true)
+    List<ProductionOrderEntity> findVendorSalesDashboardOrders(
+            @Param("fromDate") java.time.LocalDate fromDate,
+            @Param("toDate") java.time.LocalDate toDate);
+
     @Query("""
             SELECT po FROM ProductionOrderEntity po
             WHERE UPPER(COALESCE(po.sellerName, '')) LIKE '%LUIS FELIPE%'

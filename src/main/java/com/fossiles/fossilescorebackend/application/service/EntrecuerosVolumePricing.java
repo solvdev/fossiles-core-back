@@ -10,6 +10,14 @@ public final class EntrecuerosVolumePricing {
     private EntrecuerosVolumePricing() {
     }
 
+    /**
+     * Top configured tier: 12 if set, else 6, else 3, else unit, else sale price
+     * (then seller price, same last fallback as {@link #resolveUnitPrice}).
+     */
+    public static BigDecimal resolveTopConfiguredTier(ProductEntity product) {
+        return resolveUnitPrice(product, BigDecimal.valueOf(12));
+    }
+
     public static BigDecimal resolveUnitPrice(ProductEntity product, BigDecimal quantity) {
         if (product == null) {
             return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);

@@ -26,6 +26,8 @@ public interface OnlineSaleRepository extends JpaRepository<OnlineSaleEntity, Lo
 
     List<OnlineSaleEntity> findBySaleDateBetweenOrderBySaleDateDesc(LocalDate startDate, LocalDate endDate);
 
+    List<OnlineSaleEntity> findByShipmentNumberIgnoreCaseOrderBySaleDateDescIdDesc(String shipmentNumber);
+
     /** Ventas elegibles para orden de producción (pagadas y no asignadas aún) */
     @Query("SELECT s FROM OnlineSaleEntity s WHERE s.inProductionOrder = false " +
            "AND s.status NOT IN ('EN_PRODUCCION', 'PRODUCIDO', 'ENVIADO', 'ENTREGADO', 'ANULADA', 'CANCELADO', 'DEVOLUCION') " +

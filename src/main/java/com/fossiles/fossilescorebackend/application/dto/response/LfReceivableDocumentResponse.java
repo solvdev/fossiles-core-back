@@ -31,8 +31,10 @@ public class LfReceivableDocumentResponse {
     private String partialReleaseLabel;
     private LocalDate dueDate;
     private LocalDate chargeDate;
-    /** Monto original del cargo (CARGOS). */
+    /** Monto de la fila CHARGE. */
     private BigDecimal chargeAmount;
+    /** CHARGE más ajustes de envío activos. */
+    private BigDecimal documentAmount;
     /** Abonos + notas de crédito + devoluciones aplicadas al cargo. */
     private BigDecimal appliedCredits;
     private BigDecimal balanceDue;

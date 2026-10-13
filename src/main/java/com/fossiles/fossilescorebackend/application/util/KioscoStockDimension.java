@@ -99,7 +99,7 @@ public final class KioscoStockDimension {
         String brand = ProductBrandNames.normalize(raw);
         if (brand == null) {
             throw new BusinessException(
-                    "En Entre Cueros indique la marca (LEVIS, NAUTICA, TOMMY HILFIGER, LACOSTE o ABERCROMBIE).");
+                    "En Entre Cueros indique la marca (LEVIS, NAUTICA, TOMMY HILFIGER, LACOSTE, ABERCROMBIE o TIMBERLAND).");
         }
         return brand;
     }

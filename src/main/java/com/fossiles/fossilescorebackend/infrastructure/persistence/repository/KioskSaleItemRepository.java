@@ -15,6 +15,31 @@ public interface KioskSaleItemRepository extends JpaRepository<KioskSaleItemEnti
 
     java.util.Optional<KioskSaleItemEntity> findByIdAndKioskSale_Id(Long id, Long kioskSaleId);
 
+    /** Ítems de todas las ventas del rango en una sola consulta (dashboards). */
+    @Query("""
+            SELECT new com.fossiles.fossilescorebackend.infrastructure.persistence.projection.KioskSaleItemRow(
+                i.kioskSale.id, i.productId, i.productCode, i.productName, i.quantity, i.lineTotal)
+            FROM KioskSaleItemEntity i
+            WHERE i.kioskSale.saleDate >= :startDate AND i.kioskSale.saleDate <= :endDate
+            ORDER BY i.id ASC
+            """)
+    List<com.fossiles.fossilescorebackend.infrastructure.persistence.projection.KioskSaleItemRow>
+            findRowsBySaleDateBetween(
+                    @Param("startDate") LocalDate startDate,
+                    @Param("endDate") LocalDate endDate
+            );
+
+    /** Ítems de un conjunto acotado de ventas en una sola consulta. */
+    @Query("""
+            SELECT new com.fossiles.fossilescorebackend.infrastructure.persistence.projection.KioskSaleItemRow(
+                i.kioskSale.id, i.productId, i.productCode, i.productName, i.quantity, i.lineTotal)
+            FROM KioskSaleItemEntity i
+            WHERE i.kioskSale.id IN :saleIds
+            ORDER BY i.id ASC
+            """)
+    List<com.fossiles.fossilescorebackend.infrastructure.persistence.projection.KioskSaleItemRow>
+            findRowsByKioskSaleIdIn(@Param("saleIds") java.util.Collection<Long> saleIds);
+
     /**
      * Ventas reales por producto/color/kiosko. Excluye anuladas y ventas de piloto.
      * Agrupa por color_id; el nombre se usa solo como respaldo si el id viene nulo.

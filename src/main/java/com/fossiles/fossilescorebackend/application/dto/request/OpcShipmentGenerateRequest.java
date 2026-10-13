@@ -25,5 +25,8 @@ public class OpcShipmentGenerateRequest {
     /** Fecha impresa en documento (YYYY-MM-DD); se persiste en notes como DOCUMENT_DATE:… */
     private String documentDate;
 
+    /** Costo de envío de este documento (Q); se guarda en product_shipment.shipping_cost. */
+    private java.math.BigDecimal shippingCost;
+
     private List<ProductShipmentRequest.PackingItemRequest> packingItems;
 }

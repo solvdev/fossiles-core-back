@@ -21,6 +21,7 @@ public class CustomerResponse {
     private String address;
     private String routeLocationCode;
     private String status;
+    private Integer creditDays;
     private LocalDateTime createdAt;
     private Long createdBy;
     private LocalDateTime updatedAt;

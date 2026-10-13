@@ -36,6 +36,9 @@ import java.util.stream.Collectors;
  * créditos y saldo, calculado desde el libro de cuentas por cobrar con la misma regla que el listado
  * ({@link CustomerAccountService#getSummary}), de modo que los totales cuadran con los saldos del sistema.
  *
+ * <p>Es una cartera de saldos: un documento cuyo saldo es cero ya no se debe y no se lista, y un cliente sin
+ * ningún documento con saldo tampoco. Los documentos con saldo negativo (crédito a favor) sí se listan.
+ *
  * <p>El detalle de movimientos es un anexo separado y opcional; nunca se mezcla con las filas de cartera.
  */
 @Service
@@ -52,8 +55,11 @@ public class CustomerAccountPortfolioReportService {
     private static final String TYPE_PAYMENT = "PAYMENT";
     private static final String TYPE_CREDIT_NOTE = "CREDIT_NOTE";
     private static final String TYPE_OPENING_BALANCE = "OPENING_BALANCE";
+    private static final String TYPE_CHARGE_ADJUSTMENT = "CHARGE_ADJUSTMENT";
     private static final String TYPE_RETURN = "RETURN";
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(2);
+    /** Por debajo de medio centavo un saldo es cero (los montos se guardan a 2 decimales). */
+    private static final BigDecimal BALANCE_EPSILON = new BigDecimal("0.005");
 
     private final CustomerAccountService accountService;
     private final CustomerAccountEntryRepository entryRepository;
@@ -63,7 +69,6 @@ public class CustomerAccountPortfolioReportService {
     public CustomerAccountPortfolioReportResponse buildReport(
             String search,
             String orderKind,
-            boolean onlyOpen,
             String regionCode,
             Integer routeNumber,
             String routeLocationCode,
@@ -80,8 +85,11 @@ public class CustomerAccountPortfolioReportService {
                 .collect(Collectors.toSet());
 
         // Una sola lectura del libro (sin joins ni paginación): cada movimiento aparece una vez.
-        Map<Long, List<CustomerAccountEntryEntity>> entriesByCustomer = entryRepository.findAll().stream()
-                .filter(e -> customerIds.contains(e.getCustomerId()))
+        // Solo lo despachado cuenta como cartera (copias para leer; el libro no se toca).
+        Map<Long, List<CustomerAccountEntryEntity>> entriesByCustomer = accountService.visibleEntries(
+                entryRepository.findAll().stream()
+                        .filter(e -> customerIds.contains(e.getCustomerId()))
+                        .toList()).stream()
                 .collect(Collectors.groupingBy(CustomerAccountEntryEntity::getCustomerId));
 
         Map<Long, ProductionOrderEntity> ordersById = loadOrders(entriesByCustomer);
@@ -108,21 +116,35 @@ public class CustomerAccountPortfolioReportService {
             }
 
             boolean customerMatches = searchNorm.isEmpty() || customerMatchesSearch(summary, searchNorm);
-            // "Solo con saldo" solo quita filas en cero (no altera el saldo del cliente).
-            List<CustomerAccountPortfolioRowResponse> open = customerRows.stream()
-                    .filter(r -> !onlyOpen || r.getBalanceDue().abs().compareTo(new BigDecimal("0.005")) >= 0)
-                    .toList();
-            List<CustomerAccountPortfolioRowResponse> filtered = open.stream()
+            List<CustomerAccountPortfolioRowResponse> matching = customerRows.stream()
                     .filter(r -> customerMatches || rowMatchesSearch(r, searchNorm))
                     .toList();
+            if (matching.isEmpty()) {
+                continue;
+            }
+            // Cartera = lo que todavía se debe: los documentos saldados (saldo cero) y los que están a favor del
+            // cliente (saldo negativo, abonos a un cargo anulado) no se listan, y un cliente sin documentos con
+            // saldo por cobrar no sale. La conciliación usa todos los documentos, listados o no.
+            List<CustomerAccountPortfolioRowResponse> filtered = matching.stream()
+                    .filter(CustomerAccountPortfolioReportService::hasBalance)
+                    .toList();
+            CustomerAccountPortfolioCustomerResponse customerTotals = totalsFor(summary, filtered);
+            CustomerAccountPortfolioCustomerResponse reconTotals = totalsFor(summary, matching);
+
+            // Si la búsqueda ocultó documentos, el saldo del cliente ya no es comparable con el del sistema.
+            // La conciliación incluye también a los clientes en cero: así un saldo en cero aquí que el sistema
+            // todavía muestra como deuda sigue apareciendo como diferencia en vez de esconderse.
+            boolean subset = matching.size() != customerRows.size();
+            if (!subset) {
+                reconDue = reconDue.add(reconTotals.getBalanceDue());
+                BigDecimal due = "OPC".equals(kind) ? summary.getBalanceDueOpc() : summary.getBalanceDueOpv();
+                systemDue = systemDue.add(due != null ? due : ZERO);
+            }
             if (filtered.isEmpty()) {
                 continue;
             }
-            // Si la búsqueda ocultó documentos, el saldo del cliente ya no es comparable con el del sistema.
-            boolean subset = filtered.size() != open.size();
 
             rows.addAll(filtered);
-            CustomerAccountPortfolioCustomerResponse customerTotals = totalsFor(summary, filtered);
             customers.add(customerTotals);
             duplicateDocs += (int) filtered.stream().filter(CustomerAccountPortfolioRowResponse::isDuplicateCharges).count();
 
@@ -130,12 +152,6 @@ public class CustomerAccountPortfolioReportService {
                 if (isCredit(credit.getEntryType()) && credit.getAppliedToEntryId() == null) {
                     unappliedCredits = unappliedCredits.add(accountService.resolveEntryAppliedCredit(credit));
                 }
-            }
-
-            if (!subset) {
-                reconDue = reconDue.add(customerTotals.getBalanceDue());
-                BigDecimal due = "OPC".equals(kind) ? summary.getBalanceDueOpc() : summary.getBalanceDueOpv();
-                systemDue = systemDue.add(due != null ? due : ZERO);
             }
 
             if (includeMovements) {
@@ -221,6 +237,20 @@ public class CustomerAccountPortfolioReportService {
         }
 
         List<CustomerAccountEntryEntity> orphanCredits = new ArrayList<>();
+        List<CustomerAccountEntryEntity> looseAdjustments = new ArrayList<>();
+        for (CustomerAccountEntryEntity entry : active) {
+            if (!TYPE_CHARGE_ADJUSTMENT.equalsIgnoreCase(entry.getEntryType())) {
+                continue;
+            }
+            ChargeGroup group = entry.getAppliedToEntryId() == null
+                    ? null
+                    : groupByChargeId.get(entry.getAppliedToEntryId());
+            if (group != null) {
+                group.adjustments.add(entry);
+            } else {
+                looseAdjustments.add(entry);
+            }
+        }
         for (CustomerAccountEntryEntity entry : active) {
             if (!isCredit(entry.getEntryType()) || entry.getAppliedToEntryId() == null) {
                 continue;
@@ -250,6 +280,11 @@ public class CustomerAccountPortfolioReportService {
                 .toList();
         if (!kindOrphans.isEmpty()) {
             rows.add(orphanCreditRow(summary, kindOrphans, kind));
+        }
+        for (CustomerAccountEntryEntity adjustment : looseAdjustments) {
+            if (kind.equals(kindOf(adjustment, ordersById))) {
+                rows.add(adjustmentRow(summary, adjustment, kind));
+            }
         }
 
         rows.sort(Comparator
@@ -282,6 +317,9 @@ public class CustomerAccountPortfolioReportService {
                 ProductShipmentEntity shipment = shipmentsById.get(charge.getProductShipmentId());
                 shipmentNumber = shipment != null ? shipment.getShipmentNumber() : null;
             }
+        }
+        for (CustomerAccountEntryEntity adjustment : group.adjustments) {
+            charged = charged.add(nz(adjustment.getAmount()));
         }
         ProductionOrderEntity order = head.getProductionOrderId() != null
                 ? ordersById.get(head.getProductionOrderId())
@@ -324,6 +362,23 @@ public class CustomerAccountPortfolioReportService {
                 .chargeCount(1)
                 .documentNumber("SALDO INICIAL")
                 .chargeDate(opening.getEntryDate())
+                .chargedAmount(amount)
+                .paymentsApplied(ZERO)
+                .creditsApplied(ZERO)
+                .balanceDue(amount)
+                .status("OPEN")
+                .build();
+    }
+
+    private CustomerAccountPortfolioRowResponse adjustmentRow(
+            CustomerAccountSummaryResponse summary, CustomerAccountEntryEntity adjustment, String kind) {
+        BigDecimal amount = nz(adjustment.getAmount()).setScale(2, RoundingMode.HALF_UP);
+        return baseRow(summary, ROW_DOCUMENT, kind)
+                .chargeEntryId(adjustment.getId())
+                .chargeEntryIds(List.of(adjustment.getId()))
+                .chargeCount(1)
+                .documentNumber("AJUSTE ENVIO " + adjustment.getId())
+                .chargeDate(adjustment.getEntryDate())
                 .chargedAmount(amount)
                 .paymentsApplied(ZERO)
                 .creditsApplied(ZERO)
@@ -394,6 +449,11 @@ public class CustomerAccountPortfolioReportService {
         private int paymentCount;
         private int creditCount;
         private LocalDate lastPaymentDate;
+    }
+
+    /** Un documento está en cartera mientras tenga saldo por cobrar; un saldo negativo es crédito a favor y no se lista. */
+    private static boolean hasBalance(CustomerAccountPortfolioRowResponse row) {
+        return row.getBalanceDue().compareTo(BALANCE_EPSILON) >= 0;
     }
 
     private static String statusOf(BigDecimal balance, Amounts amounts) {
@@ -561,6 +621,7 @@ public class CustomerAccountPortfolioReportService {
         private final CustomerAccountEntryEntity head;
         private final List<CustomerAccountEntryEntity> charges = new ArrayList<>();
         private final List<CustomerAccountEntryEntity> credits = new ArrayList<>();
+        private final List<CustomerAccountEntryEntity> adjustments = new ArrayList<>();
 
         private ChargeGroup(CustomerAccountEntryEntity head) {
             this.head = head;
@@ -596,7 +657,9 @@ public class CustomerAccountPortfolioReportService {
     }
 
     private static boolean isDebit(String type) {
-        return TYPE_CHARGE.equalsIgnoreCase(type) || TYPE_OPENING_BALANCE.equalsIgnoreCase(type);
+        return TYPE_CHARGE.equalsIgnoreCase(type)
+                || TYPE_OPENING_BALANCE.equalsIgnoreCase(type)
+                || TYPE_CHARGE_ADJUSTMENT.equalsIgnoreCase(type);
     }
 
     private static boolean isCredit(String type) {

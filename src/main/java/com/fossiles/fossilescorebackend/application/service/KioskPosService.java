@@ -134,6 +134,7 @@ public class KioskPosService {
     );
     static final String DEPOSIT_BANK_GT_CONTINENTAL = "GT_CONTINENTAL";
     static final String DEPOSIT_BANK_INDUSTRIAL = "INDUSTRIAL";
+    static final String DEPOSIT_BANK_BANRURAL = "BANRURAL";
 
     private final SecurityUtil securityUtil;
     private final UserRepository userRepository;
@@ -277,9 +278,11 @@ public class KioskPosService {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
-        appendMissingPackagingCatalogItems(rawInventory, productsById, categoriesById, kiosk);
         if (KioskPosMode.isEntrecueros(kiosk)) {
+            rawInventory.removeIf(item -> isPackagingInventoryItem(item, productsById));
             rawInventory.removeIf(item -> !Boolean.TRUE.equals(item.getEntrecuerosEnabled()));
+        } else {
+            appendMissingPackagingCatalogItems(rawInventory, productsById, categoriesById, kiosk);
         }
 
         List<KioskPosContextResponse.InventoryItem> inventory = rawInventory.stream()
@@ -363,6 +366,9 @@ public class KioskPosService {
         }
 
         Map<String, BigDecimal> aggregatedQty = aggregateItemQuantities(request.getItems());
+        if (entrecueros) {
+            rejectEntrecuerosPackagingSaleItems(request.getItems());
+        }
         // Cambio: no valida/descuenta stock aquí (lo mueve la boleta: CAMBIO + y CAMBIO −).
         if (!exchangeSale) {
             lockAndValidateStock(kiosk.getId(), aggregatedQty);
@@ -386,7 +392,6 @@ public class KioskPosService {
                         itemRequest.getQuantity());
             }
         }
-        boolean wholesaleUnlocked = entrecueros && EntrecuerosPriceLists.unlocksWholesale(qtyByPriceKey);
 
         for (KioskPosSaleRequest.ItemRequest itemRequest : request.getItems()) {
             if (itemRequest == null || itemRequest.getProductId() == null) {
@@ -399,6 +404,7 @@ public class KioskPosService {
 
             ProductEntity product = productRepository.findById(itemRequest.getProductId())
                     .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
+            rejectEntrecuerosPackaging(entrecueros, product);
             if (entrecueros && !Boolean.TRUE.equals(product.getEntrecuerosEnabled())) {
                 throw new BusinessException(
                         "El producto " + product.getCode() + " no está habilitado para venta Entrecueros.");
@@ -438,9 +444,9 @@ public class KioskPosService {
                 throw new BusinessException("Debe seleccionar talla para " + product.getName() + ".");
             }
 
+            // Entrecueros: el servidor recalcula y guarda el precio. El unitPrice del cliente no se usa.
             BigDecimal unitPrice = entrecueros
-                    ? resolveEntrecuerosLineUnitPrice(
-                            product, hardware, quantity, qtyByPriceKey, wholesaleUnlocked)
+                    ? resolveEntrecuerosLineUnitPrice(product, hardware, quantity, qtyByPriceKey)
                     : resolvePosUnitPrice(product, sizeLabel);
             // Línea con precio editado (Miraflores): monto final, sin descuento sobre esa línea.
             boolean finalUnitPrice = false;
@@ -455,7 +461,9 @@ public class KioskPosService {
                     finalUnitPrice = true;
                 }
             }
-            BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal lineTotal = entrecueros
+                    ? EntrecuerosPriceLists.lineTotal(unitPrice, quantity)
+                    : unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
 
             preparedLines.add(new PreparedLine(
                     product,
@@ -662,6 +670,7 @@ public class KioskPosService {
 
         List<LocationEntity> availableKiosks = resolveAvailableKiosks(user, admin);
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
+        boolean entrecueros = KioskPosMode.isEntrecueros(kiosk);
 
         String saleNumber = safeTrim(request.getSaleNumber());
         if (saleNumber.isBlank()) {
@@ -702,6 +711,7 @@ public class KioskPosService {
 
             ProductEntity product = productRepository.findById(itemRequest.getProductId())
                     .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
+            rejectEntrecuerosPackaging(entrecueros, product);
 
             ColorEntity color = null;
             if (itemRequest.getColorId() != null) {
@@ -1205,7 +1215,7 @@ public class KioskPosService {
         String depositBank = normalizeDepositBankCode(request.getDepositBank());
         if (depositBank == null) {
             throw new BusinessException(
-                    "Debes indicar el banco del depósito (Banco G&T Continental o Banco Industrial).");
+                    "Debes indicar el banco del depósito (Banco G&T Continental, Banco Industrial o BANRURAL).");
         }
         UserEntity user = getCurrentUserOrThrow();
         boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
@@ -1818,11 +1828,17 @@ public class KioskPosService {
             }
         }
 
+        // TARJETAS = monto de factura + (voucher − factura). Si cobraron de más/menos en terminal, entra en DIFERENCIA.
+        cardsTotal = cardsTotal.add(sumCardVoucherDifferences(sales));
+
         List<KioskCashExpenseEntity> expenses = kioskCashExpenseRepository.findForReport(
                 startAt, endAtExclusive, kiosk.getId());
         BigDecimal expensesTotal = expenses.stream()
                 .map(expense -> safeAmount(expense.getAmount()))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // Sobrante/faltante de efectivo de todos los cierres del periodo (cualquier día del corte).
+        BigDecimal cashCloseVarianceTotal = sumCashCloseVariancesForPeriod(kiosk.getId(), startAt, endAtExclusive);
 
         totalSold = totalSold.setScale(2, RoundingMode.HALF_UP);
         cardsTotal = cardsTotal.setScale(2, RoundingMode.HALF_UP);
@@ -1830,7 +1846,9 @@ public class KioskPosService {
         expensesTotal = expensesTotal.setScale(2, RoundingMode.HALF_UP);
         BigDecimal reconciledTotal = cardsTotal.add(depositsTotal).add(expensesTotal)
                 .setScale(2, RoundingMode.HALF_UP);
-        BigDecimal difference = reconciledTotal.subtract(totalSold).setScale(2, RoundingMode.HALF_UP);
+        // DIFERENCIA = descuadre canales + diffs voucher (en TARJETAS) + variances de cierres del periodo.
+        BigDecimal difference = reconciledTotal.subtract(totalSold).add(cashCloseVarianceTotal)
+                .setScale(2, RoundingMode.HALF_UP);
 
         List<KioskMainSheetReportResponse.DailySaleRow> dailySales = dailyTotals.entrySet().stream()
                 .map(entry -> KioskMainSheetReportResponse.DailySaleRow.builder()
@@ -2608,32 +2626,16 @@ public class KioskPosService {
             String hardware,
             BigDecimal quantity
     ) {
-        if (product != null && KioscoInventoryInitRules.isPackagingProduct(product)) {
-            return;
-        }
-        qtyByPriceKey.merge(
-                EntrecuerosPriceLists.volumeKey(productId, product, hardware),
-                quantity,
-                BigDecimal::add);
+        EntrecuerosPriceLists.addVolumeQuantity(qtyByPriceKey, productId, product, hardware, quantity);
     }
 
     private BigDecimal resolveEntrecuerosLineUnitPrice(
             ProductEntity product,
             String hardware,
             BigDecimal lineQty,
-            Map<String, BigDecimal> qtyByPriceKey,
-            boolean wholesaleUnlocked
+            Map<String, BigDecimal> qtyByPriceKey
     ) {
-        if (KioscoInventoryInitRules.isPackagingProduct(product)) {
-            return EntrecuerosPriceLists.resolveUnitPrice(product, hardware, lineQty);
-        }
-        BigDecimal ownQty = qtyByPriceKey.getOrDefault(
-                EntrecuerosPriceLists.volumeKey(product.getId(), product, hardware),
-                lineQty);
-        return EntrecuerosPriceLists.resolveUnitPrice(
-                product,
-                hardware,
-                EntrecuerosPriceLists.quantityForPrice(ownQty, wholesaleUnlocked));
+        return EntrecuerosPriceLists.resolveChargedUnitPrice(product, hardware, lineQty, qtyByPriceKey);
     }
 
     private List<PreparedLine> buildPreparedLinesForEstimate(
@@ -2656,7 +2658,6 @@ public class KioskPosService {
                         itemRequest.getQuantity());
             }
         }
-        boolean wholesaleUnlocked = entrecueros && EntrecuerosPriceLists.unlocksWholesale(qtyByPriceKey);
         List<PreparedLine> preparedLines = new ArrayList<>();
         for (KioskPosPromotionEstimateRequest.ItemRequest itemRequest : items) {
             if (itemRequest == null || itemRequest.getProductId() == null) {
@@ -2668,6 +2669,7 @@ public class KioskPosService {
             }
             ProductEntity product = productRepository.findById(itemRequest.getProductId())
                     .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
+            rejectEntrecuerosPackaging(entrecueros, product);
             ColorEntity color = null;
             if (itemRequest.getColorId() != null) {
                 color = colorRepository.findById(itemRequest.getColorId())
@@ -2676,10 +2678,11 @@ public class KioskPosService {
             String sizeLabel = ProductInventorySizesJson.normalizeKey(itemRequest.getSize());
             String hardware = resolveItemHardwareCondition(itemRequest.getHardwareCondition());
             BigDecimal unitPrice = entrecueros
-                    ? resolveEntrecuerosLineUnitPrice(
-                            product, hardware, quantity, qtyByPriceKey, wholesaleUnlocked)
+                    ? resolveEntrecuerosLineUnitPrice(product, hardware, quantity, qtyByPriceKey)
                     : resolvePosUnitPrice(product, sizeLabel);
-            BigDecimal lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal lineTotal = entrecueros
+                    ? EntrecuerosPriceLists.lineTotal(unitPrice, quantity)
+                    : unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
             preparedLines.add(new PreparedLine(
                     product,
                     color,
@@ -3156,6 +3159,45 @@ public class KioskPosService {
             return false;
         }
         return product.getCode().trim().toUpperCase(Locale.ROOT).startsWith(PACKAGING_PRODUCT_CODE_PREFIX);
+    }
+
+    private boolean isPackagingInventoryItem(
+            KioskPosContextResponse.InventoryItem item,
+            Map<Long, ProductEntity> productsById
+    ) {
+        if (item == null) {
+            return false;
+        }
+        ProductEntity product = item.getProductId() != null && productsById != null
+                ? productsById.get(item.getProductId())
+                : null;
+        if (product != null) {
+            return isPackagingProduct(product);
+        }
+        return ProductCinchoType.isPackagingProductCode(item.getProductCode());
+    }
+
+    private void rejectEntrecuerosPackaging(boolean entrecueros, ProductEntity product) throws BusinessException {
+        if (!entrecueros || !isPackagingProduct(product)) {
+            return;
+        }
+        throw new BusinessException("Entrecueros no vende empaque: " + product.getName() + ".");
+    }
+
+    private void rejectEntrecuerosPackagingSaleItems(List<KioskPosSaleRequest.ItemRequest> items)
+            throws BusinessException {
+        if (items == null) {
+            return;
+        }
+        for (KioskPosSaleRequest.ItemRequest itemRequest : items) {
+            if (itemRequest == null || itemRequest.getProductId() == null) {
+                continue;
+            }
+            ProductEntity product = productRepository.findById(itemRequest.getProductId()).orElse(null);
+            if (product != null) {
+                rejectEntrecuerosPackaging(true, product);
+            }
+        }
     }
 
     private boolean isInactiveProduct(ProductEntity product) {
@@ -4617,6 +4659,26 @@ public class KioskPosService {
         return total.setScale(2, RoundingMode.HALF_UP);
     }
 
+    /** Suma variance (contado − esperado) de cierres CLOSED del kiosko en la ventana del corte. */
+    private BigDecimal sumCashCloseVariancesForPeriod(
+            Long kioskLocationId,
+            LocalDateTime startAt,
+            LocalDateTime endAtExclusive
+    ) {
+        if (kioskLocationId == null || startAt == null || endAtExclusive == null) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        List<KioskCashSessionEntity> sessions = kioskCashSessionRepository.findClosedSessionsForHistory(
+                CASH_SESSION_CLOSED, startAt, endAtExclusive, List.of(kioskLocationId));
+        BigDecimal total = BigDecimal.ZERO;
+        for (KioskCashSessionEntity session : sessions) {
+            if (session.getVariance() != null) {
+                total = total.add(session.getVariance());
+            }
+        }
+        return total.setScale(2, RoundingMode.HALF_UP);
+    }
+
     private String resolveSaleInvoiceNumber(KioskSaleEntity sale) {
         String internal = taxInvoiceService.getInternalNumber(sale.getInvoiceId());
         if (internal != null && !internal.isBlank()) {
@@ -5086,6 +5148,10 @@ public class KioskPosService {
                 || "BI".equals(normalized)) {
             return DEPOSIT_BANK_INDUSTRIAL;
         }
+        if (DEPOSIT_BANK_BANRURAL.equals(normalized)
+                || "BANCO_BANRURAL".equals(normalized)) {
+            return DEPOSIT_BANK_BANRURAL;
+        }
         return null;
     }
 
@@ -5095,6 +5161,10 @@ public class KioskPosService {
             String name = safeTrim(depositReportProperties.getIndustrialBankName());
             return name.isBlank() ? "Banco Industrial" : name;
         }
+        if (DEPOSIT_BANK_BANRURAL.equals(code)) {
+            String name = safeTrim(depositReportProperties.getBanruralBankName());
+            return name.isBlank() ? "BANRURAL" : name;
+        }
         String name = safeTrim(depositReportProperties.getBankName());
         return name.isBlank() ? "Banco G&T Continental" : name;
     }
@@ -5103,6 +5173,9 @@ public class KioskPosService {
         String code = normalizeDepositBankCode(bankCode);
         if (DEPOSIT_BANK_INDUSTRIAL.equals(code)) {
             return safeTrim(depositReportProperties.getIndustrialBankAccount());
+        }
+        if (DEPOSIT_BANK_BANRURAL.equals(code)) {
+            return safeTrim(depositReportProperties.getBanruralBankAccount());
         }
         return safeTrim(depositReportProperties.getBankAccount());
     }

@@ -78,6 +78,10 @@ public class CustomerAccountEntryEntity {
     @Column(name = "applied_to_entry_id")
     private Long appliedToEntryId;
 
+    /** Primer cargo del que se trasladó este movimiento. No se pisa en un segundo traslado. */
+    @Column(name = "reassigned_from_entry_id")
+    private Long reassignedFromEntryId;
+
     @Column(name = "invoice_number", length = 50)
     private String invoiceNumber;
 

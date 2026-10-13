@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductDistribut
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentDestinationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentObservationsRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentShippingCostRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockPreviewResponse;
@@ -36,6 +37,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -58,6 +60,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional
@@ -109,6 +112,7 @@ public class ProductDistributionService {
     private final SecurityUtil securityUtil;
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final ProductionOrderPartialReleaseRepository partialReleaseRepository;
+    private final CustomerAccountService customerAccountService;
     private final ObjectMapper objectMapper;
 
     // ========== DISTRIBUTION ==========
@@ -303,6 +307,9 @@ public class ProductDistributionService {
             }
             targetShipment.setNotes(persistedNotes);
             targetShipment.setPackingItems(serializePackingItems(request.getPackingItems()));
+            if (request.getShippingCost() != null) {
+                targetShipment.setShippingCost(normalizeShippingCost(request.getShippingCost()));
+            }
             ProductShipmentEntity saved = shipmentRepository.save(targetShipment);
             return toShipmentResponse(saved);
         }
@@ -337,6 +344,7 @@ public class ProductDistributionService {
                 .status("DRAFT")
                 .notes(persistedNotes)
                 .packingItems(serializePackingItems(request.getPackingItems()))
+                .shippingCost(normalizeShippingCost(request.getShippingCost()))
                 .createdBy(securityUtil.getCurrentUserId())
                 .updatedBy(securityUtil.getCurrentUserId())
                 .build();
@@ -402,6 +410,7 @@ public class ProductDistributionService {
                 .documentDate(request.getDocumentDate())
                 .products(products)
                 .packingItems(packingItems)
+                .shippingCost(request.getShippingCost())
                 .build();
 
         ProductShipmentResponse draft = createOrUpdateShipmentForProductionOrder(productionOrderId, createRequest);
@@ -450,6 +459,7 @@ public class ProductDistributionService {
                 .products(products)
                 .packingItems(packingItems)
                 .partialReleaseId(partialReleaseId)
+                .shippingCost(request.getShippingCost())
                 .build();
 
         ProductShipmentResponse draft = createOrUpdateShipmentForProductionOrder(productionOrderId, createRequest);
@@ -486,6 +496,7 @@ public class ProductDistributionService {
         if (details.isEmpty() && !hasPacking) {
             throw new BusinessException("No se puede confirmar un envío sin productos ni empaques.");
         }
+        assertShipmentDetailsHaveCinchoSize(shipmentId);
         // Congela precios en la línea del envío al confirmar (CxC usa este precio, no el catálogo futuro).
         freezeMissingShipmentDetailUnitPrices(shipment, details);
         shipment.setStatus("CONFIRMED");
@@ -1042,11 +1053,20 @@ public class ProductDistributionService {
                                 .build());
                         addedFromSizes = true;
                     }
-                } catch (Exception ignored) {
-                    // malformed sizes JSON
+                } catch (Exception ex) {
+                    String label = product != null && product.getCode() != null
+                            ? product.getCode()
+                            : ("producto " + item.getProductId());
+                    throw new BusinessException(
+                            "No se pudieron leer las tallas de " + label + ". El envío no se armó.");
                 }
             }
             if (!addedFromSizes && item.getQuantity() != null && item.getQuantity() > 0) {
+                if (CinchoProductUtils.isCinchoLineForProduction(product)) {
+                    String label = product.getCode() != null ? product.getCode() : ("producto " + product.getId());
+                    throw new BusinessException(
+                            "El cincho " + label + " no tiene tallas. Indique la cantidad de cada talla antes de armar el envío.");
+                }
                 BigDecimal unitPrice = resolveShipmentUnitPriceFromOrderItem(item, null, preferSellerPrice);
                 lines.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
                         .productId(item.getProductId())
@@ -1322,6 +1342,28 @@ public class ProductDistributionService {
     }
 
     /**
+     * Asigna o limpia el costo de envío del documento (Preparar envíos / parciales).
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ProductShipmentResponse updateShipmentShippingCost(
+            Long shipmentId,
+            ProductShipmentShippingCostRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        ProductShipmentEntity shipment = shipmentRepository.findById(shipmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
+        assertShipmentProductsEditable(shipment);
+        if (request == null || request.getShippingCost() == null) {
+            shipment.setShippingCost(null);
+        } else {
+            shipment.setShippingCost(normalizeShippingCost(request.getShippingCost()));
+        }
+        shipment.setUpdatedBy(securityUtil.getCurrentUserId());
+        ProductShipmentEntity saved = shipmentRepository.save(shipment);
+        customerAccountService.syncShipmentEntries(shipmentId);
+        return toShipmentResponse(saved);
+    }
+
+    /**
      * Corrige kiosko destino y/o dirección DESTINO: en notas (borrador, confirmado o en tránsito).
      */
     public ProductShipmentResponse updateShipmentDestination(
@@ -1432,7 +1474,8 @@ public class ProductDistributionService {
      * Actualiza los productos de un envío (borrador, confirmado o en tránsito).
      * Si el envío ya salió de PT, revierte la salida anterior y aplica la nueva composición.
      */
-    public ProductShipmentResponse updateShipmentProducts(Long shipmentId, List<ProductShipmentRequest.ProductShipmentDetailRequest> products) 
+    @Transactional(rollbackFor = Exception.class)
+    public ProductShipmentResponse updateShipmentProducts(Long shipmentId, List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
@@ -1441,6 +1484,10 @@ public class ProductDistributionService {
         List<ProductShipmentRequest.ProductShipmentDetailRequest> normalized = normalizeShipmentProducts(products);
         if (normalized.isEmpty()) {
             throw new BusinessException("El envío debe tener al menos un producto con cantidad.");
+        }
+        for (ProductShipmentRequest.ProductShipmentDetailRequest line : normalized) {
+            ProductEntity product = productRepository.findById(line.getProductId()).orElse(null);
+            assertCinchoSizePresent(product, line.getSize());
         }
 
         String status = shipment.getStatus() == null ? "" : shipment.getStatus().trim().toUpperCase();
@@ -1483,6 +1530,8 @@ public class ProductDistributionService {
 
         shipment.setUpdatedBy(securityUtil.getCurrentUserId());
         shipmentRepository.save(shipment);
+        // Si el envío ya está despachado, su cargo sigue lo realmente enviado.
+        customerAccountService.syncShipmentEntries(shipmentId);
         return toShipmentResponse(shipment);
     }
 
@@ -1579,6 +1628,7 @@ public class ProductDistributionService {
      * Revierte un envío en tránsito (SENT) a confirmado y devuelve el inventario a PT/Devoluciones.
      * No aplica si el kiosko ya recibió el envío (DELIVERED u otros estados finales).
      */
+    @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse revertSentShipment(Long shipmentId)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
@@ -1588,6 +1638,9 @@ public class ProductDistributionService {
             throw new BusinessException(
                     "Solo se puede regresar a bodega un envío en tránsito (SENT). Estado actual: " + currentStatus);
         }
+        // Lo que ya no salió no se cobra: se anula el cargo del despacho (o se rechaza si ya tiene pagos).
+        customerAccountService.voidEntriesForShipment(shipmentId,
+                "Despacho revertido del envío " + shipment.getShipmentNumber());
 
         if (shipmentDispatchesFromPtWarehouses(shipment)) {
             reverseSentShipmentDispatchInventory(shipment);
@@ -1616,6 +1669,7 @@ public class ProductDistributionService {
      * En SENT revierte primero la salida de Bodega PT/Devoluciones.
      * No aplica a envíos ya recibidos en kiosko (DELIVERED u otros finales).
      */
+    @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse cancelShipment(Long shipmentId)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
@@ -1631,6 +1685,9 @@ public class ProductDistributionService {
                     "Solo se puede anular un envío en borrador, confirmado o en tránsito (antes de recibir en kiosko). Estado actual: "
                             + currentStatus);
         }
+        // Un envío anulado no se cobra: se anula el cargo del despacho (o se rechaza si ya tiene pagos).
+        customerAccountService.voidEntriesForShipment(shipmentId,
+                "Envío anulado " + shipment.getShipmentNumber());
 
         boolean wasConfirmedOrSent = "CONFIRMED".equals(currentStatus) || "SENT".equals(currentStatus);
         if ("SENT".equals(currentStatus) && shipmentDispatchesFromPtWarehouses(shipment)) {
@@ -1753,6 +1810,9 @@ public class ProductDistributionService {
         if (shipments.isEmpty()) {
             throw new BusinessException("No se puede completar una distribución sin envíos");
         }
+        for (ProductShipmentEntity shipment : shipments) {
+            assertShipmentDetailsHaveCinchoSize(shipment.getId());
+        }
         
         if (generateProductionOrder) {
             // Agregar productos de todos los envíos (sumar cantidades por producto+color)
@@ -1760,6 +1820,7 @@ public class ProductDistributionService {
             Map<String, BigDecimal> aggregatedProducts = new HashMap<>();
             Map<String, Long> keyToProductId = new HashMap<>();
             Map<String, Long> keyToColorId = new HashMap<>();
+            Map<String, Map<String, Integer>> sizesByKey = new HashMap<>();
 
             for (ProductShipmentEntity shipment : shipments) {
                 List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(shipment.getId());
@@ -1771,6 +1832,11 @@ public class ProductDistributionService {
                     aggregatedProducts.merge(key, detail.getQuantity(), BigDecimal::add);
                     keyToProductId.put(key, detail.getProductId());
                     keyToColorId.put(key, detail.getColorId());
+                    String size = normalizeSize(detail.getSizeLabel());
+                    if (!size.isEmpty() && detail.getQuantity() != null) {
+                        sizesByKey.computeIfAbsent(key, ignored -> new LinkedHashMap<>())
+                                .merge(size, detail.getQuantity().intValue(), Integer::sum);
+                    }
                 }
             }
 
@@ -1797,11 +1863,21 @@ public class ProductDistributionService {
                 Long productId = keyToProductId.get(key);
                 Long colorId = keyToColorId.get(key);
 
+                String sizesData = null;
+                Map<String, Integer> sizes = sizesByKey.get(key);
+                if (sizes != null && !sizes.isEmpty()) {
+                    try {
+                        sizesData = objectMapper.writeValueAsString(sizes);
+                    } catch (Exception ex) {
+                        throw new BusinessException("No se pudieron guardar las tallas de la orden de producción.");
+                    }
+                }
                 ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
                         .productionOrderId(productionOrder.getId())
                         .productId(productId)
                         .colorId(colorId)
                         .quantity(entry.getValue().intValue())
+                        .sizesData(sizesData)
                         .observations("Cantidad total de distribución #" + distribution.getDistributionNumber())
                         .build();
                 productionOrderItemRepository.save(item);
@@ -1870,6 +1946,22 @@ public class ProductDistributionService {
             throw new BusinessException("El envío debe estar confirmado para poder enviarse. Estado actual: " + currentStatus);
         }
 
+        if (CustomerAccountService.isHistoricalShipment(shipment)) {
+            // Envío histórico (orden anterior a Preparar envíos): no tiene productos, destino ni inventario que mover.
+            // Solo se marca como despachado, con su fecha original, y entra a cuentas por cobrar.
+            shipment.setStatus("SENT");
+            shipment.setSentAt(shipment.getCreatedAt() != null ? shipment.getCreatedAt() : LocalDateTime.now());
+            shipment.setSentBy(securityUtil.getCurrentUserId());
+            shipment.setUpdatedBy(securityUtil.getCurrentUserId());
+            ProductShipmentEntity historical = shipmentRepository.save(shipment);
+            try {
+                customerAccountService.createChargeForDispatchedShipment(shipmentId);
+            } catch (BusinessException ex) {
+                log.warn("Envío histórico {} sin cargo de cuentas por cobrar: {}", historical.getShipmentNumber(), ex.getMessage());
+            }
+            return toShipmentResponse(historical);
+        }
+
         Long shipmentLocationId = shipment.getLocationId();
         Optional<ProductionOrderEntity> linkedPoOpt = shipment.getProductionOrderId() == null
                 ? Optional.empty()
@@ -1903,6 +1995,7 @@ public class ProductDistributionService {
         if (details.isEmpty() && !hasPacking) {
             throw new BusinessException("No se puede enviar un envío sin productos ni empaques.");
         }
+        assertShipmentDetailsHaveCinchoSize(shipmentId);
         // Empaques SUM- solos: no hay líneas de producto ni salida de Bodega PT;
         // al recibir en kiosko el material se convierte en producto de stock.
         if (details.isEmpty()) {
@@ -2008,6 +2101,14 @@ public class ProductDistributionService {
 
         if (saved.getDistributionId() != null) {
             markDistributionDispatchedIfAllSent(saved.getDistributionId());
+        }
+
+        // El cargo de cuentas por cobrar nace al despachar. Si no corresponde o falla una validación, no se
+        // bloquea la salida física: el envío queda visible en cartera como despachado sin cargo.
+        try {
+            customerAccountService.createChargeForDispatchedShipment(shipmentId);
+        } catch (BusinessException ex) {
+            log.warn("Envío {} despachado sin cargo de cuentas por cobrar: {}", saved.getShipmentNumber(), ex.getMessage());
         }
 
         return toShipmentResponse(saved);
@@ -4233,6 +4334,7 @@ public class ProductDistributionService {
                 .status(entity.getStatus())
                 .notes(entity.getNotes())
                 .packingItems(parsePackingItems(entity.getPackingItems()))
+                .shippingCost(entity.getShippingCost())
                 .sentAt(entity.getSentAt())
                 .sentBy(entity.getSentBy())
                 .receivedAt(entity.getReceivedAt())
@@ -4335,6 +4437,25 @@ public class ProductDistributionService {
 
     private String normalizeSize(String size) {
         return size == null ? "" : size.trim().toUpperCase();
+    }
+
+    private void assertShipmentDetailsHaveCinchoSize(Long shipmentId) throws BusinessException {
+        for (ProductShipmentDetailEntity detail : shipmentDetailRepository.findByShipmentId(shipmentId)) {
+            if (detail.getProductId() == null || isPackagingProduct(detail.getProductId())) {
+                continue;
+            }
+            ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
+            assertCinchoSizePresent(product, detail.getSizeLabel());
+        }
+    }
+
+    private void assertCinchoSizePresent(ProductEntity product, String size) throws BusinessException {
+        if (!CinchoProductUtils.isCinchoLineForProduction(product) || !normalizeSize(size).isEmpty()) {
+            return;
+        }
+        String label = product.getCode() != null ? product.getCode() : ("producto " + product.getId());
+        throw new BusinessException(
+                "El cincho " + label + " debe llevar talla en el envío. Indique la cantidad de cada talla antes de guardar o enviar.");
     }
 
     private String persistShipmentHardware(Long locationId, Long productId, String raw, String size)
@@ -4441,6 +4562,16 @@ public class ProductDistributionService {
                         .unitPrice(keyToUnitPrice.get(entry.getKey()))
                         .build())
                 .collect(Collectors.toList());
+    }
+
+    private BigDecimal normalizeShippingCost(BigDecimal raw) throws BusinessException {
+        if (raw == null) {
+            return null;
+        }
+        if (raw.compareTo(BigDecimal.ZERO) < 0) {
+            throw new BusinessException("El costo de envío no puede ser negativo.");
+        }
+        return raw.setScale(2, java.math.RoundingMode.HALF_UP);
     }
 
     private String serializePackingItems(List<ProductShipmentRequest.PackingItemRequest> packingItems) {

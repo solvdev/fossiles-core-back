@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.OnlineSaleExchangeRequest;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
@@ -31,6 +32,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -72,6 +74,12 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
                 .build();
     }
 
+    private OnlineSaleItemEntity soldItem(Long saleId) {
+        return OnlineSaleItemEntity.builder()
+                .id(10L).onlineSaleId(saleId).productId(7L).size("M").quantity(3)
+                .unitPrice(new BigDecimal("100.00")).build();
+    }
+
     private OnlineSaleExchangeRequest request(Long targetId) {
         return OnlineSaleExchangeRequest.builder()
                 .targetOnlineSaleId(targetId)
@@ -88,6 +96,10 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
         when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
         when(saleRepository.findById(2L)).thenReturn(Optional.of(target));
         when(itemRepository.save(any(OnlineSaleItemEntity.class))).thenAnswer(i -> i.getArgument(0));
+        when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
+        when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
+        when(returnsWarehouseLocator.find()).thenReturn(Optional.of(LocationEntity.builder().id(99L).build()));
+        when(onlineSaleReturnRepository.save(any())).thenAnswer(i -> i.getArgument(0));
 
         service.createExchange(1L, request(2L));
 
@@ -97,18 +109,23 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
         assertThat(itemCaptor.getValue().getUnitPrice()).isEqualByComparingTo(BigDecimal.ZERO);
         assertThat(itemCaptor.getValue().getQuantity()).isEqualTo(2);
 
-        // Solo se guarda el envío destino (no se crea una venta nueva) y sus montos no cambian
+        // Los montos del envío destino no cambian
         ArgumentCaptor<OnlineSaleEntity> saleCaptor = ArgumentCaptor.forClass(OnlineSaleEntity.class);
-        verify(saleRepository).save(saleCaptor.capture());
-        assertThat(saleCaptor.getValue().getId()).isEqualTo(2L);
-        assertThat(saleCaptor.getValue().getShipmentNumber()).isEqualTo("ENVL-00002");
-        assertThat(saleCaptor.getValue().getTotalAmount()).isEqualByComparingTo("415.00");
-        assertThat(saleCaptor.getValue().getObservations()).contains("CAMBIO_Q0(ENVIO_REL=ENVL-00001)");
+        verify(saleRepository, atLeastOnce()).save(saleCaptor.capture());
+        // Se guardan el destino y la venta original (nota); no se crea ninguna venta nueva
+        assertThat(saleCaptor.getAllValues()).extracting(OnlineSaleEntity::getId).containsOnly(1L, 2L);
+        OnlineSaleEntity savedTarget = saleCaptor.getAllValues().stream().filter(s -> s.getId().equals(2L)).findFirst().orElseThrow();
+        assertThat(savedTarget.getId()).isEqualTo(2L);
+        assertThat(savedTarget.getShipmentNumber()).isEqualTo("ENVL-00002");
+        assertThat(savedTarget.getTotalAmount()).isEqualByComparingTo("415.00");
+        assertThat(savedTarget.getObservations()).contains("CAMBIO_Q0(ENVIO_REL=ENVL-00001)");
         verify(onlineSaleShipmentNumberService, never()).nextNumber();
     }
 
     @Test
     void createExchange_withTargetAlreadyShipped_isRejected() {
+        when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
+        when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
         OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
         OnlineSaleEntity target = sale(2L, "ENVIADO", "ENVL-00002");
         when(saleRepository.findById(1L)).thenReturn(Optional.of(original));

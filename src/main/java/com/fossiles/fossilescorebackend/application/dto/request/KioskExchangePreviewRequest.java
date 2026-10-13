@@ -22,6 +22,13 @@ public class KioskExchangePreviewRequest {
     private Long originalSaleItemId;
 
     /**
+     * Líneas de la factura original que devuelve el cliente (N). Si viene con ítems, tiene prioridad sobre
+     * {@code originalSaleItemId}/{@code returnedQuantity}, que quedan como compat 1→1.
+     */
+    @Valid
+    private List<KioskExchangeReturnedItemRequest> returnedItems;
+
+    /**
      * Productos a entregar (1→N). Si viene con ítems, tiene prioridad sobre los campos escalares
      * {@code givenProductId}/{@code givenQuantity}/…
      */
@@ -60,4 +67,12 @@ public class KioskExchangePreviewRequest {
 
     /** Porcentaje de descuento aplicado en la venta original del producto que ingresa (0–99). */
     private BigDecimal returnedDiscountPercent;
+
+    /**
+     * Modo de precios del cambio:
+     * {@code SAME_UNIT_PRICE} — egreso al mismo precio unitario del ingreso (sin diferencia);
+     * {@code CATALOG_GIVEN} — egreso a precio de catálogo (con diferencia).
+     * Null = legado (preservar precio solo si mismo producto / cincho FOSS).
+     */
+    private String pricingMode;
 }

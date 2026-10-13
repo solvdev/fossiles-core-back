@@ -12,7 +12,8 @@ public final class ProductBrandNames {
             "NAUTICA",
             "TOMMY HILFIGER",
             "LACOSTE",
-            "ABERCROMBIE"
+            "ABERCROMBIE",
+            "TIMBERLAND"
     );
 
     private static final Set<String> OPTION_SET = Set.copyOf(OPTIONS);

@@ -45,6 +45,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.PageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductionOrderListItemResponse;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderListService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderLeatherEstimateService;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderMaterialsEstimateService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderTimeEstimateService;
 import org.springframework.format.annotation.DateTimeFormat;
 import java.time.LocalDate;
@@ -60,7 +61,8 @@ public class ProductionOrderController {
             "NAUTICA",
             "TOMMY HILFIGER",
             "LACOSTE",
-            "ABERCROMBIE"
+            "ABERCROMBIE",
+            "TIMBERLAND"
     );
 
     private final ProductionOrderRepository productionOrderRepository;
@@ -72,6 +74,7 @@ public class ProductionOrderController {
     private final DocumentSeriesRepository documentSeriesRepository;
     private final SmartMaterialRequestService smartMaterialRequestService;
     private final ProductionAutoPlannerService productionAutoPlannerService;
+    private final com.fossiles.fossilescorebackend.application.service.ProductionCenterCache productionCenterCache;
     private final ProductionOrderCodeService productionOrderCodeService;
     private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
@@ -91,11 +94,13 @@ public class ProductionOrderController {
     private final ProductInventoryService productInventoryService;
     private final com.fossiles.fossilescorebackend.application.service.MaterialConsumptionService materialConsumptionService;
     private final ProductDistributionService productDistributionService;
+    private final com.fossiles.fossilescorebackend.application.service.CustomerAccountService customerAccountService;
     private final ProductionOrderPartialReleaseService productionOrderPartialReleaseService;
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final InternalShipmentRequestService internalShipmentRequestService;
     private final ProductionOrderTimeEstimateService productionOrderTimeEstimateService;
     private final ProductionOrderLeatherEstimateService productionOrderLeatherEstimateService;
+    private final ProductionOrderMaterialsEstimateService productionOrderMaterialsEstimateService;
     private final com.fossiles.fossilescorebackend.application.service.ProductionDeskCountService productionDeskCountService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -114,13 +119,25 @@ public class ProductionOrderController {
      * que hay que correr ANTES de desplegar este cambio. {@link #getById} la conserva como
      * ultima red mientras ese relleno no haya corrido en produccion.
      */
+    /**
+     * @param cached {@code true} lo sirve desde la caché del Centro de Producción (hasta 2 min,
+     *               invalidada al escribir órdenes o planificar). Por defecto no: Bodega, Envíos
+     *               y las demás pantallas que usan este listado necesitan el dato al instante.
+     */
     @GetMapping
     @Transactional(readOnly = true)
-    public ResponseEntity<List<ProductionOrderResponse>> getAll() {
-        List<ProductionOrderResponse> orders = productionOrderRepository.findAll().stream()
+    public ResponseEntity<List<ProductionOrderResponse>> getAll(
+            @RequestParam(name = "cached", defaultValue = "false") boolean cached) {
+        if (cached) {
+            return ResponseEntity.ok(productionCenterCache.orders(this::listAllOrders));
+        }
+        return ResponseEntity.ok(listAllOrders());
+    }
+
+    private List<ProductionOrderResponse> listAllOrders() {
+        return productionOrderRepository.findAll().stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
-        return ResponseEntity.ok(orders);
     }
 
     /**
@@ -221,6 +238,17 @@ public class ProductionOrderController {
     public ResponseEntity<ProductionOrderLeatherEstimateResponse> getLeatherEstimate(@PathVariable Long id)
             throws ResourceNotFoundException {
         return ResponseEntity.ok(productionOrderLeatherEstimateService.estimate(id));
+    }
+
+    /**
+     * Materiales requeridos por OP según receta (BOM × cantidad de piezas).
+     * Incluye disponible y faltante a pedir.
+     */
+    @GetMapping("/{id}/materials-estimate")
+    @Transactional(readOnly = true)
+    public ResponseEntity<ProductionOrderMaterialsEstimateResponse> getMaterialsEstimate(@PathVariable Long id)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(productionOrderMaterialsEstimateService.estimate(id));
     }
 
     /**
@@ -500,6 +528,7 @@ public class ProductionOrderController {
         for (ProductionOrderItemEntity item : existingItems) {
             byKey.put(itemPriceMatchKey(item.getProductId(), item.getColorId()), item);
         }
+        int itemsPriced = 0;
 
         for (ProductionOrderItemPricesRequest.ItemPrice priceRow : request.getItems()) {
             if (priceRow == null || priceRow.getProductId() == null) {
@@ -531,10 +560,21 @@ public class ProductionOrderController {
             }
             item.setUnitPricesJson(convertUnitPricesToJson(normalizedPrices));
             productionOrderItemRepository.save(item);
+            itemsPriced++;
         }
 
         List<ProductionOrderItemEntity> refreshedItems = productionOrderItemRepository.findByProductionOrderId(id);
         syncShipmentDetailUnitPrices(id, refreshedItems);
+        int linesPriced = applyRequestedPricesToUnmatchedShipmentLines(id, request.getItems(), refreshedItems);
+        if (itemsPriced == 0 && linesPriced == 0 && request.getShippingCost() == null) {
+            throw new BusinessException(
+                    "No se guardó ningún precio: la orden no tiene ítems ni líneas de envío que coincidan con ese "
+                            + "producto y color.");
+        }
+        // Un envío ya despachado cobra lo que lleva: su cargo sigue a los precios de sus líneas.
+        for (ProductShipmentEntity shipment : shipmentRepository.findByProductionOrderId(id)) {
+            customerAccountService.syncShipmentEntries(shipment.getId());
+        }
 
         return ResponseEntity.ok(toResponse(entity));
     }
@@ -2008,7 +2048,7 @@ public class ProductionOrderController {
                 throw new BusinessException("Brand name is required for each item in MARCAS production orders");
             }
             if (!ALLOWED_BRANDS.contains(normalizedBrand)) {
-                throw new BusinessException("Invalid brand name. Must be one of: LEVIS, NAUTICA, TOMMY HILFIGER, LACOSTE, ABERCROMBIE");
+                throw new BusinessException("Invalid brand name. Must be one of: LEVIS, NAUTICA, TOMMY HILFIGER, LACOSTE, ABERCROMBIE, TIMBERLAND");
             }
         }
     }
@@ -2088,6 +2128,77 @@ public class ProductionOrderController {
 
     private static String itemPriceMatchKey(Long productId, Long colorId) {
         return String.valueOf(productId) + ":" + (colorId != null ? colorId : "");
+    }
+
+    /**
+     * Precios para líneas de envío cuyo producto no tiene ítem en la orden (orden sin ítems o migrada): no hay dónde
+     * guardarlos en la orden, así que se guardan directo en la línea del envío. Sin esto el precio se perdía en silencio.
+     */
+    private int applyRequestedPricesToUnmatchedShipmentLines(
+            Long productionOrderId,
+            List<ProductionOrderItemPricesRequest.ItemPrice> prices,
+            List<ProductionOrderItemEntity> orderItems) {
+        List<ProductShipmentEntity> shipments = shipmentRepository.findByProductionOrderId(productionOrderId);
+        if (shipments == null || shipments.isEmpty() || prices == null) {
+            return 0;
+        }
+        List<Long> shipmentIds = shipments.stream()
+                .map(ProductShipmentEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (shipmentIds.isEmpty()) {
+            return 0;
+        }
+        Set<Long> productsWithItem = orderItems == null
+                ? Set.of()
+                : orderItems.stream().map(ProductionOrderItemEntity::getProductId)
+                        .filter(Objects::nonNull).collect(Collectors.toSet());
+        List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentIdIn(shipmentIds);
+        int changed = 0;
+        for (ProductShipmentDetailEntity detail : details) {
+            if (detail == null || detail.getProductId() == null || productsWithItem.contains(detail.getProductId())) {
+                continue;
+            }
+            ProductionOrderItemPricesRequest.ItemPrice row = null;
+            for (ProductionOrderItemPricesRequest.ItemPrice candidate : prices) {
+                if (candidate == null || !detail.getProductId().equals(candidate.getProductId())) {
+                    continue;
+                }
+                if (Objects.equals(candidate.getColorId(), detail.getColorId())) {
+                    row = candidate;
+                    break;
+                }
+                if (row == null) {
+                    row = candidate;
+                }
+            }
+            if (row == null) {
+                continue;
+            }
+            BigDecimal price = null;
+            if (row.getUnitPrices() != null && detail.getSizeLabel() != null) {
+                String sizeKey = ProductInventorySizesJson.normalizeKey(detail.getSizeLabel());
+                for (Map.Entry<String, BigDecimal> entry : row.getUnitPrices().entrySet()) {
+                    if (entry.getValue() != null
+                            && sizeKey.equals(ProductInventorySizesJson.normalizeKey(entry.getKey()))) {
+                        price = entry.getValue();
+                        break;
+                    }
+                }
+            }
+            if (price == null) {
+                price = row.getUnitPrice();
+            }
+            if (price != null && price.compareTo(BigDecimal.ZERO) > 0
+                    && (detail.getUnitPrice() == null || detail.getUnitPrice().compareTo(price) != 0)) {
+                detail.setUnitPrice(price);
+                changed++;
+            }
+        }
+        if (changed > 0) {
+            shipmentDetailRepository.saveAll(details);
+        }
+        return changed;
     }
 
     private void syncShipmentDetailUnitPrices(Long productionOrderId, List<ProductionOrderItemEntity> orderItems) {

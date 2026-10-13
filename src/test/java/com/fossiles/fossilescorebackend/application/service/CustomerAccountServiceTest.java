@@ -53,8 +53,9 @@ class CustomerAccountServiceTest {
 
     @BeforeEach
     void setUp() {
-        when(customerRepository.findById(customerId)).thenReturn(Optional.of(
-                CustomerEntity.builder().id(customerId).name("Cliente Test").build()));
+        CustomerEntity customer = CustomerEntity.builder().id(customerId).name("Cliente Test").build();
+        when(customerRepository.findById(customerId)).thenReturn(Optional.of(customer));
+        when(customerRepository.findByIdForUpdate(customerId)).thenReturn(Optional.of(customer));
         when(securityUtil.getCurrentUserId()).thenReturn(99L);
         when(entryRepository.findByCustomerIdAndStatusOrderByEntryDateAscIdAsc(customerId, "ACTIVE"))
                 .thenAnswer(inv -> new ArrayList<>(storedEntries));

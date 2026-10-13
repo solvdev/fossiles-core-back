@@ -29,6 +29,8 @@ public class CustomerAccountEntryResponse {
     private BigDecimal paymentDiscountPercent;
     private BigDecimal grossCollectedAmount;
     private Long appliedToEntryId;
+    /** Primer cargo del que se trasladó este movimiento, si se anuló y se reasignó. */
+    private Long reassignedFromEntryId;
     private String invoiceNumber;
     private String documentNumber;
     private String returnVoucherNumber;

@@ -885,9 +885,10 @@ public class TaxInvoiceService {
                 default -> { }
             }
         }
-        long unsigned = failed + draft + skipped;
+        // Sin firmar = borrador/omitida. Con error (FAILED) es categoría aparte.
+        long unsigned = draft + skipped;
         return TaxInvoiceSummaryResponse.builder()
-                .total(certified + unsigned + voided)
+                .total(certified + unsigned + failed + voided)
                 .certified(certified)
                 .unsigned(unsigned)
                 .failed(failed)

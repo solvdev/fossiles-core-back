@@ -19,6 +19,40 @@ public interface CustomerAccountEntryRepository extends JpaRepository<CustomerAc
 
     List<CustomerAccountEntryEntity> findByAppliedToEntryIdAndStatus(Long appliedToEntryId, String status);
 
+    @Query("SELECT e.status FROM CustomerAccountEntryEntity e WHERE e.id = :id")
+    Optional<String> findStatusById(@Param("id") Long id);
+
+    @Query("SELECT e.customerId FROM CustomerAccountEntryEntity e WHERE e.id = :id")
+    Optional<Long> findCustomerIdById(@Param("id") Long id);
+
+    @Query("""
+            SELECT e FROM CustomerAccountEntryEntity e
+            WHERE e.productionOrderId = :productionOrderId
+              AND e.entryType = 'CHARGE'
+              AND e.status <> 'VOID'
+            """)
+    List<CustomerAccountEntryEntity> findNonVoidChargesByProductionOrderId(
+            @Param("productionOrderId") Long productionOrderId);
+
+    /** Cargo(s) activos de un envío (el cargo por despacho). */
+    @Query("""
+            SELECT e FROM CustomerAccountEntryEntity e
+            WHERE e.productShipmentId = :productShipmentId
+              AND e.entryType = 'CHARGE'
+              AND e.status <> 'VOID'
+            """)
+    List<CustomerAccountEntryEntity> findNonVoidChargesByProductShipmentId(
+            @Param("productShipmentId") Long productShipmentId);
+
+    @Query("""
+            SELECT e FROM CustomerAccountEntryEntity e
+            WHERE e.productShipmentId = :productShipmentId
+              AND e.entryType = 'CHARGE_ADJUSTMENT'
+              AND e.status <> 'VOID'
+            """)
+    List<CustomerAccountEntryEntity> findNonVoidAdjustmentsByProductShipmentId(
+            @Param("productShipmentId") Long productShipmentId);
+
     @Query("""
             SELECT e FROM CustomerAccountEntryEntity e
             WHERE e.customerId = :customerId
