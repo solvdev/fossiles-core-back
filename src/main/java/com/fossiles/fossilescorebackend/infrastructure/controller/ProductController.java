@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.OnlineSalesReadCache;
 import com.fossiles.fossilescorebackend.application.util.ProductAudienceCategory;
 import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.BomEntity;
@@ -30,12 +31,13 @@ public class ProductController {
 
     private final ProductRepository productRepository;
     private final BomRepository bomRepository;
+    private final OnlineSalesReadCache readCache;
 
     @GetMapping
     public ResponseEntity<List<ProductResponse>> getAll() {
-        List<ProductResponse> products = productRepository.findAll().stream()
+        List<ProductResponse> products = readCache.catalog("products", () -> productRepository.findAll().stream()
                 .map(this::toResponse)
-                .collect(Collectors.toList());
+                .collect(Collectors.toList()));
         return ResponseEntity.ok(products);
     }
 

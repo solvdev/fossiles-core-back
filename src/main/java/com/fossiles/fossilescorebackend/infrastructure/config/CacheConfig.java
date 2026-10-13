@@ -38,6 +38,25 @@ public class CacheConfig {
     private static final Duration PRODUCTION_CENTER_PANELS_TTL = Duration.ofSeconds(60);
     private static final long PRODUCTION_CENTER_PANELS_MAX_ENTRIES = 100;
 
+    /**
+     * Lecturas de la vista de Ventas en línea (por fecha, rango, resumen, elegibles, devoluciones). Se invalidan
+     * con cualquier escritura de los módulos que las alimentan (ver {@code OnlineSalesCacheInvalidator}); el TTL
+     * cubre lo que se escriba fuera de HTTP (jobs).
+     */
+    public static final String ONLINE_SALES_READS_CACHE = "onlineSalesReads";
+    private static final Duration ONLINE_SALES_READS_TTL = Duration.ofSeconds(30);
+    private static final long ONLINE_SALES_READS_MAX_ENTRIES = 100;
+
+    /** Catálogos de productos y colores que las pantallas cargan al abrir. Cambian muy poco. */
+    public static final String CATALOG_READS_CACHE = "catalogReads";
+    private static final Duration CATALOG_READS_TTL = Duration.ofSeconds(60);
+    private static final long CATALOG_READS_MAX_ENTRIES = 10;
+
+    /** Vista de bodega (órdenes con su destino de despacho). Depende de varios módulos; TTL corto. */
+    public static final String WAREHOUSE_VIEW_CACHE = "warehouseView";
+    private static final Duration WAREHOUSE_VIEW_TTL = Duration.ofSeconds(30);
+    private static final long WAREHOUSE_VIEW_MAX_ENTRIES = 20;
+
     @Bean
     public CacheManager cacheManager() {
         CaffeineCache salesDashboard = new CaffeineCache(
@@ -58,8 +77,28 @@ public class CacheConfig {
                         .expireAfterWrite(PRODUCTION_CENTER_PANELS_TTL)
                         .maximumSize(PRODUCTION_CENTER_PANELS_MAX_ENTRIES)
                         .build());
+        CaffeineCache onlineSalesReads = new CaffeineCache(
+                ONLINE_SALES_READS_CACHE,
+                Caffeine.newBuilder()
+                        .expireAfterWrite(ONLINE_SALES_READS_TTL)
+                        .maximumSize(ONLINE_SALES_READS_MAX_ENTRIES)
+                        .build());
+        CaffeineCache catalogReads = new CaffeineCache(
+                CATALOG_READS_CACHE,
+                Caffeine.newBuilder()
+                        .expireAfterWrite(CATALOG_READS_TTL)
+                        .maximumSize(CATALOG_READS_MAX_ENTRIES)
+                        .build());
+        CaffeineCache warehouseView = new CaffeineCache(
+                WAREHOUSE_VIEW_CACHE,
+                Caffeine.newBuilder()
+                        .expireAfterWrite(WAREHOUSE_VIEW_TTL)
+                        .maximumSize(WAREHOUSE_VIEW_MAX_ENTRIES)
+                        .build());
         SimpleCacheManager manager = new SimpleCacheManager();
-        manager.setCaches(List.of(salesDashboard, productionOrdersList, productionCenterPanels));
+        manager.setCaches(List.of(
+                salesDashboard, productionOrdersList, productionCenterPanels,
+                onlineSalesReads, catalogReads, warehouseView));
         return manager;
     }
 }

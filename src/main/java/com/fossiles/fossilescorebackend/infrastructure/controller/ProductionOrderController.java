@@ -75,6 +75,7 @@ public class ProductionOrderController {
     private final SmartMaterialRequestService smartMaterialRequestService;
     private final ProductionAutoPlannerService productionAutoPlannerService;
     private final com.fossiles.fossilescorebackend.application.service.ProductionCenterCache productionCenterCache;
+    private final com.fossiles.fossilescorebackend.application.service.OnlineSalesReadCache onlineSalesReadCache;
     private final ProductionOrderCodeService productionOrderCodeService;
     private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
@@ -741,10 +742,13 @@ public class ProductionOrderController {
                 ? List.of(status)
                 : List.of("PENDING", "IN_PROGRESS", "COMPLETED");
 
-        List<ProductionOrderEntity> orders = productionOrderRepository.findByStatusIn(statuses);
-        List<WarehouseOrderViewResponse> responses = orders.stream()
-                .map(warehouseOrderViewAssembler::toWarehouseView)
-                .collect(Collectors.toList());
+        // Caché corta: la pantalla la pide al abrir y al cambiar de fecha. Se invalida con escrituras de órdenes,
+        // tareas, envíos y ventas (OnlineSalesCacheInvalidator).
+        List<WarehouseOrderViewResponse> responses = onlineSalesReadCache.warehouse(
+                com.fossiles.fossilescorebackend.application.service.OnlineSalesReadCache.key("warehouse-view", String.join(",", statuses)),
+                () -> productionOrderRepository.findByStatusIn(statuses).stream()
+                        .map(warehouseOrderViewAssembler::toWarehouseView)
+                        .collect(Collectors.toList()));
 
         return ResponseEntity.ok(responses);
     }

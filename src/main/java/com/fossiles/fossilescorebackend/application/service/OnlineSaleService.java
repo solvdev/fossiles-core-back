@@ -203,11 +203,10 @@ public class OnlineSaleService {
 
     @Transactional(readOnly = true)
     public List<OnlineSaleResponse> getAll() {
-        return saleRepository.findAll().stream()
+        return toResponses(saleRepository.findAll().stream()
                 .sorted(Comparator.comparing(OnlineSaleEntity::getSaleDate).reversed()
                         .thenComparing(OnlineSaleEntity::getId))
-                .map(this::toResponse)
-                .collect(Collectors.toList());
+                .collect(Collectors.toList()));
     }
 
     public void delete(Long id) throws ResourceNotFoundException {
@@ -222,26 +221,22 @@ public class OnlineSaleService {
 
     @Transactional(readOnly = true)
     public List<OnlineSaleResponse> getByDate(LocalDate date) {
-        return saleRepository.findBySaleDateOrderByIdAsc(date).stream()
-                .map(this::toResponse).collect(Collectors.toList());
+        return toResponses(saleRepository.findBySaleDateOrderByIdAsc(date));
     }
 
     @Transactional(readOnly = true)
     public List<OnlineSaleResponse> getBySalesperson(String salesperson) {
-        return saleRepository.findBySalespersonOrderBySaleDateDesc(salesperson).stream()
-                .map(this::toResponse).collect(Collectors.toList());
+        return toResponses(saleRepository.findBySalespersonOrderBySaleDateDesc(salesperson));
     }
 
     @Transactional(readOnly = true)
     public List<OnlineSaleResponse> getByDateAndSalesperson(LocalDate date, String salesperson) {
-        return saleRepository.findBySaleDateAndSalespersonOrderByIdAsc(date, salesperson).stream()
-                .map(this::toResponse).collect(Collectors.toList());
+        return toResponses(saleRepository.findBySaleDateAndSalespersonOrderByIdAsc(date, salesperson));
     }
 
     @Transactional(readOnly = true)
     public List<OnlineSaleResponse> getByDateRange(LocalDate startDate, LocalDate endDate) {
-        return saleRepository.findBySaleDateBetweenOrderBySaleDateDesc(startDate, endDate).stream()
-                .map(this::toResponse).collect(Collectors.toList());
+        return toResponses(saleRepository.findBySaleDateBetweenOrderBySaleDateDesc(startDate, endDate));
     }
 
     @Transactional(readOnly = true)
@@ -250,21 +245,18 @@ public class OnlineSaleService {
         if (query.isEmpty()) {
             return List.of();
         }
-        return saleRepository.findByShipmentNumberIgnoreCaseOrderBySaleDateDescIdDesc(query).stream()
-                .map(this::toResponse).collect(Collectors.toList());
+        return toResponses(saleRepository.findByShipmentNumberIgnoreCaseOrderBySaleDateDescIdDesc(query));
     }
 
     @Transactional(readOnly = true)
     public List<OnlineSaleResponse> getEligibleForProduction() {
-        return saleRepository.findEligibleForProduction().stream()
-                .map(this::toResponse).collect(Collectors.toList());
+        return toResponses(saleRepository.findEligibleForProduction());
     }
 
     @Transactional(readOnly = true)
     public List<OnlineSaleResponse> getEligibleForProduction(LocalDate startDate, LocalDate endDate) {
         if (startDate != null && endDate != null) {
-            return saleRepository.findEligibleForProductionByDateRange(startDate, endDate).stream()
-                    .map(this::toResponse).collect(Collectors.toList());
+            return toResponses(saleRepository.findEligibleForProductionByDateRange(startDate, endDate));
         }
         return getEligibleForProduction();
     }
@@ -896,7 +888,7 @@ public class OnlineSaleService {
 
         if (req != null && req.getTargetOnlineSaleId() != null) {
             OnlineSaleEntity target = addExchangeItemsToExistingShipment(original, req, exchangeLines);
-            creditExchangeLinesToReturns(original, exchangeLines, exchangeReason(req));
+            creditExchangeLinesToReturns(original, exchangeLines, exchangeReason(req), target.getShipmentNumber());
             noteOriginalSaleExchange(original, target.getShipmentNumber());
             return toResponse(target);
         }
@@ -967,7 +959,7 @@ public class OnlineSaleService {
         saved.setUpdatedBy(securityUtil.getCurrentUserId());
         saleRepository.save(saved);
 
-        creditExchangeLinesToReturns(original, exchangeLines, exchangeReason(req));
+        creditExchangeLinesToReturns(original, exchangeLines, exchangeReason(req), saved.getShipmentNumber());
         noteOriginalSaleExchange(original, saved.getShipmentNumber());
 
         return toResponse(saved);
@@ -1128,7 +1120,8 @@ public class OnlineSaleService {
     private void creditExchangeLinesToReturns(
             OnlineSaleEntity original,
             List<ExchangeLine> lines,
-            String reason) throws BusinessException {
+            String reason,
+            String exchangeShipmentNumber) throws BusinessException {
         LocationEntity returnsLocation = returnsWarehouseLocator.find()
                 .orElseThrow(() -> new BusinessException(
                         "No está configurada la ubicación de inventario de devoluciones "
@@ -1149,6 +1142,7 @@ public class OnlineSaleService {
         OnlineSaleReturnEntity header = onlineSaleReturnRepository.save(OnlineSaleReturnEntity.builder()
                 .onlineSaleId(original.getId())
                 .relatedShipmentNumber(original.getShipmentNumber())
+                .exchangeShipmentNumber(exchangeShipmentNumber)
                 .returnReason(truncate(reason, 500))
                 .itemCondition("BUENO")
                 .createdBy(securityUtil.getCurrentUserId())
@@ -1297,6 +1291,7 @@ public class OnlineSaleService {
                 .onlineSaleId(sale.getId())
                 .saleNumber(sale.getSaleNumber())
                 .relatedShipmentNumber(header.getRelatedShipmentNumber())
+                .exchangeShipmentNumber(header.getExchangeShipmentNumber())
                 .customerName(sale.getCustomerName())
                 .address(sale.getAddress())
                 .phone(sale.getPhone())
@@ -1461,10 +1456,72 @@ public class OnlineSaleService {
         return entity;
     }
 
-    private OnlineSaleResponse toResponse(OnlineSaleEntity e) {
-        // Cargar items
-        List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(e.getId());
+    private static final int RESPONSE_BATCH_SIZE = 1000;
 
+    private OnlineSaleResponse toResponse(OnlineSaleEntity e) {
+        List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(e.getId());
+        Optional<TaxInvoiceEntity> invoice = e.getInvoiceId() != null
+                ? taxInvoiceRepository.findById(e.getInvoiceId())
+                : taxInvoiceRepository.findBySourceTypeAndSourceId("ONLINE_SALE", e.getId());
+        return toResponse(e, items, invoice);
+    }
+
+    /**
+     * Listados: carga los items y las facturas de todas las ventas en consultas por lote en vez de dos consultas
+     * por cada venta (con un rango de fechas grande eran cientos de consultas).
+     */
+    private List<OnlineSaleResponse> toResponses(List<OnlineSaleEntity> sales) {
+        if (sales == null || sales.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<Long> saleIds = sales.stream().map(OnlineSaleEntity::getId).collect(Collectors.toList());
+        Map<Long, List<OnlineSaleItemEntity>> itemsBySale = new HashMap<>();
+        for (List<Long> batch : partition(saleIds)) {
+            for (OnlineSaleItemEntity item : itemRepository.findByOnlineSaleIdInOrderByIdAsc(batch)) {
+                itemsBySale.computeIfAbsent(item.getOnlineSaleId(), k -> new ArrayList<>()).add(item);
+            }
+        }
+
+        List<Long> invoiceIds = sales.stream()
+                .map(OnlineSaleEntity::getInvoiceId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        Map<Long, TaxInvoiceEntity> invoiceById = new HashMap<>();
+        for (List<Long> batch : partition(invoiceIds)) {
+            for (TaxInvoiceEntity invoice : taxInvoiceRepository.findAllById(batch)) {
+                invoiceById.put(invoice.getId(), invoice);
+            }
+        }
+        List<Long> saleIdsWithoutInvoiceId = sales.stream()
+                .filter(s -> s.getInvoiceId() == null)
+                .map(OnlineSaleEntity::getId).collect(Collectors.toList());
+        Map<Long, TaxInvoiceEntity> invoiceBySaleId = new HashMap<>();
+        for (List<Long> batch : partition(saleIdsWithoutInvoiceId)) {
+            // Orden por id descendente: si hubiera mas de una, gana la mas reciente (putIfAbsent).
+            for (TaxInvoiceEntity invoice
+                    : taxInvoiceRepository.findBySourceTypeAndSourceIdInOrderByIdDesc("ONLINE_SALE", batch)) {
+                invoiceBySaleId.putIfAbsent(invoice.getSourceId(), invoice);
+            }
+        }
+
+        List<OnlineSaleResponse> responses = new ArrayList<>(sales.size());
+        for (OnlineSaleEntity sale : sales) {
+            Optional<TaxInvoiceEntity> invoice = sale.getInvoiceId() != null
+                    ? Optional.ofNullable(invoiceById.get(sale.getInvoiceId()))
+                    : Optional.ofNullable(invoiceBySaleId.get(sale.getId()));
+            responses.add(toResponse(sale, itemsBySale.getOrDefault(sale.getId(), List.of()), invoice));
+        }
+        return responses;
+    }
+
+    private static List<List<Long>> partition(List<Long> ids) {
+        List<List<Long>> batches = new ArrayList<>();
+        for (int i = 0; i < ids.size(); i += RESPONSE_BATCH_SIZE) {
+            batches.add(ids.subList(i, Math.min(ids.size(), i + RESPONSE_BATCH_SIZE)));
+        }
+        return batches;
+    }
+
+    private OnlineSaleResponse toResponse(
+            OnlineSaleEntity e, List<OnlineSaleItemEntity> items, Optional<TaxInvoiceEntity> invoiceOpt) {
         List<OnlineSaleResponse.SaleItemResponse> itemResponses;
         if (items != null && !items.isEmpty()) {
             itemResponses = items.stream().map(item -> OnlineSaleResponse.SaleItemResponse.builder()
@@ -1538,14 +1595,12 @@ public class OnlineSaleService {
                 .createdAt(e.getCreatedAt())
                 .createdBy(e.getCreatedBy())
                 .items(itemResponses);
-        applyInvoiceFields(builder, e);
+        applyInvoiceFields(builder, invoiceOpt);
         return builder.build();
     }
 
-    private void applyInvoiceFields(OnlineSaleResponse.OnlineSaleResponseBuilder builder, OnlineSaleEntity sale) {
-        Optional<TaxInvoiceEntity> invoiceOpt = sale.getInvoiceId() != null
-                ? taxInvoiceRepository.findById(sale.getInvoiceId())
-                : taxInvoiceRepository.findBySourceTypeAndSourceId("ONLINE_SALE", sale.getId());
+    private void applyInvoiceFields(
+            OnlineSaleResponse.OnlineSaleResponseBuilder builder, Optional<TaxInvoiceEntity> invoiceOpt) {
         invoiceOpt.ifPresent(invoice -> builder
                 .invoiceId(invoice.getId())
                 .invoiceStatus(invoice.getStatus())
