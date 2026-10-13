@@ -229,6 +229,35 @@ class KioskPosServiceTest {
     }
 
     @Test
+    void createSale_keepsSoldBrandOnSaleLineAndDetail() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kioskA.getId())
+                .productId(wallet.getId())
+                .colorId(negro.getId())
+                .hardwareCondition("LEVIS")
+                .currentStock(4)
+                .build());
+
+        KioskPosSaleRequest.ItemRequest levis = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        levis.setHardwareCondition("LEVIS");
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .items(List.of(levis, item(wallet.getId(), negro.getId(), new BigDecimal("1"))))
+                .build());
+
+        KioskPosSaleResponse.Item branded = sale.getItems().get(0);
+        assertThat(branded.getHardwareCondition()).isEqualTo("LEVIS");
+        assertThat(branded.getHardwareLabel()).isEqualTo("LEVIS");
+
+        KioskPosSaleResponse.Item defaultLine = sale.getItems().get(1);
+        assertThat(defaultLine.getHardwareCondition()).isEqualTo("NUEVO");
+    }
+
+    @Test
     void createSale_rejectsInsufficientStock() {
         when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
 

@@ -4243,6 +4243,10 @@ public class KioscoInventoryService {
                 .productName(product != null ? product.getName() : null)
                 .colorId(colorId)
                 .colorName(color != null ? color.getName() : null)
+                .hardwareCondition(stock != null ? stock.getHardwareCondition() : null)
+                .hardwareLabel(stock != null && stock.getHardwareCondition() != null
+                        ? ProductHardwareCondition.label(stock.getHardwareCondition())
+                        : null)
                 .movementType(entity.getMovementType())
                 .quantity(entity.getQuantity())
                 .sizeKey(entity.getSizeKey())
