@@ -263,6 +263,21 @@ class ShipmentChargeDetectionAcceptanceTest extends LfReceivablesH2TestBase {
         assertThat(fx.dispatch(first)).isEmpty();
     }
 
+    @Test
+    @DisplayName("When what was dispatched cannot be valued (no prices, no order items) the charge is not clipped, only shipping is added")
+    void unvaluableDispatchDoesNotClipTheCharge() throws Exception {
+        ProductionOrderEntity noItems = fx.order(customer, "OPV-T0060", TYPE_OPC);
+        ProductShipmentEntity real = fx.shipment(noItems, fx.release(noItems, 1), "ENVP-90060-ENV-00001", "0.01");
+        fx.setLinePrice(real, "0.00");
+        fx.withShipping(real, "30.00");
+        fx.insert(LfReceivablesFixture.legacyCharge(customer, noItems, null, null, "5475.00")
+                .vendorShipmentNumber(noItems.getVendorShipmentNumber())
+                .orderKind("OPC")
+                .build());
+
+        assertThat(fx.balance(customer)).isEqualByComparingTo("5505.00");
+    }
+
     private void pay(Long chargeId, String amount) throws Exception {
         fx.create(customer, creditRequest("PAYMENT", chargeId, amount));
     }
