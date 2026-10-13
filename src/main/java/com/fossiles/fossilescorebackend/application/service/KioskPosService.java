@@ -1183,23 +1183,36 @@ public class KioskPosService {
             }
         }
 
+        // Mismo criterio que la venta: líneas del mismo producto/color/talla/marca se anulan juntas (la venta
+        // las descontó agrupadas y la anulación es idempotente por línea de producto).
+        Map<VoidStockKey, BigDecimal> qtyToVoid = new LinkedHashMap<>();
         List<KioskSaleItemEntity> saleItems = sale.getItems() != null ? sale.getItems() : List.of();
         for (KioskSaleItemEntity item : saleItems) {
-                if (item.getProductId() == null || item.getQuantity() == null) {
-                    continue;
-                }
-                String sizeKey = extractSizeFromSaleItemName(item.getProductName());
-                // Solo kiosco_stock: la anulación no toca inventario legacy.
-                kioscoInventoryService.anularFacturaDesdeIntegracion(
-                        sale.getId(),
-                        kiosk.getId(),
-                        item.getProductId(),
-                        item.getColorId(),
-                        item.getQuantity(),
-                        request.getReason(),
-                        user.getId(),
-                        sizeKey
-                );
+            if (item.getProductId() == null || item.getQuantity() == null) {
+                continue;
+            }
+            VoidStockKey key = new VoidStockKey(
+                    item.getProductId(),
+                    item.getColorId(),
+                    extractSizeFromSaleItemName(item.getProductName()),
+                    item.getHardwareCondition());
+            qtyToVoid.merge(key, item.getQuantity(), BigDecimal::add);
+        }
+        for (Map.Entry<VoidStockKey, BigDecimal> entry : qtyToVoid.entrySet()) {
+            VoidStockKey key = entry.getKey();
+            // Solo kiosco_stock: la anulación no toca inventario legacy. La unidad vuelve al stock (marca,
+            // niño/dama) del que salió; la marca de la línea solo se usa si no hay movimiento de venta.
+            kioscoInventoryService.anularFacturaDesdeIntegracion(
+                    sale.getId(),
+                    kiosk.getId(),
+                    key.productId(),
+                    key.colorId(),
+                    entry.getValue(),
+                    request.getReason(),
+                    user.getId(),
+                    key.sizeKey(),
+                    key.hardwareCondition()
+            );
         }
 
         sale.setStatus(SALE_STATUS_VOID);
@@ -5192,6 +5205,9 @@ public class KioskPosService {
     private String safeTrim(String value) {
         return value == null ? "" : value.trim();
     }
+
+    /** Línea de stock a devolver al anular una venta: producto, color, talla y dimensión (marca/niño-dama). */
+    private record VoidStockKey(Long productId, Long colorId, String sizeKey, String hardwareCondition) {}
 
     record DiscountResolution(
             BigDecimal discountAmount,

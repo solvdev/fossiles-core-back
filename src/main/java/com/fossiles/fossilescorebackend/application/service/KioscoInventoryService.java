@@ -401,6 +401,8 @@ public class KioscoInventoryService {
             throw new BusinessException("Debes indicar si el producto es apto para reventa.");
         }
         Long resolvedUserId = resolveUserIdRequired(userId);
+        // La devolución vuelve al stock (marca, niño/dama) del que salió la venta original.
+        String soldHardware = resolveSoldHardware(locationId, productId, colorId, originalInvoiceId, sizeKey);
         if (Boolean.TRUE.equals(apto)) {
             return applyStockMovement(
                     locationId,
@@ -418,11 +420,13 @@ public class KioscoInventoryService {
                     sizeKey,
                     true,
                     physicalSlipNumber,
-                    physicalCountId
+                    physicalCountId,
+                    soldHardware
             );
         }
 
-        KioscoStockEntity stock = getOrCreateLockedStock(locationId, productId, colorId, resolvedUserId);
+        KioscoStockEntity stock = getOrCreateLockedStock(
+                locationId, productId, colorId, resolvedUserId, resolveStockHardware(soldHardware));
         int before = safeInt(stock.getCurrentStock());
         int after = before;
         saveMovement(stock, KioscoMovementType.DEVOLUCION_CLIENTE, quantity, before, after,
@@ -1813,6 +1817,24 @@ public class KioscoInventoryService {
             String sizeKey,
             boolean syncLegacy
     ) throws BusinessException, ResourceNotFoundException {
+        return anularFactura(
+                invoiceId, locationId, productId, colorId, quantity, reason, productLeftKiosk, userId, sizeKey,
+                syncLegacy, null);
+    }
+
+    public KioscoStockResponse anularFactura(
+            Long invoiceId,
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            String reason,
+            Boolean productLeftKiosk,
+            Long userId,
+            String sizeKey,
+            boolean syncLegacy,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
         if (invoiceId == null) {
             throw new BusinessException("La factura es obligatoria.");
         }
@@ -1829,23 +1851,97 @@ public class KioscoInventoryService {
                     locationId, productId, colorId, invoiceId);
             return resolveStockResponseForNoOp(locationId, productId, colorId, null);
         }
-        int delta = Boolean.TRUE.equals(productLeftKiosk) ? 0 : quantity;
-        return applyStockMovement(
-                locationId,
-                productId,
-                colorId,
-                quantity,
-                invoiceId,
-                null,
-                null,
-                resolveUserIdRequired(userId),
-                KioscoMovementType.ANULACION,
-                delta,
-                !Boolean.TRUE.equals(productLeftKiosk),
-                reason.trim(),
-                sizeKey,
-                syncLegacy
-        );
+        // La unidad vuelve al mismo stock (marca, NINO/DAMA, NUEVO/VIEJO) del que salio al vender. Sin esto la
+        // anulacion caia en la fila NUEVO y dejaba una linea fantasma "sin marca" en kardex y conteo fisico.
+        KioscoStockResponse last = null;
+        for (HardwareAllocation allocation : resolveAnulacionAllocations(
+                locationId, productId, colorId, invoiceId, sizeKey, quantity, hardwareCondition)) {
+            int delta = Boolean.TRUE.equals(productLeftKiosk) ? 0 : allocation.quantity();
+            last = applyStockMovement(
+                    locationId,
+                    productId,
+                    colorId,
+                    allocation.quantity(),
+                    invoiceId,
+                    null,
+                    null,
+                    resolveUserIdRequired(userId),
+                    KioscoMovementType.ANULACION,
+                    delta,
+                    !Boolean.TRUE.equals(productLeftKiosk),
+                    reason.trim(),
+                    sizeKey,
+                    syncLegacy,
+                    null,
+                    null,
+                    allocation.hardwareCondition()
+            );
+        }
+        return last;
+    }
+
+    private record HardwareAllocation(String hardwareCondition, int quantity) {}
+
+    /** Dimensión de stock de la que salió la venta POS {@code referenceId}; null si no hay movimiento VENTA. */
+    private String resolveSoldHardware(
+            Long locationId, Long productId, Long colorId, Long referenceId, String sizeKey
+    ) {
+        if (referenceId == null) {
+            return null;
+        }
+        String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
+        List<Object[]> sold = kioscoMovementRepository.sumPosReferenceQuantityByHardware(
+                locationId, productId, colorId, referenceId, KioscoMovementType.VENTA,
+                normalizedSize.isEmpty() ? null : normalizedSize);
+        if (sold == null || sold.isEmpty() || sold.get(0)[0] == null) {
+            return null;
+        }
+        return sold.get(0)[0].toString();
+    }
+
+    /**
+     * Reparte la cantidad a anular entre los stocks de los que salio la venta (lo normal es uno solo; los
+     * cinchos FOSS pueden salir mitad NUEVO y mitad VIEJO). Sin movimiento VENTA original usa
+     * {@code fallbackHardware}, y si tampoco hay, queda en NUEVO como antes.
+     */
+    private List<HardwareAllocation> resolveAnulacionAllocations(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Long invoiceId,
+            String sizeKey,
+            int quantity,
+            String fallbackHardware
+    ) {
+        String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
+        List<Object[]> sold = kioscoMovementRepository.sumPosReferenceQuantityByHardware(
+                locationId, productId, colorId, invoiceId, KioscoMovementType.VENTA,
+                normalizedSize.isEmpty() ? null : normalizedSize);
+        List<HardwareAllocation> allocations = new ArrayList<>();
+        int remaining = quantity;
+        if (sold != null) {
+            for (Object[] row : sold) {
+                if (remaining <= 0) {
+                    break;
+                }
+                int soldQty = row[1] instanceof Number n ? n.intValue() : 0;
+                int take = Math.min(remaining, soldQty);
+                if (take > 0) {
+                    allocations.add(new HardwareAllocation(row[0] != null ? row[0].toString() : null, take));
+                    remaining -= take;
+                }
+            }
+        }
+        if (allocations.isEmpty()) {
+            String hardware = safeTrim(fallbackHardware).isEmpty() ? null : fallbackHardware.trim();
+            return List.of(new HardwareAllocation(hardware, quantity));
+        }
+        if (remaining > 0) {
+            // Anulan mas de lo registrado en el kardex: el excedente va al primer stock de la venta.
+            HardwareAllocation first = allocations.get(0);
+            allocations.set(0, new HardwareAllocation(first.hardwareCondition(), first.quantity() + remaining));
+        }
+        return allocations;
     }
 
     public KioscoStockResponse registrarEntradaDesdeIntegracion(
@@ -2104,9 +2200,30 @@ public class KioscoInventoryService {
             Long userId,
             String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
+        return anularFacturaDesdeIntegracion(
+                invoiceId, locationId, productId, colorId, quantity, reason, userId, sizeKey, null);
+    }
+
+    /**
+     * Anulacion POS. {@code hardwareCondition} (marca, NINO/DAMA, ...) solo se usa si no se encuentra el
+     * movimiento VENTA original: lo normal es devolver la unidad al mismo stock que la vendio.
+     */
+    public KioscoStockResponse anularFacturaDesdeIntegracion(
+            Long invoiceId,
+            Long locationId,
+            Long productId,
+            Long colorId,
+            BigDecimal quantity,
+            String reason,
+            Long userId,
+            String sizeKey,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
         // syncLegacy=false: el POS no toca inventario legacy; solo kiosco_stock.
-        return anularFactura(invoiceId, locationId, productId, colorId, qty, reason, false, userId, sizeKey, false);
+        return anularFactura(
+                invoiceId, locationId, productId, colorId, qty, reason, false, userId, sizeKey, false,
+                hardwareCondition);
     }
 
     @Transactional(readOnly = true)
