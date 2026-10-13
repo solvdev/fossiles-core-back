@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleReturnEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
@@ -120,6 +121,11 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
         assertThat(savedTarget.getTotalAmount()).isEqualByComparingTo("415.00");
         assertThat(savedTarget.getObservations()).contains("CAMBIO_Q0(ENVIO_REL=ENVL-00001)");
         verify(onlineSaleShipmentNumberService, never()).nextNumber();
+
+        // El registro de devolución guarda a qué envío de cambio quedó asignado
+        ArgumentCaptor<OnlineSaleReturnEntity> returnCaptor = ArgumentCaptor.forClass(OnlineSaleReturnEntity.class);
+        verify(onlineSaleReturnRepository).save(returnCaptor.capture());
+        assertThat(returnCaptor.getValue().getExchangeShipmentNumber()).isEqualTo("ENVL-00002");
     }
 
     @Test

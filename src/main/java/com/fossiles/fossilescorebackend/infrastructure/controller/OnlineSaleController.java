@@ -202,6 +202,7 @@ public class OnlineSaleController {
             row.put("id", e.getId());
             row.put("onlineSaleId", e.getOnlineSaleId());
             row.put("relatedShipmentNumber", e.getRelatedShipmentNumber());
+            row.put("exchangeShipmentNumber", e.getExchangeShipmentNumber());
             row.put("returnReason", e.getReturnReason());
             row.put("itemCondition", e.getItemCondition());
             row.put("createdAt", e.getCreatedAt());

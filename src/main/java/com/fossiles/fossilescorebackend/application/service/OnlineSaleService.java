@@ -896,7 +896,7 @@ public class OnlineSaleService {
 
         if (req != null && req.getTargetOnlineSaleId() != null) {
             OnlineSaleEntity target = addExchangeItemsToExistingShipment(original, req, exchangeLines);
-            creditExchangeLinesToReturns(original, exchangeLines, exchangeReason(req));
+            creditExchangeLinesToReturns(original, exchangeLines, exchangeReason(req), target.getShipmentNumber());
             noteOriginalSaleExchange(original, target.getShipmentNumber());
             return toResponse(target);
         }
@@ -967,7 +967,7 @@ public class OnlineSaleService {
         saved.setUpdatedBy(securityUtil.getCurrentUserId());
         saleRepository.save(saved);
 
-        creditExchangeLinesToReturns(original, exchangeLines, exchangeReason(req));
+        creditExchangeLinesToReturns(original, exchangeLines, exchangeReason(req), saved.getShipmentNumber());
         noteOriginalSaleExchange(original, saved.getShipmentNumber());
 
         return toResponse(saved);
@@ -1128,7 +1128,8 @@ public class OnlineSaleService {
     private void creditExchangeLinesToReturns(
             OnlineSaleEntity original,
             List<ExchangeLine> lines,
-            String reason) throws BusinessException {
+            String reason,
+            String exchangeShipmentNumber) throws BusinessException {
         LocationEntity returnsLocation = returnsWarehouseLocator.find()
                 .orElseThrow(() -> new BusinessException(
                         "No está configurada la ubicación de inventario de devoluciones "
@@ -1149,6 +1150,7 @@ public class OnlineSaleService {
         OnlineSaleReturnEntity header = onlineSaleReturnRepository.save(OnlineSaleReturnEntity.builder()
                 .onlineSaleId(original.getId())
                 .relatedShipmentNumber(original.getShipmentNumber())
+                .exchangeShipmentNumber(exchangeShipmentNumber)
                 .returnReason(truncate(reason, 500))
                 .itemCondition("BUENO")
                 .createdBy(securityUtil.getCurrentUserId())
@@ -1297,6 +1299,7 @@ public class OnlineSaleService {
                 .onlineSaleId(sale.getId())
                 .saleNumber(sale.getSaleNumber())
                 .relatedShipmentNumber(header.getRelatedShipmentNumber())
+                .exchangeShipmentNumber(header.getExchangeShipmentNumber())
                 .customerName(sale.getCustomerName())
                 .address(sale.getAddress())
                 .phone(sale.getPhone())
