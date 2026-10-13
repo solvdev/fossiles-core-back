@@ -324,6 +324,31 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
     );
 
     /**
+     * Igual que {@link #existsPosReferenceMovement} pero distinguiendo la dimension del stock (marca, NINO/DAMA,
+     * NUEVO/VIEJO). Una venta puede traer el mismo producto/color/talla en dos marcas distintas: cada una es
+     * un movimiento propio y la segunda no debe tomarse como "ya aplicada".
+     */
+    @Query("SELECT COUNT(m) > 0 FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
+            + "AND s.productId = :productId "
+            + "AND s.hardwareCondition = :hardwareCondition "
+            + "AND m.referenceId = :referenceId "
+            + "AND m.movementType = :movementType "
+            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
+            + "AND ((:sizeKey IS NULL AND (m.sizeKey IS NULL OR m.sizeKey = '')) "
+            + "OR m.sizeKey = :sizeKey)")
+    boolean existsPosReferenceMovementByHardware(
+            @Param("locationId") Long locationId,
+            @Param("productId") Long productId,
+            @Param("colorId") Long colorId,
+            @Param("referenceId") Long referenceId,
+            @Param("movementType") KioscoMovementType movementType,
+            @Param("sizeKey") String sizeKey,
+            @Param("hardwareCondition") String hardwareCondition
+    );
+
+    /**
      * Dimension de stock (marca, NINO/DAMA, NUEVO/VIEJO) y cantidad con que quedo registrado el movimiento
      * original de una linea POS. Cada fila es {@code [hardwareCondition, SUM(quantity)]}, en el orden en que
      * se registraron. Sirve para que la anulacion devuelva la unidad al MISMO stock que la vendio.

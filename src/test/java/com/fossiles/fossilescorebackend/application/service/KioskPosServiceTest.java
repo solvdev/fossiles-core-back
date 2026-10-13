@@ -259,6 +259,51 @@ class KioskPosServiceTest {
     }
 
     @Test
+    void createSale_discountsEachBrandWhenSameProductAndColorAreSoldInTwoBrands() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        for (String brand : List.of("LEVIS", "NAUTICA")) {
+            kioscoStockRepository.save(KioscoStockEntity.builder()
+                    .locationId(kioskA.getId())
+                    .productId(wallet.getId())
+                    .colorId(negro.getId())
+                    .hardwareCondition(brand)
+                    .currentStock(4)
+                    .build());
+        }
+
+        KioskPosSaleRequest.ItemRequest levis = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        levis.setHardwareCondition("LEVIS");
+        KioskPosSaleRequest.ItemRequest nautica = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        nautica.setHardwareCondition("NAUTICA");
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .items(List.of(levis, nautica))
+                .build());
+
+        // Las dos marcas deben descontar su propia unidad (antes la segunda se descartaba).
+        assertThat(stockOf("LEVIS")).isEqualTo(3);
+        assertThat(stockOf("NAUTICA")).isEqualTo(3);
+
+        kioskPosService.voidSale(
+                sale.getId(), kioskA.getId(), KioskSaleVoidRequest.builder().reason("error de venta").build());
+
+        assertThat(stockOf("LEVIS")).isEqualTo(4);
+        assertThat(stockOf("NAUTICA")).isEqualTo(4);
+        assertThat(stockOf("NUEVO")).isEqualTo(5);
+    }
+
+    private int stockOf(String hardware) {
+        return kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        kioskA.getId(), wallet.getId(), negro.getId(), hardware)
+                .orElseThrow()
+                .getCurrentStock();
+    }
+
+    @Test
     void voidSale_returnsUnitsToTheBrandStockTheyWereSoldFrom() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
         kioscoStockRepository.save(KioscoStockEntity.builder()

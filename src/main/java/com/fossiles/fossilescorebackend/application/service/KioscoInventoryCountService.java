@@ -629,10 +629,6 @@ public class KioscoInventoryCountService {
                     .filter(s -> Objects.equals(
                             rowDimension, ProductBrandNames.resolveDistinctDimension(s.getHardwareCondition())))
                     .collect(Collectors.toList());
-            if (rowDimension == null && item == null && isEmptyStockWithDimensionedSiblings(
-                    kardexRow, stocksForRow, productColorStocks)) {
-                continue;
-            }
             KioscoStockEntity stock = stocksForRow.isEmpty() ? stockByKey.get(productColorKey) : stocksForRow.get(0);
             Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardexForStock = mergeSizeKardexForStocks(
                     stocksForRow, kardexByStockAndSize);
@@ -651,6 +647,11 @@ public class KioscoInventoryCountService {
             Map<String, Integer> counts = new LinkedHashMap<>();
             int total = computePhysicalCountTotal(
                     product, countedValues, physicalSizes, physicalSizesByLocation);
+            // Stock residual sin dimensión: sin kardex, sin existencias, sin nada contado y sin observaciones.
+            if (rowDimension == null && total == 0 && generalObservation.isEmpty() && sizeObservations.isEmpty()
+                    && isEmptyStockWithDimensionedSiblings(kardexRow, stocksForRow, productColorStocks)) {
+                continue;
+            }
 
             for (String key : COUNT_LOCATION_KEYS) {
                 int value = countedValues.getOrDefault(key, BigDecimal.ZERO).intValue();

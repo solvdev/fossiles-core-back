@@ -444,8 +444,8 @@ class KioscoInventoryServiceTest {
 
     @Test
     void venta_noOp_siVentaYaAplicadaParaMismaFactura() throws Exception {
-        when(kioscoMovementRepository.existsPosReferenceMovement(
-                locationId, productId, colorId, 777L, KioscoMovementType.VENTA, null))
+        when(kioscoMovementRepository.existsPosReferenceMovementByHardware(
+                locationId, productId, colorId, 777L, KioscoMovementType.VENTA, null, "NUEVO"))
                 .thenReturn(true);
         when(kioscoStockRepository.findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
                 eq(locationId), eq(productId), eq(colorId), any()))
@@ -714,6 +714,39 @@ class KioscoInventoryServiceTest {
                 eq(locationId), eq(productId), eq(colorId), eq(userId), eq("VIEJO"));
         verify(kioscoMovementRepository, org.mockito.Mockito.times(2)).save(captor.capture());
         assertThat(captor.getAllValues().stream().mapToInt(KioscoMovementEntity::getQuantity).sum()).isEqualTo(3);
+    }
+
+    @Test
+    void anulacion_noDevuelveLoQueLaVentaNuncaDescontó() throws Exception {
+        // La venta solo descontó 1 unidad de LEVIS (la otra marca se perdió); anular 2 no debe inflar el stock.
+        when(kioscoMovementRepository.sumPosReferenceQuantityByHardware(
+                locationId, productId, colorId, 900L, KioscoMovementType.VENTA, null))
+                .thenReturn(java.util.Collections.singletonList(new Object[] {"LEVIS", 1L}));
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(10, 0)));
+        ArgumentCaptor<KioscoMovementEntity> captor = ArgumentCaptor.forClass(KioscoMovementEntity.class);
+
+        service.anularFactura(900L, locationId, productId, colorId, 2, "error", false, userId);
+
+        verify(kioscoMovementRepository).save(captor.capture());
+        assertThat(captor.getValue().getQuantity()).isEqualTo(1);
+    }
+
+    @Test
+    void venta_dosMarcasDelMismoProductoYColorSeDescuentanAmbas() throws Exception {
+        // La primera marca ya tiene su movimiento; la revisión de "ya aplicado" es por marca, no por producto.
+        when(kioscoMovementRepository.existsPosReferenceMovementByHardware(
+                locationId, productId, colorId, 100L, KioscoMovementType.VENTA, null, "LEVIS"))
+                .thenReturn(true);
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(10, 0)));
+
+        service.registrarVentaDesdeIntegracion(
+                locationId, productId, colorId, new BigDecimal("1"), 100L, userId, null, "NAUTICA");
+
+        verify(kioscoStockProvisioningService).ensureStockRow(
+                eq(locationId), eq(productId), eq(colorId), eq(userId), eq("NAUTICA"));
+        verify(kioscoMovementRepository).save(any(KioscoMovementEntity.class));
     }
 
     @Test

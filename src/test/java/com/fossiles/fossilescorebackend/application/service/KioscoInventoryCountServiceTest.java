@@ -802,6 +802,43 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
+    void buildReport_cinchoJrOcultaStockNuevoVacioAunqueTengaConteoGuardadoEnCeros() throws Exception {
+        Long cinchoProductId = 79L;
+        long stockNuevo = 9201L;
+        long stockNino = 9202L;
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(cinchoProductId).code("L-04JR").name("CINCHO CASUAL LEVIS")
+                        .categoryId(categoryId).cinchoType("CASUAL").build()
+        ));
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
+                cinchoJrStock(stockNuevo, cinchoProductId, "NUEVO", 0, "{}"),
+                cinchoJrStock(stockNino, cinchoProductId, "NINO", 2, "{\"20\":2}")
+        ));
+        // El front guardó la fila NUEVO con ceros al editar el producto.
+        when(itemRepository.findByCountId(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountItemEntity.builder()
+                        .countId(countId).productId(cinchoProductId).colorId(colorId)
+                        .hardwareCondition("NUEVO").countsData("{}").build()));
+        stubKardexDateTime(
+                List.of(
+                        cinchoJrKardex(cinchoProductId, "NUEVO", 0),
+                        cinchoJrKardex(cinchoProductId, "NINO", 2)),
+                Map.of(stockNino, Map.of("20", KioscoInventoryService.SizeKardexBucket.of(0, 0, 2, 0, 0, 0))));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
+
+        var rows = report.getCategories().get(0).getRows();
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getHardwareCondition()).isEqualTo("NINO");
+    }
+
+    @Test
     void buildReport_cinchoJrStockNuevoConMovimientoPropioNoHeredaTallasDeNinoYDama() throws Exception {
         Long cinchoProductId = 78L;
         long stockNuevo = 9101L;

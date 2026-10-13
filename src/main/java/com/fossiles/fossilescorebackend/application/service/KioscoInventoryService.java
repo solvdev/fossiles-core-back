@@ -1937,9 +1937,12 @@ public class KioscoInventoryService {
             return List.of(new HardwareAllocation(hardware, quantity));
         }
         if (remaining > 0) {
-            // Anulan mas de lo registrado en el kardex: el excedente va al primer stock de la venta.
-            HardwareAllocation first = allocations.get(0);
-            allocations.set(0, new HardwareAllocation(first.hardwareCondition(), first.quantity() + remaining));
+            // Se anula mas de lo que la venta descontó: esa parte nunca salió del inventario, no se devuelve
+            // (devolverla inflaría el stock de la marca).
+            log.warn(
+                    "KIOSCO_ANULACION_EXCEDENTE locationId={} productId={} colorId={} invoiceId={} size={} "
+                            + "excedente={} (la venta no descontó esa cantidad)",
+                    locationId, productId, colorId, invoiceId, sizeKey, remaining);
         }
         return allocations;
     }
@@ -3596,8 +3599,11 @@ public class KioscoInventoryService {
             String sizeKey,
             String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
+        // Idempotencia por marca: una venta con el mismo producto/color en dos marcas (LEVIS y NAUTICA) son dos
+        // movimientos; si solo se mirara producto+color la segunda marca se descartaba y nunca se descontaba.
         if (hasPosReferenceMovementApplied(
-                locationId, productId, colorId, invoiceId, KioscoMovementType.VENTA, sizeKey)) {
+                locationId, productId, colorId, invoiceId, KioscoMovementType.VENTA, sizeKey,
+                resolveStockHardware(hardwareCondition))) {
             log.info(
                     "KIOSCO_VENTA_SKIPPED locationId={} productId={} colorId={} invoiceId={} (already applied)",
                     locationId, productId, colorId, invoiceId);
@@ -3641,6 +3647,24 @@ public class KioscoInventoryService {
         String sizeKeyOrNull = normalizedSize.isEmpty() ? null : normalizedSize;
         return kioscoMovementRepository.existsPosReferenceMovement(
                 locationId, productId, colorId, referenceId, movementType, sizeKeyOrNull);
+    }
+
+    private boolean hasPosReferenceMovementApplied(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Long referenceId,
+            KioscoMovementType movementType,
+            String sizeKey,
+            String stockHardware
+    ) {
+        if (referenceId == null || locationId == null || productId == null || movementType == null) {
+            return false;
+        }
+        String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
+        return kioscoMovementRepository.existsPosReferenceMovementByHardware(
+                locationId, productId, colorId, referenceId, movementType,
+                normalizedSize.isEmpty() ? null : normalizedSize, stockHardware);
     }
 
     private boolean shouldSplitVentaByHardware(Long productId, String hardwareCondition) {
