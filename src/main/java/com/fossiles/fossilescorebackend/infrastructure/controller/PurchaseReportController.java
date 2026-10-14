@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.response.PurchaseReportResponse;
+import com.fossiles.fossilescorebackend.application.service.MaterialStockValueService;
 import com.fossiles.fossilescorebackend.application.service.PurchaseReportService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -15,6 +16,13 @@ import java.time.LocalDate;
 public class PurchaseReportController {
 
     private final PurchaseReportService purchaseReportService;
+    private final MaterialStockValueService materialStockValueService;
+
+    /** Valor del stock de materiales: La Bandola de Oro y Otros (sin cuero). */
+    @GetMapping("/material-value-by-supplier")
+    public ResponseEntity<MaterialStockValueService.Report> getMaterialValueBySupplier() {
+        return ResponseEntity.ok(materialStockValueService.getValueBySupplier());
+    }
 
     // CP-08-001: Reporte de Órdenes por Estado
     @GetMapping("/orders-by-status")
