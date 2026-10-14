@@ -42,8 +42,9 @@ import java.util.stream.Collectors;
  *   <li>Costo estimado: valor × % de costo de producto del último mes configurado del sitio (igual que el P&amp;L,
  *       que aplica ese % sobre las ventas con IVA). El producto no tiene costo unitario propio.</li>
  * </ul>
- * Los suministros (códigos {@code SUM...}: bolsas, cajas) no son mercadería y no se cuentan.
- * Sólo aplica a sitios con kiosco real ({@code location_id}); los históricos no tienen stock.
+ * Incluye los empaques (códigos {@code SUM...}: bolsas, cajas) a su precio del POS y los sitios marcados fuera de
+ * los demás reportes (p. ej. Entre Cueros). Sólo aplica a sitios con kiosco real ({@code location_id}); los kioscos
+ * sin valor en producto no aparecen.
  */
 @Service
 @RequiredArgsConstructor
@@ -68,7 +69,7 @@ public class KioskFinancialsStockValueService {
     public KioskFinancialsStockValueResponse getStockValue(String siteIdsCsv) throws BusinessException {
         guard.assertCanView();
         Set<Long> requested = KioskFinancialsReportService.parseSiteIds(siteIdsCsv);
-        List<KioskSiteEntity> sites = siteRepository.findAllByExcludeFromReportsFalseOrderBySortOrderAscNameAsc()
+        List<KioskSiteEntity> sites = siteRepository.findAllByOrderBySortOrderAscNameAsc()
                 .stream()
                 .filter(s -> s.getLocationId() != null)
                 .filter(s -> requested.isEmpty() || requested.contains(s.getId()))
@@ -108,14 +109,14 @@ public class KioskFinancialsStockValueService {
             LocalDateTime lastUpdated = null;
             for (KioscoStockEntity row : stockByLocation.getOrDefault(site.getLocationId(), List.of())) {
                 ProductEntity product = products.get(row.getProductId());
-                if (product == null || isPackaging(product)) {
+                if (product == null) {
                     continue;
                 }
                 BigDecimal unitPrice = entrecueros
                         ? nz(EntrecuerosPriceLists.resolveUnitPrice(product, row.getHardwareCondition(), BigDecimal.ONE))
                         : catalogUnitPrice(product);
                 // Entre Cueros no lleva recargo por talla en su lista de precios
-                Valuation v = value(row.getCurrentStock(), row.getSizesData(), unitPrice, !entrecueros);
+                Valuation v = value(row.getCurrentStock(), row.getSizesData(), unitPrice, !entrecueros && !isPackaging(product));
                 if (v.units() <= 0) {
                     continue;
                 }
@@ -141,8 +142,8 @@ public class KioskFinancialsStockValueService {
             lines.sort(Comparator.comparing(KioskFinancialsStockValueResponse.Line::getSaleValue).reversed()
                     .thenComparing(l -> l.getProductCode() == null ? "" : l.getProductCode()));
 
-            // Kiosco cerrado sin mercadería: no aparece salvo que se pida por filtro
-            if (units == 0 && requested.isEmpty() && KioskSiteEntity.STATUS_CLOSED.equals(site.getStatus())) {
+            // Kiosco sin valor en producto (sin existencias o todo sin precio): no aparece
+            if (value.signum() <= 0) {
                 continue;
             }
             CostPct pct = costPcts.get(site.getId());
@@ -218,9 +219,12 @@ public class KioskFinancialsStockValueService {
                 && product.getCode().trim().toUpperCase(Locale.ROOT).startsWith(PACKAGING_PRODUCT_CODE_PREFIX);
     }
 
-    /** Precio de catálogo del POS (kioscos normales), sin recargo de talla. */
+    /** Precio de catálogo del POS (kioscos normales), sin recargo de talla; empaques: venta o vendedor, como el POS. */
     static BigDecimal catalogUnitPrice(ProductEntity product) {
-        for (BigDecimal p : new BigDecimal[]{product.getSalePrice(), product.getDiscountedPrice(), product.getSellerPrice()}) {
+        BigDecimal[] candidates = isPackaging(product)
+                ? new BigDecimal[]{product.getSalePrice(), product.getSellerPrice()}
+                : new BigDecimal[]{product.getSalePrice(), product.getDiscountedPrice(), product.getSellerPrice()};
+        for (BigDecimal p : candidates) {
             if (p != null && p.signum() > 0) {
                 return p.setScale(2, RoundingMode.HALF_UP);
             }

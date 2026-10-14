@@ -66,6 +66,15 @@ class KioskFinancialsStockValueServiceTest {
     }
 
     @Test
+    void packagingIgnoresDiscountedPriceLikePos() {
+        ProductEntity p = new ProductEntity();
+        p.setCode("SUM-BOLSA");
+        p.setDiscountedPrice(new BigDecimal("3"));
+        p.setSellerPrice(new BigDecimal("2"));
+        assertEquals(new BigDecimal("2.00"), KioskFinancialsStockValueService.catalogUnitPrice(p));
+    }
+
+    @Test
     void packagingIsDetectedByCode() {
         ProductEntity p = new ProductEntity();
         p.setCode("sum-bolsa");

@@ -682,6 +682,15 @@ public class ProductInventoryService {
                 + "|" + row.getReferenceLineId();
     }
 
+    /**
+     * Lee la fila con bloqueo de escritura: dos descargas simultáneas sobre el mismo producto y
+     * bodega se serializan en lugar de pisarse y perder una de las dos.
+     */
+    private Optional<ProductInventoryLocation> findRowForUpdate(Long productId, Long locationId, Long colorId) {
+        return productInventoryLocationRepository
+                .findWithLockByProductIdAndLocationIdAndColorId(productId, locationId, colorId);
+    }
+
     private BigDecimal readQuantity(Long productId, Long locationId, Long colorId) {
         return productInventoryLocationRepository
                 .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
@@ -1046,8 +1055,7 @@ public class ProductInventoryService {
             throw new ResourceNotFoundException("Product", productId);
         }
         ProductEntity product = productRepository.findById(productId).orElse(null);
-        Optional<ProductInventoryLocation> existing =
-                productInventoryLocationRepository.findByProductIdAndLocationIdAndColorId(productId, locationId, colorId);
+        Optional<ProductInventoryLocation> existing = findRowForUpdate(productId, locationId, colorId);
 
         ProductInventoryLocation entity;
         if (existing.isPresent()) {
@@ -1245,8 +1253,7 @@ public class ProductInventoryService {
             String kardexMovementType,
             Long referenceLineId)
             throws ResourceNotFoundException, BusinessException {
-        ProductInventoryLocation entity = productInventoryLocationRepository
-                .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
+        ProductInventoryLocation entity = findRowForUpdate(productId, locationId, colorId)
                 .orElseThrow(() -> new ResourceNotFoundException(
                     "Product Inventory Location",
                     "Product: " + productId +
