@@ -4,9 +4,11 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancials
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsCompletenessResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsDailyMatrixResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsPnlResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsStockValueResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsSupervisorsResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.KioskFinancialsReportService;
+import com.fossiles.fossilescorebackend.application.service.KioskFinancialsStockValueService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -24,6 +26,14 @@ import java.time.LocalDate;
 public class KioskFinancialsReportController {
 
     private final KioskFinancialsReportService reportService;
+    private final KioskFinancialsStockValueService stockValueService;
+
+    /** Valor del inventario actual de cada kiosco (precio de venta y costo estimado). */
+    @GetMapping("/stock-value")
+    public ResponseEntity<KioskFinancialsStockValueResponse> getStockValue(
+            @RequestParam(required = false) String siteIds) throws BusinessException {
+        return ResponseEntity.ok(stockValueService.getStockValue(siteIds));
+    }
 
     @GetMapping("/pnl")
     public ResponseEntity<KioskFinancialsPnlResponse> getPnl(
