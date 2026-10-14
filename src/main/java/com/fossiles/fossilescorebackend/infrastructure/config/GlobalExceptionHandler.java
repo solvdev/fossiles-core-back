@@ -5,17 +5,23 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.server.ResponseStatusException;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 @RestControllerAdvice
 @Slf4j
@@ -58,6 +64,41 @@ public class GlobalExceptionHandler {
         errors.put("message", ex.getMessage());
         
         return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<Map<String, Object>> handleAccessDenied(AccessDeniedException ex) {
+        return body(HttpStatus.FORBIDDEN, ex.getMessage());
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, Object>> handleResponseStatus(ResponseStatusException ex) {
+        HttpStatus status = HttpStatus.resolve(ex.getStatusCode().value());
+        return body(status != null ? status : HttpStatus.BAD_REQUEST, ex.getReason());
+    }
+
+    // Parámetros con formato inválido son errores del cliente; el mensaje no expone tipos internos.
+    @ExceptionHandler({MethodArgumentTypeMismatchException.class, MissingServletRequestParameterException.class,
+            HttpMessageNotReadableException.class})
+    public ResponseEntity<Map<String, Object>> handleBadRequestFormat(Exception ex) {
+        String parameter = ex instanceof MethodArgumentTypeMismatchException mismatch ? mismatch.getName()
+                : ex instanceof MissingServletRequestParameterException missing ? missing.getParameterName() : null;
+        return body(HttpStatus.BAD_REQUEST, parameter != null
+                ? "El parámetro '" + parameter + "' falta o tiene un formato inválido."
+                : "El cuerpo de la petición tiene un formato inválido.");
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
+        return body(HttpStatus.BAD_REQUEST, ex.getMessage());
+    }
+
+    private static ResponseEntity<Map<String, Object>> body(HttpStatus status, String message) {
+        Map<String, Object> errors = new HashMap<>();
+        errors.put("timestamp", LocalDateTime.now());
+        errors.put("status", status.value());
+        errors.put("message", message);
+        return new ResponseEntity<>(errors, status);
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)
@@ -121,14 +162,10 @@ public class GlobalExceptionHandler {
             log.debug("Cliente desconectado: {}", ex.getMessage());
             return null;
         }
-        log.error("Error no controlado en API", ex);
-        Map<String, Object> errors = new HashMap<>();
-        errors.put("timestamp", LocalDateTime.now());
-        errors.put("status", HttpStatus.INTERNAL_SERVER_ERROR.value());
-        errors.put("message", ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
-        errors.put("error", ex.getClass().getSimpleName());
-
-        return new ResponseEntity<>(errors, HttpStatus.INTERNAL_SERVER_ERROR);
+        // El detalle técnico queda en el log; la respuesta solo lleva la referencia para buscarlo.
+        String reference = UUID.randomUUID().toString().substring(0, 8);
+        log.error("Error no controlado en API [ref {}]", reference, ex);
+        return body(HttpStatus.INTERNAL_SERVER_ERROR, "Ocurrió un error interno. Referencia: " + reference);
     }
 
     private static boolean isDisconnectedClient(Throwable ex) {

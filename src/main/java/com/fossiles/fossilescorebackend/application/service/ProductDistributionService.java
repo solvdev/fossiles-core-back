@@ -1468,6 +1468,7 @@ public class ProductDistributionService {
      * Actualiza los productos de un envío (borrador, confirmado o en tránsito).
      * Si el envío ya salió de PT, revierte la salida anterior y aplica la nueva composición.
      */
+    @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse updateShipmentProducts(Long shipmentId, List<ProductShipmentRequest.ProductShipmentDetailRequest> products) 
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
@@ -1489,7 +1490,13 @@ public class ProductDistributionService {
 
         if (sentStatus && dispatchInventory) {
             reverseSentShipmentDispatchInventory(shipment);
-            assertDispatchStockAvailable(normalized);
+            try {
+                assertDispatchStockAvailable(normalized);
+            } catch (BusinessException ex) {
+                // La devolución a PT ya se escribió: sin rollback quedaría stock que no existe con el envío aún SENT.
+                org.springframework.transaction.interceptor.TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+                throw ex;
+            }
         }
 
         shipmentDetailRepository.deleteByShipmentId(shipmentId);
