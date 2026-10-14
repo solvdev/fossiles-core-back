@@ -33,7 +33,7 @@ public class KioscoMovementResponse {
     private Integer stockBefore;
     private Integer stockAfter;
     private Long referenceId;
-    /** Tipo de documento asociado: SHIPMENT, TRANSFER, INVOICE, TRASLADO. */
+    /** Tipo de documento asociado: SHIPMENT, TRANSFER, INVOICE, TRASLADO, POS_SALE (venta sin factura). */
     private String referenceType;
     /** Número legible del documento (ej. ENVI-00123, TRF-45). */
     private String referenceNumber;

@@ -19,7 +19,11 @@ BEGIN
             current_setting('app.kiosco_movement_admin_mutation', true),
             'false'
         ) = 'true' THEN
-        RETURN OLD;
+        -- En UPDATE hay que devolver NEW: devolver OLD descarta el cambio (responde "UPDATE n" sin modificar la fila).
+        IF TG_OP = 'DELETE' THEN
+            RETURN OLD;
+        END IF;
+        RETURN NEW;
     END IF;
 
     RAISE EXCEPTION 'kiosco_movement is append-only; UPDATE/DELETE are not allowed';

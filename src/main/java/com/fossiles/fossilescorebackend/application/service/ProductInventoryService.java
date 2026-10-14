@@ -668,6 +668,208 @@ public class ProductInventoryService {
         }
     }
 
+    // ========== EN TRÁNSITO ==========
+
+    /** Ubicación donde quedan las unidades despachadas que el destino aún no ha recibido. */
+    public static final String TRANSIT_LOCATION_CODE = "EN_TRANSITO";
+    public static final String REF_SHIPMENT_TRANSIT = "SHIPMENT_TRANSIT";
+    public static final String MOVEMENT_TRANSIT_IN = "TRANSIT_IN";
+    public static final String MOVEMENT_TRANSIT_OUT = "TRANSIT_OUT";
+    private static final List<String> TRANSIT_MOVEMENTS = List.of(MOVEMENT_TRANSIT_IN, MOVEMENT_TRANSIT_OUT);
+
+    /**
+     * Ubicación "En tránsito"; se crea la primera vez que se necesita para no depender de una
+     * migración de datos.
+     */
+    public LocationEntity getOrCreateTransitLocation() {
+        return locationRepository.findByCode(TRANSIT_LOCATION_CODE)
+                .orElseGet(() -> locationRepository.save(LocationEntity.builder()
+                        .code(TRANSIT_LOCATION_CODE)
+                        .name("En tránsito")
+                        .categoria("TRANSITO")
+                        .build()));
+    }
+
+    /** Devoluciones dañadas o usadas: se guardan aparte para que no se despachen. */
+    public static final String NON_SELLABLE_RETURNS_LOCATION_CODE = "DEV_NO_APTA";
+
+    public LocationEntity getOrCreateNonSellableReturnsLocation() {
+        return locationRepository.findByCode(NON_SELLABLE_RETURNS_LOCATION_CODE)
+                .orElseGet(() -> locationRepository.save(LocationEntity.builder()
+                        .code(NON_SELLABLE_RETURNS_LOCATION_CODE)
+                        .name("Devoluciones no aptas")
+                        .categoria("DEVOLUCION_NO_APTA")
+                        .build()));
+    }
+
+    public static final String REF_KIOSK_DEPOSIT_RETURN = "KIOSK_DEPOSIT_RETURN";
+
+    /**
+     * Entrada a bodega de un producto que el kiosko devuelve a depósito. Revendible va a Devoluciones
+     * (primera bodega de despacho); dañado a Devoluciones no aptas. Idempotente por movimiento de kiosko.
+     */
+    public void creditKioskDepositReturn(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            boolean apto,
+            Long kioskMovementId,
+            String referenceNumber,
+            String description) throws BusinessException {
+        LocationEntity target;
+        if (apto) {
+            target = returnsWarehouseLocator.find().orElseThrow(() -> new BusinessException(
+                    "No está configurada la bodega de devoluciones; no se puede recibir la devolución del kiosko."));
+        } else {
+            target = getOrCreateNonSellableReturnsLocation();
+        }
+        creditReturnsWithReturnMovement(productId, target.getId(), colorId, quantity, sizeLabel,
+                REF_KIOSK_DEPOSIT_RETURN, kioskMovementId, referenceNumber, description, null);
+    }
+
+    /** Unidades de una línea de envío que siguen en tránsito (salieron de bodega y no se han recibido). */
+    @Transactional(readOnly = true)
+    public BigDecimal getTransitBalanceForLine(
+            Long shipmentId, Long productId, Long colorId, Long referenceLineId) {
+        Optional<LocationEntity> transit = locationRepository.findByCode(TRANSIT_LOCATION_CODE);
+        if (transit.isEmpty() || shipmentId == null || productId == null) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal sum = productInventoryKardexRepository.sumSignedQuantityForLine(
+                REF_SHIPMENT_TRANSIT, shipmentId, TRANSIT_MOVEMENTS, productId,
+                transit.get().getId(), colorId, referenceLineId);
+        return sum == null ? BigDecimal.ZERO : sum.max(BigDecimal.ZERO);
+    }
+
+    /**
+     * Deja en tránsito la cantidad de la línea. Es idempotente: solo acredita lo que falta para que el
+     * saldo en tránsito de la línea llegue a {@code quantity}.
+     */
+    public void creditTransitForLine(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            Long shipmentId,
+            String shipmentNumber,
+            String description,
+            Long referenceLineId) throws BusinessException {
+        if (productId == null || shipmentId == null || quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        LocationEntity transit = getOrCreateTransitLocation();
+        BigDecimal toCredit = quantity.subtract(
+                getTransitBalanceForLine(shipmentId, productId, colorId, referenceLineId));
+        if (toCredit.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        try {
+            BigDecimal before = readQuantity(productId, transit.getId(), colorId);
+            incrementInventory(productId, transit.getId(), colorId, toCredit, null,
+                    REF_SHIPMENT_TRANSIT, shipmentId, shipmentNumber, description, sizeLabel);
+            BigDecimal after = readQuantity(productId, transit.getId(), colorId);
+            recordMovement(productId, transit.getId(), colorId, MOVEMENT_TRANSIT_IN, toCredit, before, after,
+                    null, REF_SHIPMENT_TRANSIT, shipmentId, shipmentNumber, description, sizeLabel, referenceLineId);
+        } catch (ResourceNotFoundException e) {
+            throw new BusinessException("No se pudo registrar el envío en tránsito: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Saca de tránsito hasta {@code quantity} unidades de la línea (recepción, regreso a bodega o
+     * reversión del envío). Envíos despachados antes de existir la ubicación no tienen saldo y no
+     * descuentan nada.
+     *
+     * @return unidades realmente descontadas de tránsito
+     */
+    public BigDecimal debitTransitForLine(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            Long shipmentId,
+            String shipmentNumber,
+            String description,
+            Long referenceLineId) throws BusinessException {
+        if (productId == null || shipmentId == null || quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal toDebit = quantity.min(getTransitBalanceForLine(shipmentId, productId, colorId, referenceLineId));
+        if (toDebit.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        LocationEntity transit = getOrCreateTransitLocation();
+        ProductInventoryLocation row = findRowForUpdate(productId, transit.getId(), colorId)
+                .orElseThrow(() -> new BusinessException(
+                        "No hay fila de inventario en tránsito para el producto #" + productId));
+        ProductEntity product = productRepository.findById(productId).orElse(null);
+        BigDecimal before = row.getQuantity() != null ? row.getQuantity() : BigDecimal.ZERO;
+        applyFossDecrementToEntity(row, product, toDebit, sizeLabel);
+        productInventoryLocationRepository.save(row);
+        BigDecimal after = row.getQuantity() != null ? row.getQuantity() : BigDecimal.ZERO;
+        try {
+            recordMovement(productId, transit.getId(), colorId, MOVEMENT_TRANSIT_OUT, toDebit.negate(), before, after,
+                    null, REF_SHIPMENT_TRANSIT, shipmentId, shipmentNumber, description, sizeLabel, referenceLineId);
+        } catch (ResourceNotFoundException e) {
+            throw new BusinessException("No se pudo registrar la salida de tránsito: " + e.getMessage());
+        }
+        return toDebit;
+    }
+
+    /** Saca de tránsito todo el saldo pendiente de un envío (anulación, reversión o edición). */
+    public BigDecimal clearTransitForShipment(Long shipmentId, String shipmentNumber, String description)
+            throws BusinessException {
+        if (shipmentId == null) {
+            return BigDecimal.ZERO;
+        }
+        Map<String, ProductInventoryKardex> groups = new LinkedHashMap<>();
+        for (ProductInventoryKardex row : productInventoryKardexRepository
+                .findByReferenceAndMovementTypes(REF_SHIPMENT_TRANSIT, shipmentId, TRANSIT_MOVEMENTS)) {
+            groups.putIfAbsent(reversalGroupKey(row), row);
+        }
+        BigDecimal cleared = BigDecimal.ZERO;
+        for (ProductInventoryKardex sample : groups.values()) {
+            BigDecimal balance = getTransitBalanceForLine(
+                    shipmentId, sample.getProductId(), sample.getColorId(), sample.getReferenceLineId());
+            cleared = cleared.add(debitTransitForLine(sample.getProductId(), sample.getColorId(),
+                    sample.getSizeLabel(), balance, shipmentId, shipmentNumber, description,
+                    sample.getReferenceLineId()));
+        }
+        return cleared;
+    }
+
+    /**
+     * Regresa a Bodega PT unidades de un envío que no llegaron al destino: salen de tránsito y entran
+     * a PT con movimiento {@code RETURN}.
+     */
+    public void returnTransitToBodegaPt(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            Long shipmentId,
+            String shipmentNumber,
+            String description,
+            Long referenceLineId) throws BusinessException {
+        if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        debitTransitForLine(productId, colorId, sizeLabel, quantity, shipmentId, shipmentNumber,
+                description, referenceLineId);
+        LocationEntity pt = requireBodegaPtLocation();
+        try {
+            BigDecimal before = readQuantity(productId, pt.getId(), colorId);
+            incrementInventory(productId, pt.getId(), colorId, quantity, null,
+                    REF_SHIPMENT_TRANSIT, shipmentId, shipmentNumber, description, sizeLabel);
+            BigDecimal after = readQuantity(productId, pt.getId(), colorId);
+            recordMovement(productId, pt.getId(), colorId, MOVEMENT_RETURN, quantity, before, after,
+                    null, REF_SHIPMENT_TRANSIT, shipmentId, shipmentNumber, description, sizeLabel, referenceLineId);
+        } catch (ResourceNotFoundException e) {
+            throw new BusinessException("No se pudo regresar el producto a Bodega PT: " + e.getMessage());
+        }
+    }
+
     private LocationEntity requireBodegaPtLocation() throws BusinessException {
         LocationEntity pt = findBodegaPtLocation();
         if (pt == null) {
@@ -699,24 +901,20 @@ public class ProductInventoryService {
     }
 
     /**
-     * Los cinchos FOSS con desglose por talla no se pueden descargar sin talla: sin ella la
-     * disponibilidad calculada es cero y la salida se perdería en silencio.
+     * Ningún cincho sale de bodega sin talla (envíos, ventas en línea, OPC): sin ella el stock por
+     * talla queda descuadrado o la salida se pierde en silencio.
      */
     private void assertSizeProvidedWhenRequired(Long productId, String sizeLabel) throws BusinessException {
         if (!ProductInventorySizesJson.normalizeKey(sizeLabel).isEmpty()) {
             return;
         }
         ProductEntity product = productRepository.findById(productId).orElse(null);
-        if (!CinchoProductUtils.isFossCinchoProduct(product)) {
+        if (!CinchoProductUtils.isFossCinchoProduct(product) && !CinchoProductUtils.isCinchoLineForProduction(product)) {
             return;
         }
-        boolean hasBreakdown = productInventoryLocationRepository.findByProductId(productId).stream()
-                .anyMatch(pil -> !ProductInventorySizesJson.parse(pil.getSizesData()).isEmpty());
-        if (hasBreakdown) {
-            String name = product != null && product.getCode() != null ? product.getCode() : "#" + productId;
-            throw new BusinessException("El producto " + name
-                    + " maneja inventario por talla: el documento debe indicar la talla para descargar bodega.");
-        }
+        String name = product != null && product.getCode() != null ? product.getCode() : "#" + productId;
+        throw new BusinessException("El cincho " + name
+                + " debe llevar talla en el documento para descargar bodega.");
     }
 
     /**

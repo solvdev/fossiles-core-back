@@ -35,6 +35,10 @@ public class InventoryTransfer {
     @Column(name = "color_id")
     private Long colorId; // Opcional: para productos con variantes de color
 
+    /** Talla del producto trasladado; obligatoria para cinchos. */
+    @Column(name = "size_label", length = 50)
+    private String sizeLabel;
+
     @Column(name = "quantity", nullable = false, precision = 12, scale = 3)
     private BigDecimal quantity;
 

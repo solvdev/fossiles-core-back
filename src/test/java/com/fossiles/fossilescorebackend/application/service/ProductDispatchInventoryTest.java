@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
+import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
@@ -20,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 
 /**
@@ -225,18 +227,17 @@ class ProductDispatchInventoryTest {
     }
 
     @Test
-    void sendShipment_sinStockSuficiente_marcaSentYDescuentaDisponible() throws Exception {
+    void sendShipment_sinStockSuficiente_bloqueaElEnvio() {
         ProductEntity product = saveProduct("PT-DISP-05", "Producto sin stock");
         seedStock(product, BigDecimal.valueOf(1), null);
 
         ProductShipmentEntity shipment = saveShipment("SHP-SHORT-1", kiosko.getId());
         saveDetail(shipment, product, null, BigDecimal.valueOf(3));
 
-        productDistributionService.sendShipment(shipment.getId());
-
-        ProductShipmentEntity refreshed = shipmentRepository.findById(shipment.getId()).orElseThrow();
-        assertThat(refreshed.getStatus()).isEqualTo("SENT");
-        assertThat(stockAt(product, bodegaPt)).isEqualByComparingTo("0");
+        assertThatThrownBy(() -> productDistributionService.sendShipment(shipment.getId()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Stock insuficiente");
+        assertThat(stockAt(product, bodegaPt)).isEqualByComparingTo("1");
     }
 
     @Test

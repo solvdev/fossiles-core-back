@@ -519,6 +519,11 @@ public class OnlineSaleService {
                                 + "y cree la ubicación con el mismo código)."));
 
         String condition = (itemCondition != null && !itemCondition.isBlank()) ? itemCondition : "BUENO";
+        // Devoluciones es la primera bodega de despacho: solo entra ahí lo revendible. Lo dañado o
+        // usado va a una ubicación aparte que no se despacha.
+        if (!"BUENO".equalsIgnoreCase(condition.trim())) {
+            returnsLocation = productInventoryService.getOrCreateNonSellableReturnsLocation();
+        }
         List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(id);
 
         if (items != null && !items.isEmpty()) {
@@ -532,7 +537,8 @@ public class OnlineSaleService {
                     sale.getProductId(),
                     sale.getColorId(),
                     sale.getSize(),
-                    sale.getQuantity());
+                    sale.getQuantity(),
+                    null);
         }
 
         sale.setStatus("DEVOLUCION");
@@ -624,16 +630,22 @@ public class OnlineSaleService {
                 item.getProductId(),
                 item.getColorId(),
                 item.getSize(),
-                item.getQuantity());
+                item.getQuantity(),
+                item.getId());
     }
 
+    /**
+     * {@code saleItemId} identifica la línea: sin él, dos líneas del mismo producto y color (p. ej.
+     * dos tallas) se tomaban por la misma entrada y la segunda no regresaba a inventario.
+     */
     private void incrementReturnPhysicalStock(
             OnlineSaleEntity sale,
             LocationEntity returnsLocation,
             Long productId,
             Long colorId,
             String size,
-            Integer quantity) throws BusinessException {
+            Integer quantity,
+            Long saleItemId) throws BusinessException {
         if (productId == null) {
             return;
         }
@@ -653,7 +665,7 @@ public class OnlineSaleService {
                 sale.getId(),
                 sale.getSaleNumber(),
                 desc,
-                null);
+                saleItemId);
     }
 
     /**
@@ -1128,17 +1140,6 @@ public class OnlineSaleService {
                                 + "(active un tipo DEVOLUCION / BODEGA_DEVOLUCIONES en inventory_location_type "
                                 + "y cree la ubicación con el mismo código)."));
 
-        for (ExchangeLine line : lines) {
-            OnlineSaleItemEntity source = line.source();
-            incrementReturnPhysicalStock(
-                    original,
-                    returnsLocation,
-                    source.getProductId(),
-                    source.getColorId(),
-                    source.getSize(),
-                    line.quantity());
-        }
-
         OnlineSaleReturnEntity header = onlineSaleReturnRepository.save(OnlineSaleReturnEntity.builder()
                 .onlineSaleId(original.getId())
                 .relatedShipmentNumber(original.getShipmentNumber())
@@ -1147,6 +1148,27 @@ public class OnlineSaleService {
                 .itemCondition("BUENO")
                 .createdBy(securityUtil.getCurrentUserId())
                 .build());
+
+        // Cada cambio es su propio documento: se referencia por el id del registro de devolución y no
+        // por la venta, para que un segundo cambio de la misma línea también regrese a inventario.
+        String saleRef = original.getSaleNumber() != null ? original.getSaleNumber() : String.valueOf(original.getId());
+        for (ExchangeLine line : lines) {
+            OnlineSaleItemEntity source = line.source();
+            int q = line.quantity();
+            if (source.getProductId() != null && q > 0) {
+                productInventoryService.creditReturnsWithReturnMovement(
+                        source.getProductId(),
+                        returnsLocation.getId(),
+                        source.getColorId(),
+                        BigDecimal.valueOf(q),
+                        source.getSize(),
+                        "ONLINE_SALE_EXCHANGE_RETURN",
+                        header.getId(),
+                        original.getSaleNumber(),
+                        "Cambio venta online #" + saleRef,
+                        source.getId());
+            }
+        }
 
         for (ExchangeLine line : lines) {
             OnlineSaleItemEntity source = line.source();

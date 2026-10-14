@@ -5,7 +5,6 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentR
 import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemPricesRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderRequest;
-import com.fossiles.fossilescorebackend.application.dto.request.WarehouseReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
@@ -773,139 +772,6 @@ public class ProductionOrderController {
     public ResponseEntity<Map<String, Object>> closeWarehouseReceipt(@PathVariable Long id)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(productionOrderWarehouseUnitService.closeWarehouseReceipt(id));
-    }
-
-    @PutMapping("/{id}/warehouse-receipt")
-    @Transactional
-    public ResponseEntity<Map<String, Object>> receiveWarehouseProducts(
-            @PathVariable Long id,
-            @RequestBody WarehouseReceiptRequest request) throws ResourceNotFoundException, BusinessException {
-        ProductionOrderEntity po = productionOrderRepository.findByIdForUpdate(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
-
-        if (request == null || request.getItems() == null || request.getItems().isEmpty()) {
-            throw new BusinessException("Debe enviar al menos un producto para recepción.");
-        }
-
-        LocationEntity finishedGoodsLocation = getFinishedGoodsLocation();
-        Map<Long, ProductionOrderItemEntity> itemsById = productionOrderItemRepository.findByProductionOrderId(id).stream()
-                .collect(Collectors.toMap(ProductionOrderItemEntity::getId, i -> i));
-
-        int totalApproved = 0;
-        int totalRejected = 0;
-        int processedRows = 0;
-
-        for (WarehouseReceiptRequest.Item row : request.getItems()) {
-            if (row == null || row.getProductionOrderItemId() == null) continue;
-
-            ProductionOrderItemEntity item = itemsById.get(row.getProductionOrderItemId());
-            if (item == null) {
-                throw new BusinessException("El item " + row.getProductionOrderItemId() + " no pertenece a la orden " + po.getCode());
-            }
-
-            int approved = row.getApprovedQuantity() != null ? row.getApprovedQuantity() : 0;
-            int rejected = row.getRejectedQuantity() != null ? row.getRejectedQuantity() : 0;
-            if (approved < 0 || rejected < 0) {
-                throw new BusinessException("Las cantidades aprobada/rechazada no pueden ser negativas.");
-            }
-            if (approved == 0 && rejected == 0) continue;
-
-            int plannedQty = item.getQuantity() != null ? item.getQuantity() : 0;
-            int alreadyReceived = item.getWarehouseReceivedQty() != null ? item.getWarehouseReceivedQty() : 0;
-            int pending = Math.max(plannedQty - alreadyReceived, 0);
-            if (pending <= 0) continue;
-            if (approved + rejected > pending) {
-                throw new BusinessException("La suma aprobada+rechazada excede pendiente para item " + item.getId() + ". Pendiente: " + pending);
-            }
-            if (rejected > 0 && (row.getRejectionReason() == null || row.getRejectionReason().trim().isEmpty())) {
-                throw new BusinessException("Debe indicar motivo de rechazo para item " + item.getId());
-            }
-
-            ProductEntity product = item.getProductId() != null
-                    ? productRepository.findById(item.getProductId()).orElse(null)
-                    : null;
-
-            if (approved > 0) {
-                if (item.getProductId() == null) {
-                    throw new BusinessException("El item " + item.getId() + " no tiene producto válido para ingreso a inventario.");
-                }
-                BigDecimal qty = BigDecimal.valueOf(approved);
-                String receiptRefNumber = po.getCode() + "-WH-RCP-" + item.getId() + "-" + alreadyReceived;
-                boolean alreadyRecorded = productInventoryService.hasProductKardexMovement(
-                        "PRODUCTION_ORDER_ITEM",
-                        item.getId(),
-                        "PRODUCTION_ENTRY",
-                        item.getProductId(),
-                        finishedGoodsLocation.getId(),
-                        item.getColorId(),
-                        receiptRefNumber);
-
-                if (!alreadyRecorded) {
-                    BigDecimal before = productInventoryService
-                            .getInventoryByProductAndLocationAndColor(item.getProductId(), finishedGoodsLocation.getId(), item.getColorId())
-                            .getQuantity();
-
-                    productInventoryService.incrementInventory(
-                            item.getProductId(),
-                            finishedGoodsLocation.getId(),
-                            item.getColorId(),
-                            qty,
-                            null,
-                            "PRODUCTION_ORDER_ITEM",
-                            item.getId(),
-                            receiptRefNumber,
-                            "Ingreso por recepción en bodega PT"
-                    );
-                    BigDecimal after = productInventoryService
-                            .getInventoryByProductAndLocationAndColor(item.getProductId(), finishedGoodsLocation.getId(), item.getColorId())
-                            .getQuantity();
-
-                    productInventoryService.recordMovement(
-                            item.getProductId(),
-                            finishedGoodsLocation.getId(),
-                            item.getColorId(),
-                            "PRODUCTION_ENTRY",
-                            qty,
-                            before,
-                            after,
-                            null,
-                            "PRODUCTION_ORDER_ITEM",
-                            item.getId(),
-                            receiptRefNumber,
-                            "Recepción bodega PT - " + (product != null ? product.getCode() : "ITEM " + item.getId())
-                    );
-                    item.setWarehouseReceivedQty(alreadyReceived + approved);
-                }
-            }
-
-            if (rejected > 0) {
-                createReprocessTask(po, item, product, rejected, row.getRejectionReason());
-            }
-
-            productionOrderItemRepository.save(item);
-
-            totalApproved += approved;
-            totalRejected += rejected;
-            processedRows++;
-        }
-
-        if (processedRows == 0) {
-            throw new BusinessException("No se procesó ninguna fila (revise cantidades pendientes).");
-        }
-
-        if (totalRejected > 0) {
-            po.setStatus("IN_PROGRESS");
-        }
-        productionOrderRepository.save(po);
-
-        return ResponseEntity.ok(Map.of(
-                "message", "Recepción procesada correctamente.",
-                "approvedQuantity", totalApproved,
-                "rejectedQuantity", totalRejected,
-                "processedRows", processedRows,
-                "productionOrderId", po.getId(),
-                "productionOrderCode", po.getCode()
-        ));
     }
 
     // ==================== MATERIAL CONSUMPTION ====================
@@ -2269,59 +2135,6 @@ public class ProductionOrderController {
         shipmentDetailRepository.saveAll(details);
     }
 
-    private void createReprocessTask(
-            ProductionOrderEntity po,
-            ProductionOrderItemEntity item,
-            ProductEntity product,
-            int rejectedQty,
-            String rejectionReason) throws BusinessException {
-        String taskCode = generateTaskCode();
-        String colorName = null;
-        if (item.getColorId() != null) {
-            colorName = colorRepository.findById(item.getColorId()).map(ColorEntity::getName).orElse(null);
-        }
-        double estimated = (product != null && product.getPrdTime() != null && product.getPrdTime() > 0)
-                ? product.getPrdTime() * rejectedQty
-                : Math.max(0.25, rejectedQty * 0.25);
-
-        TaskEntity task = TaskEntity.builder()
-                .code(taskCode)
-                .productionOrderId(po.getId())
-                .productionOrderCode(po.getCode())
-                .productionOrderItemId(item.getId())
-                .productId(item.getProductId())
-                .productCode(product != null ? product.getCode() : null)
-                .productName(product != null ? product.getName() : null)
-                .colorId(item.getColorId())
-                .colorName(colorName)
-                .quantity(rejectedQty)
-                .estimatedHours(Math.round(estimated * 100.0) / 100.0)
-                .deliveryDate(po.getDeliveryDate())
-                .priority(1)
-                .status("PENDING")
-                .observations("REPROCESO por rechazo en bodega PT: " + rejectionReason)
-                .build();
-        TaskEntity savedTask = taskRepository.save(task);
-
-        boolean requiresMaterials = product == null || !Boolean.FALSE.equals(product.getRequiresMaterials());
-        taskItemRepository.save(TaskItemEntity.builder()
-                .taskId(savedTask.getId())
-                .productionOrderItemId(item.getId())
-                .productId(item.getProductId())
-                .productCode(product != null ? product.getCode() : null)
-                .productName(product != null ? product.getName() : null)
-                .colorId(item.getColorId())
-                .colorName(colorName)
-                .quantity(rejectedQty)
-                .estimatedHours(Math.round(estimated * 100.0) / 100.0)
-                .observations("REPROCESO por rechazo en bodega PT")
-                .leatherDelivered(false)
-                .leatherDeliveredAt(null)
-                .materialsDelivered(!requiresMaterials)
-                .materialsDeliveredAt(!requiresMaterials ? GuatemalaDateTime.now() : null)
-                .build());
-    }
-
     private String generateTaskCode() throws BusinessException {
         String documentType = "TASK";
         String series = "TK";
@@ -2342,15 +2155,5 @@ public class ProductionOrderController {
         return String.format("%s-%05d", series, seriesEntity.getCurrentCorrelative());
     }
 
-    private LocationEntity getFinishedGoodsLocation() throws BusinessException {
-        Optional<InventoryLocationTypeEntity> bodegaType = inventoryLocationTypeRepository.findByCodeAndIsActiveTrue("BODEGA_PT");
-        if (bodegaType.isEmpty()) {
-            throw new BusinessException("No existe el tipo de ubicacion BODEGA_PT.");
-        }
-        return locationRepository.findAll().stream()
-                .filter(loc -> bodegaType.get().getCode().equalsIgnoreCase(loc.getCode()))
-                .findFirst()
-                .orElseThrow(() -> new BusinessException("No existe una ubicacion configurada para BODEGA_PT."));
-    }
 }
 

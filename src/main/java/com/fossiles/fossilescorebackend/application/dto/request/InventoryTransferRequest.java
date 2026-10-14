@@ -24,6 +24,9 @@ public class InventoryTransferRequest {
     private Long productId;
     private Long colorId; // Opcional: para productos con variantes de color
 
+    /** Talla; obligatoria para cinchos. */
+    private String sizeKey;
+
     @NotNull(message = "Quantity is required")
     @DecimalMin(value = "0.0001", message = "Quantity must be greater than 0")
     private BigDecimal quantity;
