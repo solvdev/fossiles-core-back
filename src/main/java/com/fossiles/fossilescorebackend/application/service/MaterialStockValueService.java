@@ -25,13 +25,16 @@ import java.util.stream.Collectors;
 /**
  * Valor del stock de materiales por proveedor (Reportes de compras > Valor de materiales):
  * existencias de {@code material_inventory} × costo unitario del material (igual que "Inventario actual").
- * Se agrupa en "La Bandola de Oro" y "Otros"; los materiales cuyo nombre dice "cuero" no se cuentan.
+ * Grupos, en este orden de prioridad: todo lo de "La Bandola de Oro"; hebillas de otros proveedores; lo que diga
+ * "empaque"; y "Otros". Los materiales cuyo nombre dice "cuero" no se cuentan.
  */
 @Service
 @RequiredArgsConstructor
 public class MaterialStockValueService {
 
     public static final String GROUP_BANDOLA = "La Bandola de Oro";
+    public static final String GROUP_BUCKLES = "Hebillas (otros proveedores)";
+    public static final String GROUP_PACKAGING = "Empaques";
     public static final String GROUP_OTHERS = "Otros";
 
     private final MaterialRepository materialRepository;
@@ -86,6 +89,8 @@ public class MaterialStockValueService {
         Map<String, BigDecimal> values = new LinkedHashMap<>();
         Map<String, Integer> counts = new HashMap<>();
         values.put(GROUP_BANDOLA, BigDecimal.ZERO);
+        values.put(GROUP_BUCKLES, BigDecimal.ZERO);
+        values.put(GROUP_PACKAGING, BigDecimal.ZERO);
         values.put(GROUP_OTHERS, BigDecimal.ZERO);
         for (Line l : lines) {
             if (isLeather(l.materialName())) {
@@ -96,7 +101,7 @@ public class MaterialStockValueService {
             if (qty.signum() <= 0 || cost.signum() <= 0) {
                 continue;
             }
-            String group = isBandola(l.supplierName()) ? GROUP_BANDOLA : GROUP_OTHERS;
+            String group = groupOf(l.materialName(), l.supplierName());
             values.merge(group, qty.multiply(cost), BigDecimal::add);
             counts.merge(group, 1, Integer::sum);
         }
@@ -112,6 +117,20 @@ public class MaterialStockValueService {
             total = total.add(v);
         }
         return Report.builder().generatedAt(GuatemalaDateTime.now()).groups(groups).totalValue(total).build();
+    }
+
+    static String groupOf(String materialName, String supplierName) {
+        if (isBandola(supplierName)) {
+            return GROUP_BANDOLA;
+        }
+        String name = normalize(materialName);
+        if (name.contains("hebilla")) {
+            return GROUP_BUCKLES;
+        }
+        if (name.contains("empaque")) {
+            return GROUP_PACKAGING;
+        }
+        return GROUP_OTHERS;
     }
 
     static boolean isLeather(String materialName) {
