@@ -90,125 +90,82 @@ public class AccountingService {
                 .collect(Collectors.toList());
     }
 
-    /**
-     * Genera asientos contables al recibir materiales
-     * CP-07-002: Debe: Inventario Materiales | Haber: Compras en Tránsito
-     * Si hay variaciones, se generan asientos adicionales
-     */
-    public List<AccountingEntryResponse> generateMaterialReceiptEntries(Long materialReceiptId, Long purchaseOrderId, String orderCode, BigDecimal receivedTotal, BigDecimal orderedTotal, Long costCenterId) {
-        List<AccountingEntryEntity> entries = new ArrayList<>();
-
-        String inventoryAccount = getAccountCode(CONFIG_INVENTORY_ACCOUNT, DEFAULT_INVENTORY_ACCOUNT);
-        String purchasesInTransitAccount = getAccountCode(CONFIG_PURCHASES_IN_TRANSIT_ACCOUNT, DEFAULT_PURCHASES_IN_TRANSIT_ACCOUNT);
-        String accountsPayableAccount = getAccountCode(CONFIG_ACCOUNTS_PAYABLE_ACCOUNT, DEFAULT_ACCOUNTS_PAYABLE_ACCOUNT);
-        String varianceAccount = getAccountCode(CONFIG_INVENTORY_VARIANCE_ACCOUNT, DEFAULT_INVENTORY_VARIANCE_ACCOUNT);
-
-        // Asiento principal: Mover de Compras en Tránsito a Inventario
-        // Debe: Inventario de Materiales
-        AccountingEntryEntity inventoryEntry = AccountingEntryEntity.builder()
-                .documentType("MATERIAL_RECEIPT")
-                .documentId(materialReceiptId)
-                .entryDate(LocalDateTime.now())
-                .debitAmount(receivedTotal)
-                .creditAmount(BigDecimal.ZERO)
-                .accountCode(inventoryAccount)
-                .accountName(getAccountName(inventoryAccount))
-                .description("Recepción de materiales - Orden: " + orderCode)
-                .costCenterId(costCenterId)
-                .referenceNumber(orderCode)
-                .build();
-        entries.add(inventoryEntry);
-
-        // Haber: Compras en Tránsito (por el monto recibido)
-        AccountingEntryEntity transitEntry = AccountingEntryEntity.builder()
-                .documentType("MATERIAL_RECEIPT")
-                .documentId(materialReceiptId)
-                .entryDate(LocalDateTime.now())
-                .debitAmount(BigDecimal.ZERO)
-                .creditAmount(receivedTotal)
-                .accountCode(purchasesInTransitAccount)
-                .accountName(getAccountName(purchasesInTransitAccount))
-                .description("Recepción de materiales - Orden: " + orderCode)
-                .costCenterId(costCenterId)
-                .referenceNumber(orderCode)
-                .build();
-        entries.add(transitEntry);
-
-        // Si hay diferencia entre lo ordenado y lo recibido, generar asientos de variación
-        BigDecimal variance = receivedTotal.subtract(orderedTotal);
-        
-        if (variance.compareTo(BigDecimal.ZERO) != 0) {
-            // Si recibimos más de lo ordenado (exceso)
-            if (variance.compareTo(BigDecimal.ZERO) > 0) {
-                // Debe: Inventario (exceso)
-                AccountingEntryEntity excessEntry = AccountingEntryEntity.builder()
-                        .documentType("MATERIAL_RECEIPT")
-                        .documentId(materialReceiptId)
-                        .entryDate(LocalDateTime.now())
-                        .debitAmount(variance)
-                        .creditAmount(BigDecimal.ZERO)
-                        .accountCode(inventoryAccount)
-                        .accountName(getAccountName(inventoryAccount))
-                        .description("Exceso de recepción - Orden: " + orderCode)
-                        .costCenterId(costCenterId)
-                        .referenceNumber(orderCode)
-                        .build();
-                entries.add(excessEntry);
-
-                // Haber: Cuentas por Pagar (exceso)
-                AccountingEntryEntity excessPayableEntry = AccountingEntryEntity.builder()
-                        .documentType("MATERIAL_RECEIPT")
-                        .documentId(materialReceiptId)
-                        .entryDate(LocalDateTime.now())
-                        .debitAmount(BigDecimal.ZERO)
-                        .creditAmount(variance)
-                        .accountCode(accountsPayableAccount)
-                        .accountName(getAccountName(accountsPayableAccount))
-                        .description("Exceso de recepción - Orden: " + orderCode)
-                        .costCenterId(costCenterId)
-                        .referenceNumber(orderCode)
-                        .build();
-                entries.add(excessPayableEntry);
-            } else {
-                // Si recibimos menos de lo ordenado (faltante)
-                // Debe: Variación de Inventario
-                AccountingEntryEntity varianceEntry = AccountingEntryEntity.builder()
-                        .documentType("MATERIAL_RECEIPT")
-                        .documentId(materialReceiptId)
-                        .entryDate(LocalDateTime.now())
-                        .debitAmount(variance.abs())
-                        .creditAmount(BigDecimal.ZERO)
-                        .accountCode(varianceAccount)
-                        .accountName(getAccountName(varianceAccount))
-                        .description("Faltante de recepción - Orden: " + orderCode)
-                        .costCenterId(costCenterId)
-                        .referenceNumber(orderCode)
-                        .build();
-                entries.add(varianceEntry);
-
-                // Haber: Compras en Tránsito (faltante)
-                AccountingEntryEntity shortfallEntry = AccountingEntryEntity.builder()
-                        .documentType("MATERIAL_RECEIPT")
-                        .documentId(materialReceiptId)
-                        .entryDate(LocalDateTime.now())
-                        .debitAmount(BigDecimal.ZERO)
-                        .creditAmount(variance.abs())
-                        .accountCode(purchasesInTransitAccount)
-                        .accountName(getAccountName(purchasesInTransitAccount))
-                        .description("Faltante de recepción - Orden: " + orderCode)
-                        .costCenterId(costCenterId)
-                        .referenceNumber(orderCode)
-                        .build();
-                entries.add(shortfallEntry);
-            }
-        }
-
-        accountingEntryRepository.saveAll(entries);
-
-        return entries.stream()
-                .map(this::toAccountingEntryResponse)
-                .collect(Collectors.toList());
+    /** El valor esperado corresponde a esta recepción, no al total de la orden. */
+    public List<AccountingEntryResponse> generateMaterialReceiptEntries(Long receiptId, Long orderId, String orderCode,
+            BigDecimal receivedTotal, BigDecimal expectedReceiptTotal, Long costCenterId) throws BusinessException {
+        return reconcileMaterialReceiptEntries(receiptId, orderCode, receivedTotal, expectedReceiptTotal, costCenterId);
     }
+
+    // Los ajustes se agregan al historial; una conciliación repetida no duplica el asiento.
+    public List<AccountingEntryResponse> reconcileMaterialReceiptEntries(Long receiptId, String orderCode,
+            BigDecimal receivedTotal, BigDecimal expectedReceiptTotal, Long costCenterId) throws BusinessException {
+        BigDecimal actual = money(receivedTotal);
+        BigDecimal expected = money(expectedReceiptTotal);
+        if (actual.signum() < 0 || expected.signum() < 0) throw new BusinessException("Los importes de recepción no pueden ser negativos.");
+        String inventory = getAccountCode(CONFIG_INVENTORY_ACCOUNT, DEFAULT_INVENTORY_ACCOUNT);
+        String transit = getAccountCode(CONFIG_PURCHASES_IN_TRANSIT_ACCOUNT, DEFAULT_PURCHASES_IN_TRANSIT_ACCOUNT);
+        String payable = getAccountCode(CONFIG_ACCOUNTS_PAYABLE_ACCOUNT, DEFAULT_ACCOUNTS_PAYABLE_ACCOUNT);
+        if (new java.util.HashSet<>(List.of(inventory, transit, payable)).size() != 3) {
+            throw new BusinessException("Configure cuentas diferentes para inventario, compras en tránsito y cuentas por pagar.");
+        }
+        java.util.Map<String, BigDecimal> desired = new java.util.LinkedHashMap<>();
+        desired.put(inventory, actual);
+        desired.put(transit, expected.negate());
+        desired.put(payable, actual.subtract(expected).negate());
+        List<AccountingEntryEntity> previous = new ArrayList<>(accountingEntryRepository
+                .findByDocumentTypeAndDocumentId("MATERIAL_RECEIPT", receiptId));
+        previous.addAll(accountingEntryRepository.findByDocumentTypeAndDocumentId("MATERIAL_RECEIPT_ADJUSTMENT", receiptId));
+        java.util.Map<String, BigDecimal> current = new java.util.LinkedHashMap<>();
+        for (var entry : previous) current.merge(entry.getAccountCode(),
+                money(entry.getDebitAmount()).subtract(money(entry.getCreditAmount())), BigDecimal::add);
+        if (current.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add).signum() != 0) {
+            throw new BusinessException("Los asientos existentes de la recepción no están balanceados; revise el documento antes de ajustarlo.");
+        }
+        java.util.Set<String> accounts = new java.util.LinkedHashSet<>(desired.keySet());
+        accounts.addAll(current.keySet());
+        List<AccountingEntryEntity> changes = new ArrayList<>();
+        for (String account : accounts) {
+            BigDecimal difference = desired.getOrDefault(account, BigDecimal.ZERO).subtract(current.getOrDefault(account, BigDecimal.ZERO));
+            if (difference.signum() == 0) continue;
+            changes.add(AccountingEntryEntity.builder()
+                    .documentType(previous.isEmpty() ? "MATERIAL_RECEIPT" : "MATERIAL_RECEIPT_ADJUSTMENT")
+                    .documentId(receiptId).entryDate(com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime.now())
+                    .accountCode(account).accountName(getAccountName(account))
+                    .debitAmount(difference.signum() > 0 ? difference : BigDecimal.ZERO)
+                    .creditAmount(difference.signum() < 0 ? difference.abs() : BigDecimal.ZERO)
+                    .description((previous.isEmpty() ? "Recepción" : "Ajuste de recepción") + " #" + receiptId + " - Orden: " + orderCode)
+                    .costCenterId(costCenterId).referenceNumber(orderCode).build());
+        }
+        if (!changes.isEmpty()) accountingEntryRepository.saveAll(changes);
+        return changes.stream().map(this::toAccountingEntryResponse).toList();
+    }
+
+    private static BigDecimal money(BigDecimal amount) {
+        return (amount == null ? BigDecimal.ZERO : amount).setScale(2, java.math.RoundingMode.HALF_UP);
+    }
+
+    @Transactional(readOnly = true)
+    public List<AccountingEntryResponse> searchEntries(String documentType, String accountCode,
+            LocalDateTime startDate, LocalDateTime endDate) throws BusinessException {
+        if (startDate != null && endDate != null && startDate.isAfter(endDate)) {
+            throw new BusinessException("La fecha inicial no puede ser posterior a la fecha final.");
+        }
+        org.springframework.data.jpa.domain.Specification<AccountingEntryEntity> filters = (root, query, builder) -> {
+            List<jakarta.persistence.criteria.Predicate> conditions = new ArrayList<>();
+            if (documentType != null && !documentType.isBlank()) conditions.add(builder.equal(root.get("documentType"), documentType.trim()));
+            if (accountCode != null && !accountCode.isBlank()) conditions.add(builder.equal(root.get("accountCode"), accountCode.trim()));
+            if (startDate != null) conditions.add(builder.greaterThanOrEqualTo(root.get("entryDate"), startDate));
+            if (endDate != null) conditions.add(builder.lessThanOrEqualTo(root.get("entryDate"), endDate));
+            return builder.and(conditions.toArray(jakarta.persistence.criteria.Predicate[]::new));
+        };
+        var sort = org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "entryDate", "id");
+        boolean filtered = (documentType != null && !documentType.isBlank()) || (accountCode != null && !accountCode.isBlank())
+                || startDate != null || endDate != null;
+        var entries = filtered ? accountingEntryRepository.findAll(filters, sort)
+                : accountingEntryRepository.findAll(filters, org.springframework.data.domain.PageRequest.of(0, 1000, sort)).getContent();
+        return entries.stream().map(this::toAccountingEntryResponse).toList();
+    }
+
 
     /**
      * Genera asientos contables al cancelar una orden de compra
@@ -220,8 +177,9 @@ public class AccountingService {
         List<AccountingEntryEntity> originalEntries = accountingEntryRepository
                 .findByDocumentTypeAndDocumentId("PURCHASE_ORDER", purchaseOrderId);
 
+        // Una compra anterior a la contabilidad automática no tiene nada que revertir; su anulación no debe bloquearse.
         if (originalEntries.isEmpty()) {
-            throw new BusinessException("No se encontraron asientos contables para la orden de compra: " + orderCode);
+            return List.of();
         }
 
         List<AccountingEntryEntity> reversalEntries = new ArrayList<>();
@@ -355,7 +313,7 @@ public class AccountingService {
                 .accountName(entity.getAccountName())
                 .description(entity.getDescription())
                 .costCenterId(entity.getCostCenterId())
-                .costCenterName(String.valueOf(costCenterName))
+                .costCenterName(costCenterName.get())
                 .referenceNumber(entity.getReferenceNumber())
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())

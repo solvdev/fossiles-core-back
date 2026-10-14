@@ -224,11 +224,9 @@ public class InventoryService {
     public MaterialInventoryResponse createOrUpdateMaterialInventory(Long materialId, BigDecimal quantity) 
             throws ResourceNotFoundException {
         // Validar que el material existe
-        if (!materialRepository.existsById(materialId)) {
-            throw new ResourceNotFoundException("Material", materialId);
-        }
-
-        Optional<MaterialInventory> existing = materialInventoryRepository.findByMaterialId(materialId);
+        MaterialEntity lockedMaterial = materialRepository.findByIdForUpdate(materialId)
+                .orElseThrow(() -> new ResourceNotFoundException("Material", materialId));
+        Optional<MaterialInventory> existing = materialInventoryRepository.findByMaterialIdForUpdate(materialId);
 
         MaterialInventory entity;
         if (existing.isPresent()) {
@@ -239,6 +237,7 @@ public class InventoryService {
             // Crear nuevo
             entity = MaterialInventory.builder()
                     .materialId(materialId)
+                    .materialName(lockedMaterial.getSku())
                     .quantity(quantity)
                     .build();
         }
@@ -284,12 +283,9 @@ public class InventoryService {
             String referenceNumber,
             String description) throws ResourceNotFoundException {
         
-        // Validar que el material existe
-        if (!materialRepository.existsById(materialId)) {
-            throw new ResourceNotFoundException("Material", materialId);
-        }
-
-        Optional<MaterialInventory> existing = materialInventoryRepository.findByMaterialId(materialId);
+        MaterialEntity lockedMaterial = materialRepository.findByIdForUpdate(materialId)
+                .orElseThrow(() -> new ResourceNotFoundException("Material", materialId));
+        Optional<MaterialInventory> existing = materialInventoryRepository.findByMaterialIdForUpdate(materialId);
 
         MaterialInventory entity;
         BigDecimal quantityBefore;
@@ -304,6 +300,7 @@ public class InventoryService {
             quantityBefore = BigDecimal.ZERO;
             entity = MaterialInventory.builder()
                     .materialId(materialId)
+                    .materialName(lockedMaterial.getSku())
                     .quantity(quantity)
                     .build();
             quantityAfter = quantity;
@@ -402,7 +399,9 @@ public class InventoryService {
             return getMaterialInventory(materialId);
         }
 
-        MaterialInventory entity = materialInventoryRepository.findByMaterialId(materialId)
+        materialRepository.findByIdForUpdate(materialId)
+                .orElseThrow(() -> new ResourceNotFoundException("Material", materialId));
+        MaterialInventory entity = materialInventoryRepository.findByMaterialIdForUpdate(materialId)
                 .orElseThrow(() -> new ResourceNotFoundException("Material Inventory", materialId));
 
         BigDecimal quantityBefore = entity.getQuantity();
@@ -538,9 +537,91 @@ public class InventoryService {
 
     // ========== MATERIAL KARDEX (SIN UBICACIÓN) ==========
 
+    // Una corrección de recepción modifica sus propios lotes y no consume entradas de otras compras.
+    @Transactional(rollbackFor = Exception.class)
+    public void reconcileReceiptInventory(Long materialId, Long receiptId, String orderCode,
+            BigDecimal oldQuantity, BigDecimal newQuantity, BigDecimal oldPrice, BigDecimal newPrice)
+            throws ResourceNotFoundException, BusinessException {
+        if (oldQuantity.signum() == 0 && newQuantity.signum() == 0) return;
+        if (oldQuantity.compareTo(newQuantity) == 0 && oldPrice.compareTo(newPrice) == 0) return;
+        MaterialEntity material = materialRepository.findByIdForUpdate(materialId)
+                .orElseThrow(() -> new ResourceNotFoundException("Material", materialId));
+        BigDecimal factor = material.getPurchaseQuantity() == null ? BigDecimal.ONE : material.getPurchaseQuantity();
+        if (factor.signum() <= 0) throw new BusinessException("La conversión de unidades del material debe ser positiva.");
+        BigDecimal oldUnits = oldQuantity.multiply(factor).setScale(3, RoundingMode.HALF_UP);
+        BigDecimal newUnits = newQuantity.multiply(factor).setScale(3, RoundingMode.HALF_UP);
+        BigDecimal cost = newPrice.divide(factor, 4, RoundingMode.HALF_UP);
+        List<MaterialFifoBatch> batches = new java.util.ArrayList<>();
+        for (String reference : List.of("MATERIAL_RECEIPT", "MATERIAL_RECEIPT_UPDATE")) {
+            materialFifoBatchRepository.findByReferenceTypeAndReferenceId(reference, receiptId).stream()
+                    .filter(b -> materialId.equals(b.getMaterialId())).forEach(batches::add);
+        }
+        BigDecimal original = batches.stream().map(MaterialFifoBatch::getQuantityOriginal).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal available = batches.stream().map(MaterialFifoBatch::getQuantityAvailable).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal consumed = original.subtract(available);
+        if (oldUnits.signum() > 0 && original.compareTo(oldUnits) != 0) {
+            throw new BusinessException("Los lotes históricos de esta recepción requieren conciliación antes de cambiar cantidades o precios.");
+        }
+        if (newUnits.compareTo(consumed) < 0 || (consumed.signum() > 0 && oldPrice.compareTo(newPrice) != 0)) {
+            throw new BusinessException("La recepción tiene material consumido; no puede revertirlo ni cambiar su costo desde compras.");
+        }
+        MaterialInventory inventory = materialInventoryRepository.findByMaterialIdForUpdate(materialId)
+                .orElseGet(() -> MaterialInventory.builder().materialId(materialId).materialName(material.getSku()).quantity(BigDecimal.ZERO).build());
+        BigDecimal before = inventory.getQuantity();
+        BigDecimal delta = newUnits.subtract(oldUnits);
+        BigDecimal after = before.add(delta);
+        if (after.signum() < 0) throw new BusinessException("Inventario insuficiente para corregir la recepción.");
+        if (delta.signum() < 0) {
+            BigDecimal remaining = delta.abs();
+            batches.sort(java.util.Comparator.comparing(MaterialFifoBatch::getId).reversed());
+            for (var batch : batches) {
+                BigDecimal reduction = remaining.min(batch.getQuantityAvailable());
+                batch.setQuantityOriginal(batch.getQuantityOriginal().subtract(reduction));
+                batch.setQuantityAvailable(batch.getQuantityAvailable().subtract(reduction));
+                remaining = remaining.subtract(reduction);
+            }
+        } else if (delta.signum() > 0) {
+            batches.add(MaterialFifoBatch.builder().materialId(materialId)
+                    .entryDate(com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime.now())
+                    .quantityOriginal(delta).quantityAvailable(delta).unitCost(cost)
+                    .referenceType("MATERIAL_RECEIPT").referenceId(receiptId).referenceNumber(orderCode)
+                    .description("Recepción #" + receiptId + " - Orden: " + orderCode)
+                    .createdBy(securityUtil.getCurrentUserId()).build());
+        }
+        if (consumed.signum() == 0) batches.forEach(b -> b.setUnitCost(cost));
+        materialFifoBatchRepository.saveAll(batches);
+        inventory.setQuantity(after);
+        materialInventoryRepository.save(inventory);
+        material.setQuantity(after);
+        material.setUnitCost(weightedAverageCost(before, material.getUnitCost(), after,
+                newUnits.multiply(cost).subtract(oldUnits.multiply(oldPrice.divide(factor, 4, RoundingMode.HALF_UP)))));
+        if (newQuantity.signum() > 0) material.setPurchasePrice(newPrice);
+        materialRepository.save(material);
+        // Las salidas del kardex se guardan en negativo, igual que los consumos.
+        recordMaterialMovement(materialId, delta.signum() > 0 ? "ENTRY" : delta.signum() < 0 ? "EXIT" : "ADJUSTMENT",
+                delta, before, after, delta.signum() < 0 ? oldPrice.divide(factor, 4, RoundingMode.HALF_UP) : cost,
+                oldQuantity.signum() == 0 ? "MATERIAL_RECEIPT" : "MATERIAL_RECEIPT_UPDATE", receiptId, orderCode,
+                oldQuantity.signum() == 0 ? "Recepción #" + receiptId + " - Orden: " + orderCode
+                        : "Corrección de recepción #" + receiptId + ": " + oldQuantity + " → " + newQuantity
+                        + "; precio " + oldPrice + " → " + newPrice);
+    }
+
+    /**
+     * Costo promedio ponderado tras sumar o retirar el valor de una recepción. Sin existencias, o si el
+     * historial deja un valor negativo, conserva el costo anterior.
+     */
+    static BigDecimal weightedAverageCost(BigDecimal stockBefore, BigDecimal costBefore, BigDecimal stockAfter, BigDecimal valueChange) {
+        BigDecimal previousCost = costBefore == null ? BigDecimal.ZERO : costBefore;
+        if (stockAfter.signum() <= 0) return previousCost;
+        BigDecimal valueAfter = stockBefore.max(BigDecimal.ZERO).multiply(previousCost).add(valueChange);
+        if (valueAfter.signum() < 0) return previousCost;
+        return valueAfter.divide(stockAfter, 4, RoundingMode.HALF_UP);
+    }
+
     /**
      * Registra un movimiento en el kardex de materiales (sin ubicación)
      */
+
     public MaterialInventoryKardexResponse recordMaterialMovement(
             Long materialId,
             String movementType,
@@ -1788,8 +1869,9 @@ public class InventoryService {
     }
 
     /**
-     * Crea una transferencia masiva de inventario
+     * Crea una transferencia masiva de inventario. Un renglón inválido revierte las transferencias anteriores del lote.
      */
+    @Transactional(rollbackFor = Exception.class)
     public List<InventoryTransferResponse> createBulkTransfer(BulkInventoryTransferRequest request) 
             throws ResourceNotFoundException, BusinessException {
         

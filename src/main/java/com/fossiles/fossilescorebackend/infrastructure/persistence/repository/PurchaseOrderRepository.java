@@ -12,6 +12,9 @@ import java.util.Optional;
 
 @Repository
 public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrderEntity, Long> {
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select po from PurchaseOrderEntity po where po.id = :id")
+    Optional<PurchaseOrderEntity> findByIdForUpdate(@Param("id") Long id);
     Optional<PurchaseOrderEntity> findById(Long id);
     
     List<PurchaseOrderEntity> findByStatus(String status);

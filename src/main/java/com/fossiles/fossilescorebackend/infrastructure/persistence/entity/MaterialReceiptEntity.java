@@ -29,6 +29,13 @@ public class MaterialReceiptEntity {
     @Column(length = 5000)
     private String observations;
 
+    @Builder.Default
+    @Column(nullable = false, length = 20)
+    private String status = "ACTIVE";
+
+    @Column(name = "cancellation_reason", length = 1000)
+    private String cancellationReason;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
