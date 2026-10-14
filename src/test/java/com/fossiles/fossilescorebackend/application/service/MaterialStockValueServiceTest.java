@@ -33,6 +33,24 @@ class MaterialStockValueServiceTest {
     }
 
     @Test
+    void separatesOtherSuppliersBucklesAndPackaging() {
+        var report = MaterialStockValueService.group(List.of(
+                line("Hebilla plateada", "Bandola de Oro", "2", "5"),
+                line("HEBILLA niño", "Importadora Z", "3", "4"),
+                line("Empaque caja regalo", "Cartones GT", "10", "1.5"),
+                line("Bolsa EMPAQUE", null, "2", "1"),
+                line("Hilo", "X", "1", "7")));
+        var g = report.getGroups();
+        assertEquals(List.of("La Bandola de Oro", "Hebillas (otros proveedores)", "Empaques", "Otros"),
+                g.stream().map(MaterialStockValueService.Group::getName).toList());
+        assertEquals(new BigDecimal("10.00"), g.get(0).getValue());
+        assertEquals(new BigDecimal("12.00"), g.get(1).getValue());
+        assertEquals(new BigDecimal("17.00"), g.get(2).getValue());
+        assertEquals(new BigDecimal("7.00"), g.get(3).getValue());
+        assertEquals(new BigDecimal("46.00"), report.getTotalValue());
+    }
+
+    @Test
     void zeroOrNegativeStockAndEmptyGroupsAreLeftOut() {
         var report = MaterialStockValueService.group(List.of(
                 line("Hebilla", "Bandola de Oro", "-3", "2"),
