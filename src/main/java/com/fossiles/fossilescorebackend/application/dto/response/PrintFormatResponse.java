@@ -19,6 +19,7 @@ public class PrintFormatResponse {
     private String paperSize;
     private String margins;
     private String header;
+    private String body;
     private String footer;
     private String logoPath;
     private Boolean isDefault;
