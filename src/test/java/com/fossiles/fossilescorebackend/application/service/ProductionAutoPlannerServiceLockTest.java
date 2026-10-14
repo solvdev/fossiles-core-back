@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LeatherMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
@@ -48,6 +49,7 @@ class ProductionAutoPlannerServiceLockTest {
     @Mock private ObjectProvider<ProductionAutoPlannerService> selfProvider;
     @Mock private ProductionTaskLifecycleService productionTaskLifecycleService;
     @Mock private TaskItemMaterialPickRepository taskItemMaterialPickRepository;
+    @Mock private LeatherMovementRepository leatherMovementRepository;
     @Mock private ProductionAutoPlannerService proxy;
 
     private ProductionAutoPlannerService service;
@@ -69,7 +71,7 @@ class ProductionAutoPlannerServiceLockTest {
                 taskDeskHoursService,
                 selfProvider,
                 productionTaskLifecycleService,
-                taskItemMaterialPickRepository);
+                taskItemMaterialPickRepository, leatherMovementRepository);
     }
 
     @Test

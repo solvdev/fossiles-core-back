@@ -67,6 +67,9 @@ public class LeatherMovementEntity {
     @Column(name = "production_order_id")
     private Long productionOrderId;
 
+    @Column(name = "task_item_id")
+    private Long taskItemId;
+
     /** Nombre de quien entrega el cuero */
     @Column(name = "delivered_by", length = 150)
     private String deliveredBy;
