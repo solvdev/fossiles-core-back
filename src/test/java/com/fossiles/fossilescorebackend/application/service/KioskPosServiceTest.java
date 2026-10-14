@@ -15,6 +15,8 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReports
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskDailySalesHistEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
@@ -29,6 +31,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.RoleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskDailySalesHistRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionRepository;
@@ -98,6 +101,9 @@ class KioskPosServiceTest {
 
     @Autowired
     private KioskSaleRepository saleRepository;
+
+    @Autowired
+    private KioscoMovementRepository kioscoMovementRepository;
 
     @Autowired
     private TaxInvoiceService taxInvoiceService;
@@ -293,6 +299,71 @@ class KioskPosServiceTest {
         assertThat(stockOf("LEVIS")).isEqualTo(4);
         assertThat(stockOf("NAUTICA")).isEqualTo(4);
         assertThat(stockOf("NUEVO")).isEqualTo(5);
+    }
+
+    @Test
+    void createSale_entrecuerosWithoutInvoice_registersStockExitInsteadOfSale() throws Exception {
+        enableEntrecuerosKiosk();
+        wallet.setEntrecuerosEnabled(true);
+        wallet = productRepository.save(wallet);
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .requestInvoice(false)
+                .shippingSheetNumber("1842")
+                .items(List.of(item(wallet.getId(), negro.getId(), new BigDecimal("2"))))
+                .build());
+
+        assertThat(sale.getFelStatus()).isEqualTo("SKIPPED");
+        assertThat(currentStock(wallet.getId())).isEqualTo(3);
+        List<KioscoMovementEntity> movements = movementsOfSale(sale.getId());
+        assertThat(movements).hasSize(1);
+        KioscoMovementEntity exit = movements.get(0);
+        // Sin factura no es venta: el kardex lo cuenta como salida (Sal.) y el motivo trae el número de venta.
+        assertThat(exit.getMovementType()).isEqualTo(KioscoMovementType.SALIDA);
+        assertThat(exit.getReason()).isEqualTo("Venta sin factura " + sale.getSaleNumber());
+        assertThat(exit.getStockBefore() - exit.getStockAfter()).isEqualTo(2);
+        assertThat(KioscoInventoryService.isSalidaVentaSinFactura(exit)).isTrue();
+
+        // La anulación devuelve las unidades al mismo stock aunque no exista un movimiento VENTA.
+        kioskPosService.voidSale(
+                sale.getId(), kioskA.getId(), KioskSaleVoidRequest.builder().reason("error de venta").build());
+
+        assertThat(currentStock(wallet.getId())).isEqualTo(5);
+        assertThat(movementsOfSale(sale.getId()))
+                .extracting(KioscoMovementEntity::getMovementType)
+                .containsExactlyInAnyOrder(KioscoMovementType.SALIDA, KioscoMovementType.ANULACION);
+    }
+
+    @Test
+    void createSale_entrecuerosWithInvoice_keepsSaleMovement() throws Exception {
+        enableEntrecuerosKiosk();
+        wallet.setEntrecuerosEnabled(true);
+        wallet = productRepository.save(wallet);
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .requestInvoice(true)
+                .shippingSheetNumber("1843")
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        List<KioscoMovementEntity> movements = movementsOfSale(sale.getId());
+        assertThat(movements).hasSize(1);
+        assertThat(movements.get(0).getMovementType()).isEqualTo(KioscoMovementType.VENTA);
+        assertThat(KioscoInventoryService.isSalidaVentaSinFactura(movements.get(0))).isFalse();
+    }
+
+    private List<KioscoMovementEntity> movementsOfSale(Long saleId) {
+        return kioscoMovementRepository.findAll().stream()
+                .filter(m -> saleId.equals(m.getReferenceId()))
+                .toList();
     }
 
     private int stockOf(String hardware) {

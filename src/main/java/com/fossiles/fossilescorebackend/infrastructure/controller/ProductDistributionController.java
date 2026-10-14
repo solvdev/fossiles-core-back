@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ConfirmReceiptRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.PendingShipmentReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductDistributionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentDestinationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentObservationsRequest;
@@ -201,6 +202,15 @@ public class ProductDistributionController {
             @RequestBody(required = false) ConfirmReceiptRequest body)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(distributionService.confirmReceipt(id, body));
+    }
+
+    /** Recibe en kiosko, o regresa a Bodega PT, las unidades que quedaron pendientes en tránsito. */
+    @PutMapping("/shipments/{id}/pending-receipt")
+    public ResponseEntity<ProductShipmentResponse> resolvePendingReceipt(
+            @PathVariable Long id,
+            @RequestBody PendingShipmentReceiptRequest body)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.resolvePendingReceipt(id, body));
     }
 
     /** Sincroniza inventario kiosco con todas las líneas del envío entregado (productos, tallas, empaques SUM-). */

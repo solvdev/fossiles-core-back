@@ -38,6 +38,9 @@ public class BulkInventoryTransferRequest {
         private Long productId;
         private Long colorId; // Opcional: para productos con variantes de color
 
+        /** Talla; obligatoria para cinchos. */
+        private String sizeKey;
+
         @NotNull(message = "Quantity is required")
         private java.math.BigDecimal quantity;
     }

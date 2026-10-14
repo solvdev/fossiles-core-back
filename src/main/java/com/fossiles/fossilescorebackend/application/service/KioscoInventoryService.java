@@ -80,6 +80,30 @@ import java.util.stream.Collectors;
 public class KioscoInventoryService {
 
     private static final String REASON_NON_RESELLABLE = "producto no apto para reventa";
+
+    /**
+     * Prefijo del motivo de la salida que registra una venta POS sin factura (Entrecueros). Es un movimiento
+     * {@link KioscoMovementType#SALIDA} (Sal. en kardex y conteo), no una venta; el resto del motivo trae el
+     * número de venta.
+     */
+    public static final String REASON_SALIDA_VENTA_SIN_FACTURA = "Venta sin factura";
+
+    /** {@code referenceType} del movimiento cuyo {@code reference_id} es una venta POS (sin factura). */
+    public static final String REFERENCE_TYPE_POS_SALE = "POS_SALE";
+
+    /** Motivo del movimiento de salida para la venta POS {@code saleNumber} registrada sin factura. */
+    public static String ventaSinFacturaReason(String saleNumber) {
+        String number = saleNumber == null ? "" : saleNumber.trim();
+        return number.isEmpty() ? REASON_SALIDA_VENTA_SIN_FACTURA : REASON_SALIDA_VENTA_SIN_FACTURA + " " + number;
+    }
+
+    /** True si el movimiento es la salida de una venta POS sin factura (ver {@link #ventaSinFacturaReason}). */
+    public static boolean isSalidaVentaSinFactura(KioscoMovementEntity movement) {
+        return movement != null
+                && movement.getMovementType() == KioscoMovementType.SALIDA
+                && movement.getReason() != null
+                && movement.getReason().trim().startsWith(REASON_SALIDA_VENTA_SIN_FACTURA);
+    }
     public static final String SHIPMENT_RECEIPT_LINE_PREFIX = "SHIPMENT_RCPT:";
 
     public static String shipmentReceiptLineReason(String lineRef) {
@@ -284,9 +308,28 @@ public class KioscoInventoryService {
             Long physicalCountId,
             String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarDevolucionDeposito(
+                locationId, productId, colorId, quantity, referenceId, userId, sizeKey, physicalSlipNumber, reason,
+                physicalCountId, hardwareCondition, null);
+    }
+
+    public KioscoStockResponse registrarDevolucionDeposito(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String physicalSlipNumber,
+            String reason,
+            Long physicalCountId,
+            String hardwareCondition,
+            Boolean apto
+    ) throws BusinessException, ResourceNotFoundException {
         return registrarDevolucionDepositoWithMovement(
                 locationId, productId, colorId, quantity, referenceId, userId, sizeKey, physicalSlipNumber, reason,
-                physicalCountId, hardwareCondition
+                physicalCountId, hardwareCondition, apto
         ).stockResponse();
     }
 
@@ -308,6 +351,61 @@ public class KioscoInventoryService {
     }
 
     public KioscoMovementWithStock registrarDevolucionDepositoWithMovement(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String physicalSlipNumber,
+            String reason,
+            Long physicalCountId,
+            String hardwareCondition
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarDevolucionDepositoWithMovement(
+                locationId, productId, colorId, quantity, referenceId, userId, sizeKey, physicalSlipNumber, reason,
+                physicalCountId, hardwareCondition, null);
+    }
+
+    /**
+     * Sale del kiosko y entra a bodega en la misma transacción: a Devoluciones si es apto (o no se
+     * indica) y a Devoluciones no aptas si viene dañado. Sin la entrada en bodega las unidades
+     * desaparecían del inventario.
+     */
+    public KioscoMovementWithStock registrarDevolucionDepositoWithMovement(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long referenceId,
+            Long userId,
+            String sizeKey,
+            String physicalSlipNumber,
+            String reason,
+            Long physicalCountId,
+            String hardwareCondition,
+            Boolean apto
+    ) throws BusinessException, ResourceNotFoundException {
+        KioscoMovementWithStock result = registrarSalidaDevolucionDeposito(
+                locationId, productId, colorId, quantity, referenceId, userId, sizeKey, physicalSlipNumber, reason,
+                physicalCountId, hardwareCondition);
+        LocationEntity kiosk = locationRepository.findById(locationId).orElse(null);
+        String kioskName = kiosk != null && kiosk.getName() != null ? kiosk.getName() : "kiosko #" + locationId;
+        String slip = safeTrim(physicalSlipNumber);
+        productInventoryService.creditKioskDepositReturn(
+                productId,
+                colorId,
+                sizeKey,
+                BigDecimal.valueOf(quantity),
+                !Boolean.FALSE.equals(apto),
+                result.movement().getId(),
+                slip.isEmpty() ? null : slip,
+                "Devolución a bodega desde " + kioskName + (slip.isEmpty() ? "" : " · boleta " + slip));
+        return result;
+    }
+
+    private KioscoMovementWithStock registrarSalidaDevolucionDeposito(
             Long locationId,
             Long productId,
             Long colorId,
@@ -533,9 +631,24 @@ public class KioscoInventoryService {
             Long userId,
             Long transferId
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarTrasladoDesdeIntegracion(
+                locationOriginId, locationDestinationId, productId, colorId, quantity, userId, transferId, null);
+    }
+
+    public TrasladoResult registrarTrasladoDesdeIntegracion(
+            Long locationOriginId,
+            Long locationDestinationId,
+            Long productId,
+            Long colorId,
+            BigDecimal quantity,
+            Long userId,
+            Long transferId,
+            String sizeKey
+    ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
         return registrarTrasladoInternal(
-                locationOriginId, locationDestinationId, productId, colorId, qty, userId, false, null, null, transferId);
+                locationOriginId, locationDestinationId, productId, colorId, qty, userId, false, null, sizeKey,
+                transferId);
     }
 
     public TrasladoResult registrarTraslado(KioscoInventoryTrasladoRequest request)
@@ -576,6 +689,7 @@ public class KioscoInventoryService {
             validateQuantity(item.getQuantity());
             validateProduct(item.getProductId());
             validateColor(item.getColorId());
+            assertCinchoHasSize(item.getProductId(), item.getSizeKey());
             String sizeKey = ProductInventorySizesJson.normalizeKey(item.getSizeKey());
             String sizeKeyOrNull = sizeKey.isEmpty() ? null : sizeKey;
 
@@ -871,6 +985,7 @@ public class KioscoInventoryService {
             validateLocationIsKiosk(locationDestinationId);
             validateProduct(productId);
             validateColor(colorId);
+            assertCinchoHasSize(productId, sizeKey);
             Long transferReferenceId = reuseReferenceId != null ? reuseReferenceId : generateTransferReferenceId();
             String sizeKeyOrNull = ProductInventorySizesJson.normalizeKey(sizeKey);
             sizeKeyOrNull = sizeKeyOrNull.isEmpty() ? null : sizeKeyOrNull;
@@ -936,6 +1051,20 @@ public class KioscoInventoryService {
             Long transferId,
             Long userId
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarEntradaPorTransferenciaInventario(
+                kioskLocationId, fromLocationId, productId, colorId, quantity, transferId, userId, null);
+    }
+
+    public KioscoStockResponse registrarEntradaPorTransferenciaInventario(
+            Long kioskLocationId,
+            Long fromLocationId,
+            Long productId,
+            Long colorId,
+            BigDecimal quantity,
+            Long transferId,
+            Long userId,
+            String sizeKey
+    ) throws BusinessException, ResourceNotFoundException {
         if (transferId == null) {
             throw new BusinessException("La transferencia de inventario requiere referencia.");
         }
@@ -965,7 +1094,7 @@ public class KioscoInventoryService {
                 qty,
                 true,
                 reason,
-                null,
+                sizeKey,
                 false
         );
     }
@@ -978,6 +1107,20 @@ public class KioscoInventoryService {
             BigDecimal quantity,
             Long transferId,
             Long userId
+    ) throws BusinessException, ResourceNotFoundException {
+        return registrarSalidaPorTransferenciaInventario(
+                kioskLocationId, toLocationId, productId, colorId, quantity, transferId, userId, null);
+    }
+
+    public KioscoStockResponse registrarSalidaPorTransferenciaInventario(
+            Long kioskLocationId,
+            Long toLocationId,
+            Long productId,
+            Long colorId,
+            BigDecimal quantity,
+            Long transferId,
+            Long userId,
+            String sizeKey
     ) throws BusinessException, ResourceNotFoundException {
         if (transferId == null) {
             throw new BusinessException("La transferencia de inventario requiere referencia.");
@@ -1008,9 +1151,21 @@ public class KioscoInventoryService {
                 -qty,
                 true,
                 reason,
-                null,
+                sizeKey,
                 false
         );
+    }
+
+    /** Los cinchos no se trasladan sin talla: el stock por talla quedaría descuadrado. */
+    private void assertCinchoHasSize(Long productId, String sizeKey) throws BusinessException {
+        if (!ProductInventorySizesJson.normalizeKey(sizeKey).isEmpty() || productId == null) {
+            return;
+        }
+        ProductEntity product = productRepository.findById(productId).orElse(null);
+        if (CinchoProductUtils.isFossCinchoProduct(product) || CinchoProductUtils.isCinchoLineForProduction(product)) {
+            String code = product.getCode() != null ? product.getCode() : "#" + productId;
+            throw new BusinessException("El cincho " + code + " debe trasladarse indicando la talla.");
+        }
     }
 
     private static String buildTransferReason(LocationEntity fromLocation, LocationEntity toLocation) {
@@ -1882,6 +2037,25 @@ public class KioscoInventoryService {
 
     private record HardwareAllocation(String hardwareCondition, int quantity) {}
 
+    /**
+     * Cantidad por dimensión de stock con que quedó registrada la venta POS {@code referenceId}: movimientos
+     * VENTA o, si no hay (venta sin factura), la {@link KioscoMovementType#SALIDA} que la
+     * reemplaza. Cada fila es {@code [hardwareCondition, SUM(quantity)]}.
+     */
+    private List<Object[]> sumSoldQuantityByHardware(
+            Long locationId, Long productId, Long colorId, Long referenceId, String sizeKey
+    ) {
+        String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
+        String sizeOrNull = normalizedSize.isEmpty() ? null : normalizedSize;
+        List<Object[]> sold = kioscoMovementRepository.sumPosReferenceQuantityByHardware(
+                locationId, productId, colorId, referenceId, KioscoMovementType.VENTA, sizeOrNull);
+        if (sold != null && !sold.isEmpty()) {
+            return sold;
+        }
+        return kioscoMovementRepository.sumPosReferenceQuantityByHardware(
+                locationId, productId, colorId, referenceId, KioscoMovementType.SALIDA, sizeOrNull);
+    }
+
     /** Dimensión de stock de la que salió la venta POS {@code referenceId}; null si no hay movimiento VENTA. */
     private String resolveSoldHardware(
             Long locationId, Long productId, Long colorId, Long referenceId, String sizeKey
@@ -1889,10 +2063,7 @@ public class KioscoInventoryService {
         if (referenceId == null) {
             return null;
         }
-        String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
-        List<Object[]> sold = kioscoMovementRepository.sumPosReferenceQuantityByHardware(
-                locationId, productId, colorId, referenceId, KioscoMovementType.VENTA,
-                normalizedSize.isEmpty() ? null : normalizedSize);
+        List<Object[]> sold = sumSoldQuantityByHardware(locationId, productId, colorId, referenceId, sizeKey);
         if (sold == null || sold.isEmpty() || sold.get(0)[0] == null) {
             return null;
         }
@@ -1913,10 +2084,7 @@ public class KioscoInventoryService {
             int quantity,
             String fallbackHardware
     ) {
-        String normalizedSize = ProductInventorySizesJson.normalizeKey(sizeKey);
-        List<Object[]> sold = kioscoMovementRepository.sumPosReferenceQuantityByHardware(
-                locationId, productId, colorId, invoiceId, KioscoMovementType.VENTA,
-                normalizedSize.isEmpty() ? null : normalizedSize);
+        List<Object[]> sold = sumSoldQuantityByHardware(locationId, productId, colorId, invoiceId, sizeKey);
         List<HardwareAllocation> allocations = new ArrayList<>();
         int remaining = quantity;
         if (sold != null) {
@@ -2157,6 +2325,25 @@ public class KioscoInventoryService {
             String sizeKey,
             String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarVentaDesdeIntegracion(
+                locationId, productId, colorId, quantity, invoiceId, userId, sizeKey, hardwareCondition, null);
+    }
+
+    /**
+     * Venta POS. Con {@code salidaSinFacturaReason} (ver {@link #ventaSinFacturaReason}) la venta no se factura
+     * y el inventario la registra como salida (Sal.) en vez de venta (Vtas.); el descuento de stock es el mismo.
+     */
+    public KioscoStockResponse registrarVentaDesdeIntegracion(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            BigDecimal quantity,
+            Long invoiceId,
+            Long userId,
+            String sizeKey,
+            String hardwareCondition,
+            String salidaSinFacturaReason
+    ) throws BusinessException, ResourceNotFoundException {
         int qty = normalizePositiveIntegerQuantity(quantity);
         // POS EntreCueros manda NINO/DAMA/SINTETICO:MARCA, no solo NUEVO/VIEJO.
         // normalize() los descarta y descuenta la fila NUEVO (stock 0) aunque el catálogo sí tenía unidades.
@@ -2170,15 +2357,17 @@ public class KioscoInventoryService {
                     userId,
                     false,
                     sizeKey,
-                    ProductHardwareCondition.normalizeStockDimension(hardwareCondition));
+                    ProductHardwareCondition.normalizeStockDimension(hardwareCondition),
+                    salidaSinFacturaReason);
         }
         if (shouldSplitVentaByHardware(productId, null)) {
             return registrarVentaFifoByHardware(
-                    locationId, productId, colorId, qty, invoiceId, userId, sizeKey, false);
+                    locationId, productId, colorId, qty, invoiceId, userId, sizeKey, false,
+                    salidaSinFacturaReason);
         }
         return registrarVentaInternal(
                 locationId, productId, colorId, qty, invoiceId, userId, false, sizeKey,
-                ProductHardwareCondition.NUEVO);
+                ProductHardwareCondition.NUEVO, salidaSinFacturaReason);
     }
 
     public KioscoStockResponse anularFacturaDesdeIntegracion(
@@ -3328,7 +3517,7 @@ public class KioscoInventoryService {
                         salidaDevolucion += qty;
                     }
                 }
-                case TRASLADO_SALIDA, MERMA, DEVOLUCION_A_CLIENTE -> {
+                case TRASLADO_SALIDA, MERMA, DEVOLUCION_A_CLIENTE, SALIDA -> {
                     if (delta < 0) {
                         salida += -delta;
                     }
@@ -3599,10 +3788,33 @@ public class KioscoInventoryService {
             String sizeKey,
             String hardwareCondition
     ) throws BusinessException, ResourceNotFoundException {
+        return registrarVentaInternal(
+                locationId, productId, colorId, quantity, invoiceId, userId, syncLegacy, sizeKey,
+                hardwareCondition, null);
+    }
+
+    /** Tipo del movimiento de una venta POS: VENTA, o salida cuando la venta no se factura. */
+    private static KioscoMovementType ventaMovementType(String salidaSinFacturaReason) {
+        return salidaSinFacturaReason == null ? KioscoMovementType.VENTA : KioscoMovementType.SALIDA;
+    }
+
+    private KioscoStockResponse registrarVentaInternal(
+            Long locationId,
+            Long productId,
+            Long colorId,
+            Integer quantity,
+            Long invoiceId,
+            Long userId,
+            boolean syncLegacy,
+            String sizeKey,
+            String hardwareCondition,
+            String salidaSinFacturaReason
+    ) throws BusinessException, ResourceNotFoundException {
+        KioscoMovementType movementType = ventaMovementType(salidaSinFacturaReason);
         // Idempotencia por marca: una venta con el mismo producto/color en dos marcas (LEVIS y NAUTICA) son dos
         // movimientos; si solo se mirara producto+color la segunda marca se descartaba y nunca se descontaba.
         if (hasPosReferenceMovementApplied(
-                locationId, productId, colorId, invoiceId, KioscoMovementType.VENTA, sizeKey,
+                locationId, productId, colorId, invoiceId, movementType, sizeKey,
                 resolveStockHardware(hardwareCondition))) {
             log.info(
                     "KIOSCO_VENTA_SKIPPED locationId={} productId={} colorId={} invoiceId={} (already applied)",
@@ -3618,10 +3830,10 @@ public class KioscoInventoryService {
                 null,
                 null,
                 resolveUserIdRequired(userId),
-                KioscoMovementType.VENTA,
+                movementType,
                 -quantity,
                 true,
-                null,
+                salidaSinFacturaReason,
                 sizeKey,
                 syncLegacy,
                 null,
@@ -3688,10 +3900,12 @@ public class KioscoInventoryService {
             Long invoiceId,
             Long userId,
             String sizeKey,
-            boolean syncLegacy
+            boolean syncLegacy,
+            String salidaSinFacturaReason
     ) throws BusinessException, ResourceNotFoundException {
+        KioscoMovementType movementType = ventaMovementType(salidaSinFacturaReason);
         if (hasPosReferenceMovementApplied(
-                locationId, productId, colorId, invoiceId, KioscoMovementType.VENTA, sizeKey)) {
+                locationId, productId, colorId, invoiceId, movementType, sizeKey)) {
             log.info(
                     "KIOSCO_VENTA_FIFO_SKIPPED locationId={} productId={} colorId={} invoiceId={} (already applied)",
                     locationId, productId, colorId, invoiceId);
@@ -3723,10 +3937,10 @@ public class KioscoInventoryService {
                     null,
                     null,
                     resolveUserIdRequired(userId),
-                    KioscoMovementType.VENTA,
+                    movementType,
                     -take,
                     true,
-                    null,
+                    salidaSinFacturaReason,
                     sizeKey,
                     syncLegacy,
                     null,
@@ -3745,10 +3959,10 @@ public class KioscoInventoryService {
                     null,
                     null,
                     resolveUserIdRequired(userId),
-                    KioscoMovementType.VENTA,
+                    movementType,
                     -remaining,
                     true,
-                    null,
+                    salidaSinFacturaReason,
                     sizeKey,
                     syncLegacy,
                     null,
@@ -4413,11 +4627,25 @@ public class KioscoInventoryService {
 
     private record RouteContext(Long originLocationId, Long destinationLocationId, String referenceType, String referenceNumber) {}
 
+    /** Número de la venta POS que trae el motivo de la salida sin factura; "Venta #id" si el motivo no lo trae. */
+    private static String salidaVentaSinFacturaNumber(KioscoMovementEntity entity) {
+        String reason = entity.getReason() == null ? "" : entity.getReason().trim();
+        String number = reason.length() > REASON_SALIDA_VENTA_SIN_FACTURA.length()
+                ? reason.substring(REASON_SALIDA_VENTA_SIN_FACTURA.length()).trim()
+                : "";
+        return number.isEmpty() ? "Venta #" + entity.getReferenceId() : number;
+    }
+
     private RouteContext resolveMovementRoute(KioscoMovementEntity entity, Long productId, Long colorId) {
         Long originId = entity.getOriginLocationId();
         Long destId = entity.getDestinationLocationId();
         String refType = null;
         String refNumber = null;
+
+        // Salida de una venta POS sin factura: reference_id es la venta, no un envío (sus ids pueden coincidir).
+        if (entity.getReferenceId() != null && isSalidaVentaSinFactura(entity)) {
+            return new RouteContext(originId, destId, REFERENCE_TYPE_POS_SALE, salidaVentaSinFacturaNumber(entity));
+        }
 
         if (entity.getReferenceId() != null) {
             Optional<ProductShipmentEntity> shipmentOpt = productShipmentRepository.findById(entity.getReferenceId());
@@ -4970,7 +5198,7 @@ public class KioscoInventoryService {
         int qty = safeInt(movement.getQuantity());
         return switch (movement.getMovementType()) {
             case ENTRADA, TRASLADO_ENTRADA, DEVOLUCION_CLIENTE, ANULACION -> qty;
-            case VENTA, DEVOLUCION_DEPOSITO, DEVOLUCION_A_CLIENTE, TRASLADO_SALIDA, MERMA -> -qty;
+            case VENTA, DEVOLUCION_DEPOSITO, DEVOLUCION_A_CLIENTE, TRASLADO_SALIDA, MERMA, SALIDA -> -qty;
             case AJUSTE, CAMBIO -> safeInt(movement.getStockAfter()) - safeInt(movement.getStockBefore());
         };
     }

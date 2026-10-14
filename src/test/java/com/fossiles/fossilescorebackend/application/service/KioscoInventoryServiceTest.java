@@ -733,6 +733,107 @@ class KioscoInventoryServiceTest {
     }
 
     @Test
+    void ventaSinFactura_registraSalidaConMotivoDeVentaYMismoDescuento() throws Exception {
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(10, 0)));
+        ArgumentCaptor<KioscoMovementEntity> captor = ArgumentCaptor.forClass(KioscoMovementEntity.class);
+
+        service.registrarVentaDesdeIntegracion(
+                locationId, productId, colorId, new BigDecimal("2"), 100L, userId, null, "LEVIS",
+                KioscoInventoryService.ventaSinFacturaReason("POS-20261014-0007"));
+
+        verify(kioscoMovementRepository).save(captor.capture());
+        KioscoMovementEntity saved = captor.getValue();
+        assertThat(saved.getMovementType()).isEqualTo(KioscoMovementType.SALIDA);
+        assertThat(saved.getReason()).isEqualTo("Venta sin factura POS-20261014-0007");
+        assertThat(saved.getReferenceId()).isEqualTo(100L);
+        assertThat(saved.getQuantity()).isEqualTo(2);
+        assertThat(saved.getStockBefore() - saved.getStockAfter()).isEqualTo(2);
+        assertThat(KioscoInventoryService.isSalidaVentaSinFactura(saved)).isTrue();
+        // La idempotencia se revisa contra la salida, no contra una venta que no existe.
+        verify(kioscoMovementRepository).existsPosReferenceMovementByHardware(
+                locationId, productId, colorId, 100L, KioscoMovementType.SALIDA, null, "LEVIS");
+    }
+
+    @Test
+    void ventaSinFactura_yaRegistrada_noDescuentaDeNuevo() throws Exception {
+        when(kioscoMovementRepository.existsPosReferenceMovementByHardware(
+                locationId, productId, colorId, 100L, KioscoMovementType.SALIDA, null, "LEVIS"))
+                .thenReturn(true);
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(10, 0)));
+
+        service.registrarVentaDesdeIntegracion(
+                locationId, productId, colorId, new BigDecimal("1"), 100L, userId, null, "LEVIS",
+                KioscoInventoryService.ventaSinFacturaReason("POS-20261014-0007"));
+
+        verify(kioscoMovementRepository, never()).save(any(KioscoMovementEntity.class));
+    }
+
+    @Test
+    void anulacion_ventaSinFactura_devuelveAlStockDeLaSalida() throws Exception {
+        // No hay movimiento VENTA: la venta salió como SALIDA de la marca NINO.
+        when(kioscoMovementRepository.sumPosReferenceQuantityByHardware(
+                locationId, productId, colorId, 900L, KioscoMovementType.SALIDA, null))
+                .thenReturn(java.util.Collections.singletonList(new Object[] {"NINO", 2L}));
+        when(kioscoStockRepository.findForUpdate(locationId, productId, colorId))
+                .thenReturn(Optional.of(stockEntity(10, 0)));
+
+        service.anularFactura(900L, locationId, productId, colorId, 2, "error", false, userId);
+
+        verify(kioscoStockProvisioningService).ensureStockRow(
+                eq(locationId), eq(productId), eq(colorId), eq(userId), eq("NINO"));
+    }
+
+    @Test
+    void salidaVentaSinFactura_soloEsSalidaConMotivoDeVentaSinFactura() {
+        KioscoMovementEntity manual = KioscoMovementEntity.builder()
+                .movementType(KioscoMovementType.SALIDA)
+                .reason("Entregado al cliente")
+                .build();
+        KioscoMovementEntity devolucion = KioscoMovementEntity.builder()
+                .movementType(KioscoMovementType.DEVOLUCION_A_CLIENTE)
+                .reason("Venta sin factura POS-1")
+                .build();
+        KioscoMovementEntity venta = KioscoMovementEntity.builder()
+                .movementType(KioscoMovementType.VENTA)
+                .reason("Venta sin factura POS-1")
+                .build();
+
+        assertThat(KioscoInventoryService.isSalidaVentaSinFactura(manual)).isFalse();
+        assertThat(KioscoInventoryService.isSalidaVentaSinFactura(devolucion)).isFalse();
+        assertThat(KioscoInventoryService.isSalidaVentaSinFactura(venta)).isFalse();
+        assertThat(KioscoInventoryService.isSalidaVentaSinFactura(null)).isFalse();
+    }
+
+    @Test
+    void movimientoSalidaVentaSinFactura_apuntaALaVentaYNoAUnEnvio() throws Exception {
+        // reference_id es el id de la venta; aunque exista un envío con ese mismo id no debe mostrarse como envío.
+        when(productShipmentRepository.findById(777L)).thenReturn(Optional.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity.builder()
+                        .id(777L)
+                        .shipmentNumber("ENVI-00777")
+                        .build()));
+        KioscoMovementEntity exit = KioscoMovementEntity.builder()
+                .id(1L)
+                .kioscoStockId(1L)
+                .movementType(KioscoMovementType.SALIDA)
+                .quantity(1)
+                .stockBefore(5)
+                .stockAfter(4)
+                .referenceId(777L)
+                .reason("Venta sin factura POS-20261014-0007")
+                .userId(userId)
+                .build();
+
+        var response = service.toMovementResponse(exit);
+
+        assertThat(response.getMovementType()).isEqualTo(KioscoMovementType.SALIDA);
+        assertThat(response.getReferenceType()).isEqualTo(KioscoInventoryService.REFERENCE_TYPE_POS_SALE);
+        assertThat(response.getReferenceNumber()).isEqualTo("POS-20261014-0007");
+    }
+
+    @Test
     void venta_dosMarcasDelMismoProductoYColorSeDescuentanAmbas() throws Exception {
         // La primera marca ya tiene su movimiento; la revisión de "ya aplicado" es por marca, no por producto.
         when(kioscoMovementRepository.existsPosReferenceMovementByHardware(
@@ -902,6 +1003,46 @@ class KioscoInventoryServiceTest {
         assertThat(row.getVentas()).isEqualTo(0);
         assertThat(row.getSalida()).isEqualTo(1);
         assertThat(row.getInventarioFinal()).isEqualTo(10);
+    }
+
+    @Test
+    void kardex_ventaSinFactura_vaASalidaNoAVentas() throws Exception {
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(locationId))
+                .thenReturn(List.of(stockEntity(0, 0)));
+
+        LocalDate from = LocalDate.of(2026, 6, 1);
+        LocalDate to = LocalDate.of(2026, 6, 30);
+        LocalDateTime periodStart = from.atStartOfDay();
+
+        KioscoMovementEntity prePeriodEntrada = movement(KioscoMovementType.ENTRADA, 0, 10, 1900L);
+        List<KioscoMovementEntity> periodMoves = List.of(
+                movement(KioscoMovementType.VENTA, 10, 9, 1901L),
+                movement(KioscoMovementType.SALIDA, 9, 7, 1902L)
+        );
+
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBeforeAsc(eq(locationId), any(LocalDateTime.class)))
+                .thenAnswer(invocation -> {
+                    LocalDateTime cutoff = invocation.getArgument(1);
+                    if (!cutoff.isAfter(periodStart)) {
+                        return List.of(prePeriodEntrada);
+                    }
+                    java.util.ArrayList<KioscoMovementEntity> all = new java.util.ArrayList<>();
+                    all.add(prePeriodEntrada);
+                    all.addAll(periodMoves);
+                    return all;
+                });
+        when(kioscoMovementRepository.findByLocationAndCreatedAtBetween(
+                eq(locationId), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(periodMoves);
+
+        KioscoKardexReportResponse report = service.getKardexReport(locationId, from, to);
+        KioscoKardexReportResponse.KioscoKardexRow row = report.getRows().get(0);
+        assertThat(row.getInventarioInicial()).isEqualTo(10);
+        // La venta facturada es Vtas.; la salida (venta sin factura) es Sal. y no se mezcla con Vtas.
+        assertThat(row.getVentas()).isEqualTo(1);
+        assertThat(row.getSalida()).isEqualTo(2);
+        assertThat(row.getSalidaDevolucion()).isEqualTo(0);
+        assertThat(row.getInventarioFinal()).isEqualTo(7);
     }
 
     @Test

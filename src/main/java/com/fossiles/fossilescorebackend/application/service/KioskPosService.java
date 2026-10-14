@@ -522,6 +522,8 @@ public class KioskPosService {
         );
 
         String saleNumber = generateSaleNumber(saleDate);
+        // Entrecueros sin factura: la venta queda con fel_status SKIPPED y su inventario sale como Sal., no Vtas.
+        boolean saleWithoutInvoice = entrecueros && !Boolean.TRUE.equals(request.getRequestInvoice());
 
         KioskSaleEntity sale = KioskSaleEntity.builder()
                 .saleNumber(saleNumber)
@@ -603,7 +605,7 @@ public class KioskPosService {
                 .totalItems(totalItems)
                 .testSale(isPosTestSale(kiosk))
                 .cashSessionId(openSession.getId())
-                .felStatus(entrecueros && !Boolean.TRUE.equals(request.getRequestInvoice()) ? "SKIPPED" : null)
+                .felStatus(saleWithoutInvoice ? "SKIPPED" : null)
                 .shippingSheetNumber(shippingSheetNumber)
                 .createdBy(user.getId())
                 .items(new ArrayList<>())
@@ -647,7 +649,8 @@ public class KioskPosService {
                     saved.getId(),
                     user.getId(),
                     parsed.size(),
-                    parsed.hardwareCondition()
+                    parsed.hardwareCondition(),
+                    saleWithoutInvoice ? KioscoInventoryService.ventaSinFacturaReason(saved.getSaleNumber()) : null
             );
         }
 
