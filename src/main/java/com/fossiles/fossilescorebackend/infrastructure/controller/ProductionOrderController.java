@@ -68,6 +68,7 @@ public class ProductionOrderController {
     private final ProductionOrderRepository productionOrderRepository;
     private final ProductionOrderListService productionOrderListService;
     private final ProductionOrderItemRepository productionOrderItemRepository;
+    private final com.fossiles.fossilescorebackend.application.service.ProductionOrderItemUpdateService productionOrderItemUpdateService;
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
     private final CustomerRepository customerRepository;
@@ -266,7 +267,7 @@ public class ProductionOrderController {
      * Crear o actualizar envío sin distribución (INTERNA / CLIENTE_KIOSKO / OPC cinchos).
      */
     @PostMapping("/{id}/shipments")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductShipmentResponse> createOrUpdateShipmentForOrder(
             @PathVariable Long id,
             @Valid @RequestBody ProductShipmentRequest request) throws ResourceNotFoundException, BusinessException {
@@ -278,7 +279,7 @@ public class ProductionOrderController {
      * Genera envío CONFIRMED desde ítems de la OP (solo CINCHOS / CINCHOS_FOSSILES / CINCHOS_MARCAS).
      */
     @PostMapping("/{id}/shipments/generate-from-order")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductShipmentResponse> generateShipmentFromOrder(
             @PathVariable Long id,
             @Valid @RequestBody com.fossiles.fossilescorebackend.application.dto.request.OpcShipmentGenerateRequest request)
@@ -429,14 +430,19 @@ public class ProductionOrderController {
     }
 
     @PutMapping("/{id}")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductionOrderResponse> update(@PathVariable Long id, 
             @Valid @RequestBody ProductionOrderRequest request)
             throws ResourceNotFoundException, BusinessException {
-        ProductionOrderEntity entity = productionOrderRepository.findById(id)
+        ProductionOrderEntity entity = productionOrderRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
 
         String requestedOrderType = request.getOrderType() != null ? request.getOrderType() : entity.getOrderType();
         String effectiveOrderType = normalizeOrderType(requestedOrderType);
+
+        if (!Objects.equals(entity.getOrderType(), effectiveOrderType) && productionOrderItemUpdateService.hasUsedItems(id)) {
+            throw new BusinessException("No se puede cambiar el tipo de una orden con producción o recepción asociada.");
+        }
 
         if (!entity.getCode().equals(request.getCode()) 
                 && productionOrderRepository.existsByCode(request.getCode())) {
@@ -446,6 +452,22 @@ public class ProductionOrderController {
         // Validar tipo de orden
         if (!isValidOrderType(effectiveOrderType)) {
             throw new BusinessException("Invalid order type. Must be one of: CINCHOS, CINCHOS_FOSSILES, CINCHOS_MARCAS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA, CLIENTE_KIOSKO, INTERNA(OPI)");
+        }
+
+        com.fossiles.fossilescorebackend.application.service.ProductionOrderItemUpdateService.UpdatePlan itemPlan = null;
+        if (request.getItems() != null) {
+            List<ProductionOrderItemEntity> proposed = new ArrayList<>();
+            for (ProductionOrderItemRequest item : request.getItems()) {
+                validateProductionOrderItemRequest(item, effectiveOrderType);
+                proposed.add(ProductionOrderItemEntity.builder()
+                        .id(item.getId()).productionOrderId(id)
+                        .productId(item.getProductId()).colorId(item.getColorId())
+                        .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, item.getBrandName()))
+                        .quantity(item.getQuantity()).sizesData(item.getSizes() == null ? null : convertSizesToJson(item.getSizes()))
+                        .observations(item.getObservations()).unitPrice(item.getUnitPrice())
+                        .unitPricesJson(convertUnitPricesToJson(item.getUnitPrices())).build());
+            }
+            itemPlan = productionOrderItemUpdateService.prepare(id, proposed);
         }
 
         updateEntity(entity, request);
@@ -459,36 +481,7 @@ public class ProductionOrderController {
             updated = productionOrderRepository.save(updated);
         }
 
-        // Actualizar items: eliminar existentes y crear nuevos
-        if (request.getItems() != null) {
-            productionOrderItemRepository.deleteByProductionOrderId(id);
-
-            if (!request.getItems().isEmpty()) {
-                // Validar items antes de procesarlos
-                for (ProductionOrderItemRequest itemRequest : request.getItems()) {
-                    validateProductionOrderItemRequest(itemRequest, effectiveOrderType);
-                }
-
-                final Long updatedProductionOrderId = updated.getId();
-                List<ProductionOrderItemEntity> items = new ArrayList<>();
-                for (ProductionOrderItemRequest itemRequest : request.getItems()) {
-                    items.add(ProductionOrderItemEntity.builder()
-                            .productionOrderId(updatedProductionOrderId)
-                            .productId(itemRequest.getProductId())
-                            .colorId(itemRequest.getColorId())
-                            .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, itemRequest.getBrandName()))
-                            .quantity(itemRequest.getQuantity())
-                            .warehouseReceivedQty(0)
-                            .sizesData(itemRequest.getSizes() != null ?
-                                    convertSizesToJson(itemRequest.getSizes()) : null)
-                            .observations(itemRequest.getObservations())
-                            .unitPrice(itemRequest.getUnitPrice())
-                            .unitPricesJson(convertUnitPricesToJson(itemRequest.getUnitPrices()))
-                            .build());
-                }
-                productionOrderItemRepository.saveAll(items);
-            }
-        }
+        if (itemPlan != null) productionOrderItemUpdateService.apply(itemPlan);
 
         return ResponseEntity.ok(toResponse(updated));
     }
@@ -567,10 +560,13 @@ public class ProductionOrderController {
     }
 
     @DeleteMapping("/{id}")
-    @Transactional
-    public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException {
-        ProductionOrderEntity entity = productionOrderRepository.findById(id)
+    @Transactional(rollbackFor = Exception.class)
+    public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException, BusinessException {
+        ProductionOrderEntity entity = productionOrderRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
+        if (productionOrderItemUpdateService.hasUsedItems(id)) {
+            throw new BusinessException("No se puede eliminar una orden con producción o recepción asociada.");
+        }
         
         // Eliminar primero los items asociados
         productionOrderItemRepository.deleteByProductionOrderId(id);
@@ -2023,6 +2019,25 @@ public class ProductionOrderController {
 
     private void validateProductionOrderItemRequest(ProductionOrderItemRequest itemRequest, String orderType)
             throws ResourceNotFoundException, BusinessException {
+        if (itemRequest == null || itemRequest.getProductId() == null) throw new BusinessException("Indique el producto de cada ítem.");
+        long sizesQuantity = 0;
+        if (itemRequest.getSizes() != null) {
+            for (var size : itemRequest.getSizes().entrySet()) {
+                if (size.getKey() == null || size.getKey().isBlank() || size.getValue() == null || size.getValue() < 0) {
+                    throw new BusinessException("Las tallas deben tener cantidades no negativas.");
+                }
+                sizesQuantity += size.getValue();
+            }
+        }
+        if (sizesQuantity > Integer.MAX_VALUE || (itemRequest.getQuantity() != null && itemRequest.getQuantity() < 0)
+                || (sizesQuantity == 0 && (itemRequest.getQuantity() == null || itemRequest.getQuantity() <= 0))) {
+            throw new BusinessException("El ítem debe tener una cantidad positiva válida.");
+        }
+        if (sizesQuantity > 0 && itemRequest.getQuantity() != null && itemRequest.getQuantity() > 0
+                && sizesQuantity != itemRequest.getQuantity()) throw new BusinessException("La suma de tallas debe coincidir con la cantidad del ítem.");
+        if ((itemRequest.getUnitPrice() != null && itemRequest.getUnitPrice().signum() < 0)
+                || (itemRequest.getUnitPrices() != null && itemRequest.getUnitPrices().values().stream()
+                .anyMatch(price -> price == null || price.signum() < 0))) throw new BusinessException("Los precios deben ser no negativos.");
         if (itemRequest.getProductId() != null && !productRepository.existsById(itemRequest.getProductId())) {
             throw new ResourceNotFoundException("Product", itemRequest.getProductId());
         }
