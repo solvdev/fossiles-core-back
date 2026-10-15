@@ -21,6 +21,8 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class OnlineSalesCacheInvalidator implements HandlerInterceptor {
 
+    private static final String DAY_PLAN_PREVIEW = "/api/tasks/organizer/day-plan/preview";
+
     private static final Set<String> READ_METHODS = Set.of("GET", "HEAD", "OPTIONS");
 
     /** Rutas que pueden cambiar una venta en línea, sus productos, su factura o sus devoluciones. */
@@ -47,6 +49,10 @@ public class OnlineSalesCacheInvalidator implements HandlerInterceptor {
             return;
         }
         String path = request.getRequestURI().substring(request.getContextPath().length());
+        if (DAY_PLAN_PREVIEW.equals(path)) {
+            // «Armar el día», vista previa: POST de solo lectura que el front repite en cada cambio.
+            return;
+        }
         if (matches(path, SALES_PATHS)) {
             cache.evictSales();
         }

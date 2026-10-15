@@ -2816,9 +2816,11 @@ public class TaskController {
     }
 
     /** Primera prioridad que el usuario puede asignar a mano: 0 y 1 son cupos reservados. */
-    private static final int MIN_MANUAL_SCHEDULING_PRIORITY = 2;
+    private static final int MIN_MANUAL_SCHEDULING_PRIORITY =
+            ProductionPlanningConstants.MIN_MANUAL_SCHEDULING_PRIORITY;
     /** Última: 100 es el valor por defecto de las órdenes sin prioridad propia. */
-    private static final int MAX_MANUAL_SCHEDULING_PRIORITY = 99;
+    private static final int MAX_MANUAL_SCHEDULING_PRIORITY =
+            ProductionPlanningConstants.MAX_MANUAL_SCHEDULING_PRIORITY;
 
     private void mergeSchedulingPrioritiesFromRequest(Map<String, Integer> schedulingPriorities) {
         if (schedulingPriorities == null || schedulingPriorities.isEmpty()) {
