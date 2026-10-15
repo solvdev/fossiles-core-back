@@ -129,41 +129,32 @@ public class InternalShipmentRequestService {
         }
         List<ProductShipmentRequest.ProductShipmentDetailRequest> products = toProductLines(entity);
 
-        if (entity.getProductionOrderId() == null) {
-            // Primera autorización: solo aquí se evalúa el stock y, si falta, se genera la OPI.
-            // Antes de autorizar no debe existir ninguna orden de producción para esta solicitud.
-            List<DispatchStockShortageResponse> shortages =
-                    productDistributionService.computeDispatchStockShortages(products);
-            if (!shortages.isEmpty()) {
-                Long productionOrderId = createOpiForShortages(entity, shortages);
-                entity.setProductionOrderId(productionOrderId);
-                requestRepository.save(entity);
-                String opiRef = productionOrderRepository.findById(productionOrderId)
-                        .map(ProductionOrderEntity::getCode)
-                        .orElse("OPI #" + productionOrderId);
+        // El envío solo se autoriza cuando hay stock en Devoluciones / Bodega PT. Si falta, Contabilidad
+        // primero autoriza la producción del faltante (authorizeProduction) y espera el ingreso a Bodega PT.
+        List<DispatchStockShortageResponse> shortages =
+                productDistributionService.computeDispatchStockShortages(products);
+        ProductionOrderEntity activeOpi = findActiveLinkedOpi(entity);
+        if (!shortages.isEmpty()) {
+            String detail = formatShortageSummary(shortages);
+            if (activeOpi == null) {
                 throw new BusinessException(
-                        "No hay stock suficiente en Devoluciones / Bodega PT. Se generó la orden " + opiRef
-                                + " por el faltante. Autorice su producción y reciba el producto terminado en "
-                                + "Bodega PT antes de autorizar este envío.");
+                        "No hay stock suficiente en Devoluciones / Bodega PT. "
+                                + "Autorice primero la producción del faltante.\n" + detail);
             }
-        } else {
-            assertLinkedOpiProductionAuthorized(entity);
+            String opiRef = activeOpi.getCode() != null ? activeOpi.getCode() : "OPI #" + activeOpi.getId();
+            if ("DRAFT".equalsIgnoreCase(safe(activeOpi.getStatus()))) {
+                throw new BusinessException(
+                        "Debe autorizar la producción de " + opiRef + " antes de autorizar el envío.\n" + detail);
+            }
+            throw new BusinessException(
+                    "Aún no hay stock suficiente en Devoluciones / Bodega PT. Complete la orden " + opiRef
+                            + " e ingrese el producto terminado antes de autorizar el envío.\n" + detail);
         }
-
-        try {
-            productDistributionService.validateDispatchStock(products);
-        } catch (BusinessException ex) {
-            if (entity.getProductionOrderId() != null) {
-                String opiRef = productionOrderRepository.findById(entity.getProductionOrderId())
-                        .map(ProductionOrderEntity::getCode)
-                        .orElse("OPI #" + entity.getProductionOrderId());
-                throw new BusinessException(
-                        "Aún no hay stock suficiente en Devoluciones / Bodega PT. "
-                                + "Complete la orden " + opiRef
-                                + " e ingrese el producto terminado antes de autorizar.\n"
-                                + ex.getMessage());
-            }
-            throw ex;
+        if (activeOpi != null && "DRAFT".equalsIgnoreCase(safe(activeOpi.getStatus()))) {
+            // Ya hay stock: la OPI en borrador por faltante quedó innecesaria.
+            activeOpi.setStatus("CANCELLED");
+            productionOrderRepository.save(activeOpi);
+            entity.setProductionOrderId(null);
         }
 
         ProductShipmentResponse shipment = productDistributionService.dispatchStandaloneInternal(
@@ -217,8 +208,23 @@ public class InternalShipmentRequestService {
         if (!"PENDIENTE".equalsIgnoreCase(status) && !"APROBADA".equalsIgnoreCase(status)) {
             throw new BusinessException("Solo se puede autorizar la producción de solicitudes pendientes o aprobadas.");
         }
-        if (entity.getProductionOrderId() == null) {
-            throw new BusinessException("Esta solicitud no tiene una OPI vinculada.");
+        if (findActiveLinkedOpi(entity) == null) {
+            // Sin OPI vigente: solo se genera (por el faltante) cuando la solicitud sigue pendiente.
+            if (!"PENDIENTE".equalsIgnoreCase(status)
+                    || "OPI".equalsIgnoreCase(safe(entity.getRequestType()))) {
+                throw new BusinessException("Esta solicitud no tiene una OPI vinculada.");
+            }
+            List<DispatchStockShortageResponse> shortages =
+                    productDistributionService.computeDispatchStockShortages(toProductLines(entity));
+            if (shortages.isEmpty()) {
+                throw new BusinessException(
+                        "Hay stock suficiente en Devoluciones / Bodega PT; no hace falta producir. "
+                                + "Autorice el envío.");
+            }
+            entity.setProductionOrderId(createOpiForShortages(entity, shortages));
+            entity.setOpiAuthorizedBy(null);
+            entity.setOpiAuthorizedAt(null);
+            requestRepository.save(entity);
         }
         if (entity.getOpiAuthorizedAt() != null) {
             throw new BusinessException("La producción OPI ya fue autorizada para esta solicitud.");
@@ -644,6 +650,82 @@ public class InternalShipmentRequestService {
         }
     }
 
+    /** OPI vinculada que sigue vigente (existe y no está cancelada); null en otro caso. */
+    private ProductionOrderEntity findActiveLinkedOpi(InternalShipmentRequestEntity entity) {
+        if (entity.getProductionOrderId() == null) {
+            return null;
+        }
+        ProductionOrderEntity order = productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null);
+        if (order == null || "CANCELLED".equalsIgnoreCase(safe(order.getStatus()))) {
+            return null;
+        }
+        return order;
+    }
+
+    private String formatShortageSummary(List<DispatchStockShortageResponse> shortages) {
+        return shortages.stream()
+                .map(s -> "• " + (s.getProductCode() != null ? s.getProductCode() + " - " : "")
+                        + s.getProductName()
+                        + (s.getSize() != null && !s.getSize().isBlank() ? " (" + s.getSize() + ")" : "")
+                        + ": disponible " + s.getAvailableQuantity()
+                        + ", requerido " + s.getRequiredQuantity())
+                .collect(Collectors.joining("\n"));
+    }
+
+    private static String stockKey(Long productId, Long colorId, String size) {
+        return productId + "|" + colorId + "|" + (size == null ? "" : size.trim().toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Calcula el estado de stock de una solicitud pendiente de envío. Devuelve null si no aplica
+     * (ya resuelta, tipo OPI) o si no se pudo calcular, para no romper el listado.
+     */
+    private StockSnapshot computeStockSnapshot(
+            InternalShipmentRequestEntity entity, ProductionOrderEntity linkedOrder) {
+        if (!"PENDIENTE".equalsIgnoreCase(safe(entity.getStatus()))
+                || "OPI".equalsIgnoreCase(safe(entity.getRequestType()))
+                || entity.getLines() == null || entity.getLines().isEmpty()) {
+            return null;
+        }
+        List<DispatchStockShortageResponse> stockLines;
+        try {
+            stockLines = productDistributionService.computeDispatchStockLines(toProductLines(entity));
+        } catch (Exception ex) {
+            return null;
+        }
+        Map<String, DispatchStockShortageResponse> byKey = new LinkedHashMap<>();
+        BigDecimal shortageTotal = BigDecimal.ZERO;
+        for (DispatchStockShortageResponse row : stockLines) {
+            byKey.put(stockKey(row.getProductId(), row.getColorId(), row.getSize()), row);
+            if (row.getShortageQuantity() != null) {
+                shortageTotal = shortageTotal.add(row.getShortageQuantity());
+            }
+        }
+        boolean opiActive = linkedOrder != null && !"CANCELLED".equalsIgnoreCase(safe(linkedOrder.getStatus()));
+        boolean opiAuthorized = opiActive
+                && (entity.getOpiAuthorizedAt() != null || !"DRAFT".equalsIgnoreCase(safe(linkedOrder.getStatus())));
+        String status;
+        String nextAction;
+        if (shortageTotal.signum() <= 0) {
+            status = "DISPONIBLE";
+            nextAction = "AUTORIZAR_ENVIO";
+        } else if (opiAuthorized) {
+            status = "EN_PRODUCCION";
+            nextAction = "ESPERAR_PRODUCCION";
+        } else {
+            status = "SIN_STOCK";
+            nextAction = "AUTORIZAR_PRODUCCION";
+        }
+        return new StockSnapshot(status, nextAction, shortageTotal, byKey);
+    }
+
+    private record StockSnapshot(
+            String status,
+            String nextAction,
+            BigDecimal shortageTotal,
+            Map<String, DispatchStockShortageResponse> byKey) {
+    }
+
     private void assertLinkedOpiProductionAuthorized(InternalShipmentRequestEntity entity)
             throws BusinessException {
         if (entity.getProductionOrderId() == null) {
@@ -768,10 +850,14 @@ public class InternalShipmentRequestService {
                 productionOrderStatus = linkedOrder.getStatus();
             }
         }
+        ProductionOrderEntity linkedForStock = entity.getProductionOrderId() == null
+                ? null
+                : productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null);
+        StockSnapshot stock = computeStockSnapshot(entity, linkedForStock);
         List<InternalShipmentRequestResponse.LineResponse> lines = entity.getLines() == null
                 ? List.of()
                 : entity.getLines().stream()
-                .map(this::toLineResponse)
+                .map(line -> toLineResponse(line, stock))
                 .collect(Collectors.toList());
         return InternalShipmentRequestResponse.builder()
                 .id(entity.getId())
@@ -799,11 +885,18 @@ public class InternalShipmentRequestService {
                 .canGenerateOpi(canGenerateOpi(entity, shipmentProductionOrderId))
                 .opiAuthorizedBy(entity.getOpiAuthorizedBy())
                 .opiAuthorizedAt(entity.getOpiAuthorizedAt())
+                .stockStatus(stock != null ? stock.status() : null)
+                .stockShortageTotal(stock != null ? stock.shortageTotal() : null)
+                .nextAction(stock != null ? stock.nextAction() : null)
                 .lines(lines)
                 .build();
     }
 
-    private InternalShipmentRequestResponse.LineResponse toLineResponse(InternalShipmentRequestLineEntity line) {
+    private InternalShipmentRequestResponse.LineResponse toLineResponse(
+            InternalShipmentRequestLineEntity line, StockSnapshot stock) {
+        DispatchStockShortageResponse stockRow = stock == null
+                ? null
+                : stock.byKey().get(stockKey(line.getProductId(), line.getColorId(), line.getSize()));
         ProductEntity product = productRepository.findById(line.getProductId()).orElse(null);
         ColorEntity color = line.getColorId() == null ? null : colorRepository.findById(line.getColorId()).orElse(null);
         return InternalShipmentRequestResponse.LineResponse.builder()
@@ -817,6 +910,8 @@ public class InternalShipmentRequestService {
                 .size(line.getSize())
                 .quantity(line.getQuantity())
                 .catalogPrice(product != null ? product.getSalePrice() : null)
+                .availableQuantity(stockRow != null ? stockRow.getAvailableQuantity() : null)
+                .shortageQuantity(stockRow != null ? stockRow.getShortageQuantity() : null)
                 .build();
     }
 

@@ -740,8 +740,28 @@ public class ProductDistributionService {
         }
     }
 
+    /**
+     * Disponibilidad por línea (Devoluciones + Bodega PT) para todas las líneas solicitadas,
+     * con o sin faltante. {@code shortageQuantity} es 0 cuando alcanza el stock.
+     */
+    public List<DispatchStockShortageResponse> computeDispatchStockLines(
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
+            throws BusinessException, ResourceNotFoundException {
+        List<ProductShipmentRequest.ProductShipmentDetailRequest> normalized = normalizeShipmentProducts(products);
+        if (normalized.isEmpty()) {
+            throw new BusinessException("Debe incluir al menos un producto con cantidad.");
+        }
+        return collectDispatchStockLines(normalized, false);
+    }
+
     private List<DispatchStockShortageResponse> collectDispatchStockShortages(
             List<ProductShipmentRequest.ProductShipmentDetailRequest> products) throws BusinessException {
+        return collectDispatchStockLines(products, true);
+    }
+
+    private List<DispatchStockShortageResponse> collectDispatchStockLines(
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> products,
+            boolean onlyShortages) throws BusinessException {
         List<DispatchStockShortageResponse> shortages = new ArrayList<>();
         for (ProductShipmentRequest.ProductShipmentDetailRequest detail : products) {
             BigDecimal stillNeeded = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
@@ -754,11 +774,12 @@ public class ProductDistributionService {
             String sizeLabel = normalizeSize(detail.getSize());
             BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
                     detail.getProductId(), detail.getColorId(), sizeLabel);
-            if (availableTotal.compareTo(stillNeeded) < 0) {
+            boolean hasShortage = availableTotal.compareTo(stillNeeded) < 0;
+            if (hasShortage || !onlyShortages) {
                 ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
                 String productCode = product != null ? product.getCode() : null;
                 String productName = product != null ? product.getName() : "Producto";
-                BigDecimal shortageQty = stillNeeded.subtract(availableTotal);
+                BigDecimal shortageQty = hasShortage ? stillNeeded.subtract(availableTotal) : BigDecimal.ZERO;
                 shortages.add(DispatchStockShortageResponse.builder()
                         .productId(detail.getProductId())
                         .productCode(productCode)
