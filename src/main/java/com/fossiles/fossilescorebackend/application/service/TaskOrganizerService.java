@@ -518,6 +518,39 @@ public class TaskOrganizerService {
     }
 
     /**
+     * Suma un borrador ya validado a una tarea existente: junta las cantidades si el ítem ya
+     * estaba, agrega los ítems nuevos, sube cantidad y horas, y pasa las OP a IN_PROGRESS.
+     */
+    @Transactional
+    public TaskEntity appendDraftToTask(TaskEntity task, TaskDraft draft) {
+        List<TaskItemEntity> existing = taskItemRepository.findByTaskId(task.getId());
+        for (TaskItemEntity added : draft.items()) {
+            TaskItemEntity same = existing.stream()
+                    .filter(e -> Objects.equals(e.getProductionOrderItemId(), added.getProductionOrderItemId()))
+                    .findFirst().orElse(null);
+            if (same != null) {
+                same.setQuantity(same.getQuantity() + added.getQuantity());
+                same.setEstimatedHours(roundHours((same.getEstimatedHours() == null ? 0.0 : same.getEstimatedHours())
+                        + (added.getEstimatedHours() == null ? 0.0 : added.getEstimatedHours())));
+                taskItemRepository.save(same);
+            } else {
+                added.setTaskId(task.getId());
+                taskItemRepository.save(added);
+            }
+        }
+        task.setQuantity((task.getQuantity() == null ? 0 : task.getQuantity()) + draft.totalQuantity());
+        task.setEstimatedHours(roundHours((task.getEstimatedHours() == null ? 0.0 : task.getEstimatedHours())
+                + draft.totalHours()));
+        for (ProductionOrderEntity order : draft.ordersById().values()) {
+            if (order != null && "PENDING".equals(order.getStatus())) {
+                order.setStatus("IN_PROGRESS");
+                productionOrderRepository.save(order);
+            }
+        }
+        return taskRepository.save(task);
+    }
+
+    /**
      * "Limpiar mesas": libera mesa y fecha de todas las tareas PENDING para reorganizar
      * desde cero (arrastrar de nuevo en el tablero). No toca tareas ya iniciadas/terminadas.
      *

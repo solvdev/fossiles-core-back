@@ -84,6 +84,37 @@ public class TaskEntity {
     @Column(name = "actual_duration_minutes")
     private Integer actualDurationMinutes;
 
+    /** Pausada: sigue IN_PROGRESS (las consultas de carga la ven) pero el reloj no corre. */
+    @Column(name = "paused_at")
+    private LocalDateTime pausedAt;
+
+    /** Minutos de trabajo esperados (suma de todas las líneas, OPL incluidas). Se fija al completar. */
+    @Column(name = "expected_minutes")
+    private Integer expectedMinutes;
+
+    /** Minutos trabajados por encima de lo esperado (0 si no pasó). */
+    @Column(name = "delay_minutes")
+    private Integer delayMinutes;
+
+    /** Atrasada: trabajado > esperado + 30 min. Una vez fijada no se revierte, solo se perdona. */
+    @Column(name = "delayed", nullable = false)
+    @Builder.Default
+    private Boolean delayed = false;
+
+    /** Comisionable: false mientras esté atrasada y sin perdonar. Toda la tarea, no por producto. */
+    @Column(name = "commission_eligible", nullable = false)
+    @Builder.Default
+    private Boolean commissionEligible = true;
+
+    @Column(name = "delay_forgiven_by")
+    private Long delayForgivenBy;
+
+    @Column(name = "delay_forgiven_at")
+    private LocalDateTime delayForgivenAt;
+
+    @Column(name = "delay_forgiven_reason", length = 500)
+    private String delayForgivenReason;
+
     @Column(name = "waste_quantity")
     @Builder.Default
     private Integer wasteQuantity = 0;
