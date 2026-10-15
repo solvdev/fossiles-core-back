@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ConfirmReceiptRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.InventoryAdjustmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InventoryTransferRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.PendingShipmentReceiptRequest;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -51,6 +52,7 @@ class ShipmentTransitInventoryTest {
     @Autowired private OnlineSaleItemRepository onlineSaleItemRepository;
     @Autowired private RoleRepository roleRepository;
     @Autowired private UserRepository userRepository;
+    @Autowired private ProductInventoryKardexRepository kardexRepository;
 
     @MockBean private SecurityUtil securityUtil;
 
@@ -266,6 +268,29 @@ class ShipmentTransitInventoryTest {
 
         assertThat(stockAt(cincho, bodegaPt)).isEqualByComparingTo("8");
         assertThat(stockAt(cincho, devoluciones)).isEqualByComparingTo("2");
+    }
+
+    @Test
+    void ajusteDeCinchoDesdeCero_dejaUnMovimientoPorTalla() throws Exception {
+        ProductEntity cincho = productRepository.save(ProductEntity.builder()
+                .code("FOSS-TR-09").name("Cincho FOSS ajuste").requiresMaterials(false).build());
+        seedStock(cincho, bodegaPt, BigDecimal.ZERO);
+
+        inventoryService.createAdjustment(InventoryAdjustmentRequest.builder()
+                .productId(cincho.getId()).locationId(bodegaPt.getId()).colorId(color.getId())
+                .systemStock(BigDecimal.ZERO).physicalStock(BigDecimal.valueOf(5))
+                .systemSizes(java.util.Map.of("32", BigDecimal.ZERO, "34", BigDecimal.ZERO))
+                .physicalSizes(java.util.Map.of("32", BigDecimal.valueOf(2), "34", BigDecimal.valueOf(3)))
+                .reason("Carga manual tras limpieza")
+                .build());
+
+        assertThat(stockAt(cincho, bodegaPt)).isEqualByComparingTo("5");
+        List<ProductInventoryKardex> rows = kardexRepository.findByProductId(cincho.getId());
+        assertThat(rows).extracting(ProductInventoryKardex::getSizeLabel).containsExactlyInAnyOrder("32", "34");
+        assertThat(rows.stream().map(ProductInventoryKardex::getQuantity).reduce(BigDecimal.ZERO, BigDecimal::add))
+                .isEqualByComparingTo("5");
+        assertThat(rows.stream().map(ProductInventoryKardex::getQuantityAfter).max(BigDecimal::compareTo).orElseThrow())
+                .isEqualByComparingTo("5");
     }
 
     // ===== helpers =====

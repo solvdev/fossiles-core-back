@@ -6,37 +6,46 @@ Las consultas están en [`scripts/audit-cuadre-inventario-pt.sql`](../scripts/au
 
 ## Antes de empezar
 
-1. Correr `scripts/migration-inventory-transfer-size-label.sql` en la base de datos **antes** de desplegar el back (sin la columna la aplicación no arranca).
+1. Correr en la base de datos, **antes** de desplegar el back (sin ellas la aplicación no arranca):
+   - `scripts/migration-inventory-transfer-size-label.sql` (talla en traslados)
+   - `scripts/migration-product-kardex-historico.sql` (tabla del kardex histórico)
 2. Desplegar back y front.
-3. Hacer el **corte de inventario** (abajo): las bodegas quedan igual al Excel de respaldo.
-4. La fecha del corte es el valor de `:desde` en las consultas de cuadre.
+3. Hacer la **limpieza de inventario** y la carga manual (abajo).
+4. La fecha de la limpieza es el valor de `:desde` en las consultas de cuadre.
 
-## Corte de inventario (bodegas = Excel de respaldo)
+## Limpieza de inventario y carga manual
 
-Script: [`scripts/corte-inventario-bodega.sql`](../scripts/corte-inventario-bodega.sql). Plantilla del Excel: [`scripts/corte-inventario-plantilla.csv`](../scripts/corte-inventario-plantilla.csv).
+Script: [`scripts/limpieza-inventario-bodega.sql`](../scripts/limpieza-inventario-bodega.sql).
 
-Qué hace: respalda las filas actuales, lleva Bodega PT, Devoluciones y Devoluciones no aptas a 0 y carga lo del Excel. En el kardex queda un movimiento `CORTE_INVENTARIO` por fila (anula la historia anterior, para que ningún recálculo del kardex reviva saldos viejos) y uno `CARGA_INICIAL` por talla. No toca kioskos ni En tránsito. Todo va en una transacción y trae instrucciones para deshacer.
+Qué hace, en las bodegas de la lista (Bodega PT, Devoluciones, Devoluciones no aptas y En tránsito):
+- deja todo el inventario en 0, sin desglose por talla;
+- mueve todos sus movimientos de kardex al **kardex histórico** (el ledger activo queda vacío; la historia se sigue consultando en *Inventario → Kardex histórico PT*);
+- borra sus lotes de costo FIFO.
 
-1. **Preparar el Excel** con columnas `ubicacion, codigo, color, talla, cantidad` (una fila por talla en cinchos; color como está en el sistema) y guardarlo como CSV.
-2. **Congelar bodega** desde el corte hasta terminar: sin envíos, recepciones de producción ni despachos de ventas en línea.
-3. **PASO 0:** poner fecha y referencia del corte, y los códigos reales de las ubicaciones.
-4. **PASO 1:** revisar envíos en camino y ventas preparadas sin despachar. Lo que el sistema ya descontó no debe ir en el Excel.
-5. **PASO 2:** crear la tabla de carga e importar el CSV.
-6. **PASO 3:** todas las validaciones deben dar 0 filas (códigos, colores, cinchos sin talla, cantidades). Corregir el Excel y volver a importar hasta que estén limpias. Revisar que los totales por ubicación (3h) coincidan con el Excel.
-7. **PASO 4:** aplicar. Antes de `COMMIT`, correr el PASO 5.
-8. **PASO 5:** las tres verificaciones deben dar 0 filas. Si algo no cuadra, `ROLLBACK`.
-9. Correr el script de cuadre con `:desde` = fecha del corte: debe salir todo en 0 filas. Esa es la línea base.
+El inventario y los lotes FIFO se copian antes a tablas `limpieza_bk_*`, y el script trae la forma de deshacer. No toca kioskos ni otras ubicaciones. Probado en un PostgreSQL local con datos de prueba (limpieza y deshacer); no se ha corrido contra la base real.
 
-Probado en un PostgreSQL local con datos de prueba (stock descuadrado, cinchos por talla, filas sin kardex y ubicaciones que no se tocan); no se ha corrido contra la base real.
+1. **Cerrar documentos a medio camino.** Sin kardex, el sistema ya no sabe qué descontó cada documento: si se mueven después, descontarían otra vez. El PASO 1 del script los lista y deben quedar en 0 filas:
+   - envíos en camino → que el kiosko los reciba (o anularlos);
+   - ventas en línea preparadas sin despachar → despacharlas o anularlas;
+   - envíos del módulo anterior de distribución en tránsito → recibirlos.
+2. **Congelar bodega** desde la limpieza hasta terminar la carga: sin envíos, recepciones de producción, despachos ni devoluciones.
+3. **PASO 0:** poner la referencia de la limpieza (p. ej. `LIMPIEZA-20261020`, es el nombre con el que se verá en el histórico). Ya trae BODEGA_PT (38) y DEVOLUCION (41); revisar (0b) que en la lista solo haya bodegas.
+4. **PASO 2:** limpiar. **PASO 3:** todo debe salir en 0, y los respaldos y los movimientos en el histórico deben coincidir con el 0b. Entonces `COMMIT` (si algo no está bien, `ROLLBACK`).
+5. **Cargar a mano** lo que hay físicamente: *Inventario → Ajustes de inventario*, ajuste masivo por bodega. Stock del sistema = 0, stock físico = conteo. En cinchos, una línea por talla (el ajuste deja un movimiento por talla en el kardex).
+6. Correr el script de cuadre con `:desde` = fecha de la limpieza: debe salir todo en 0 filas. Esa es la línea base.
+7. Descongelar bodega.
+8. Cuando el inventario nuevo esté revisado, borrar los respaldos: `DROP TABLE limpieza_bk_inventario, limpieza_bk_fifo;` (el kardex histórico se queda).
 
-Para las pruebas conviene usar un producto normal y un cincho (con tallas), con stock conocido en Bodega PT. Anotar el stock antes de cada prueba.
+### Consultar la historia anterior
+
+*Inventario → Kardex histórico PT* muestra los movimientos archivados: filtros por limpieza, ubicación, producto, tipo de movimiento, fechas y documento (envío, venta, OP), con saldo antes/después y exportación a CSV. Es solo consulta: esos movimientos ya no cuentan en los saldos.
 
 ## Ubicaciones
 
 | Ubicación | Qué contiene | ¿Se despacha desde ahí? |
 |---|---|---|
-| Devoluciones (`BODEGA_DEV` / `DEVOLUCIONES`) | Producto devuelto revendible | Sí, primero |
-| Bodega PT (`BODEGA_PT`) | Producción recibida | Sí, después de Devoluciones |
+| Devoluciones (`DEVOLUCION`, id 41) | Producto devuelto revendible | Sí, primero |
+| Bodega PT (`BODEGA_PT`, id 38) | Producción recibida | Sí, después de Devoluciones |
 | En tránsito (`EN_TRANSITO`) | Enviado a kiosko y aún no recibido | No |
 | Devoluciones no aptas (`DEV_NO_APTA`) | Devuelto dañado o usado | No |
 | Kioskos | Stock del kiosko (`kiosco_stock`) | Venta POS |

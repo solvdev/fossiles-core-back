@@ -2464,7 +2464,9 @@ public class InventoryService {
                 productInventoryLocationRepository.save(inventory);
             }
 
-            if (adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) != 0) {
+            if (fossWithSizes) {
+                recordSizedAdjustmentMovements(adjustment, quantityBefore);
+            } else if (adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) != 0) {
                 String movementType = adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) > 0
                         ? "ADJUSTMENT_IN"
                         : "ADJUSTMENT_OUT";
@@ -2484,6 +2486,44 @@ public class InventoryService {
                         adjustment.getReason()
                 );
             }
+        }
+    }
+
+    /**
+     * Cinchos: un movimiento por talla con su diferencia. Con un solo movimiento sin talla, un
+     * recálculo del kardex (Product Ledger Lab) perdería el desglose por talla.
+     */
+    private void recordSizedAdjustmentMovements(InventoryAdjustment adjustment, BigDecimal quantityBefore)
+            throws ResourceNotFoundException {
+        Map<String, BigDecimal> system = ProductInventorySizesJson.parse(adjustment.getSystemSizesData());
+        Map<String, BigDecimal> physical = ProductInventorySizesJson.parse(adjustment.getPhysicalSizesData());
+        java.util.TreeSet<String> sizes = new java.util.TreeSet<>();
+        sizes.addAll(system.keySet());
+        sizes.addAll(physical.keySet());
+        BigDecimal running = quantityBefore;
+        for (String size : sizes) {
+            BigDecimal diff = physical.getOrDefault(size, BigDecimal.ZERO)
+                    .subtract(system.getOrDefault(size, BigDecimal.ZERO));
+            if (diff.compareTo(BigDecimal.ZERO) == 0) {
+                continue;
+            }
+            BigDecimal after = running.add(diff);
+            productInventoryService.recordMovement(
+                    adjustment.getProductId(),
+                    adjustment.getLocationId(),
+                    adjustment.getColorId(),
+                    diff.compareTo(BigDecimal.ZERO) > 0 ? "ADJUSTMENT_IN" : "ADJUSTMENT_OUT",
+                    diff,
+                    running,
+                    after,
+                    null,
+                    "ADJUSTMENT",
+                    adjustment.getId(),
+                    "AJT-" + adjustment.getId(),
+                    adjustment.getReason(),
+                    size,
+                    null);
+            running = after;
         }
     }
 
