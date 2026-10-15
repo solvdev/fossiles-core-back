@@ -26,6 +26,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionShift;
 import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.PessimisticLockingFailureException;
@@ -131,8 +132,8 @@ public class DayPlanService {
 
         Map<String, DayPlanConfirmResponse.Created> createdByClient = new HashMap<>();
         for (Planned p : plan.byPlanOrder) {
-            if (p.notPlaced) {
-                continue; // no cupo en el horizonte: va a «para otro día», no se crea
+            if (p.notPlaced || p.mergedInto != null) {
+                continue; // no cupo en el horizonte (va a «para otro día») u OPL que ya viaja en otra tarea
             }
             TaskEntity task;
             try {
@@ -158,6 +159,11 @@ public class DayPlanService {
         for (Planned p : plan.byRequestOrder) {
             if (p.notPlaced) {
                 notPlaced.add(p.toNotPlaced());
+            } else if (p.mergedInto != null) {
+                DayPlanConfirmResponse.Created host = createdByClient.get(p.mergedInto);
+                created.add(DayPlanConfirmResponse.Created.builder().clientId(p.clientId)
+                        .taskId(host.getTaskId()).code(host.getCode()).scheduledDate(host.getScheduledDate())
+                        .indicativeDesk(host.getIndicativeDesk()).mergedInto(p.mergedInto).build());
             } else {
                 created.add(createdByClient.get(p.clientId));
             }
@@ -265,6 +271,9 @@ public class DayPlanService {
         LocalDate proposedDate;
         LocalDate nextDayCandidate;
         Integer indicativeDesk;
+        /** clientId de la tarea que lleva esta OPL combinada, o null si va aparte. */
+        String mergedInto;
+        final List<String> includes = new ArrayList<>();
 
         double baseHours() {
             return prepared == null ? 0.0 : round2(prepared.baseHours());
@@ -297,6 +306,8 @@ public class DayPlanService {
                     .proposedDate(proposedDate)
                     .nextDayCandidate(nextDayCandidate)
                     .indicativeDesk(indicativeDesk)
+                    .mergedInto(mergedInto)
+                    .includes(List.copyOf(includes))
                     .build();
         }
 
@@ -319,6 +330,8 @@ public class DayPlanService {
         List<DayPlanPreviewResponse.Capacity> capacities = new ArrayList<>();
         Map<Long, Integer> priorityOverrides = new HashMap<>();
         Map<Long, ProductionOrderEntity> orders = new HashMap<>();
+        /** Unidades que ya piden los borradores válidos, por ítem de OP. */
+        Map<Long, Integer> reserved = new HashMap<>();
 
         boolean blocked() {
             return byRequestOrder.stream().anyMatch(p -> p.status == Status.BLOCKED)
@@ -451,8 +464,17 @@ public class DayPlanService {
         Map<LocalDate, Map<Integer, Double>> before = new HashMap<>();
         shown.forEach((d, m) -> before.put(d, new HashMap<>(m)));
         Map<LocalDate, Map<Integer, Double>> added = new HashMap<>();
+        // 1) Tareas base en su día y mesa orientativa.
         for (Planned p : plan.byPlanOrder) {
-            if (p.status != Status.BLOCKED) {
+            if (p.status != Status.BLOCKED && !isOnlineSale(p)) {
+                placeTask(p, firstDay, horizonDays, afterHorizon, data, shown, added);
+            }
+        }
+        // 2) Las OPL (siempre primero en prioridad) se combinan, como primeras líneas, en la tarea
+        //    cuya mesa tenga tiempo libre ese día; 3) las que no caben van como tarea aparte.
+        mergeOplIntoTasks(plan, shown, lockItems);
+        for (Planned p : plan.byPlanOrder) {
+            if (p.status != Status.BLOCKED && isOnlineSale(p) && p.mergedInto == null) {
                 placeTask(p, firstDay, horizonDays, afterHorizon, data, shown, added);
             }
         }
@@ -491,6 +513,83 @@ public class DayPlanService {
                 .build();
     }
 
+    private static boolean isOnlineSale(Planned p) {
+        return p.order != null
+                && ProductionPlanningConstants.isOnlineSaleOrder(p.order.getOrderType(), p.order.getCode());
+    }
+
+    /**
+     * Combina cada OPL (por prioridad) en la primera tarea base, por día y mesa, a cuya mesa le
+     * sobre tiempo: jornada efectiva (9 h) menos lo que ya lleva esa mesa ese día. La OPL pasa a
+     * ser la primera línea de la tarea. Si ninguna tiene tiempo libre, la OPL sigue como tarea
+     * aparte. El tiempo de la OPL no cuenta para el cupo de 4/5 h, pero sí para el tiempo
+     * esperado de la tarea (ver {@link TaskWorkflowService}).
+     */
+    private void mergeOplIntoTasks(Plan plan, Map<LocalDate, Map<Integer, Double>> shown, boolean lockItems) {
+        Map<String, Double> oplHours = new HashMap<>();
+        for (Planned opl : plan.byPlanOrder) {
+            if (opl.status == Status.BLOCKED || opl.prepared == null || !isOnlineSale(opl)
+                    || opl.prepared.totalHours() <= EPS) {
+                continue;
+            }
+            double hours = opl.prepared.totalHours();
+            List<Planned> hosts = plan.byPlanOrder.stream()
+                    .filter(h -> h.status != Status.BLOCKED && h.prepared != null && !isOnlineSale(h)
+                            && !h.notPlaced && h.proposedDate != null && h.indicativeDesk != null)
+                    .filter(h -> opl.draft.getScheduledDate() == null
+                            || opl.draft.getScheduledDate().equals(h.proposedDate))
+                    .sorted(Comparator.comparing((Planned h) -> h.proposedDate)
+                            .thenComparing(h -> h.indicativeDesk).thenComparing(h -> h.index))
+                    .toList();
+            for (Planned host : hosts) {
+                String key = host.proposedDate + "|" + host.indicativeDesk;
+                double free = ProductionShift.EFFECTIVE_HOURS_PER_DAY
+                        - shown.get(host.proposedDate).getOrDefault(host.indicativeDesk, 0.0)
+                        - oplHours.getOrDefault(key, 0.0);
+                if (free + EPS < hours) {
+                    continue;
+                }
+                if (tryMerge(plan, opl, host, lockItems)) {
+                    oplHours.merge(key, hours, Double::sum);
+                    break;
+                }
+            }
+        }
+    }
+
+    private boolean tryMerge(Plan plan, Planned opl, Planned host, boolean lockItems) {
+        Map<Long, Integer> hostQty = host.prepared.quantityByItemId();
+        Map<Long, Integer> oplQty = opl.prepared.quantityByItemId();
+        hostQty.forEach((id, q) -> plan.reserved.merge(id, -q, Integer::sum));
+        oplQty.forEach((id, q) -> plan.reserved.merge(id, -q, Integer::sum));
+        List<CreateManualTaskRequest.ManualTaskItemRequest> items = new ArrayList<>();
+        opl.draft.getItems().stream().filter(Objects::nonNull).forEach(i -> items.add(
+                CreateManualTaskRequest.ManualTaskItemRequest.builder()
+                        .productionOrderItemId(i.getProductionOrderItemId()).quantity(i.getQuantity())
+                        .daySaleExtra(true).build()));
+        host.draft.getItems().stream().filter(Objects::nonNull).forEach(items::add);
+        try {
+            TaskOrganizerService.TaskDraft combined = taskOrganizerService.prepareDraft(
+                    CreateManualTaskRequest.builder()
+                            .productionOrderId(host.draft.getProductionOrderId()).items(items).desk(null)
+                            .scheduledDate(host.draft.getScheduledDate()).observations(host.draft.getObservations())
+                            .build(),
+                    TaskOrganizerService.CreateMode.MANUAL, lockItems, plan.reserved);
+            combined.quantityByItemId().forEach((id, q) -> plan.reserved.merge(id, q, Integer::sum));
+            host.prepared = combined;
+            host.includes.add(opl.clientId);
+            opl.mergedInto = host.clientId;
+            opl.proposedDate = host.proposedDate;
+            opl.indicativeDesk = host.indicativeDesk;
+            opl.messages.add("Se combina en la tarea " + host.clientId + " como primera línea.");
+            return true;
+        } catch (BusinessException | ResourceNotFoundException e) {
+            hostQty.forEach((id, q) -> plan.reserved.merge(id, q, Integer::sum));
+            oplQty.forEach((id, q) -> plan.reserved.merge(id, q, Integer::sum));
+            return false;
+        }
+    }
+
     private static Map<Long, Integer> parsePriorities(Map<String, Integer> raw, Map<Long, ProductionOrderEntity> orders) {
         Map<Long, Integer> out = new HashMap<>();
         if (raw == null) {
@@ -518,7 +617,7 @@ public class DayPlanService {
 
     /** Valida cada borrador con las reglas de la tarea manual, restando lo que piden los anteriores. */
     private void validateDrafts(Plan plan, boolean lockItems) {
-        Map<Long, Integer> reserved = new HashMap<>();
+        Map<Long, Integer> reserved = plan.reserved;
         Map<Long, BigDecimal> reservedLeather = new HashMap<>();
         for (Planned p : plan.byPlanOrder) {
             DayPlanRequest.Draft draft = p.draft;

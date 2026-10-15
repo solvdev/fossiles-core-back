@@ -223,6 +223,65 @@ class DayPlanServiceTest {
     }
 
     @Test
+    @DisplayName("Una OPL que cabe en el tiempo libre de la mesa se combina como primera línea de la tarea")
+    void oplCabeSeCombina() throws Exception {
+        numDesks = 1;
+        kit.opl(3);
+        kit.item(300, 3, 10, 30);
+        // Mesa con 4 h base: quedan 9 - 4 = 5 h de jornada; la OPL de 3 h cabe.
+        DayPlanRequest request = plan(JUEVES, draft("base", 1, line(100, 4)), draft("opl", 3, line(300, 3)));
+
+        DayPlanPreviewResponse preview = service.preview(request);
+        assertThat(task(preview, "opl").getMergedInto()).isEqualTo("base");
+        assertThat(task(preview, "base").getIncludes()).containsExactly("opl");
+        assertThat(task(preview, "base").getBaseHours()).isEqualTo(4.0);
+        assertThat(task(preview, "base").getTotalHours()).isEqualTo(7.0);
+        assertThat(preview.isBlocked()).isFalse();
+
+        DayPlanConfirmResponse response = service.confirm(
+                copyWithFingerprint(request, preview.getPlanFingerprint()));
+        assertThat(kit.savedTasks).hasSize(1);
+        assertThat(response.getCreated()).hasSize(2);
+        assertThat(response.getCreated().get(1).getMergedInto()).isEqualTo("base");
+        assertThat(response.getCreated().get(1).getTaskId()).isEqualTo(response.getCreated().get(0).getTaskId());
+        // La tarea empieza por la OPL y lleva lo demás combinado.
+        assertThat(kit.savedTaskItems).extracting(TaskItemEntity::getProductionOrderItemId)
+                .containsExactly(300L, 100L);
+        assertThat(kit.savedTaskItems.get(0).getDaySaleExtra()).isTrue();
+        assertThat(kit.savedTasks.get(0).getProductionOrderId()).isEqualTo(1L);
+        assertThat(kit.savedTasks.get(0).getEstimatedHours()).isEqualTo(7.0);
+    }
+
+    @Test
+    @DisplayName("Una OPL que no cabe va como tarea aparte; las que caben se combinan por prioridad")
+    void oplQueNoCabeVaAparte() throws Exception {
+        numDesks = 1;
+        kit.opl(3);
+        kit.opl(4);
+        kit.item(300, 3, 10, 30);
+        kit.item(400, 4, 10, 30);
+        // Libre 5 h: la primera OPL (3 h) se combina; a la segunda (3 h) solo le quedan 2 h.
+        DayPlanRequest request = plan(JUEVES, draft("base", 1, line(100, 4)),
+                draft("oplA", 3, line(300, 3)), draft("oplB", 4, line(400, 3)));
+
+        DayPlanPreviewResponse preview = service.preview(request);
+        assertThat(task(preview, "oplA").getMergedInto()).isEqualTo("base");
+        assertThat(task(preview, "oplB").getMergedInto()).isNull();
+        DayPlanConfirmResponse response = service.confirm(
+                copyWithFingerprint(request, preview.getPlanFingerprint()));
+        assertThat(kit.savedTasks).hasSize(2);
+        assertThat(response.getCreated()).hasSize(3);
+
+        // Una OPL grande tampoco cabe en una mesa libre de 5 h.
+        setUp();
+        kit.opl(3);
+        kit.item(300, 3, 10, 30);
+        DayPlanPreviewResponse big = service.preview(plan(JUEVES, draft("base", 1, line(100, 4)),
+                draft("opl", 3, line(300, 6))));
+        assertThat(task(big, "opl").getMergedInto()).isNull();
+    }
+
+    @Test
     @DisplayName("Las prioridades recibidas ordenan el reparto; las de OPL se ignoran")
     void prioridadesOrdenanElReparto() throws Exception {
         numDesks = 1;

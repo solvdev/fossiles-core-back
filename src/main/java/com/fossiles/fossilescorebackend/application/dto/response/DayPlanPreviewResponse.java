@@ -63,6 +63,10 @@ public class DayPlanPreviewResponse {
         private LocalDate nextDayCandidate;
         /** Mesa orientativa; la real la pone el corte. null = ninguna mesa tiene lugar. */
         private Integer indicativeDesk;
+        /** OPL que se combinó en otra tarea: clientId de la tarea que la lleva (no se crea aparte). */
+        private String mergedInto;
+        /** clientId de las OPL que esta tarea lleva combinadas, como primeras líneas. */
+        private List<String> includes;
     }
 
     @Data

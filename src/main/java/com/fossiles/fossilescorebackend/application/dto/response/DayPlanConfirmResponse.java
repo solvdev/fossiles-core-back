@@ -34,5 +34,7 @@ public class DayPlanConfirmResponse {
         private LocalDate scheduledDate;
         /** Mesa orientativa: la tarea queda con mesa NULL hasta marcar el corte. */
         private Integer indicativeDesk;
+        /** Si esta fila era una OPL combinada: el clientId de la tarea que la lleva (mismo taskId). */
+        private String mergedInto;
     }
 }
