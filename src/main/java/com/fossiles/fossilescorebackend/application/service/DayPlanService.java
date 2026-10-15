@@ -114,6 +114,12 @@ public class DayPlanService {
             throw new DayPlanConflictException(DayPlanConflictException.PLAN_BLOCKED,
                     "Hay tareas que no se pueden crear. No se creó ninguna.", blocked, plan.toResponse());
         }
+        // Tope duro del día: nunca se crean más tareas de las que caben (mesas activas × 5 h).
+        List<DayPlanPreviewResponse.Capacity> exceeded = plan.capacityViolations();
+        if (!exceeded.isEmpty()) {
+            throw new DayPlanConflictException(DayPlanConflictException.CAPACITY_EXCEEDED,
+                    capacityMessage(exceeded.get(0)), List.of(), plan.toResponse(), exceeded);
+        }
         boolean accept = Boolean.TRUE.equals(request.getAcceptChanges());
         if (!accept && !request.getPlanFingerprint().equals(plan.fingerprint)) {
             throw new DayPlanConflictException(DayPlanConflictException.PLAN_CHANGED,
@@ -125,6 +131,9 @@ public class DayPlanService {
 
         Map<String, DayPlanConfirmResponse.Created> createdByClient = new HashMap<>();
         for (Planned p : plan.byPlanOrder) {
+            if (p.notPlaced) {
+                continue; // no cupo en el horizonte: va a «para otro día», no se crea
+            }
             TaskEntity task;
             try {
                 // Mesa NULL: la tarea nace sin corte y la mesa real llega al marcarlo.
@@ -147,12 +156,22 @@ public class DayPlanService {
         List<DayPlanConfirmResponse.Created> created = new ArrayList<>();
         List<DayPlanPreviewResponse.NotPlaced> notPlaced = new ArrayList<>();
         for (Planned p : plan.byRequestOrder) {
-            created.add(createdByClient.get(p.clientId));
             if (p.notPlaced) {
                 notPlaced.add(p.toNotPlaced());
+            } else {
+                created.add(createdByClient.get(p.clientId));
             }
         }
-        return DayPlanConfirmResponse.builder().created(created).notPlaced(notPlaced).build();
+        return DayPlanConfirmResponse.builder().created(created).notPlaced(notPlaced)
+                .leftovers(plan.leftovers()).build();
+    }
+
+    private static String capacityMessage(DayPlanPreviewResponse.Capacity c) {
+        return String.format(Locale.ROOT,
+                "El %s hay %d mesas activas (capacidad %.2f h) y ya hay %.2f h planificadas; la propuesta "
+                        + "suma %.2f h y se pasa %.2f h. No se creó ninguna tarea.",
+                c.getDate(), c.getActiveDesks(), c.getTotalHours(), c.getPlannedHours(),
+                c.getRequestedHours(), c.getExcessHours());
     }
 
     // ==================== BLOQUEOS ====================
@@ -297,11 +316,37 @@ public class DayPlanService {
         List<Planned> byRequestOrder = new ArrayList<>();
         List<Planned> byPlanOrder = new ArrayList<>();
         List<DayPlanPreviewResponse.DayLoad> dayLoads = new ArrayList<>();
+        List<DayPlanPreviewResponse.Capacity> capacities = new ArrayList<>();
         Map<Long, Integer> priorityOverrides = new HashMap<>();
         Map<Long, ProductionOrderEntity> orders = new HashMap<>();
 
         boolean blocked() {
-            return byRequestOrder.stream().anyMatch(p -> p.status == Status.BLOCKED);
+            return byRequestOrder.stream().anyMatch(p -> p.status == Status.BLOCKED)
+                    || !capacityViolations().isEmpty();
+        }
+
+        List<DayPlanPreviewResponse.Capacity> capacityViolations() {
+            return capacities.stream().filter(c -> c.getExcessHours() > EPS).toList();
+        }
+
+        /** Una fila por ítem de cada tarea que no cupo en el horizonte. */
+        List<DayPlanPreviewResponse.Leftover> leftovers() {
+            List<DayPlanPreviewResponse.Leftover> out = new ArrayList<>();
+            for (Planned p : byRequestOrder) {
+                if (!p.notPlaced || p.prepared == null) {
+                    continue;
+                }
+                String reason = p.messages.isEmpty() ? "Sin lugar en el horizonte." : p.messages.get(p.messages.size() - 1);
+                for (TaskItemEntity item : p.prepared.items()) {
+                    out.add(DayPlanPreviewResponse.Leftover.builder()
+                            .clientId(p.clientId).productionOrderId(p.draft.getProductionOrderId())
+                            .productionOrderItemId(item.getProductionOrderItemId())
+                            .quantity(item.getQuantity() == null ? 0 : item.getQuantity())
+                            .hours(round2(item.getEstimatedHours() == null ? 0 : item.getEstimatedHours()))
+                            .reason(reason).nextDayCandidate(p.nextDayCandidate).build());
+                }
+            }
+            return out;
         }
 
         List<DayPlanConflictException.Failure> failures(boolean quantityOnly) {
@@ -320,6 +365,9 @@ public class DayPlanService {
                     .tasks(byRequestOrder.stream().map(Planned::toPreview).toList())
                     .dayLoads(dayLoads)
                     .notPlaced(byRequestOrder.stream().filter(p -> p.notPlaced).map(Planned::toNotPlaced).toList())
+                    .capacity(capacities.isEmpty() ? null : capacities.get(0))
+                    .capacities(capacities)
+                    .leftovers(leftovers())
                     .blocked(blocked())
                     .build();
         }
@@ -418,7 +466,29 @@ public class DayPlanService {
                         .build());
             }
         }
+        for (LocalDate day : days) {
+            plan.capacities.add(capacityOf(day, data.get(day).numDesks(), before.get(day),
+                    added.getOrDefault(day, Map.of())));
+        }
         return plan;
+    }
+
+    /** Capacidad del día: mesas activas de esa fecha × 5 h, contra lo planificado y lo que se pide. */
+    private static DayPlanPreviewResponse.Capacity capacityOf(LocalDate day, int desks,
+                                                             Map<Integer, Double> planned, Map<Integer, Double> requested) {
+        double hard = ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP;
+        double total = desks * hard;
+        double plannedHours = planned.values().stream().mapToDouble(Double::doubleValue).sum();
+        double requestedHours = requested.values().stream().mapToDouble(Double::doubleValue).sum();
+        return DayPlanPreviewResponse.Capacity.builder()
+                .date(day).activeDesks(desks)
+                .idealHoursPerDesk(ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY)
+                .hardHoursPerDesk(hard)
+                .plannedHours(round2(plannedHours)).totalHours(round2(total))
+                .remainingHours(round2(Math.max(0, total - plannedHours)))
+                .requestedHours(round2(requestedHours))
+                .excessHours(round2(Math.max(0, plannedHours + requestedHours - total)))
+                .build();
     }
 
     private static Map<Long, Integer> parsePriorities(Map<String, Integer> raw, Map<Long, ProductionOrderEntity> orders) {
@@ -650,7 +720,7 @@ public class DayPlanService {
         p.nextDayCandidate = afterHorizon;
         p.indicativeDesk = null;
         p.warn(String.format(Locale.ROOT, "Ninguna mesa tiene lugar para %.2f h en %d días hábiles; "
-                + "queda para el %s.", hours, horizonDays.size(), afterHorizon));
+                + "no se crea y queda para otro día (desde el %s).", hours, horizonDays.size(), afterHorizon));
     }
 
     private static void commit(Planned p, LocalDate day, int desk, double hours,

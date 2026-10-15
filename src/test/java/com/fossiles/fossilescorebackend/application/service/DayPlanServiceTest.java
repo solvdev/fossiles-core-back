@@ -321,7 +321,94 @@ class DayPlanServiceTest {
         });
         assertThat(task(preview, "t").getIndicativeDesk()).isNull();
         assertThat(task(preview, "t").getStatus()).isEqualTo(Status.WARN);
+        assertThat(preview.getLeftovers()).singleElement()
+                .satisfies(l -> assertThat(l.getQuantity()).isEqualTo(2));
         assertThat(preview.isBlocked()).isFalse();
+    }
+
+    @Test
+    @DisplayName("La capacidad del día son las mesas activas de ESA fecha × 5 h, menos lo ya planificado")
+    void capacidadPorFecha() throws Exception {
+        existing.put(JUEVES, List.of(existingTask(1, "PENDING", 1, JUEVES, 3.0)));
+        when(deskCount.getDay(VIERNES)).thenReturn(DeskCountDayResponse.builder()
+                .effectiveDate(VIERNES).numDesks(4).build());
+
+        DayPlanPreviewResponse preview = service.preview(plan(JUEVES, draft("t", 1, line(100, 2))));
+
+        DayPlanPreviewResponse.Capacity jueves = preview.getCapacity();
+        assertThat(jueves).isSameAs(preview.getCapacities().get(0));
+        assertThat(jueves.getDate()).isEqualTo(JUEVES);
+        assertThat(jueves.getActiveDesks()).isEqualTo(2);
+        assertThat(jueves.getIdealHoursPerDesk()).isEqualTo(4.0);
+        assertThat(jueves.getHardHoursPerDesk()).isEqualTo(5.0);
+        assertThat(jueves.getTotalHours()).isEqualTo(10.0);
+        assertThat(jueves.getPlannedHours()).isEqualTo(3.0);
+        assertThat(jueves.getRemainingHours()).isEqualTo(7.0);
+        assertThat(jueves.getRequestedHours()).isEqualTo(2.0);
+        assertThat(jueves.getExcessHours()).isZero();
+        // Otro día, otras mesas.
+        assertThat(preview.getCapacities()).filteredOn(c -> c.getDate().equals(VIERNES))
+                .singleElement().satisfies(c -> {
+                    assertThat(c.getActiveDesks()).isEqualTo(4);
+                    assertThat(c.getTotalHours()).isEqualTo(20.0);
+                });
+        assertThat(preview.getLeftovers()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Superar mesas × 5 h marca la vista previa como bloqueada y confirmar responde CAPACITY_EXCEEDED")
+    void capacidadExcedida() throws Exception {
+        numDesks = 1;
+        existing.put(JUEVES, List.of(existingTask(1, "PENDING", 1, JUEVES, 4.0)));
+        DayPlanRequest.Draft fixed = draft("t", 1, line(100, 2));
+        fixed.setScheduledDate(JUEVES);
+        DayPlanRequest request = plan(JUEVES, fixed);
+
+        DayPlanPreviewResponse preview = service.preview(request);
+        assertThat(preview.isBlocked()).isTrue();
+        assertThat(preview.getCapacity().getExcessHours()).isEqualTo(1.0);
+
+        assertThatThrownBy(() -> service.confirm(copyWithFingerprint(request, preview.getPlanFingerprint())))
+                .isInstanceOfSatisfying(DayPlanConflictException.class, e -> {
+                    assertThat(e.getCode()).isEqualTo(DayPlanConflictException.CAPACITY_EXCEEDED);
+                    assertThat(e.getCapacity()).singleElement().satisfies(c -> {
+                        assertThat(c.getTotalHours()).isEqualTo(5.0);
+                        assertThat(c.getPlannedHours()).isEqualTo(4.0);
+                        assertThat(c.getExcessHours()).isEqualTo(1.0);
+                    });
+                });
+        verify(kit.taskRepository, never()).save(any());
+
+        // Justo en el tope (4 + 1 = 5 h) sí cabe.
+        DayPlanRequest.Draft exact = draft("t", 1, line(100, 1));
+        exact.setScheduledDate(JUEVES);
+        assertThat(confirmed(plan(JUEVES, exact)).getCreated()).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("Lo que no cabe no se crea: va a leftovers por ítem con su cantidad")
+    void loQueNoCabeNoSeCrea() throws Exception {
+        numDesks = 1;
+        existing.put(JUEVES, List.of(existingTask(1, "PENDING", 1, JUEVES, 4.0)));
+        DayPlanRequest request = plan(JUEVES, draft("cabe", 2, line(200, 2)), draft("sobra", 1, line(100, 3)));
+        request.setHorizonDays(1);
+        request.setOrderPriorities(Map.of("2", 2, "1", 3));
+        // Con 1 día y 1 mesa de 4 h ya llena, ninguna cabe: ambas sobran.
+        DayPlanPreviewResponse preview = service.preview(request);
+        assertThat(preview.getLeftovers()).extracting("clientId").containsExactlyInAnyOrder("cabe", "sobra");
+        assertThat(preview.getLeftovers()).filteredOn(l -> l.getClientId().equals("sobra"))
+                .singleElement().satisfies(l -> {
+                    assertThat(l.getProductionOrderItemId()).isEqualTo(100L);
+                    assertThat(l.getQuantity()).isEqualTo(3);
+                    assertThat(l.getHours()).isEqualTo(3.0);
+                    assertThat(l.getNextDayCandidate()).isEqualTo(VIERNES);
+                });
+
+        DayPlanConfirmResponse response = service.confirm(copyWithFingerprint(request, preview.getPlanFingerprint()));
+        assertThat(response.getCreated()).isEmpty();
+        assertThat(response.getNotPlaced()).hasSize(2);
+        assertThat(response.getLeftovers()).hasSize(2);
+        verify(kit.taskRepository, never()).save(any());
     }
 
     @Test

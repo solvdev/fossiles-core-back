@@ -9,9 +9,9 @@ import java.time.LocalDate;
 import java.util.List;
 
 /**
- * Resultado de confirmar «Armar el día». Todas las tareas de la propuesta quedan creadas, sin
- * mesa y sin corte; {@code notPlaced} lista las que no tuvieron mesa libre en el horizonte
- * (creadas igual, en {@code nextDayCandidate}).
+ * Resultado de confirmar «Armar el día». Las tareas que cupieron quedan creadas, sin mesa y sin
+ * corte; las que no tuvieron lugar en el horizonte NO se crean: van en {@code notPlaced} y sus
+ * ítems en {@code leftovers}.
  */
 @Data
 @Builder
@@ -20,6 +20,8 @@ import java.util.List;
 public class DayPlanConfirmResponse {
     private List<Created> created;
     private List<DayPlanPreviewResponse.NotPlaced> notPlaced;
+    /** Ítems y cantidades que no cupieron: no se crearon, quedan para otro día. */
+    private List<DayPlanPreviewResponse.Leftover> leftovers;
 
     @Data
     @Builder

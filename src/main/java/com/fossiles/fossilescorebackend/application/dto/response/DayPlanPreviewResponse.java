@@ -23,6 +23,15 @@ public class DayPlanPreviewResponse {
     private List<TaskPreview> tasks;
     private List<DayLoad> dayLoads;
     private List<NotPlaced> notPlaced;
+    /** Capacidad del primer día de la propuesta (atajo de {@code capacities[0]}). */
+    private Capacity capacity;
+    /** Capacidad de cada día que toca la propuesta. */
+    private List<Capacity> capacities;
+    /**
+     * Lo que no cupo en el horizonte: no se convierte en tareas ni se crea. Una fila por ítem
+     * con su cantidad, para ofrecerlo otro día.
+     */
+    private List<Leftover> leftovers;
     /** true si alguna tarea es BLOCKED: no se puede confirmar. */
     private boolean blocked;
 
@@ -67,6 +76,45 @@ public class DayPlanPreviewResponse {
         private double currentHours;
         /** Horas que sumarían las tareas de esta propuesta. */
         private double addedHours;
+    }
+
+    /**
+     * Capacidad de un día = mesas activas de esa fecha × 5 h (tope duro; 4 h es lo ideal por mesa).
+     * Las horas son base: las de OPL no cuentan.
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class Capacity {
+        private LocalDate date;
+        private int activeDesks;
+        private double idealHoursPerDesk;
+        private double hardHoursPerDesk;
+        /** Horas ya planificadas ese día (tareas existentes, incluidas las sin mesa). */
+        private double plannedHours;
+        /** activeDesks × hardHoursPerDesk. */
+        private double totalHours;
+        /** totalHours − plannedHours, antes de esta propuesta (mínimo 0). */
+        private double remainingHours;
+        /** Horas base que esta propuesta pone ese día. */
+        private double requestedHours;
+        /** Lo que se pasa de la capacidad: plannedHours + requestedHours − totalHours (mínimo 0). */
+        private double excessHours;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class Leftover {
+        private String clientId;
+        private Long productionOrderId;
+        private Long productionOrderItemId;
+        private int quantity;
+        private double hours;
+        private String reason;
+        private LocalDate nextDayCandidate;
     }
 
     @Data
