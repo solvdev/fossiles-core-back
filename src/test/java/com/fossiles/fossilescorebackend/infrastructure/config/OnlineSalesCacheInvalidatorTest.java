@@ -123,6 +123,26 @@ class OnlineSalesCacheInvalidatorTest {
         return request;
     }
 
+    @Test
+    void laVistaPreviaDeArmarElDiaNoInvalida() throws Exception {
+        String warehouse = OnlineSalesReadCache.key("warehouse-view", "PENDING");
+        cache.warehouse(warehouse, () -> "v1");
+
+        invalidator.afterCompletion(request("POST", "/api/tasks/organizer/day-plan/preview"), response(200), null, null);
+
+        assertThat(cache.warehouse(warehouse, () -> "v2")).isEqualTo("v1");
+    }
+
+    @Test
+    void confirmarArmarElDiaInvalidaBodega() throws Exception {
+        String warehouse = OnlineSalesReadCache.key("warehouse-view", "PENDING");
+        cache.warehouse(warehouse, () -> "v1");
+
+        invalidator.afterCompletion(request("POST", "/api/tasks/organizer/day-plan/confirm"), response(200), null, null);
+
+        assertThat(cache.warehouse(warehouse, () -> "v2")).isEqualTo("v2");
+    }
+
     private static MockHttpServletResponse response(int status) {
         MockHttpServletResponse response = new MockHttpServletResponse();
         response.setStatus(status);

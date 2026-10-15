@@ -30,6 +30,12 @@ public final class ProductionPlanningConstants {
      */
     public static final LocalDate KPI_EFFICIENCY_FROM = LocalDate.of(2026, 9, 14);
 
+    /** Primera prioridad que el usuario puede asignar a mano: 0 y 1 son cupos reservados. */
+    public static final int MIN_MANUAL_SCHEDULING_PRIORITY = 2;
+
+    /** Última prioridad manual: 100 es el valor por defecto de las órdenes sin prioridad propia. */
+    public static final int MAX_MANUAL_SCHEDULING_PRIORITY = 99;
+
     /** Número de mesas por defecto si no hay configuración. */
     public static final int MAX_DESKS = 12;
 
@@ -39,6 +45,12 @@ public final class ProductionPlanningConstants {
     );
 
     private ProductionPlanningConstants() {}
+
+    public static boolean isManualSchedulingPriority(Integer priority) {
+        return priority != null
+                && priority >= MIN_MANUAL_SCHEDULING_PRIORITY
+                && priority <= MAX_MANUAL_SCHEDULING_PRIORITY;
+    }
 
     /** Órdenes que pueden exceder el cupo de la mesa en su día ancla (extra sobre las 4h). */
     public static boolean canOvercapDeskDay(String orderType) {
