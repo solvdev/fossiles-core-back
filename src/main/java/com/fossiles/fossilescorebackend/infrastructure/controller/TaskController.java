@@ -158,21 +158,6 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(task));
     }
 
-    @PostMapping("/auto-plan")
-    public ResponseEntity<ProductionAutoPlanResult> autoPlan(
-            @RequestParam(required = false) Long productionOrderId,
-            @RequestParam(defaultValue = "false") boolean regenerate,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date)
-            throws ResourceNotFoundException, BusinessException {
-        if (regenerate) {
-            return ResponseEntity.ok(productionAutoPlannerService.regenerate(productionOrderId, date));
-        }
-        if (productionOrderId != null) {
-            return ResponseEntity.ok(productionAutoPlannerService.planOrder(productionOrderId, date));
-        }
-        return ResponseEntity.ok(productionAutoPlannerService.planPending(date));
-    }
-
     /**
      * Cola del día: las OPs con prioridad manual (2..99), en su orden. Es la misma prioridad
      * que usa «Planificar» en el Centro y «Distribuir» en el Organizador. Antes la cola vivía
