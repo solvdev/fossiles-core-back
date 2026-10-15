@@ -85,8 +85,11 @@ public class CustomerAccountPortfolioReportService {
                 .collect(Collectors.toSet());
 
         // Una sola lectura del libro (sin joins ni paginación): cada movimiento aparece una vez.
-        Map<Long, List<CustomerAccountEntryEntity>> entriesByCustomer = entryRepository.findAll().stream()
-                .filter(e -> customerIds.contains(e.getCustomerId()))
+        // Solo lo despachado cuenta como cartera (copias para leer; el libro no se toca).
+        Map<Long, List<CustomerAccountEntryEntity>> entriesByCustomer = accountService.visibleEntries(
+                entryRepository.findAll().stream()
+                        .filter(e -> customerIds.contains(e.getCustomerId()))
+                        .toList()).stream()
                 .collect(Collectors.groupingBy(CustomerAccountEntryEntity::getCustomerId));
 
         Map<Long, ProductionOrderEntity> ordersById = loadOrders(entriesByCustomer);
@@ -119,19 +122,21 @@ public class CustomerAccountPortfolioReportService {
             if (matching.isEmpty()) {
                 continue;
             }
-            // Cartera = lo que todavía se debe: los documentos saldados (saldo cero) no se listan y un cliente
-            // sin documentos con saldo no sale. Quitarlos no cambia el saldo neto del cliente.
+            // Cartera = lo que todavía se debe: los documentos saldados (saldo cero) y los que están a favor del
+            // cliente (saldo negativo, abonos a un cargo anulado) no se listan, y un cliente sin documentos con
+            // saldo por cobrar no sale. La conciliación usa todos los documentos, listados o no.
             List<CustomerAccountPortfolioRowResponse> filtered = matching.stream()
                     .filter(CustomerAccountPortfolioReportService::hasBalance)
                     .toList();
             CustomerAccountPortfolioCustomerResponse customerTotals = totalsFor(summary, filtered);
+            CustomerAccountPortfolioCustomerResponse reconTotals = totalsFor(summary, matching);
 
             // Si la búsqueda ocultó documentos, el saldo del cliente ya no es comparable con el del sistema.
             // La conciliación incluye también a los clientes en cero: así un saldo en cero aquí que el sistema
             // todavía muestra como deuda sigue apareciendo como diferencia en vez de esconderse.
             boolean subset = matching.size() != customerRows.size();
             if (!subset) {
-                reconDue = reconDue.add(customerTotals.getBalanceDue());
+                reconDue = reconDue.add(reconTotals.getBalanceDue());
                 BigDecimal due = "OPC".equals(kind) ? summary.getBalanceDueOpc() : summary.getBalanceDueOpv();
                 systemDue = systemDue.add(due != null ? due : ZERO);
             }
@@ -446,9 +451,9 @@ public class CustomerAccountPortfolioReportService {
         private LocalDate lastPaymentDate;
     }
 
-    /** Un documento sigue en cartera mientras su saldo no sea cero (un saldo negativo es crédito a favor). */
+    /** Un documento está en cartera mientras tenga saldo por cobrar; un saldo negativo es crédito a favor y no se lista. */
     private static boolean hasBalance(CustomerAccountPortfolioRowResponse row) {
-        return row.getBalanceDue().abs().compareTo(BALANCE_EPSILON) >= 0;
+        return row.getBalanceDue().compareTo(BALANCE_EPSILON) >= 0;
     }
 
     private static String statusOf(BigDecimal balance, Amounts amounts) {

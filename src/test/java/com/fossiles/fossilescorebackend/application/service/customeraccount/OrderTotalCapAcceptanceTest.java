@@ -2,7 +2,6 @@ package com.fossiles.fossilescorebackend.application.service.customeraccount;
 
 import com.fossiles.fossilescorebackend.application.dto.response.CustomerAccountReceivableSearchResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.LfSalesDocumentResponse;
-import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
@@ -16,14 +15,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import java.math.BigDecimal;
 import java.util.Objects;
 
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.PARTIAL_HAS_NO_CHARGE;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.TYPE_OPV;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Products Q1,500. Existing shipments carry shipping Q75 and Q40, so the cap is Q1,615.
- * The stored charge is the product total Q1,500. A planned partial with no shipment adds nothing.
+ * Products Q1,500 over two dispatched shipments carrying shipping Q75 and Q40 (Q1,615 in all).
+ * Each shipment is charged for what it shipped; a planned partial with no shipment adds nothing.
  */
 class OrderTotalCapAcceptanceTest extends LfReceivablesH2TestBase {
 
@@ -50,32 +47,19 @@ class OrderTotalCapAcceptanceTest extends LfReceivablesH2TestBase {
     }
 
     @Test
-    @DisplayName("Partial charges are rejected and a charge above products plus existing shipping is rejected")
-    void perShipmentChargesAboveOrderTotalAreAccepted() throws Exception {
-        assertThatThrownBy(() -> fx.charge(customer, order, release1, shipment1, "1400.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE);
-        assertThatThrownBy(() -> fx.charge(customer, order, release2, shipment2, "900.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE);
-        assertThatThrownBy(() -> fx.charge(customer, order, null, null, "5000.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessage("El monto supera el total de la orden (Q 1615.00). El cargo se calcula en el servidor.");
+    @DisplayName("Each dispatched shipment gets its own charge for what shipped; shipping goes as an adjustment")
+    void dispatchChargesEachShipmentOnItsOwn() throws Exception {
+        var charge1 = fx.dispatch(shipment1).orElseThrow();
+        var charge2 = fx.dispatch(shipment2).orElseThrow();
 
-        var charge = fx.charge(customer, order, null, null, "1615.00");
-        assertThat(fx.entry(charge.getId()).getAmount()).isEqualByComparingTo("1500.00");
-        assertThat(fx.balance(customer)).isEqualByComparingTo("1500.00");
-        assertThat(fx.activeCharges(customer)).hasSize(1);
-    }
-
-    @Test
-    @DisplayName("An order-level charge above products plus existing shipping is rejected")
-    void orderLevelChargeAboveOrderTotalIsAccepted() throws Exception {
-        assertThatThrownBy(() -> fx.charge(customer, order, null, null, "5000.00"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("supera el total de la orden (Q 1615.00)");
-        assertThat(fx.balance(customer)).isEqualByComparingTo("0");
-        assertThat(fx.activeCharges(customer)).isEmpty();
+        assertThat(charge1.getAmount()).isEqualByComparingTo("1000.00");
+        assertThat(charge2.getAmount()).isEqualByComparingTo("500.00");
+        assertThat(charge1.getProductShipmentId()).isEqualTo(shipment1.getId());
+        assertThat(fx.activeAdjustments(customer))
+                .extracting(adjustment -> adjustment.getAmount().toPlainString())
+                .containsExactlyInAnyOrder("75.00", "40.00");
+        assertThat(fx.balance(customer)).isEqualByComparingTo("1615.00");
+        assertThat(fx.activeCharges(customer)).hasSize(2);
     }
 
     @Test
@@ -95,17 +79,13 @@ class OrderTotalCapAcceptanceTest extends LfReceivablesH2TestBase {
     }
 
     @Test
-    @DisplayName("A planned partial with no shipment has a null estimate and no catalog row")
+    @DisplayName("A planned partial with no shipment has no cartera row, a null estimate in lf-documents and no catalog row")
     void plannedPartialWithoutShipment() throws Exception {
         order.setObservations("__OPV_SHIPPING__:50.00");
         orderRepository.save(order);
 
-        CustomerAccountReceivableSearchResponse plannedRow = fx.receivableRows(customer).stream()
-                .filter(row -> Objects.equals(row.getPartialReleaseId(), plannedRelease.getId()))
-                .filter(row -> row.getProductShipmentId() == null)
-                .findFirst()
-                .orElseThrow();
-        assertThat(plannedRow.getEstimatedTotal()).isNull();
+        assertThat(fx.receivableRows(customer))
+                .noneMatch(row -> Objects.equals(row.getPartialReleaseId(), plannedRelease.getId()));
         assertThat(lfDocument().getPartialReleases())
                 .filteredOn(partial -> Objects.equals(partial.getPartialReleaseId(), plannedRelease.getId()))
                 .singleElement()

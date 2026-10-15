@@ -61,8 +61,11 @@ public class OpvShipmentCatalogService {
 
         Map<Long, CustomerEntity> customersById = customerRepository.findAll().stream()
                 .collect(Collectors.toMap(CustomerEntity::getId, c -> c, (a, b) -> a));
-        Map<Long, List<CustomerAccountEntryEntity>> entriesByCustomer = customerAccountEntryRepository.findAll().stream()
-                .filter(e -> STATUS_ACTIVE.equalsIgnoreCase(e.getStatus()))
+        // Solo lo despachado cuenta en el estado del cargo (misma vista que la cartera).
+        Map<Long, List<CustomerAccountEntryEntity>> entriesByCustomer = customerAccountService.visibleEntries(
+                customerAccountEntryRepository.findAll().stream()
+                        .filter(e -> STATUS_ACTIVE.equalsIgnoreCase(e.getStatus()))
+                        .toList()).stream()
                 .collect(Collectors.groupingBy(CustomerAccountEntryEntity::getCustomerId));
 
         List<OpvShipmentCatalogRowResponse> rows = new ArrayList<>();
@@ -374,7 +377,7 @@ public class OpvShipmentCatalogService {
             Long partialReleaseId,
             Long productShipmentId) {
         String status = customerAccountService.orderChargeStatus(
-                entries == null ? List.of() : entries, productionOrderId);
+                entries == null ? List.of() : entries, productionOrderId, productShipmentId);
         return new ChargeInfo(status, !"NONE".equals(status));
     }
 

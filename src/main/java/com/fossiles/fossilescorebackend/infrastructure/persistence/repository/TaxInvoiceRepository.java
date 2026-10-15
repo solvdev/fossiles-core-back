@@ -14,5 +14,9 @@ public interface TaxInvoiceRepository extends JpaRepository<TaxInvoiceEntity, Lo
 
     List<TaxInvoiceEntity> findBySourceTypeAndSourceIdOrderByIdDesc(String sourceType, Long sourceId);
 
+    /** Facturas de varias fuentes en una sola consulta (listados de ventas en linea). */
+    List<TaxInvoiceEntity> findBySourceTypeAndSourceIdInOrderByIdDesc(
+            String sourceType, java.util.Collection<Long> sourceIds);
+
     boolean existsBySourceTypeAndSourceIdAndStatus(String sourceType, Long sourceId, String status);
 }

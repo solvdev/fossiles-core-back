@@ -9,9 +9,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.DUPLICATE_ORDER_CHARGE;
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.PARTIAL_HAS_NO_CHARGE;
+import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.CHARGE_NEEDS_SHIPMENT;
+import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.ORDER_ALREADY_CHARGED;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.TYPE_OPC;
+import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.chargeRequest;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.creditRequest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -51,16 +52,16 @@ class ChargeVoidAndZeroBalanceAcceptanceTest extends LfReceivablesH2TestBase {
     }
 
     @Test
-    @DisplayName("The paid order still rejects a partial charge and a second order charge")
+    @DisplayName("The paid order rejects a shipment charge and a whole-order charge")
     void paidOrderRejectsAnotherCharge() throws Exception {
         assertThatThrownBy(() -> fx.charge(customer, order, release, shipment, "1968.00"))
                 .isInstanceOf(BusinessException.class)
-                .hasMessage(PARTIAL_HAS_NO_CHARGE)
+                .hasMessage(ORDER_ALREADY_CHARGED)
                 .hasMessageNotContaining("Anúlelo")
                 .hasMessageNotContaining("registrarlo de nuevo");
-        assertThatThrownBy(() -> fx.charge(customer, order, null, null, "1968.00"))
+        assertThatThrownBy(() -> fx.create(customer, chargeRequest(order, null, null, "1968.00")))
                 .isInstanceOf(BusinessException.class)
-                .hasMessage(DUPLICATE_ORDER_CHARGE)
+                .hasMessage(CHARGE_NEEDS_SHIPMENT)
                 .hasMessageNotContaining("Anúlelo")
                 .hasMessageNotContaining("registrarlo de nuevo");
 

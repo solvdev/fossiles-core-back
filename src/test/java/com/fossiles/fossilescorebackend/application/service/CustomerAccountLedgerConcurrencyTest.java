@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerAccountEntryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentDetailEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
@@ -13,6 +14,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.CustomerAccountEntryRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.CustomerRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentDetailRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductShipmentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderPartialReleaseRepository;
@@ -42,8 +44,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Concurrent creates on PostgreSQL. The service lock rejects the duplicate even before phase 2's
- * unique index exists; the index is applied afterwards and checked on its own.
+ * Concurrent creates on PostgreSQL. The service lock rejects the duplicate even before the unique
+ * indexes exist; the shipment index is applied afterwards and checked on its own.
  */
 @SpringBootTest
 @Testcontainers
@@ -68,6 +70,7 @@ class CustomerAccountLedgerConcurrencyTest {
     @Autowired ProductionOrderItemRepository items;
     @Autowired ProductionOrderPartialReleaseRepository releases;
     @Autowired ProductShipmentRepository shipments;
+    @Autowired ProductShipmentDetailRepository shipmentDetails;
     @Autowired ProductRepository products;
     @Autowired CustomerAccountEntryRepository entries;
     @Autowired JdbcTemplate jdbc;
@@ -94,23 +97,33 @@ class CustomerAccountLedgerConcurrencyTest {
                 .label("Parcial 1")
                 .status("RELEASED")
                 .build());
-        products.save(ProductEntity.builder().code("LF-CONC").name("Producto").requiresMaterials(false).build());
+        ProductEntity product = products.save(
+                ProductEntity.builder().code("LF-CONC").name("Producto").requiresMaterials(false).build());
         ProductShipmentEntity shipment = shipments.save(ProductShipmentEntity.builder()
                 .productionOrderId(order.getId())
                 .partialReleaseId(release.getId())
                 .shipmentNumber("ENV-CONC")
                 .status("SENT")
-                .shippingCost(new BigDecimal("15.00"))
+                .build());
+        shipmentDetails.save(ProductShipmentDetailEntity.builder()
+                .shipmentId(shipment.getId())
+                .productId(product.getId())
+                .sizeLabel("")
+                .quantity(BigDecimal.ONE)
+                .unitPrice(new BigDecimal("100.00"))
                 .build());
 
         CustomerAccountEntryRequest charge = request("CHARGE", "100.00");
         charge.setProductionOrderId(order.getId());
+        charge.setProductShipmentId(shipment.getId());
         Outcome charges = race(() -> accounts.createEntry(customer.getId(), charge));
         assertThat(charges.successes).isEqualTo(1);
         assertThat(charges.rejected).isEqualTo(1);
         assertThat(charges.unexpected).isEmpty();
-        assertThat(entries.findNonVoidChargesByProductionOrderId(order.getId())).hasSize(1);
+        assertThat(entries.findNonVoidChargesByProductShipmentId(shipment.getId())).hasSize(1);
 
+        shipment.setShippingCost(new BigDecimal("15.00"));
+        shipments.save(shipment);
         CustomerAccountEntryRequest adjustment = request("CHARGE_ADJUSTMENT", "1.00");
         adjustment.setProductShipmentId(shipment.getId());
         Outcome adjustments = race(() -> accounts.createEntry(customer.getId(), adjustment));
@@ -120,17 +133,18 @@ class CustomerAccountLedgerConcurrencyTest {
         assertThat(entries.findNonVoidAdjustmentsByProductShipmentId(shipment.getId())).hasSize(1);
 
         jdbc.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_cae_one_active_charge_per_order
-                ON customer_account_entry (production_order_id)
-                WHERE entry_type = 'CHARGE' AND status <> 'VOID'
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_cae_one_active_charge_per_shipment
+                ON customer_account_entry (product_shipment_id)
+                WHERE entry_type = 'CHARGE' AND status <> 'VOID' AND product_shipment_id IS NOT NULL
                 """);
         Long customerId = customer.getId();
         Long orderId = order.getId();
+        Long shipmentId = shipment.getId();
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update("""
                 INSERT INTO customer_account_entry
-                    (customer_id, entry_type, entry_date, amount, production_order_id, status)
-                VALUES (?, 'CHARGE', CURRENT_DATE, 100.00, ?, 'ACTIVE')
-                """, customerId, orderId))
+                    (customer_id, entry_type, entry_date, amount, production_order_id, product_shipment_id, status)
+                VALUES (?, 'CHARGE', CURRENT_DATE, 100.00, ?, ?, 'ACTIVE')
+                """, customerId, orderId, shipmentId))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
@@ -207,9 +221,30 @@ class CustomerAccountLedgerConcurrencyTest {
                 .quantity(1)
                 .unitPrice(new BigDecimal(price))
                 .build());
-        CustomerAccountEntryRequest charge = request("CHARGE", price);
-        charge.setProductionOrderId(order.getId());
-        return accounts.createEntry(customer.getId(), charge).getId();
+        // Cargo por orden completa del modelo anterior (la API ya no lo crea) sobre una orden despachada completa.
+        ProductEntity product = products.save(
+                ProductEntity.builder().code("LF-" + code).name("Producto").requiresMaterials(false).build());
+        ProductShipmentEntity shipment = shipments.save(ProductShipmentEntity.builder()
+                .productionOrderId(order.getId())
+                .shipmentNumber("ENV-" + code)
+                .status("SENT")
+                .build());
+        shipmentDetails.save(ProductShipmentDetailEntity.builder()
+                .shipmentId(shipment.getId())
+                .productId(product.getId())
+                .sizeLabel("")
+                .quantity(BigDecimal.ONE)
+                .unitPrice(new BigDecimal(price))
+                .build());
+        return entries.save(CustomerAccountEntryEntity.builder()
+                .customerId(customer.getId())
+                .entryType("CHARGE")
+                .status("ACTIVE")
+                .entryDate(LocalDate.of(2026, 9, 1))
+                .amount(new BigDecimal(price))
+                .productionOrderId(order.getId())
+                .orderKind("OPV")
+                .build()).getId();
     }
 
     private static CustomerAccountEntryRequest payment(Long chargeId, String amount) {

@@ -134,6 +134,7 @@ public class KioskPosService {
     );
     static final String DEPOSIT_BANK_GT_CONTINENTAL = "GT_CONTINENTAL";
     static final String DEPOSIT_BANK_INDUSTRIAL = "INDUSTRIAL";
+    static final String DEPOSIT_BANK_BANRURAL = "BANRURAL";
 
     private final SecurityUtil securityUtil;
     private final UserRepository userRepository;
@@ -471,7 +472,8 @@ public class KioskPosService {
                     quantity,
                     unitPrice,
                     lineTotal,
-                    finalUnitPrice
+                    finalUnitPrice,
+                    hardware
             ));
             subtotal = subtotal.add(lineTotal);
             totalItems = totalItems.add(quantity);
@@ -520,6 +522,8 @@ public class KioskPosService {
         );
 
         String saleNumber = generateSaleNumber(saleDate);
+        // Entrecueros sin factura: la venta queda con fel_status SKIPPED y su inventario sale como Sal., no Vtas.
+        boolean saleWithoutInvoice = entrecueros && !Boolean.TRUE.equals(request.getRequestInvoice());
 
         KioskSaleEntity sale = KioskSaleEntity.builder()
                 .saleNumber(saleNumber)
@@ -601,7 +605,7 @@ public class KioskPosService {
                 .totalItems(totalItems)
                 .testSale(isPosTestSale(kiosk))
                 .cashSessionId(openSession.getId())
-                .felStatus(entrecueros && !Boolean.TRUE.equals(request.getRequestInvoice()) ? "SKIPPED" : null)
+                .felStatus(saleWithoutInvoice ? "SKIPPED" : null)
                 .shippingSheetNumber(shippingSheetNumber)
                 .createdBy(user.getId())
                 .items(new ArrayList<>())
@@ -619,6 +623,7 @@ public class KioskPosService {
                     .productName(displayName)
                     .colorId(line.color() != null ? line.color().getId() : null)
                     .colorName(line.color() != null ? line.color().getName() : "")
+                    .hardwareCondition(line.hardware())
                     .quantity(line.quantity())
                     .unitPrice(line.unitPrice())
                     .lineTotal(line.lineTotal())
@@ -644,7 +649,8 @@ public class KioskPosService {
                     saved.getId(),
                     user.getId(),
                     parsed.size(),
-                    parsed.hardwareCondition()
+                    parsed.hardwareCondition(),
+                    saleWithoutInvoice ? KioscoInventoryService.ventaSinFacturaReason(saved.getSaleNumber()) : null
             );
         }
 
@@ -733,7 +739,8 @@ public class KioskPosService {
                     quantity,
                     unitPrice,
                     lineTotal,
-                    false
+                    false,
+                    null
             ));
             subtotal = subtotal.add(lineTotal);
             totalItems = totalItems.add(quantity);
@@ -812,6 +819,7 @@ public class KioskPosService {
                     .productName(displayName)
                     .colorId(line.color() != null ? line.color().getId() : null)
                     .colorName(line.color() != null ? line.color().getName() : "")
+                    .hardwareCondition(line.hardware())
                     .quantity(line.quantity())
                     .unitPrice(line.unitPrice())
                     .lineTotal(line.lineTotal())
@@ -1178,23 +1186,38 @@ public class KioskPosService {
             }
         }
 
+        // Se anula por producto/color/talla en UNA sola llamada: el inventario reparte la cantidad entre los
+        // stocks (marcas) de los que salió la venta y la anulación es idempotente por esa línea de producto.
+        Map<VoidStockKey, VoidStockLine> qtyToVoid = new LinkedHashMap<>();
         List<KioskSaleItemEntity> saleItems = sale.getItems() != null ? sale.getItems() : List.of();
         for (KioskSaleItemEntity item : saleItems) {
-                if (item.getProductId() == null || item.getQuantity() == null) {
-                    continue;
-                }
-                String sizeKey = extractSizeFromSaleItemName(item.getProductName());
-                // Solo kiosco_stock: la anulación no toca inventario legacy.
-                kioscoInventoryService.anularFacturaDesdeIntegracion(
-                        sale.getId(),
-                        kiosk.getId(),
-                        item.getProductId(),
-                        item.getColorId(),
-                        item.getQuantity(),
-                        request.getReason(),
-                        user.getId(),
-                        sizeKey
-                );
+            if (item.getProductId() == null || item.getQuantity() == null) {
+                continue;
+            }
+            VoidStockKey key = new VoidStockKey(
+                    item.getProductId(), item.getColorId(), extractSizeFromSaleItemName(item.getProductName()));
+            qtyToVoid.merge(
+                    key,
+                    new VoidStockLine(item.getQuantity(), item.getHardwareCondition()),
+                    (a, b) -> new VoidStockLine(
+                            a.quantity().add(b.quantity()),
+                            a.hardwareCondition() != null ? a.hardwareCondition() : b.hardwareCondition()));
+        }
+        for (Map.Entry<VoidStockKey, VoidStockLine> entry : qtyToVoid.entrySet()) {
+            VoidStockKey key = entry.getKey();
+            // Solo kiosco_stock: la anulación no toca inventario legacy. La marca de la línea solo se usa si
+            // no hay movimiento de venta del cual tomar el stock.
+            kioscoInventoryService.anularFacturaDesdeIntegracion(
+                    sale.getId(),
+                    kiosk.getId(),
+                    key.productId(),
+                    key.colorId(),
+                    entry.getValue().quantity(),
+                    request.getReason(),
+                    user.getId(),
+                    key.sizeKey(),
+                    entry.getValue().hardwareCondition()
+            );
         }
 
         sale.setStatus(SALE_STATUS_VOID);
@@ -1214,7 +1237,7 @@ public class KioskPosService {
         String depositBank = normalizeDepositBankCode(request.getDepositBank());
         if (depositBank == null) {
             throw new BusinessException(
-                    "Debes indicar el banco del depósito (Banco G&T Continental o Banco Industrial).");
+                    "Debes indicar el banco del depósito (Banco G&T Continental, Banco Industrial o BANRURAL).");
         }
         UserEntity user = getCurrentUserOrThrow();
         boolean admin = KioskAccessHelper.hasAllKiosksAccess(user);
@@ -2689,7 +2712,8 @@ public class KioskPosService {
                     quantity,
                     unitPrice,
                     lineTotal,
-                    false
+                    false,
+                    hardware
             ));
         }
         return preparedLines;
@@ -3642,6 +3666,10 @@ public class KioskPosService {
                         .colorId(row.getColorId())
                         .colorName(row.getColorName())
                         .categoryName(categoryNameByProductId.get(row.getProductId()))
+                        .hardwareCondition(row.getHardwareCondition())
+                        .hardwareLabel(row.getHardwareCondition() != null && !row.getHardwareCondition().isBlank()
+                                ? ProductHardwareCondition.label(row.getHardwareCondition())
+                                : null)
                         .quantity(row.getQuantity())
                         .unitPrice(row.getUnitPrice())
                         .lineTotal(row.getLineTotal())
@@ -5147,6 +5175,10 @@ public class KioskPosService {
                 || "BI".equals(normalized)) {
             return DEPOSIT_BANK_INDUSTRIAL;
         }
+        if (DEPOSIT_BANK_BANRURAL.equals(normalized)
+                || "BANCO_BANRURAL".equals(normalized)) {
+            return DEPOSIT_BANK_BANRURAL;
+        }
         return null;
     }
 
@@ -5155,6 +5187,10 @@ public class KioskPosService {
         if (DEPOSIT_BANK_INDUSTRIAL.equals(code)) {
             String name = safeTrim(depositReportProperties.getIndustrialBankName());
             return name.isBlank() ? "Banco Industrial" : name;
+        }
+        if (DEPOSIT_BANK_BANRURAL.equals(code)) {
+            String name = safeTrim(depositReportProperties.getBanruralBankName());
+            return name.isBlank() ? "BANRURAL" : name;
         }
         String name = safeTrim(depositReportProperties.getBankName());
         return name.isBlank() ? "Banco G&T Continental" : name;
@@ -5165,12 +5201,21 @@ public class KioskPosService {
         if (DEPOSIT_BANK_INDUSTRIAL.equals(code)) {
             return safeTrim(depositReportProperties.getIndustrialBankAccount());
         }
+        if (DEPOSIT_BANK_BANRURAL.equals(code)) {
+            return safeTrim(depositReportProperties.getBanruralBankAccount());
+        }
         return safeTrim(depositReportProperties.getBankAccount());
     }
 
     private String safeTrim(String value) {
         return value == null ? "" : value.trim();
     }
+
+    /** Línea de producto a devolver al anular una venta: producto, color y talla. */
+    private record VoidStockKey(Long productId, Long colorId, String sizeKey) {}
+
+    /** Cantidad a devolver y marca de respaldo (la de la línea de venta) si no hay movimiento de venta. */
+    private record VoidStockLine(BigDecimal quantity, String hardwareCondition) {}
 
     record DiscountResolution(
             BigDecimal discountAmount,
@@ -5192,7 +5237,9 @@ public class KioskPosService {
             BigDecimal unitPrice,
             BigDecimal lineTotal,
             /** Precio editado (Miraflores): no recibe descuento POS/promo sobre esa línea. */
-            boolean finalUnitPrice
+            boolean finalUnitPrice,
+            /** Dimensión de stock de la línea (marca, NINO/DAMA, NUEVO/VIEJO); null al restaurar ventas. */
+            String hardware
     ) {}
 
     record PaymentSnapshot(

@@ -27,6 +27,10 @@ public class OnlineSaleReturnEntity {
     @Column(name = "related_shipment_number", length = 50)
     private String relatedShipmentNumber;
 
+    /** ENVL del envío de cambio (nuevo o existente) al que quedó asignado este cambio. */
+    @Column(name = "exchange_shipment_number", length = 50)
+    private String exchangeShipmentNumber;
+
     @Column(name = "return_reason", length = 500)
     private String returnReason;
 

@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.service.OnlineSalesReadCache;
 import com.fossiles.fossilescorebackend.application.dto.request.ColorBatchRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ColorRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.ColorResponse;
@@ -21,12 +22,13 @@ import java.util.stream.Collectors;
 public class ColorController {
 
     private final ColorRepository colorRepository;
+    private final OnlineSalesReadCache readCache;
 
     @GetMapping
     public ResponseEntity<List<ColorResponse>> getAll() {
-        List<ColorResponse> colors = colorRepository.findAll().stream()
+        List<ColorResponse> colors = readCache.catalog("colors", () -> colorRepository.findAll().stream()
                 .map(this::toResponse)
-                .collect(Collectors.toList());
+                .collect(Collectors.toList()));
         return ResponseEntity.ok(colors);
     }
 

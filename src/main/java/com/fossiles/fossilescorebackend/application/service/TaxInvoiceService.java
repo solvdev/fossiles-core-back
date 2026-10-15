@@ -75,6 +75,7 @@ public class TaxInvoiceService {
     private final SecurityUtil securityUtil;
     private final TaxInvoiceAttemptService taxInvoiceAttemptService;
     private final TaxInvoiceAccessGuard taxInvoiceAccessGuard;
+    private final KioscoSaleExitReclassifier kioscoSaleExitReclassifier;
 
     @Transactional
     public TaxInvoiceResponse issueFromKioskSale(KioskSaleEntity sale, boolean requestInvoice)
@@ -1401,6 +1402,8 @@ public class TaxInvoiceService {
             sale.setFelNumero(invoice.getFelNumero());
             sale.setFelError(null);
             sale.setFelCertifiedAt(invoice.getFelCertifiedAt());
+            // Una venta que quedó sin factura (salida) y luego se factura vuelve a ser venta en el inventario.
+            restoreSaleMovementsQuietly(sale);
         } else if ("DRAFT".equals(invoice.getStatus())) {
             clearKioskSaleFelFields(sale);
         } else if ("VOID".equals(invoice.getStatus())) {
@@ -1414,6 +1417,16 @@ public class TaxInvoiceService {
             sale.setFelError(null);
         } else {
             sale.setFelError(invoice.getFelError());
+        }
+    }
+
+    /** La factura ya está certificada: un fallo al reclasificar el inventario no debe deshacer esa certificación. */
+    private void restoreSaleMovementsQuietly(KioskSaleEntity sale) {
+        try {
+            kioscoSaleExitReclassifier.restoreAsSale(sale.getKioskLocationId(), sale.getId());
+        } catch (Exception ex) {
+            log.error("No se pudo devolver a VENTA el inventario de la venta POS {} ya facturada: {}",
+                    sale.getId(), ex.getMessage(), ex);
         }
     }
 

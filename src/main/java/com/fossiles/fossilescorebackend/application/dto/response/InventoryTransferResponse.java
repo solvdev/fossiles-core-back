@@ -28,6 +28,7 @@ public class InventoryTransferResponse {
     private String productName;
     private Long colorId;
     private String colorName;
+    private String sizeLabel;
     private BigDecimal quantity;
     private String reason;
     private String physicalSlipNumber;
