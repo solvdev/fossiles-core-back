@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.CreateManualTaskRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.TaskBoardResponse;
 import com.fossiles.fossilescorebackend.application.dto.request.PlanWindowRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DistributionQueueProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialsCinchoOrderResponse;
@@ -251,12 +252,11 @@ public class TaskController {
      * (aunque la fecha sea hoy), para retomarlas y reprogramarlas.
      */
     @GetMapping("/organizer/backlog")
-    public ResponseEntity<List<TaskResponse>> getPendingBacklog() {
-        LocalDate today = GuatemalaDateTime.today();
-        List<TaskResponse> tasks = taskRepository.findPendingBacklog(today).stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
-        return ResponseEntity.ok(tasks);
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<TaskResponse>> getPendingBacklog(
+            @RequestParam(name = "page", required = false) Integer page,
+            @RequestParam(name = "size", required = false) Integer size) {
+        return pagedResponse(taskRepository.findPendingBacklog(GuatemalaDateTime.today()), page, size);
     }
 
     /**
@@ -277,20 +277,102 @@ public class TaskController {
      * que el front no necesita un formato nuevo.
      */
     @GetMapping("/organizer/die-cut-pending")
-    public ResponseEntity<List<TaskResponse>> getDieCutPending() {
-        List<TaskResponse> tasks = taskRepository.findPendingWithUncutItems().stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
-        return ResponseEntity.ok(tasks);
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<TaskResponse>> getDieCutPending(
+            @RequestParam(name = "page", required = false) Integer page,
+            @RequestParam(name = "size", required = false) Integer size) {
+        return pagedResponse(taskRepository.findPendingWithUncutItems(), page, size);
     }
 
     @GetMapping("/organizer/unfinished")
-    public ResponseEntity<List<TaskResponse>> getUnfinishedCarryOver() {
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<TaskResponse>> getUnfinishedCarryOver(
+            @RequestParam(name = "page", required = false) Integer page,
+            @RequestParam(name = "size", required = false) Integer size) {
+        return pagedResponse(taskRepository.findUnfinishedCarryOver(GuatemalaDateTime.today()), page, size);
+    }
+
+    /**
+     * Respuesta de lista con los ítems cargados en lote (antes eran una consulta por tarea).
+     * Sin {@code size} devuelve todo, igual que antes; con {@code size} recorta ANTES de cargar
+     * los ítems y deja el total en {@code X-Total-Count}.
+     */
+    private ResponseEntity<List<TaskResponse>> pagedResponse(List<TaskEntity> all, Integer page, Integer size) {
+        List<TaskEntity> slice = all;
+        if (size != null && size > 0) {
+            int pageSize = Math.min(size, 500);
+            int from = (int) Math.min((long) Math.max(page == null ? 0 : page, 0) * pageSize, all.size());
+            slice = all.subList(from, Math.min(from + pageSize, all.size()));
+        }
+        return ResponseEntity.ok()
+                .header("X-Total-Count", String.valueOf(all.size()))
+                .body(toResponses(slice));
+    }
+
+    /**
+     * Tablero de un día, liviano: una consulta de tareas activas (ese día, más las activas sin
+     * mesa), sus ítems en lote y tres conteos. No recorre órdenes de producción ni trae las
+     * tareas cerradas. Las tareas y líneas de cinchos se excluyen aquí, con la misma regla que el
+     * front usa en {@code buildTableCenterTasks}, así que el front no necesita la lista de OPs.
+     */
+    @GetMapping("/board")
+    @Transactional(readOnly = true)
+    public ResponseEntity<TaskBoardResponse> getBoard(
+            @RequestParam(name = "date", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        LocalDate day = date != null ? date : GuatemalaDateTime.today();
         LocalDate today = GuatemalaDateTime.today();
-        List<TaskResponse> tasks = taskRepository.findUnfinishedCarryOver(today).stream()
-                .map(this::toResponse)
+        List<TaskResponse> tasks = toResponses(taskRepository.findBoardTasks(day)).stream()
+                .map(TaskController::withoutCinchoLines)
+                .filter(Objects::nonNull)
                 .collect(Collectors.toList());
-        return ResponseEntity.ok(tasks);
+        return ResponseEntity.ok(TaskBoardResponse.builder()
+                .date(day)
+                .tasks(tasks)
+                .counts(TaskBoardResponse.Counts.builder()
+                        .dieCutPending(taskRepository.countPendingWithUncutItems())
+                        .backlog(taskRepository.countPendingBacklog(today))
+                        .unfinished(taskRepository.countUnfinishedCarryOver(today))
+                        .build())
+                .build());
+    }
+
+    private static boolean isMesaCinchosLine(String productCode, String productName) {
+        return CinchoProductUtils.isMesaCinchosLineForProduction(
+                ProductEntity.builder().code(productCode).name(productName).build());
+    }
+
+    /**
+     * Misma regla que {@code taskForTableCenterView} del front: fuera las tareas OPC y las que
+     * solo tienen líneas de cinchos/pulseras; a las mixtas se les quitan esas líneas y se
+     * recalculan cantidad y horas. {@code null} = la tarea no va en el tablero.
+     */
+    static TaskResponse withoutCinchoLines(TaskResponse task) {
+        if (task == null) {
+            return null;
+        }
+        String code = task.getProductionOrderCode() == null ? "" : task.getProductionOrderCode().trim().toUpperCase(Locale.ROOT);
+        if (code.matches("^OPC[FM]?-.*")) {
+            return null;
+        }
+        List<TaskResponse.TaskItemDTO> items = task.getItems();
+        if (items == null || items.isEmpty()) {
+            return isMesaCinchosLine(task.getProductCode(), task.getProductName()) ? null : task;
+        }
+        List<TaskResponse.TaskItemDTO> kept = items.stream()
+                .filter(i -> !isMesaCinchosLine(i.getProductCode(), i.getProductName()))
+                .collect(Collectors.toList());
+        if (kept.isEmpty()) {
+            return null;
+        }
+        if (kept.size() == items.size()) {
+            return task;
+        }
+        task.setItems(kept);
+        task.setQuantity(kept.stream().mapToInt(i -> i.getQuantity() == null ? 0 : i.getQuantity()).sum());
+        task.setEstimatedHours(Math.round(kept.stream()
+                .mapToDouble(i -> i.getEstimatedHours() == null ? 0.0 : i.getEstimatedHours()).sum() * 100.0) / 100.0);
+        return task;
     }
 
     /**
