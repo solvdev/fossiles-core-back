@@ -25,7 +25,7 @@ Qué hace, en las bodegas de la lista (Bodega PT, Devoluciones, Devoluciones no 
 El inventario y los lotes FIFO se copian antes a tablas `limpieza_bk_*`, y el script trae la forma de deshacer. No toca kioskos ni otras ubicaciones. Probado en un PostgreSQL local con datos de prueba (limpieza y deshacer); no se ha corrido contra la base real.
 
 1. **Cerrar documentos a medio camino.** Sin kardex, el sistema ya no sabe qué descontó cada documento: si se mueven después, descontarían otra vez. El PASO 1 del script los lista y deben quedar en 0 filas:
-   - envíos en camino → que el kiosko los reciba (o anularlos);
+   - envíos a kiosko en camino → que el kiosko los reciba (ENVP, ENVI y ENVL terminan en enviado: no hay que hacer nada con ellos, solo no anularlos ni editarlos después);
    - ventas en línea preparadas sin despachar → despacharlas o anularlas;
    - envíos del módulo anterior de distribución en tránsito → recibirlos.
 2. **Congelar bodega** desde la limpieza hasta terminar la carga: sin envíos, recepciones de producción, despachos ni devoluciones.

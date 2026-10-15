@@ -14,15 +14,19 @@ import java.util.List;
 @Repository
 public interface ProductInventoryKardexHistoricoRepository extends JpaRepository<ProductInventoryKardexHistorico, Long> {
 
+    /**
+     * Los filtros de texto vacíos ('') significan "sin filtro". No se usa null: PostgreSQL tipa un
+     * parámetro de texto nulo como bytea y LOWER/LIKE fallan.
+     */
     @Query("""
         SELECT h FROM ProductInventoryKardexHistorico h
         WHERE (:locationId IS NULL OR h.locationId = :locationId)
           AND (:productId IS NULL OR h.productId = :productId)
-          AND (:movementType IS NULL OR h.movementType = :movementType)
-          AND (:archiveReference IS NULL OR h.archiveReference = :archiveReference)
+          AND (:movementType = '' OR h.movementType = :movementType)
+          AND (:archiveReference = '' OR h.archiveReference = :archiveReference)
           AND (CAST(:from AS timestamp) IS NULL OR h.movementDate >= :from)
           AND (CAST(:to AS timestamp) IS NULL OR h.movementDate < :to)
-          AND (:reference IS NULL OR LOWER(h.referenceNumber) LIKE LOWER(CONCAT('%', :reference, '%')))
+          AND (:referencePattern = '' OR LOWER(h.referenceNumber) LIKE :referencePattern)
         """)
     Page<ProductInventoryKardexHistorico> search(
             @Param("locationId") Long locationId,
@@ -31,7 +35,7 @@ public interface ProductInventoryKardexHistoricoRepository extends JpaRepository
             @Param("archiveReference") String archiveReference,
             @Param("from") LocalDateTime from,
             @Param("to") LocalDateTime to,
-            @Param("reference") String reference,
+            @Param("referencePattern") String referencePattern,
             Pageable pageable);
 
     /** Limpiezas archivadas: referencia, fecha y cantidad de movimientos. */
