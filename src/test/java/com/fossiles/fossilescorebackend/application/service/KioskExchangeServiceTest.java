@@ -392,6 +392,9 @@ class KioskExchangeServiceTest {
         assertThat(result.getSale()).isNull();
         assertThat(currentStock(originalProduct.getId())).isEqualTo(4);
         assertThat(kioscoMovementRepository.findByPhysicalSlipNumber("BC-ZERO-001")).isEmpty();
+        // Pista de stock para quien autoriza: 4 en kiosko + 1 que ingresa en la misma boleta.
+        assertThat(result.getSlip().getGivenItems()).hasSize(1);
+        assertThat(result.getSlip().getGivenItems().get(0).getAvailableStock()).isEqualByComparingTo("5");
     }
 
     @Test

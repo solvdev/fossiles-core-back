@@ -53,5 +53,10 @@ public class KioskExchangePreviewResponse {
         private BigDecimal quantity;
         private BigDecimal unitPrice;
         private BigDecimal lineTotal;
+        /**
+         * Stock disponible en el kiosko para entregar esta línea (incluye lo que ingresa en la misma boleta).
+         * Solo se informa en boletas pendientes de autorización; null en el resto.
+         */
+        private BigDecimal availableStock;
     }
 }
