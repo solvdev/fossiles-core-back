@@ -1360,8 +1360,31 @@ public class ProductDistributionService {
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findById(shipmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
-        shipment.setPackingItems(serializePackingItems(packingItems));
+        shipment.setPackingItems(serializePackingItems(zeroPackingPricesForLuisFelipe(shipment, packingItems)));
         return toShipmentResponse(shipmentRepository.save(shipment));
+    }
+
+    /** OPV/OPC de Luis Felipe: el empaque no se cobra, el envío no debe guardar precio de empaque. */
+    private List<ProductShipmentRequest.PackingItemRequest> zeroPackingPricesForLuisFelipe(
+            ProductShipmentEntity shipment,
+            List<ProductShipmentRequest.PackingItemRequest> packingItems) {
+        if (packingItems == null || shipment.getProductionOrderId() == null) {
+            return packingItems;
+        }
+        boolean luisFelipe = productionOrderRepository.findById(shipment.getProductionOrderId())
+                .map(this::isLuisFelipeVendorOrder)
+                .orElse(false);
+        if (!luisFelipe) {
+            return packingItems;
+        }
+        return packingItems.stream()
+                .filter(Objects::nonNull)
+                .map(item -> ProductShipmentRequest.PackingItemRequest.builder()
+                        .materialId(item.getMaterialId())
+                        .quantity(item.getQuantity())
+                        .unitPrice(BigDecimal.ZERO)
+                        .build())
+                .collect(Collectors.toList());
     }
 
     /**
