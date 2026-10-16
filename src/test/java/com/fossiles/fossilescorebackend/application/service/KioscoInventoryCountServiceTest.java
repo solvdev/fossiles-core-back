@@ -1094,59 +1094,49 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
-    void buildReport_segundoConteo_iniEsFinDelConteoCerrado_gapVaAEntradas() throws Exception {
-        long stockId = 913L;
+    void buildReport_segundoConteo_ventaEnElHuecoEntreConteosBajaElFin() throws Exception {
         long previousCountId = 100L;
         LocalDate previousFrom = LocalDate.of(2026, 5, 1);
         LocalDate previousTo = LocalDate.of(2026, 5, 31);
-        LocalDateTime openingCutoff = previousTo.plusDays(1).atStartOfDay();
+        // El conteo nuevo arranca a mediodía; la venta de las 10:31 cae en el hueco entre ambos conteos.
+        LocalDateTime currentFromAt = LocalDateTime.of(2026, 6, 1, 12, 0);
+        LocalDateTime previousFromAt = previousFrom.atStartOfDay();
+        LocalDateTime afterPrevious = previousTo.atTime(23, 59, 59).plusSeconds(1);
+        LocalDateTime currentToExclusive = to.atTime(23, 59, 59).plusSeconds(1);
 
-        KioscoPhysicalCountEntity previousClosed = KioscoPhysicalCountEntity.builder()
+        KioscoPhysicalCountEntity previous = KioscoPhysicalCountEntity.builder()
                 .id(previousCountId)
                 .locationId(locationId)
                 .periodFrom(previousFrom)
                 .periodTo(previousTo)
-                .status(KioscoPhysicalCountStatus.CERRADO)
+                .status(KioscoPhysicalCountStatus.CONTADO)
                 .build();
-
         when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 eq(locationId), eq(from), eq(countId)))
-                .thenReturn(Optional.of(previousClosed));
-        // Al reconstruir el conteo cerrado previo no hay otro conteo anterior.
+                .thenReturn(Optional.of(previous));
         when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 eq(locationId), eq(previousFrom), eq(previousCountId)))
                 .thenReturn(Optional.empty());
 
-        // Fin. del conteo cerrado = Ini 0 + Ent 1 = 1 (aunque el ledger floored diga otra cosa).
+        // Conteo previo: Ini 0 + Ent 1 = Fin 1.
         when(kioscoInventoryService.buildKardexRows(
-                eq(locationId), eq(previousFrom), eq(previousTo), eq(true), eq(previousTo), eq(previousCountId)))
-                .thenReturn(List.of(
-                        KioscoKardexReportResponse.KioscoKardexRow.builder()
-                                .productId(productId).productCode("BD-8").productName("Bolso Perla")
-                                .colorId(colorId).colorName("Salmon Acabado Flores")
-                                .entradas(1)
-                                .build()
-                ));
-        when(kioscoInventoryService.buildKardexByStockAndSize(
-                eq(locationId), eq(previousFrom), eq(previousTo), eq(previousCountId)))
-                .thenReturn(Map.of());
+                eq(locationId), eq(previousFromAt), eq(afterPrevious), eq(true), eq(afterPrevious), eq(previousCountId)))
+                .thenReturn(List.of(KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(productId).productCode("MR-1").productName("ESTUCHE MEDIANO")
+                        .colorId(colorId).colorName("NEGRO")
+                        .entradas(1)
+                        .build()));
+        // El kardex del conteo nuevo debe pedirse desde el fin del previo (no desde las 12:00),
+        // para que la venta del hueco (Vtas 1) y la 2ª venta/anulación del periodo cuenten.
+        when(kioscoInventoryService.buildKardexRows(
+                eq(locationId), eq(afterPrevious), eq(currentToExclusive), eq(true), eq(currentToExclusive), eq(countId)))
+                .thenReturn(List.of(KioscoKardexReportResponse.KioscoKardexRow.builder()
+                        .productId(productId).productCode("MR-1").productName("ESTUCHE MEDIANO")
+                        .colorId(colorId).colorName("NEGRO")
+                        .ventas(2)
+                        .anulacionVenta(1)
+                        .build()));
 
-        when(kioscoInventoryService.computePrePeriodEntradasByStockId(eq(locationId), eq(openingCutoff), any(LocalDateTime.class)))
-                .thenReturn(Map.of(stockId, 1));
-        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
-                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
-                        .id(stockId)
-                        .locationId(locationId)
-                        .productId(productId)
-                        .colorId(colorId)
-                        .build()
-        ));
-        stubPrincipalKardex(List.of(
-                KioscoKardexReportResponse.KioscoKardexRow.builder()
-                        .productId(productId).productCode("BD-8").productName("Bolso Perla")
-                        .colorId(colorId).colorName("Salmon Acabado Flores")
-                        .build()
-        ));
         when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
         when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
             KioscoPhysicalCountEntity entity = inv.getArgument(0);
@@ -1154,12 +1144,14 @@ class KioscoInventoryCountServiceTest {
             return entity;
         });
 
-        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(
+                locationId, currentFromAt.toString(), to.toString());
 
         var row = report.getCategories().get(0).getRows().get(0);
         assertThat(row.getInventarioInicial()).isEqualTo(1);
-        assertThat(row.getEntradas()).isEqualTo(1);
-        assertThat(row.getInventarioFinal()).isEqualTo(2);
+        assertThat(row.getVentas()).isEqualTo(2);
+        assertThat(row.getAnulacionVenta()).isEqualTo(1);
+        assertThat(row.getInventarioFinal()).isZero();
     }
 
     @Test

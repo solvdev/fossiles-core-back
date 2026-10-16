@@ -489,15 +489,15 @@ public class KioscoInventoryCountService {
                 .map(this::loadPreviousClosingBalances)
                 .orElse(null);
 
-        // Si el periodo se solapa con el anterior, el kardex arranca justo después del fin inclusive anterior.
+        // Con conteo previo el kardex arranca SIEMPRE justo después del fin inclusive anterior (Ini. = Fin. previo),
+        // aunque el periodo nuevo empiece más tarde: todo lo ocurrido en el hueco (ventas, anulaciones, salidas,
+        // cambios, entradas) cae en sus columnas. Si arrancara en periodFromAt, una venta hecha entre ambos
+        // conteos nunca bajaría el Fin. y saldría como falso faltante.
         // Primer conteo: ampliar desde el primer movimiento del kiosko (Ini.=0; historial en columnas).
         LocalDateTime effectiveKardexFrom = periodFromAt;
         if (previousCount.isPresent()) {
-            LocalDateTime afterPrev = GuatemalaDateTime.exclusiveAfterInclusive(
+            effectiveKardexFrom = GuatemalaDateTime.exclusiveAfterInclusive(
                     resolvePeriodToAt(previousCount.get()));
-            if (afterPrev.isAfter(effectiveKardexFrom)) {
-                effectiveKardexFrom = afterPrev;
-            }
         } else {
             Optional<LocalDate> earliestMovement = kioscoInventoryService
                     .findEarliestMovementDate(count.getLocationId());
@@ -550,25 +550,8 @@ public class KioscoInventoryCountService {
                 mergeKardexRowsByProductColor(rawKardexRows);
         applyPendingReturnSalidasForCount(count, kardexRows, kardexByStockAndSize, stockByKey);
 
-        LocalDateTime periodStart = periodFromAt;
-        LocalDateTime openingCutoffExclusive = previousCount
-                .map(c -> GuatemalaDateTime.exclusiveAfterInclusive(resolvePeriodToAt(c)))
-                .orElse(periodStart);
         // Primer conteo: Ini.=0 (sin ledger). Siguientes: Ini.=Fin. del conteo anterior (previousClosing).
-        Map<Long, Integer> openingBalanceByStockId = Map.of();
         Map<Long, Map<String, Integer>> openingBalanceByStockAndSize = Map.of();
-
-        // Solo el hueco entre conteos (si periodFromAt > periodToAt anterior) va a Ent.; el primer conteo no
-        // (su historial pre-periodFrom ya está en el kardex ampliado).
-        Map<Long, Integer> gapEntradasByStockId = previousCount.isPresent()
-                ? kioscoInventoryService.computePrePeriodEntradasByStockId(
-                        count.getLocationId(), openingCutoffExclusive, periodStart)
-                : Map.of();
-        Map<Long, Map<String, Integer>> gapEntradasByStockAndSize = previousCount.isPresent()
-                ? kioscoInventoryService.computePrePeriodEntradasByStockAndSize(
-                        count.getLocationId(), openingCutoffExclusive, periodStart)
-                : Map.of();
-        applyPrePeriodEntradasToKardexBySize(kardexByStockAndSize, gapEntradasByStockAndSize);
 
         Map<String, KioscoPhysicalCountItemEntity> itemsByKey = itemRepository.findByCountId(count.getId()).stream()
                 .collect(Collectors.toMap(
@@ -661,13 +644,10 @@ public class KioscoInventoryCountService {
             Map<String, Integer> inventarioFinalByHardware = inventarioFinalByHardwareLookup.getOrDefault(
                     productColorKey, Map.of());
 
-            int gapEntradas = stocksForRow.stream()
-                    .mapToInt(s -> gapEntradasByStockId.getOrDefault(s.getId(), 0))
-                    .sum();
             // Primer conteo: Ini.=0. Siguientes: Fin. del conteo anterior (0 si SKU nuevo).
             int inventarioInicial = resolveOpeningInventarioInicial(productColorKey, previousClosing, 0);
-            // Ent. = periodo (+ hueco entre conteos). En el primer conteo el kardex ya incluye historial previo.
-            int entradas = kardexRow.getEntradas() + gapEntradas;
+            // El kardex ya arranca tras el conteo anterior: incluye el hueco entre conteos y, en el primero, el historial.
+            int entradas = kardexRow.getEntradas();
             // Fin. = Ini. + movimientos del periodo (algebraico): +Ent -Vtas +Anul.Vta -Sal (+Compras -Anul.Compras)
             int inventarioFinal = Math.max(0, inventarioInicial + kardexRowNetDelta(kardexRow, entradas));
 
@@ -1653,24 +1633,6 @@ public class KioscoInventoryCountService {
                 - row.getSalida()
                 - row.getCambioIn()
                 + row.getCambioOut();
-    }
-
-    private static void applyPrePeriodEntradasToKardexBySize(
-            Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> kardexByStockAndSize,
-            Map<Long, Map<String, Integer>> prePeriodEntradasByStockAndSize
-    ) {
-        if (prePeriodEntradasByStockAndSize == null || prePeriodEntradasByStockAndSize.isEmpty()) {
-            return;
-        }
-        for (Map.Entry<Long, Map<String, Integer>> stockEntry : prePeriodEntradasByStockAndSize.entrySet()) {
-            Map<String, KioscoInventoryService.SizeKardexBucket> bySize = kardexByStockAndSize
-                    .computeIfAbsent(stockEntry.getKey(), k -> new LinkedHashMap<>());
-            for (Map.Entry<String, Integer> sizeEntry : stockEntry.getValue().entrySet()) {
-                KioscoInventoryService.SizeKardexBucket current = bySize.getOrDefault(
-                        sizeEntry.getKey(), KioscoInventoryService.SizeKardexBucket.empty());
-                bySize.put(sizeEntry.getKey(), current.plus(0, 0, sizeEntry.getValue(), 0, 0, 0));
-            }
-        }
     }
 
     /**
