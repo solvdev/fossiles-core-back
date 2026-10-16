@@ -48,6 +48,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -201,9 +202,7 @@ public class ProductDistributionService {
      * Obtiene todos los envíos de una distribución
      */
     public List<ProductShipmentResponse> getShipmentsByDistribution(Long distributionId) {
-        return shipmentRepository.findByDistributionId(distributionId).stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findByDistributionId(distributionId));
     }
 
     /**
@@ -213,9 +212,7 @@ public class ProductDistributionService {
             throws ResourceNotFoundException {
         productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductionOrder", productionOrderId));
-        return shipmentRepository.findByProductionOrderId(productionOrderId).stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findByProductionOrderId(productionOrderId));
     }
 
     /**
@@ -628,9 +625,7 @@ public class ProductDistributionService {
     }
 
     public List<ProductShipmentResponse> listStandaloneInternalShipments() {
-        return shipmentRepository.findStandaloneInternalEnviShipments().stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findStandaloneInternalEnviShipments());
     }
 
     /**
@@ -685,9 +680,7 @@ public class ProductDistributionService {
     }
 
     public List<ProductShipmentResponse> listStandaloneKioskShipments() {
-        return shipmentRepository.findStandaloneKioskShipments().stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findStandaloneKioskShipments());
     }
 
     private void assertKioskLocation(LocationEntity location) throws BusinessException {
@@ -698,9 +691,7 @@ public class ProductDistributionService {
     }
 
     public List<ProductShipmentResponse> listAllInternalEnviShipments() {
-        return shipmentRepository.findAllInternalEnviShipments().stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findAllInternalEnviShipments());
     }
 
     public DispatchStockPreviewResponse previewDispatchStock(Long productId, Long colorId, String size)
@@ -1266,10 +1257,9 @@ public class ProductDistributionService {
             return List.of();
         }
         int max = Math.min(Math.max(limit, 1), 50);
-        return shipmentRepository.searchByShipmentNumberContaining(q).stream()
+        return toShipmentResponses(shipmentRepository.searchByShipmentNumberContaining(q).stream()
                 .limit(max)
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+                .collect(Collectors.toList()));
     }
 
     /**
@@ -4286,10 +4276,7 @@ public class ProductDistributionService {
             return List.of();
         }
         String normalizedStatus = status.trim();
-        return shipmentRepository.findAll().stream()
-                .filter(s -> normalizedStatus.equalsIgnoreCase(safeTrim(s.getStatus())))
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findByStatusIgnoreCase(normalizedStatus));
     }
 
     /**
@@ -4298,13 +4285,37 @@ public class ProductDistributionService {
      * Sin parámetro: admin ve todos; encargada ve sus kioskos asignados (pantalla distribución).
      */
     public List<ProductShipmentResponse> getShipmentsInTransit(Long kioskLocationId) throws BusinessException {
-        return findShipmentsInTransitEntities(kioskLocationId).stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(findShipmentsInTransitEntities(kioskLocationId));
+    }
+
+    /**
+     * Pendientes de recepción de un kiosko en una sola consulta: envíos en tránsito (SENT) más los ya
+     * entregados con líneas aún por recibir (quantity_received &lt; quantity), en ese orden.
+     */
+    public List<ProductShipmentResponse> getShipmentsPendingReceipt(Long kioskLocationId) throws BusinessException {
+        if (kioskLocationId == null) {
+            throw new BusinessException("Indica el kiosko para consultar las recepciones pendientes.");
+        }
+        assertMayAccessKioskLocation(kioskLocationId, resolveReceiptLocationScope());
+        List<ProductShipmentEntity> pending = new ArrayList<>(
+                shipmentRepository.findByStatusIgnoreCaseAndLocationId("SENT", kioskLocationId));
+        pending.addAll(shipmentRepository.findDeliveredWithPendingLinesByLocationId(kioskLocationId));
+        return toShipmentResponses(pending);
     }
 
     public long countShipmentsInTransit(Long kioskLocationId) throws BusinessException {
-        return findShipmentsInTransitEntities(kioskLocationId).size();
+        Set<Long> scopedLocationIds = resolveReceiptLocationScope();
+        if (kioskLocationId != null) {
+            assertMayAccessKioskLocation(kioskLocationId, scopedLocationIds);
+            return shipmentRepository.countByStatusIgnoreCaseAndLocationId("SENT", kioskLocationId);
+        }
+        if (scopedLocationIds == null) {
+            return shipmentRepository.findByStatusIgnoreCase("SENT").size();
+        }
+        if (scopedLocationIds.isEmpty()) {
+            return 0L;
+        }
+        return shipmentRepository.countByStatusIgnoreCaseAndLocationIdIn("SENT", scopedLocationIds);
     }
 
     private List<ProductShipmentEntity> findShipmentsInTransitEntities(Long kioskLocationId) throws BusinessException {
@@ -4452,9 +4463,7 @@ public class ProductDistributionService {
                 .status(entity.getStatus())
                 .description(entity.getDescription())
                 .shipmentCount(shipments.size())
-                .shipments(shipments.stream()
-                        .map(this::toShipmentResponse)
-                        .collect(Collectors.toList()))
+                .shipments(toShipmentResponses(shipments))
                 .productionOrderId(linkedOrder.map(ProductionOrderEntity::getId).orElse(null))
                 .productionOrderCode(linkedOrder.map(ProductionOrderEntity::getCode).orElse(null))
                 .createdAt(entity.getCreatedAt())
@@ -4471,64 +4480,165 @@ public class ProductDistributionService {
             return null;
         }
         return userRepository.findById(userId)
-                .map(user -> {
-                    String first = user.getFirstName() != null ? user.getFirstName().trim() : "";
-                    String last = user.getLastName() != null ? user.getLastName().trim() : "";
-                    String full = (first + " " + last).trim();
-                    return full.isEmpty() ? user.getUsername() : full;
-                })
+                .map(this::userDisplayName)
                 .orElse(null);
+    }
+
+    private String userDisplayName(UserEntity user) {
+        String first = user.getFirstName() != null ? user.getFirstName().trim() : "";
+        String last = user.getLastName() != null ? user.getLastName().trim() : "";
+        String full = (first + " " + last).trim();
+        return full.isEmpty() ? user.getUsername() : full;
     }
 
     /**
      * Convierte entidad de envío a DTO de respuesta
      */
     private ProductShipmentResponse toShipmentResponse(ProductShipmentEntity entity) {
-        List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(entity.getId());
-        LocationEntity location = entity.getLocationId() == null
-                ? null
-                : locationRepository.findById(entity.getLocationId()).orElse(null);
-        ProductDistributionEntity distribution = entity.getDistributionId() == null
-                ? null
-                : distributionRepository.findById(entity.getDistributionId()).orElse(null);
-        ProductionOrderEntity linkedPo = entity.getProductionOrderId() == null
-                ? null
-                : productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null);
-
-        String locationName = location != null ? location.getName() : virtualDestinationForDirectShipment(linkedPo, entity);
-        String locationCode = location != null ? location.getCode() : null;
-
-        return ProductShipmentResponse.builder()
-                .id(entity.getId())
-                .distributionId(entity.getDistributionId())
-                .productionOrderId(entity.getProductionOrderId())
-                .partialReleaseId(entity.getPartialReleaseId())
-                .productionOrderCode(linkedPo != null ? linkedPo.getCode() : null)
-                .distributionNumber(distribution != null ? distribution.getDistributionNumber() : null)
-                .shipmentNumber(entity.getShipmentNumber())
-                .locationId(entity.getLocationId())
-                .locationCode(locationCode)
-                .locationName(locationName)
-                .status(entity.getStatus())
-                .notes(entity.getNotes())
-                .packingItems(parsePackingItems(entity.getPackingItems()))
-                .shippingCost(entity.getShippingCost())
-                .sentAt(entity.getSentAt())
-                .sentBy(entity.getSentBy())
-                .receivedAt(entity.getReceivedAt())
-                .receivedBy(entity.getReceivedBy())
-                .receivedNotes(entity.getReceivedNotes())
-                .products(details.stream()
-                        .map(this::toShipmentDetailResponse)
-                        .collect(Collectors.toList()))
-                .createdAt(entity.getCreatedAt())
-                .createdBy(entity.getCreatedBy())
-                .createdByName(resolveUserDisplayName(
-                        entity.getCreatedBy() != null ? entity.getCreatedBy() : entity.getUpdatedBy()))
-                .updatedAt(entity.getUpdatedAt())
-                .updatedBy(entity.getUpdatedBy())
-                .build();
+        return toShipmentResponses(List.of(entity)).get(0);
     }
+
+    /**
+     * Convierte varios envíos a DTO cargando detalles, productos, colores, categorías, ubicaciones,
+     * distribuciones, órdenes, usuarios y materiales en consultas por lote (sin N+1 por envío/línea).
+     */
+    private List<ProductShipmentResponse> toShipmentResponses(Collection<ProductShipmentEntity> entities) {
+        if (entities == null || entities.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<ProductShipmentEntity> shipments = new ArrayList<>(entities);
+
+        Set<Long> shipmentIds = collectIds(shipments, ProductShipmentEntity::getId);
+        Map<Long, List<ProductShipmentDetailEntity>> detailsByShipment = new HashMap<>();
+        if (!shipmentIds.isEmpty()) {
+            shipmentDetailRepository.findByShipmentIdIn(shipmentIds).stream()
+                    .sorted(Comparator.comparing(ProductShipmentDetailEntity::getId,
+                            Comparator.nullsLast(Comparator.naturalOrder())))
+                    .forEach(d -> detailsByShipment.computeIfAbsent(d.getShipmentId(), k -> new ArrayList<>()).add(d));
+        }
+
+        Set<Long> productIds = new HashSet<>();
+        Set<Long> colorIds = new HashSet<>();
+        detailsByShipment.values().forEach(list -> list.forEach(d -> {
+            if (d.getProductId() != null) productIds.add(d.getProductId());
+            if (d.getColorId() != null) colorIds.add(d.getColorId());
+        }));
+        Map<Long, ProductEntity> productsById = loadById(productIds, productRepository::findAllById,
+                ProductEntity::getId);
+        Set<Long> categoryIds = productsById.values().stream()
+                .map(ProductEntity::getCategoryId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, String> categoryNames = new HashMap<>();
+        loadById(categoryIds, productCategoryRepository::findAllById, ProductCategoryEntity::getId)
+                .forEach((id, c) -> categoryNames.put(id, c.getName()));
+        Map<Long, String> colorNames = new HashMap<>();
+        loadById(colorIds, colorRepository::findAllById, ColorEntity::getId)
+                .forEach((id, c) -> colorNames.put(id, c.getName()));
+
+        Map<Long, LocationEntity> locationsById = loadById(
+                collectIds(shipments, ProductShipmentEntity::getLocationId),
+                locationRepository::findAllById, LocationEntity::getId);
+        Map<Long, ProductDistributionEntity> distributionsById = loadById(
+                collectIds(shipments, ProductShipmentEntity::getDistributionId),
+                distributionRepository::findAllById, ProductDistributionEntity::getId);
+        Map<Long, ProductionOrderEntity> ordersById = loadById(
+                collectIds(shipments, ProductShipmentEntity::getProductionOrderId),
+                productionOrderRepository::findAllById, ProductionOrderEntity::getId);
+
+        Set<Long> userIds = new HashSet<>();
+        shipments.forEach(s -> {
+            Long uid = s.getCreatedBy() != null ? s.getCreatedBy() : s.getUpdatedBy();
+            if (uid != null) userIds.add(uid);
+        });
+        Map<Long, String> userNames = new HashMap<>();
+        loadById(userIds, userRepository::findAllById, UserEntity::getId)
+                .forEach((id, u) -> userNames.put(id, userDisplayName(u)));
+
+        Map<Long, List<ProductShipmentRequest.PackingItemRequest>> rawPacking = new HashMap<>();
+        Set<Long> materialIds = new HashSet<>();
+        for (ProductShipmentEntity s : shipments) {
+            List<ProductShipmentRequest.PackingItemRequest> items = readPackingItems(s.getPackingItems());
+            if (s.getId() != null && !items.isEmpty()) {
+                rawPacking.put(s.getId(), items);
+                items.forEach(i -> materialIds.add(i.getMaterialId()));
+            }
+        }
+        Map<Long, MaterialEntity> materialsById = loadById(materialIds, materialRepository::findAllById,
+                MaterialEntity::getId);
+
+        List<ProductShipmentResponse> result = new ArrayList<>(shipments.size());
+        for (ProductShipmentEntity entity : shipments) {
+            LocationEntity location = entity.getLocationId() == null ? null : locationsById.get(entity.getLocationId());
+            ProductDistributionEntity distribution = entity.getDistributionId() == null
+                    ? null
+                    : distributionsById.get(entity.getDistributionId());
+            ProductionOrderEntity linkedPo = entity.getProductionOrderId() == null
+                    ? null
+                    : ordersById.get(entity.getProductionOrderId());
+            String locationName = location != null ? location.getName() : virtualDestinationForDirectShipment(linkedPo, entity);
+            String locationCode = location != null ? location.getCode() : null;
+            Long creatorId = entity.getCreatedBy() != null ? entity.getCreatedBy() : entity.getUpdatedBy();
+            List<ProductShipmentDetailEntity> details = entity.getId() == null
+                    ? List.of()
+                    : detailsByShipment.getOrDefault(entity.getId(), List.of());
+            List<ProductShipmentResponse.PackingItemResponse> packingItems = entity.getId() == null
+                    ? List.of()
+                    : rawPacking.getOrDefault(entity.getId(), List.of()).stream()
+                            .map(item -> toPackingItemResponse(item, materialsById.get(item.getMaterialId())))
+                            .collect(Collectors.toList());
+
+            result.add(ProductShipmentResponse.builder()
+                    .id(entity.getId())
+                    .distributionId(entity.getDistributionId())
+                    .productionOrderId(entity.getProductionOrderId())
+                    .partialReleaseId(entity.getPartialReleaseId())
+                    .productionOrderCode(linkedPo != null ? linkedPo.getCode() : null)
+                    .distributionNumber(distribution != null ? distribution.getDistributionNumber() : null)
+                    .shipmentNumber(entity.getShipmentNumber())
+                    .locationId(entity.getLocationId())
+                    .locationCode(locationCode)
+                    .locationName(locationName)
+                    .status(entity.getStatus())
+                    .notes(entity.getNotes())
+                    .packingItems(packingItems)
+                    .shippingCost(entity.getShippingCost())
+                    .sentAt(entity.getSentAt())
+                    .sentBy(entity.getSentBy())
+                    .receivedAt(entity.getReceivedAt())
+                    .receivedBy(entity.getReceivedBy())
+                    .receivedNotes(entity.getReceivedNotes())
+                    .products(details.stream()
+                            .map(d -> toShipmentDetailResponse(d, productsById, colorNames, categoryNames))
+                            .collect(Collectors.toList()))
+                    .createdAt(entity.getCreatedAt())
+                    .createdBy(entity.getCreatedBy())
+                    .createdByName(creatorId != null ? userNames.get(creatorId) : null)
+                    .updatedAt(entity.getUpdatedAt())
+                    .updatedBy(entity.getUpdatedBy())
+                    .build());
+        }
+        return result;
+    }
+
+    private static Set<Long> collectIds(Collection<ProductShipmentEntity> shipments,
+                                        java.util.function.Function<ProductShipmentEntity, Long> getter) {
+        return shipments.stream().map(getter).filter(Objects::nonNull).collect(Collectors.toCollection(HashSet::new));
+    }
+
+    /** findAllById en una sola consulta; mapa vacío (sin consultar) si no hay ids. */
+    private static <T> Map<Long, T> loadById(
+            Set<Long> ids,
+            java.util.function.Function<Set<Long>, ? extends Iterable<T>> loader,
+            java.util.function.Function<T, Long> idGetter) {
+        Map<Long, T> map = new HashMap<>();
+        if (ids.isEmpty()) {
+            return map;
+        }
+        loader.apply(ids).forEach(e -> map.put(idGetter.apply(e), e));
+        return map;
+    }
+
     private static final String PACKAGING_PRODUCT_CODE_PREFIX = "SUM";
 
     private boolean isPackagingProduct(Long productId) {
@@ -4571,17 +4681,15 @@ public class ProductDistributionService {
     /**
      * Convierte entidad de detalle a DTO de respuesta
      */
-    private ProductShipmentDetailResponse toShipmentDetailResponse(ProductShipmentDetailEntity entity) {
-        ProductEntity product = entity.getProductId() == null
-                ? null
-                : productRepository.findById(entity.getProductId()).orElse(null);
-        String colorName = null;
-        if (entity.getColorId() != null) {
-            ColorEntity color = colorRepository.findById(entity.getColorId()).orElse(null);
-            colorName = color != null ? color.getName() : null;
-        }
+    private ProductShipmentDetailResponse toShipmentDetailResponse(
+            ProductShipmentDetailEntity entity,
+            Map<Long, ProductEntity> productsById,
+            Map<Long, String> colorNames,
+            Map<Long, String> categoryNames) {
+        ProductEntity product = entity.getProductId() == null ? null : productsById.get(entity.getProductId());
+        String colorName = entity.getColorId() == null ? null : colorNames.get(entity.getColorId());
         Long categoryId = product != null ? product.getCategoryId() : null;
-        String categoryName = resolveProductCategoryName(categoryId);
+        String categoryName = categoryId == null ? null : categoryNames.get(categoryId);
 
         return ProductShipmentDetailResponse.builder()
                 .id(entity.getId())
@@ -4982,6 +5090,15 @@ public class ProductDistributionService {
     }
 
     private List<ProductShipmentResponse.PackingItemResponse> parsePackingItems(String packingItemsRaw) {
+        return readPackingItems(packingItemsRaw).stream()
+                .map(item -> toPackingItemResponse(
+                        item,
+                        materialRepository.findById(item.getMaterialId()).orElse(null)))
+                .collect(Collectors.toList());
+    }
+
+    /** Parsea packing_items y deja solo líneas válidas (material y cantidad &gt; 0); no consulta materiales. */
+    private List<ProductShipmentRequest.PackingItemRequest> readPackingItems(String packingItemsRaw) {
         try {
             if (packingItemsRaw == null || packingItemsRaw.trim().isEmpty()) {
                 return List.of();
@@ -4996,20 +5113,21 @@ public class ProductDistributionService {
                             && item.getMaterialId() > 0
                             && item.getQuantity() != null
                             && item.getQuantity().compareTo(BigDecimal.ZERO) > 0)
-                    .map(item -> {
-                        MaterialEntity material = materialRepository.findById(item.getMaterialId()).orElse(null);
-                        return ProductShipmentResponse.PackingItemResponse.builder()
-                                .materialId(item.getMaterialId())
-                                .materialSku(material != null ? material.getSku() : null)
-                                .materialName(material != null ? material.getName() : null)
-                                .quantity(item.getQuantity())
-                                .unitPrice(item.getUnitPrice())
-                                .build();
-                    })
                     .collect(Collectors.toList());
         } catch (Exception _err) {
             return List.of();
         }
     }
-}
 
+    private ProductShipmentResponse.PackingItemResponse toPackingItemResponse(
+            ProductShipmentRequest.PackingItemRequest item,
+            MaterialEntity material) {
+        return ProductShipmentResponse.PackingItemResponse.builder()
+                .materialId(item.getMaterialId())
+                .materialSku(material != null ? material.getSku() : null)
+                .materialName(material != null ? material.getName() : null)
+                .quantity(item.getQuantity())
+                .unitPrice(item.getUnitPrice())
+                .build();
+    }
+}

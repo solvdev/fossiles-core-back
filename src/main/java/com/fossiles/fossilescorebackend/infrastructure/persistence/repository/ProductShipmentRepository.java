@@ -45,6 +45,21 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
 
     List<ProductShipmentEntity> findByStatusIgnoreCaseAndLocationIdIn(String status, Collection<Long> locationIds);
 
+    /** Entregados al kiosko con al menos una línea por recibir (quedan unidades en tránsito). */
+    @Query("""
+        SELECT s FROM ProductShipmentEntity s
+        WHERE s.locationId = :locationId
+          AND UPPER(TRIM(COALESCE(s.status, ''))) = 'DELIVERED'
+          AND EXISTS (
+            SELECT 1 FROM ProductShipmentDetailEntity d
+            WHERE d.shipmentId = s.id
+              AND d.quantityReceived IS NOT NULL
+              AND d.quantityReceived < d.quantity
+          )
+        ORDER BY s.id ASC
+        """)
+    List<ProductShipmentEntity> findDeliveredWithPendingLinesByLocationId(@Param("locationId") Long locationId);
+
     long countByStatusIgnoreCaseAndLocationId(String status, Long locationId);
 
     long countByStatusIgnoreCaseAndLocationIdIn(String status, Collection<Long> locationIds);

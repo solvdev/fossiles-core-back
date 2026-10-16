@@ -287,6 +287,13 @@ public class ProductDistributionController {
         return ResponseEntity.ok(distributionService.getShipmentsInTransit(kioskLocationId));
     }
 
+    @GetMapping("/shipments/pending-receipt")
+    public ResponseEntity<List<ProductShipmentResponse>> getShipmentsPendingReceipt(
+            @RequestParam Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(distributionService.getShipmentsPendingReceipt(kioskLocationId));
+    }
+
     @GetMapping("/shipments/in-transit/count")
     public ResponseEntity<Map<String, Long>> countShipmentsInTransit(
             @RequestParam(required = false) Long kioskLocationId
