@@ -129,6 +129,13 @@ public class OnlineSaleEntity {
     @Column(name = "guide_number", length = 100)
     private String guideNumber;
 
+    /**
+     * Momento en que la venta pasó a ENVIADO (despacho real). Vacío en las ventas despachadas antes de
+     * existir esta columna y en las importadas por CSV. Lo usa la conciliación (fechas y antigüedad).
+     */
+    @Column(name = "dispatched_at")
+    private LocalDateTime dispatchedAt;
+
     /** Autorización de pago */
     @Column(name = "payment_authorization", length = 200)
     private String paymentAuthorization;
