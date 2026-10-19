@@ -23,7 +23,7 @@ public class WebConfig implements WebMvcConfigurer {
                         "/api/public/online-warehouse/**", "/api/partial-releases/**",
                         "/api/product-distributions/**", "/api/distribuciones/**",
                         "/api/internal-shipment-requests/**", "/api/tasks/**", "/api/products/**",
-                        "/api/colors/**", "/api/product-categories/**");
+                        "/api/colors/**", "/api/product-categories/**", "/api/reconciliation/guides/**");
     }
 
     @Override

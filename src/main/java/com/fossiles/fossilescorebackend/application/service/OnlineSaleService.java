@@ -721,6 +721,7 @@ public class OnlineSaleService {
         String previousStatus = Boolean.TRUE.equals(sale.getInProductionOrder()) ? "EN_PRODUCCION" : "PRODUCIDO";
         sale.setStatus(previousStatus);
         sale.setGuideNumber(null);
+        sale.setDispatchedAt(null);
         sale.setObservations((sale.getObservations() != null ? sale.getObservations() + " | " : "")
                 + "ENVÍO ANULADO: " + (reason != null && !reason.isBlank() ? reason : "Sin razón especificada")
                 + " → " + previousStatus);
