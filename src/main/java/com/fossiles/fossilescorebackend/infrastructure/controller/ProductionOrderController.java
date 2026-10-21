@@ -579,6 +579,36 @@ public class ProductionOrderController {
         return ResponseEntity.ok(toResponse(entity));
     }
 
+    /**
+     * Actualiza solo empaques SUM- y costo de envío de la orden (meta en observaciones), sin tocar ítems.
+     * Lo usa Preparar envíos en el documento OPV armado desde la orden (sin fila en product_shipment):
+     * el PUT general recrea los ítems y, por cascada, borraría las unidades ya recibidas en bodega.
+     */
+    @PutMapping("/{id}/packing")
+    @Transactional(rollbackFor = Exception.class)
+    public ResponseEntity<ProductionOrderResponse> updatePacking(
+            @PathVariable Long id,
+            @RequestBody ProductionOrderRequest request) throws ResourceNotFoundException {
+        ProductionOrderEntity entity = productionOrderRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
+        OrderMeta existingMeta = parseOrderMeta(entity.getObservations());
+        List<ProductionOrderRequest.PackingItemRequest> packing = request != null && request.getPackingItems() != null
+                ? request.getPackingItems()
+                : existingMeta.packingItems.stream()
+                        .map(item -> ProductionOrderRequest.PackingItemRequest.builder()
+                                .materialId(item.materialId)
+                                .quantity(item.quantity)
+                                .unitPrice(item.unitPrice)
+                                .build())
+                        .collect(Collectors.toList());
+        BigDecimal shippingCost = request != null && request.getShippingCost() != null
+                ? request.getShippingCost()
+                : existingMeta.shippingCost;
+        entity.setObservations(composeOrderObservations(existingMeta.baseObservations, packing, shippingCost));
+        productionOrderRepository.save(entity);
+        return ResponseEntity.ok(toResponse(entity));
+    }
+
     @DeleteMapping("/{id}")
     @Transactional
     public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException {

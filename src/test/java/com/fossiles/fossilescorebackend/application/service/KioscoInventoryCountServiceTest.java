@@ -35,6 +35,7 @@ import org.mockito.quality.Strictness;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -116,8 +118,8 @@ class KioscoInventoryCountServiceTest {
         when(userRepository.findById(reviewerId)).thenReturn(Optional.of(UserEntity.builder()
                 .id(reviewerId).username("gustavo").build()));
         when(securityUtil.getCurrentUserId()).thenReturn(userId);
-        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                any(), any(), any())).thenReturn(Optional.empty());
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                any(), any(), any(), any())).thenReturn(Optional.empty());
         when(countRepository.findFirstByLocationIdAndStatusAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 any(), any(), any(), any())).thenReturn(Optional.empty());
         when(kioscoInventoryService.computeStockBalanceByStockId(any(), any())).thenReturn(Map.of());
@@ -903,8 +905,8 @@ class KioscoInventoryCountServiceTest {
                 .status(KioscoPhysicalCountStatus.CERRADO)
                 .closingBalancesData(snapshot)
                 .build();
-        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(from), eq(countId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(from), any(), eq(countId)))
                 .thenReturn(Optional.of(previousClosed));
         when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
                 cinchoJrStock(stockId, cinchoProductId, "NUEVO", 1, "{\"34\":1}")
@@ -1158,12 +1160,12 @@ class KioscoInventoryCountServiceTest {
                 .status(KioscoPhysicalCountStatus.CERRADO)
                 .build();
 
-        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(from), eq(countId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(from), any(), eq(countId)))
                 .thenReturn(Optional.of(previousClosed));
         // Al reconstruir el conteo cerrado previo no hay otro conteo anterior.
-        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(previousFrom), eq(previousCountId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(previousFrom), any(), eq(previousCountId)))
                 .thenReturn(Optional.empty());
 
         // Fin. del conteo cerrado = Ini 0 + Ent 1 = 1 (aunque el ledger floored diga otra cosa).
@@ -1236,11 +1238,11 @@ class KioscoInventoryCountServiceTest {
             entity.setId(countId);
             return entity;
         });
-        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(currentFrom), eq(countId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(currentFrom), any(), eq(countId)))
                 .thenReturn(Optional.of(previousClosed));
-        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(previousFrom), eq(previousCountId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(previousFrom), any(), eq(previousCountId)))
                 .thenReturn(Optional.empty());
 
         // Conteo cerrado: Ini 0 + Ent 1 - Vtas 2 + AV 1 = Fin 0 (caso B-22 CAFE).
@@ -1364,8 +1366,8 @@ class KioscoInventoryCountServiceTest {
             entity.setId(countId);
             return entity;
         });
-        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(currentFrom), eq(countId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(currentFrom), any(), eq(countId)))
                 .thenReturn(Optional.of(previousClosed));
 
         when(kioscoInventoryService.buildKardexRows(
@@ -1404,6 +1406,29 @@ class KioscoInventoryCountServiceTest {
         // No reconstruye el reporte del conteo cerrado si hay snapshot.
         verify(kioscoInventoryService, never()).buildKardexRows(
                 eq(locationId), eq(previousFrom), eq(previousTo), eq(true), eq(previousTo), eq(previousCountId));
+    }
+
+    @Test
+    void buildReport_conteoAnteriorDebeHaberEmpezadoAntesQueElActual() throws Exception {
+        // Pradera Vistares: DRAFT #48 (22-sep 08:24–23:59, vacío) dentro del #85 (desde 22-sep 00:16).
+        // Con solo periodTo <= periodFrom el #48 salía como anterior y se comía la venta del 22-sep
+        // (Ini. de FOSS-2 y bolsas = Fin. del #49 − 1). La búsqueda debe acotar por el inicio del actual.
+        stubPrincipalKardex(List.of(kardexRow(0)));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        List<LocalDateTime> savedFromAt = new ArrayList<>();
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            savedFromAt.add(entity.getPeriodFromAt());
+            return entity;
+        });
+
+        service.startOrGetSession(locationId, from.toString(), to.toString());
+
+        assertThat(savedFromAt.get(0)).isNotNull();
+        verify(countRepository, atLeastOnce())
+                .findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                        eq(locationId), eq(from), eq(savedFromAt.get(0)), eq(countId));
     }
 
     @Test
@@ -1451,11 +1476,11 @@ class KioscoInventoryCountServiceTest {
             return entity;
         });
         // El anterior más reciente es el CONTADO (no el CERRADO).
-        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(currentFrom), eq(countId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(currentFrom), any(), eq(countId)))
                 .thenReturn(Optional.of(previousContado));
-        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
-                eq(locationId), eq(contadoFrom), eq(contadoCountId)))
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(contadoFrom), any(), eq(contadoCountId)))
                 .thenReturn(Optional.of(previousClosed));
 
         // Kardex del CONTADO: Ini 5 - Vtas 2 = Fin 3.
