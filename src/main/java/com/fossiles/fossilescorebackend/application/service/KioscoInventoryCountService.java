@@ -54,6 +54,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -1688,10 +1689,18 @@ public class KioscoInventoryCountService {
     ) {
         Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex =
                 sizeKardexMerged != null ? sizeKardexMerged : Map.of();
-        if (!shouldExpandRowBySize(product, base, sizeKardex)) {
+        // Tallas con Fin. > 0 en el conteo anterior: aunque ya no tengan stock ni movimiento en este periodo
+        // (p.ej. vendidas después), su Ini. no se debe perder (si no, el Fin. del siguiente conteo las arrastra en 0).
+        Set<String> sizeKeysWithMovement = new LinkedHashSet<>(sizeKardex.keySet());
+        openingBalanceBySize.forEach((size, opening) -> {
+            if (size != null && !size.isBlank() && opening != null && opening > 0) {
+                sizeKeysWithMovement.add(size);
+            }
+        });
+        if (!shouldExpandRowBySize(product, base, sizeKardex, sizeKeysWithMovement)) {
             return List.of(applyRowObservation(base, generalObservation, null));
         }
-        List<String> sizeKeys = collectSizeKeysForRow(base, sizeKardex.keySet());
+        List<String> sizeKeys = collectSizeKeysForRow(base, sizeKeysWithMovement);
         if (sizeKeys.isEmpty()) {
             return List.of(applyRowObservation(base, generalObservation, null));
         }
@@ -1756,12 +1765,14 @@ public class KioscoInventoryCountService {
     private boolean shouldExpandRowBySize(
             ProductEntity product,
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
-            Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex
+            Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardex,
+            Set<String> sizeKeysWithMovement
     ) {
         if (base.isPackaging()) {
             return false;
         }
-        boolean hasSizes = hasSizeBreakdown(base) || hasSizedKardexActivity(sizeKardex);
+        boolean hasSizes = hasSizeBreakdown(base) || hasSizedKardexActivity(sizeKardex)
+                || (sizeKeysWithMovement != null && !sizeKeysWithMovement.isEmpty());
         if (!hasSizes) {
             return false;
         }

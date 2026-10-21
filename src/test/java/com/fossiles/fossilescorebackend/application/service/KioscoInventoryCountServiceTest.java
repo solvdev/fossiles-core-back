@@ -879,6 +879,55 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
+    void buildReport_cinchoConservaIniDeTallaSinStockNiMovimientoEnElPeriodo() throws Exception {
+        // Fin. del conteo anterior: tallas 34 y 36 con 1 c/u. La 36 ya se vendió (sin stock) y en este
+        // periodo no tuvo movimiento: su Ini. no debe perderse (si no, el siguiente conteo la hereda en 0).
+        Long cinchoProductId = 80L;
+        long stockId = 9301L;
+        long previousCountId = 100L;
+        LocalDate previousFrom = LocalDate.of(2026, 5, 1);
+        LocalDate previousTo = LocalDate.of(2026, 5, 31);
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(cinchoProductId).code("FOSS-25").name("CINCHO COLLIN")
+                        .categoryId(categoryId).cinchoType("CASUAL").build()
+        ));
+        String snapshot = service.serializeClosingBalances(
+                new KioscoInventoryCountService.PreviousClosingBalances(
+                        Map.of(cinchoProductId + ":" + colorId, 2),
+                        Map.of(cinchoProductId + ":" + colorId, Map.of("34", 1, "36", 1))));
+        KioscoPhysicalCountEntity previousClosed = KioscoPhysicalCountEntity.builder()
+                .id(previousCountId)
+                .locationId(locationId)
+                .periodFrom(previousFrom)
+                .periodTo(previousTo)
+                .status(KioscoPhysicalCountStatus.CERRADO)
+                .closingBalancesData(snapshot)
+                .build();
+        when(countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+                eq(locationId), eq(from), eq(countId)))
+                .thenReturn(Optional.of(previousClosed));
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
+                cinchoJrStock(stockId, cinchoProductId, "NUEVO", 1, "{\"34\":1}")
+        ));
+        stubKardexDateTime(
+                List.of(cinchoJrKardex(cinchoProductId, "NUEVO", 0)),
+                Map.of());
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
+
+        var rows = report.getCategories().get(0).getRows();
+        assertThat(rows.stream().map(r -> r.getSizeLabel())).containsExactly("34", "36");
+        assertThat(rows.stream().map(r -> r.getInventarioInicial())).containsExactly(1, 1);
+        assertThat(rows.stream().map(r -> r.getInventarioFinal())).containsExactly(1, 1);
+    }
+
+    @Test
     void buildReport_kardexPorTallaCuadraIniMasMovimientosConFin() throws Exception {
         Long fossProductId = 34L;
         long stockId = 501L;
