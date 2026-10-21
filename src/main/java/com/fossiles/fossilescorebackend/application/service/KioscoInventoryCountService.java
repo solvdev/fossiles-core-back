@@ -1176,15 +1176,19 @@ public class KioscoInventoryCountService {
     /**
      * Conteo anterior/contiguo más reciente del mismo kiosko ({@code periodTo <= periodFrom}).
      * Incluye DRAFT/CONTADO/REVISADO/CERRADO para no saltar un periodo intermedio no cerrado.
+     * Un conteo que empezó después que este no es su anterior: si no, un DRAFT de un solo día creado
+     * dentro del periodo (loc 26: #48 del 22-sep 08:24 dentro del #85 que arranca 22-sep 00:16) se come
+     * las ventas de ese día y el Ini. deja de cuadrar con el Fin. del conteo realmente anterior.
      */
     private Optional<KioscoPhysicalCountEntity> resolvePreviousPhysicalCount(KioscoPhysicalCountEntity count) {
         if (count == null || count.getLocationId() == null || count.getPeriodFrom() == null) {
             return Optional.empty();
         }
         Long excludeId = count.getId() != null ? count.getId() : -1L;
-        return countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
+        return countRepository.findFirstByLocationIdAndPeriodToLessThanEqualAndPeriodFromAtLessThanEqualAndIdNotOrderByPeriodToDescIdDesc(
                 count.getLocationId(),
                 count.getPeriodFrom(),
+                resolvePeriodFromAt(count),
                 excludeId);
     }
 
