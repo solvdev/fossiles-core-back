@@ -2390,16 +2390,18 @@ public class KioskPosService {
             return BigDecimal.ZERO;
         }
         if ("PERCENT".equals(type)) {
-            // Líneas de la audiencia → % promo; resto elegible → 10% base (empaque 0%).
+            // Solo las líneas de la audiencia llevan el % de la promo; el resto no recibe descuento.
             BigDecimal discount = BigDecimal.ZERO;
             for (PreparedLine line : filterDiscountEligibleLines(lines)) {
                 boolean inPromo = ProductAudienceCategory.productMatchesPromotion(
                         line.product().getAudienceCategory(),
                         promotion.getAudienceCategory()
                 );
-                BigDecimal pct = inPromo ? value : DEFAULT_POS_DISCOUNT_PERCENT;
+                if (!inPromo) {
+                    continue;
+                }
                 discount = discount.add(line.lineTotal()
-                        .multiply(pct)
+                        .multiply(value)
                         .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP));
             }
             return discount.max(BigDecimal.ZERO).min(subtotal).setScale(2, RoundingMode.HALF_UP);
@@ -2408,7 +2410,7 @@ public class KioskPosService {
     }
 
     /**
-     * Descuento por línea: si hay tier, usa ese %; si no, el 10% base.
+     * Descuento por línea: solo las líneas con tier aplicable llevan descuento.
      * Empaque nunca entra (isDiscountEligibleProduct).
      */
     BigDecimal calculateTieredPercentDiscount(List<PreparedLine> lines, List<KioskPromotionEntity> promotions) {
@@ -2432,11 +2434,11 @@ public class KioskPosService {
             if (promoPct.compareTo(BigDecimal.ZERO) > 0) {
                 anyTierMatch = true;
             }
-            BigDecimal pct = promoPct.compareTo(BigDecimal.ZERO) > 0
-                    ? promoPct
-                    : DEFAULT_POS_DISCOUNT_PERCENT;
+            if (promoPct.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
             discount = discount.add(line.lineTotal()
-                    .multiply(pct)
+                    .multiply(promoPct)
                     .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP));
         }
         BigDecimal maxDiscount = lines.stream()
@@ -2470,56 +2472,22 @@ public class KioskPosService {
             BigDecimal eligibleSubtotal = eligibleDiscountSubtotal(lines);
             BigDecimal discount = eligibleSubtotal.multiply(pct)
                     .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
-            return applyDefaultPosDiscountFloor(
-                    new DiscountResolution(
-                            discount,
-                            null,
-                            resolvePromotionDisplayName(null, pct),
-                            false
-                    ),
-                    lines
+            return new DiscountResolution(
+                    discount,
+                    null,
+                    resolvePromotionDisplayName(null, pct),
+                    false
             );
         }
         if (selectedPromotion != null) {
-            DiscountResolution resolved = new DiscountResolution(
+            return new DiscountResolution(
                     calculatePromotionDiscount(subtotal, selectedPromotion, lines),
                     selectedPromotion.getId(),
                     resolvePromotionDisplayName(selectedPromotion, null),
                     false
             );
-            return applyDefaultPosDiscountFloor(resolved, lines);
         }
-        return applyDefaultPosDiscountFloor(
-                resolveAutoPromotionDiscount(subtotal, lines, kioskId, saleDate),
-                lines
-        );
-    }
-
-    private BigDecimal calculateDefaultPosDiscount(List<PreparedLine> lines) {
-        return eligibleDiscountSubtotal(lines)
-                .multiply(DEFAULT_POS_DISCOUNT_PERCENT)
-                .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
-    }
-
-    /**
-     * Piso cart-level solo si el descuento resuelto queda por debajo del 10% base
-     * (p. ej. combo que no aplica). El descuento TIERED/PERCENT ya aplica 10% por línea
-     * en productos sin match de promo.
-     */
-    private DiscountResolution applyDefaultPosDiscountFloor(DiscountResolution resolved, List<PreparedLine> lines) {
-        BigDecimal defaultDiscount = calculateDefaultPosDiscount(lines);
-        if (defaultDiscount.compareTo(BigDecimal.ZERO) <= 0) {
-            return resolved;
-        }
-        if (resolved.discountAmount().compareTo(defaultDiscount) >= 0) {
-            return resolved;
-        }
-        return new DiscountResolution(
-                defaultDiscount,
-                null,
-                DEFAULT_POS_DISCOUNT_NAME,
-                true
-        );
+        return resolveAutoPromotionDiscount(subtotal, lines, kioskId, saleDate);
     }
 
     private DiscountResolution resolveAutoPromotionDiscount(
@@ -3118,9 +3086,6 @@ public class KioskPosService {
     }
 
     private static final String PACKAGING_PRODUCT_CODE_PREFIX = "SUM";
-    /** Descuento base POS sobre precio de catálogo (no acumula con promos; la promo mayor reemplaza). */
-    private static final BigDecimal DEFAULT_POS_DISCOUNT_PERCENT = new BigDecimal("10");
-    private static final String DEFAULT_POS_DISCOUNT_NAME = "Descuento 10%";
     /** Códigos/nombres de Miraflores autorizados a editar unitPrice en venta POS. */
     private static final String POS_UNIT_PRICE_EDIT_KIOSK_CODE = "A15";
 

@@ -221,7 +221,7 @@ class KioskPosServiceTest {
                 .build());
 
         assertThat(sale.getSaleNumber()).startsWith("POS-");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("450.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("500.00");
 
         KioscoStockEntity kiosco = kioscoStockRepository
                 .findByLocationIdAndProductIdAndColorId(kioskA.getId(), wallet.getId(), negro.getId())
@@ -446,12 +446,12 @@ class KioskPosServiceTest {
         KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
                 .kioskLocationId(kioskA.getId())
                 .paymentMethod("EFECTIVO")
-                .amountReceived(new BigDecimal("225.00"))
+                .amountReceived(new BigDecimal("250.00"))
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
         assertThat(sale.getSaleNumber()).startsWith("POS-");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("225.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("250.00");
 
         ProductInventoryLocation legacyAfter = inventoryRepository
                 .findByProductIdAndLocationIdAndColorId(wallet.getId(), kioskA.getId(), negro.getId())
@@ -782,13 +782,13 @@ class KioskPosServiceTest {
                 .build());
 
         assertThat(sale.getSubtotal()).isEqualByComparingTo("300.00");
-        // dama 10% (tier) + unisex sin match → 10% base = 20 + 10
-        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("30.00");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("270.00");
+        // dama 10% (tier) = 20; unisex con tier en 0 → sin descuento
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("20.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("280.00");
     }
 
     @Test
-    void discount_tiered_percent_mixed_with_default_per_line() throws Exception {
+    void discount_tiered_percent_only_applies_to_lines_with_tier() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
 
         ProductCategoryEntity mariconerasCategory = productCategoryRepository.save(ProductCategoryEntity.builder()
@@ -843,10 +843,10 @@ class KioskPosServiceTest {
                         item(billetera.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
-        // 708*10% + 517*15% = 70.80 + 77.55 = 148.35 (no piso cart-level 10%)
+        // mariconera sin tier → 0; billetera 517*15% = 77.55
         assertThat(sale.getSubtotal()).isEqualByComparingTo("1225.00");
-        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("148.35");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("1076.65");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("77.55");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("1147.45");
     }
 
     @Test
@@ -893,7 +893,7 @@ class KioskPosServiceTest {
     }
 
     @Test
-    void default_pos_discount_applies_without_promotion() throws Exception {
+    void no_discount_applies_without_promotion() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
 
         KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
@@ -906,13 +906,14 @@ class KioskPosServiceTest {
                 .build());
 
         assertThat(sale.getSubtotal()).isEqualByComparingTo("250.00");
-        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("25.00");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("225.00");
-        assertThat(sale.getPromotionName()).isEqualTo("Descuento 10%");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("0.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("250.00");
+        assertThat(sale.getPromotionId()).isNull();
+        assertThat(sale.getPromotionName()).isNull();
     }
 
     @Test
-    void promotion_percent_replaces_default_on_original_price_not_stacked() throws Exception {
+    void promotion_percent_applies_on_original_price() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
 
         KioskPromotionEntity percentPromo = promotionRepository.save(KioskPromotionEntity.builder()
@@ -1257,9 +1258,9 @@ class KioskPosServiceTest {
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("225.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("250.00");
         assertThat(sale.getAmountReceived()).isEqualByComparingTo("300.00");
-        assertThat(sale.getChangeAmount()).isEqualByComparingTo("75.00");
+        assertThat(sale.getChangeAmount()).isEqualByComparingTo("50.00");
     }
 
     @Test
@@ -1287,8 +1288,8 @@ class KioskPosServiceTest {
 
         assertThat(report.getSalesCount()).isEqualTo(2);
         assertThat(report.getTotalItems()).isEqualByComparingTo("2");
-        assertThat(report.getTotalAmount()).isEqualByComparingTo("450.00");
-        assertThat(report.getAverageTicket()).isEqualByComparingTo("225.00");
+        assertThat(report.getTotalAmount()).isEqualByComparingTo("500.00");
+        assertThat(report.getAverageTicket()).isEqualByComparingTo("250.00");
     }
 
     @Test
