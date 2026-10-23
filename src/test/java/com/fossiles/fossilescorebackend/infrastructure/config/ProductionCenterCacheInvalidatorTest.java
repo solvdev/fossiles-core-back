@@ -94,4 +94,34 @@ class ProductionCenterCacheInvalidatorTest {
 
         assertThat(panelLoads).hasValue(2);
     }
+
+    @Test
+    void laVistaPreviaDeArmarElDiaNoSueltaNada() {
+        readBoth();
+        call("POST", "/api/tasks/organizer/day-plan/preview", 200);
+        readBoth();
+
+        assertThat(ordersLoads).hasValue(1);
+        assertThat(panelLoads).hasValue(1);
+    }
+
+    @Test
+    void confirmarArmarElDiaSueltaPanelesYOrdenes() {
+        readBoth();
+        call("POST", "/api/tasks/organizer/day-plan/confirm", 200);
+        readBoth();
+
+        assertThat(ordersLoads).hasValue(2);
+        assertThat(panelLoads).hasValue(2);
+    }
+
+    @Test
+    void confirmarRechazadoConConflictoNoSueltaNada() {
+        readBoth();
+        call("POST", "/api/tasks/organizer/day-plan/confirm", 409);
+        readBoth();
+
+        assertThat(ordersLoads).hasValue(1);
+        assertThat(panelLoads).hasValue(1);
+    }
 }

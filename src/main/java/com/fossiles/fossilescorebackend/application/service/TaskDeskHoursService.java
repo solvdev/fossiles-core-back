@@ -131,7 +131,9 @@ public class TaskDeskHoursService {
         }
         if (now == null) return base;
 
-        double transcurrido = ProductionShift.workingMinutesBetween(task.getStartedAt(), now) / 60.0;
+        // Una tarea pausada deja de consumir mesa: el reloj se detiene en la pausa.
+        LocalDateTime hasta = task.getPausedAt() != null ? task.getPausedAt() : now;
+        double transcurrido = ProductionShift.workingMinutesBetween(task.getStartedAt(), hasta) / 60.0;
         double restante = base - transcurrido;
 
         if (restante < MIN_IN_PROGRESS_DESK_HOURS) return MIN_IN_PROGRESS_DESK_HOURS;

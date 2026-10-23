@@ -68,13 +68,52 @@ jobs:
 
       - name: Setup SSH key
         id: ssh_setup
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_USER: ${{ secrets.SSH_USER }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ env.HOST }} >> ~/.ssh/known_hosts
-          echo "SSH key lista (${{ env.ENV_LABEL }} ${{ env.HOST }})" | tee -a /tmp/deploy.log
+
+          # 1) El servidor tiene que contestar en el puerto 22. Se reintenta porque una instancia
+          #    recién encendida o con red lenta tarda en responder; el motivo queda en el log y en
+          #    el aviso de Discord (antes solo salía "exit code 1" sin decir por qué).
+          ok=0
+          for intento in 1 2 3 4 5; do
+            echo "Intento $intento/5: ssh-keyscan ${HOST}:22" | tee -a /tmp/deploy.log
+            if ssh-keyscan -T 10 -H "$HOST" > /tmp/keyscan.out 2> /tmp/keyscan.err && [ -s /tmp/keyscan.out ]; then
+              cat /tmp/keyscan.out >> ~/.ssh/known_hosts
+              ok=1
+              break
+            fi
+            echo "  sin respuesta: $(tr '\n' ' ' < /tmp/keyscan.err)" | tee -a /tmp/deploy.log
+            sleep $((intento * 5))
+          done
+          if [ "$ok" != 1 ]; then
+            {
+              echo "ERROR: el servidor ${ENV_LABEL} no responde por SSH (puerto 22) tras 5 intentos."
+              if timeout 10 bash -c "exec 3<>/dev/tcp/${HOST}/22" 2>/dev/null; then
+                echo "  El puerto 22 abre, pero ssh-keyscan no obtuvo la llave del servidor."
+              else
+                echo "  No se pudo abrir una conexión al puerto 22 (apagado, IP distinta o cerrado en el grupo de seguridad)."
+              fi
+              echo "  Revise en AWS: 1) la instancia está encendida, 2) su IP pública es la del secret"
+              echo "  BACK_HOST_TEST/BACK_HOST (cambia al apagar/encender si no es IP elástica),"
+              echo "  3) el grupo de seguridad permite el puerto 22 desde las IPs de GitHub."
+            } | tee -a /tmp/deploy.log
+            exit 1
+          fi
+
+          # 2) La llave y el usuario tienen que entrar; así un "Permission denied" sale aquí y no
+          #    en «Detener servicio» con el JAR ya compilado.
+          if ! ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
+                "${SSH_USER}@${HOST}" 'echo conexion-ok' 2>&1 | tee -a /tmp/deploy.log; then
+            echo "ERROR: el servidor contesta pero rechazó la llave SSH_PRIVATE_KEY o el usuario SSH_USER." | tee -a /tmp/deploy.log
+            exit 1
+          fi
+          echo "SSH key lista (${ENV_LABEL} ${HOST})" | tee -a /tmp/deploy.log
 
       - name: Detener servicio antes de transferir
         id: stop_service

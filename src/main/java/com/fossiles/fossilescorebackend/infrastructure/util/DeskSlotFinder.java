@@ -70,8 +70,25 @@ public final class DeskSlotFinder {
      * @return la mesa elegida, o {@code null} si ninguna tiene espacio ese día
      */
     public static Integer pickDeskOnDay(Map<Integer, Double> dayLoads, int numDesks, double requiredHours) {
-        int desks = Math.max(numDesks, 1);
-        double needed = Math.max(requiredHours, 0.0);
+        List<Integer> best = lightestDesksWithRoom(dayLoads, Math.max(numDesks, 1), Math.max(requiredHours, 0.0));
+        if (best.isEmpty()) {
+            return null;
+        }
+        return best.get(ThreadLocalRandom.current().nextInt(best.size()));
+    }
+
+    /**
+     * Igual que {@link #pickDeskOnDay} pero el empate lo gana la mesa menor, así que el mismo
+     * día con las mismas cargas siempre da la misma mesa. La usa la vista previa de «Armar el
+     * día», que no puede proponer una mesa distinta en cada pulsación.
+     */
+    public static Integer pickDeskOnDayLowest(Map<Integer, Double> dayLoads, int numDesks, double requiredHours) {
+        List<Integer> best = lightestDesksWithRoom(dayLoads, Math.max(numDesks, 1), Math.max(requiredHours, 0.0));
+        return best.isEmpty() ? null : best.get(0);
+    }
+
+    /** Mesas de menor carga entre las que caben, en orden ascendente de número. */
+    private static List<Integer> lightestDesksWithRoom(Map<Integer, Double> dayLoads, int desks, double needed) {
         boolean oversized = needed > ProductionPlanningConstants.MAX_HOURS_PER_DESK_PER_DAY + 1e-9;
         List<Integer> best = new ArrayList<>();
         double bestLoad = Double.MAX_VALUE;
@@ -91,10 +108,7 @@ public final class DeskSlotFinder {
                 best.add(desk);
             }
         }
-        if (best.isEmpty()) {
-            return null;
-        }
-        return best.get(ThreadLocalRandom.current().nextInt(best.size()));
+        return best;
     }
 
     public static void addLoad(Map<LocalDate, Map<Integer, Double>> scheduleMap, Slot slot, double hours) {

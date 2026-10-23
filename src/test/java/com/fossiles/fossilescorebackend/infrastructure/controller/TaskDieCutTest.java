@@ -261,7 +261,7 @@ class TaskDieCutTest {
     @Test
     @DisplayName("la lista por troquelar solo trae pendientes con algo sin cortar, y sin cinchos")
     void laListaPorTroquelar() throws Exception {
-        List<TaskResponse> lista = controller.getDieCutPending().getBody();
+        List<TaskResponse> lista = controller.getDieCutPending(null, null).getBody();
         assertNotNull(lista);
 
         for (TaskResponse t : lista) {
@@ -279,7 +279,7 @@ class TaskDieCutTest {
     void laTareaSaleDeLaListaAlCompletarse() throws Exception {
         TaskEntity tarea = tareaConProductos(1);
         conCuero(tarea);
-        long antes = controller.getDieCutPending().getBody().stream()
+        long antes = controller.getDieCutPending(null, null).getBody().stream()
                 .filter(t -> t.getId().equals(tarea.getId())).count();
         assertEquals(1, antes, "la tarea deberia estar en la lista antes de troquelarla");
 
@@ -287,7 +287,7 @@ class TaskDieCutTest {
             controller.setTaskItemDieCut(tarea.getId(), item.getId(), cuerpo("dieCutReady", true));
         }
 
-        long despues = controller.getDieCutPending().getBody().stream()
+        long despues = controller.getDieCutPending(null, null).getBody().stream()
                 .filter(t -> t.getId().equals(tarea.getId())).count();
         assertEquals(0, despues, "al quedar entera troquelada debe salir de la lista");
     }

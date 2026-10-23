@@ -161,6 +161,74 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
             """)
     List<TaskEntity> findPendingWithUncutItems();
 
+    /**
+     * Tareas del tablero de un día: las activas (ni CANCELLED ni COMPLETED) programadas ese día,
+     * más las pendientes o en proceso sin mesa cuya fecha es nula o anterior. Las
+     * AWAITING_WAREHOUSE (sin mesa por diseño) solo entran si son de ese día: de otro modo todas
+     * las que esperan bodega inundarían el tablero. Sin tareas de OPs de cinchos.
+     */
+    @Query("""
+            SELECT t FROM TaskEntity t
+            WHERE t.status NOT IN ('CANCELLED', 'COMPLETED')
+              AND (
+                    t.scheduledDate = :date
+                 OR (t.status IN ('PENDING', 'IN_PROGRESS')
+                     AND t.desk IS NULL
+                     AND (t.scheduledDate IS NULL OR t.scheduledDate < :date))
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM ProductionOrderEntity po
+                WHERE po.id = t.productionOrderId
+                  AND UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              )
+            ORDER BY t.desk ASC NULLS LAST, COALESCE(t.priority, 9999), t.id
+            """)
+    List<TaskEntity> findBoardTasks(@Param("date") LocalDate date);
+
+    /** Cuántas tareas trae {@link #findPendingWithUncutItems()} (pestaña «Por cortar»). */
+    @Query("""
+            SELECT COUNT(t) FROM TaskEntity t
+            WHERE t.status = 'PENDING'
+              AND EXISTS (
+                SELECT 1 FROM TaskItemEntity ti
+                WHERE ti.taskId = t.id
+                  AND (ti.dieCutReady IS NULL OR ti.dieCutReady = FALSE)
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM ProductionOrderEntity po
+                WHERE po.id = t.productionOrderId
+                  AND UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              )
+            """)
+    long countPendingWithUncutItems();
+
+    /** Cuántas tareas trae {@link #findPendingBacklog}, sin las de OPs de cinchos. */
+    @Query("""
+            SELECT COUNT(t) FROM TaskEntity t
+            WHERE t.status = 'PENDING'
+              AND (t.desk IS NULL OR t.scheduledDate IS NULL OR t.scheduledDate < :today)
+              AND NOT EXISTS (
+                SELECT 1 FROM ProductionOrderEntity po
+                WHERE po.id = t.productionOrderId
+                  AND UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              )
+            """)
+    long countPendingBacklog(@Param("today") LocalDate today);
+
+    /** Cuántas tareas trae {@link #findUnfinishedCarryOver}, sin las de OPs de cinchos. */
+    @Query("""
+            SELECT COUNT(t) FROM TaskEntity t
+            WHERE t.status = 'IN_PROGRESS'
+              AND t.scheduledDate IS NOT NULL
+              AND t.scheduledDate < :today
+              AND NOT EXISTS (
+                SELECT 1 FROM ProductionOrderEntity po
+                WHERE po.id = t.productionOrderId
+                  AND UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              )
+            """)
+    long countUnfinishedCarryOver(@Param("today") LocalDate today);
+
     @Query("SELECT DISTINCT t.scheduledDate FROM TaskEntity t WHERE t.status NOT IN ('COMPLETED', 'CANCELLED') ORDER BY t.scheduledDate")
     List<LocalDate> findDistinctScheduledDates();
 

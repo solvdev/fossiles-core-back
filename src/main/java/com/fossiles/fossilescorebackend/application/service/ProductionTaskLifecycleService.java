@@ -14,8 +14,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -39,7 +44,31 @@ public class ProductionTaskLifecycleService {
         if (isCinchoMaterialsTask(task)) {
             return false;
         }
-        return unitRepository.countByProductionOrderId(task.getProductionOrderId()) > 0;
+        // Una tarea consolidada espera a bodega si cualquiera de sus OPV ya lleva unidades.
+        return ordersOfTask(task).stream().anyMatch(id -> unitRepository.countByProductionOrderId(id) > 0);
+    }
+
+    /** OP base de la tarea y las OP de sus líneas propias (más de una si es consolidada). */
+    public Set<Long> ordersOfTask(TaskEntity task) {
+        Set<Long> ids = new LinkedHashSet<>();
+        if (task == null) {
+            return ids;
+        }
+        if (task.getProductionOrderId() != null) {
+            ids.add(task.getProductionOrderId());
+        }
+        if (task.getId() != null) {
+            ids.addAll(taskItemRepository.findBaseLineOrderIdsByTaskId(task.getId()));
+        }
+        return ids;
+    }
+
+    /** Sincroniza el estado de todas las OP que trabaja la tarea. */
+    @Transactional
+    public void syncProductionOrderStatusesOfTask(TaskEntity task) {
+        for (Long orderId : ordersOfTask(task)) {
+            syncProductionOrderStatusFromTasks(orderId);
+        }
     }
 
     private boolean isCinchoMaterialsTask(TaskEntity task) {
@@ -57,7 +86,16 @@ public class ProductionTaskLifecycleService {
             return;
         }
 
-        List<TaskEntity> tasks = taskRepository.findByProductionOrderId(productionOrderId);
+        Map<Long, TaskEntity> linked = new LinkedHashMap<>();
+        taskRepository.findByProductionOrderId(productionOrderId).forEach(t -> linked.put(t.getId(), t));
+        // Tareas consolidadas cuya OP base es otra OPV de Luis Felipe.
+        List<Long> viaItems = taskItemRepository.findBaseLineTaskIdsByProductionOrderId(productionOrderId).stream()
+                .filter(id -> !linked.containsKey(id))
+                .toList();
+        if (!viaItems.isEmpty()) {
+            taskRepository.findAllById(viaItems).forEach(t -> linked.put(t.getId(), t));
+        }
+        List<TaskEntity> tasks = new ArrayList<>(linked.values());
         if (tasks.isEmpty()) {
             return;
         }
@@ -108,6 +146,7 @@ public class ProductionTaskLifecycleService {
                 continue;
             }
             completeTaskAtWarehouse(task, completionTime);
+            syncProductionOrderStatusesOfTask(task);
         }
         syncProductionOrderStatusFromTasks(productionOrderId);
     }

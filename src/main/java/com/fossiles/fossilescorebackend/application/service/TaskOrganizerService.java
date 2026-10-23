@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.CreateManualTask
 import com.fossiles.fossilescorebackend.application.dto.response.OrganizerOrderPageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.OrganizerProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.application.exception.QuantityUnavailableException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
@@ -42,6 +43,8 @@ public class TaskOrganizerService {
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
     private final TaskCodeGenerator taskCodeGenerator;
+    private final ProductionOrderGroupRepository groupRepository;
+    private final ProductionOrderGroupMemberRepository groupMemberRepository;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -202,6 +205,7 @@ public class TaskOrganizerService {
                         .assignedQuantity(assigned)
                         .remainingQuantity(remaining)
                         .prdTimePerUnit(resolvePrdTimePerUnit(product))
+                        .unitsPerTask(product != null ? product.getUnitsPerTask() : null)
                         .sizes(parseSizes(item.getSizesData()))
                         .observations(item.getObservations())
                         .assignments(assignments)
@@ -259,6 +263,47 @@ public class TaskOrganizerService {
     @Transactional
     public TaskEntity createTask(CreateManualTaskRequest request, CreateMode mode)
             throws ResourceNotFoundException, BusinessException {
+        TaskDraft draft = prepareDraft(request, mode, true, Map.of());
+        return persistDraft(draft, request.getScheduledDate(), request.getDesk());
+    }
+
+    /**
+     * Tarea ya validada, lista para guardarse. {@link #quantityByItemId()} es lo que consume de
+     * cada ítem, para que quien valida varios borradores seguidos (Armar el día) reste lo ya
+     * tomado por los anteriores.
+     */
+    public record TaskDraft(
+            CreateManualTaskRequest request,
+            CreateMode mode,
+            ProductionOrderEntity headerOrder,
+            Map<Long, ProductionOrderEntity> ordersById,
+            List<TaskItemEntity> items,
+            double baseHours,
+            double totalHours,
+            int totalQuantity) {
+
+        public Map<Long, Integer> quantityByItemId() {
+            Map<Long, Integer> out = new HashMap<>();
+            for (TaskItemEntity item : items) {
+                out.merge(item.getProductionOrderItemId(), item.getQuantity(), Integer::sum);
+            }
+            return out;
+        }
+    }
+
+    /**
+     * Valida un borrador sin guardar nada. Todas las reglas de la tarea manual viven aquí: OP
+     * base única, solo OPL como extra, cinchos fuera, restante por ítem y tope duro de 5 h.
+     *
+     * @param lockItems  {@code true} bloquea los ítems con {@code FOR UPDATE} (crear);
+     *                   {@code false} los lee sin bloquear (vista previa)
+     * @param reservedByItemId unidades que otros borradores del mismo reparto ya piden de cada
+     *                   ítem; se restan del restante
+     * @throws QuantityUnavailableException si el restante no alcanza
+     */
+    public TaskDraft prepareDraft(CreateManualTaskRequest request, CreateMode mode, boolean lockItems,
+                                  Map<Long, Integer> reservedByItemId)
+            throws ResourceNotFoundException, BusinessException {
         CreateMode createMode = mode == null ? CreateMode.MANUAL : mode;
 
         if (request == null || request.getProductionOrderId() == null) {
@@ -281,6 +326,18 @@ public class TaskOrganizerService {
         } else {
             assertOrderReadyForTasks(headerOrder);
         }
+        // Tarea de una OP consolidada: admite productos de cualquier orden de esa consolidada.
+        boolean consolidate = Boolean.TRUE.equals(request.getConsolidateVendorOrders());
+        ProductionOrderGroupEntity group = null;
+        if (consolidate) {
+            Long groupId = groupMemberRepository.groupIdByOrderId(List.of(headerOrder.getId())).get(headerOrder.getId());
+            group = groupId == null ? null : groupRepository.findById(groupId)
+                    .filter(g -> ProductionOrderGroupEntity.ACTIVE.equals(g.getStatus())).orElse(null);
+            if (group == null) {
+                throw new BusinessException("La orden " + headerOrder.getCode()
+                        + " no está en ninguna OP consolidada activa.");
+            }
+        }
 
         List<Long> requestedItemIds = new ArrayList<>();
         for (CreateManualTaskRequest.ManualTaskItemRequest line : lines) {
@@ -300,7 +357,10 @@ public class TaskOrganizerService {
         // Lock pesimista en orden ascendente (el query ya ordena por id) — evita deadlocks
         // y congela las cantidades mientras validamos el restante.
         List<Long> sortedIds = requestedItemIds.stream().sorted().toList();
-        Map<Long, ProductionOrderItemEntity> lockedById = productionOrderItemRepository.findAllByIdForUpdate(sortedIds)
+        List<ProductionOrderItemEntity> loadedItems = lockItems
+                ? productionOrderItemRepository.findAllByIdForUpdate(sortedIds)
+                : productionOrderItemRepository.findAllById(sortedIds);
+        Map<Long, ProductionOrderItemEntity> lockedById = loadedItems
                 .stream().collect(Collectors.toMap(ProductionOrderItemEntity::getId, i -> i));
         for (Long itemId : requestedItemIds) {
             if (!lockedById.containsKey(itemId)) {
@@ -311,6 +371,11 @@ public class TaskOrganizerService {
         Map<Long, Integer> assignedByItemId = taskItemRepository.assignedQuantityMap(requestedItemIds);
         Map<Long, ProductionOrderEntity> ordersById = new HashMap<>();
         ordersById.put(headerOrder.getId(), headerOrder);
+        Map<Long, Long> groupByOrder = consolidate
+                ? groupMemberRepository.groupIdByOrderId(loadedItems.stream()
+                        .map(ProductionOrderItemEntity::getProductionOrderId).collect(Collectors.toSet()))
+                : Map.of();
+        Long groupId = group == null ? null : group.getId();
 
         double baseHours = 0.0;
         double totalHours = 0.0;
@@ -334,10 +399,11 @@ public class TaskOrganizerService {
                 throw new BusinessException("Solo los productos de órdenes VENTA_EN_LINEA (OPL) "
                         + "pueden agregarse como extra sobre las 4 horas.");
             }
-            if (!extra && !Objects.equals(itemOrder.getId(), headerOrder.getId())) {
+            boolean otherOrder = !Objects.equals(itemOrder.getId(), headerOrder.getId());
+            if (!extra && otherOrder && !(consolidate && Objects.equals(groupByOrder.get(itemOrder.getId()), groupId))) {
                 throw new BusinessException("El producto " + item.getId() + " pertenece a la orden "
                         + itemOrder.getCode() + ", distinta a la orden base de la tarea. "
-                        + "Solo los extras OPL pueden mezclar órdenes.");
+                        + "Solo los extras OPL y las órdenes de una misma OP consolidada pueden mezclarse.");
             }
             if (createMode == CreateMode.AUTO_CINCHO) {
                 assertNotDraft(itemOrder);
@@ -358,13 +424,14 @@ public class TaskOrganizerService {
 
             int total = ProductionOrderItemQuantityHelper.effectiveQuantityForBom(item);
             int assigned = assignedByItemId.getOrDefault(item.getId(), 0);
-            int remaining = total - assigned;
+            int reserved = reservedByItemId == null ? 0 : reservedByItemId.getOrDefault(item.getId(), 0);
+            int remaining = total - assigned - reserved;
             int qty = line.getQuantity();
             if (qty > remaining) {
                 String productLabel = product != null ? product.getName() : ("ítem " + item.getId());
-                throw new BusinessException("Cantidad no disponible para " + productLabel
+                throw new QuantityUnavailableException("Cantidad no disponible para " + productLabel
                         + ": restante " + Math.max(remaining, 0) + " de " + total
-                        + " (ya asignado " + assigned + ").");
+                        + " (ya asignado " + (assigned + reserved) + ").");
             }
 
             double prdTimePerUnit = resolvePrdTimePerUnit(product);
@@ -391,7 +458,9 @@ public class TaskOrganizerService {
                     .colorName(colorName)
                     .quantity(qty)
                     .estimatedHours(lineHours)
-                    .observations(buildItemObservations(item, qty, total))
+                    .observations(consolidate && !extra
+                            ? withOrderCode(itemOrder.getCode(), buildItemObservations(item, qty, total))
+                            : buildItemObservations(item, qty, total))
                     .leatherDelivered(cinchoReady)
                     .leatherDeliveredAt(cinchoReady ? GuatemalaDateTime.now() : null)
                     .materialsDelivered(!requiresMaterials)
@@ -412,7 +481,62 @@ public class TaskOrganizerService {
                     baseHours, ProductionPlanningConstants.MAX_HOURS_PER_TASK_HARD_CAP));
         }
 
-        boolean cinchoReady = createMode == CreateMode.AUTO_CINCHO;
+        CreateManualTaskRequest saved = request;
+        List<String> vendorCodes = ordersById.values().stream()
+                .filter(o -> !isOnlineSaleOrder(o))
+                .sorted(Comparator.comparing(ProductionOrderEntity::getId))
+                .map(ProductionOrderEntity::getCode)
+                .toList();
+        if (group != null) {
+            // La mesa ve en la tarea a qué OP consolidada pertenece y qué órdenes trae;
+            // cada línea lleva además su OP.
+            saved = CreateManualTaskRequest.builder()
+                    .productionOrderId(request.getProductionOrderId())
+                    .items(request.getItems())
+                    .desk(request.getDesk())
+                    .scheduledDate(request.getScheduledDate())
+                    .observations(consolidatedObservations(group.getCode(), vendorCodes, request.getObservations()))
+                    .consolidateVendorOrders(true)
+                    .build();
+        }
+
+        return new TaskDraft(saved, createMode, headerOrder, ordersById, itemsToSave,
+                baseHours, totalHours, totalQuantity);
+    }
+
+    /** «Consolidada LF-OPV-012: OPV-64, OPV-65 | notas del jefe», cortado a VARCHAR(500). */
+    static String consolidatedObservations(String groupCode, List<String> orderCodes, String observations) {
+        String head = ProductionPlanningConstants.CONSOLIDATED_PREFIX + groupCode + ": " + String.join(", ", orderCodes);
+        String notes = observations == null ? "" : observations.trim();
+        if (notes.startsWith(ProductionPlanningConstants.CONSOLIDATED_PREFIX)) {
+            // Ya venía armada (p. ej. al combinar una OPL en la tarea): se conservan solo las notas.
+            int bar = notes.indexOf(" | ");
+            notes = bar >= 0 ? notes.substring(bar + 3).trim() : "";
+        }
+        String combined = notes.isEmpty() ? head : head + " | " + notes;
+        return combined.length() > 500 ? combined.substring(0, 500) : combined;
+    }
+
+    private static String withOrderCode(String orderCode, String observations) {
+        String combined = observations == null || observations.isBlank()
+                ? orderCode : orderCode + " · " + observations;
+        return combined.length() > 500 ? combined.substring(0, 500) : combined;
+    }
+
+    /**
+     * Guarda un borrador ya validado. Fecha y mesa se pasan aparte porque «Armar el día» las
+     * decide después de medir el borrador.
+     */
+    @Transactional
+    public TaskEntity persistDraft(TaskDraft draft, LocalDate scheduledDate, Integer desk)
+            throws BusinessException {
+        CreateManualTaskRequest request = draft.request();
+        ProductionOrderEntity headerOrder = draft.headerOrder();
+        List<TaskItemEntity> itemsToSave = draft.items();
+        double totalHours = draft.totalHours();
+        int totalQuantity = draft.totalQuantity();
+        Map<Long, ProductionOrderEntity> ordersById = draft.ordersById();
+        boolean cinchoReady = draft.mode() == CreateMode.AUTO_CINCHO;
         TaskItemEntity primary = itemsToSave.get(0);
         TaskEntity task = taskRepository.save(TaskEntity.builder()
                 .code(taskCodeGenerator.generateTaskCode())
@@ -427,8 +551,8 @@ public class TaskOrganizerService {
                 .quantity(totalQuantity)
                 .estimatedHours(roundHours(totalHours))
                 .deliveryDate(headerOrder.getDeliveryDate())
-                .desk(cinchoReady ? null : request.getDesk())
-                .scheduledDate(request.getScheduledDate())
+                .desk(cinchoReady ? null : desk)
+                .scheduledDate(scheduledDate)
                 .priority(5)
                 .status("PENDING")
                 .dieCutReady(cinchoReady)
@@ -451,6 +575,39 @@ public class TaskOrganizerService {
         }
 
         return task;
+    }
+
+    /**
+     * Suma un borrador ya validado a una tarea existente: junta las cantidades si el ítem ya
+     * estaba, agrega los ítems nuevos, sube cantidad y horas, y pasa las OP a IN_PROGRESS.
+     */
+    @Transactional
+    public TaskEntity appendDraftToTask(TaskEntity task, TaskDraft draft) {
+        List<TaskItemEntity> existing = taskItemRepository.findByTaskId(task.getId());
+        for (TaskItemEntity added : draft.items()) {
+            TaskItemEntity same = existing.stream()
+                    .filter(e -> Objects.equals(e.getProductionOrderItemId(), added.getProductionOrderItemId()))
+                    .findFirst().orElse(null);
+            if (same != null) {
+                same.setQuantity(same.getQuantity() + added.getQuantity());
+                same.setEstimatedHours(roundHours((same.getEstimatedHours() == null ? 0.0 : same.getEstimatedHours())
+                        + (added.getEstimatedHours() == null ? 0.0 : added.getEstimatedHours())));
+                taskItemRepository.save(same);
+            } else {
+                added.setTaskId(task.getId());
+                taskItemRepository.save(added);
+            }
+        }
+        task.setQuantity((task.getQuantity() == null ? 0 : task.getQuantity()) + draft.totalQuantity());
+        task.setEstimatedHours(roundHours((task.getEstimatedHours() == null ? 0.0 : task.getEstimatedHours())
+                + draft.totalHours()));
+        for (ProductionOrderEntity order : draft.ordersById().values()) {
+            if (order != null && "PENDING".equals(order.getStatus())) {
+                order.setStatus("IN_PROGRESS");
+                productionOrderRepository.save(order);
+            }
+        }
+        return taskRepository.save(task);
     }
 
     /**

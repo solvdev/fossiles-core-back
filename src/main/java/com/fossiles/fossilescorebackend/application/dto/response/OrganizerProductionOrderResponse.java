@@ -51,6 +51,8 @@ public class OrganizerProductionOrderResponse {
         private int remainingQuantity;
         /** Horas por unidad (prd_time del producto o 0.1 por defecto). */
         private double prdTimePerUnit;
+        /** Unidades por tarea del producto ({@code units_per_task}); null = sin tope propio. */
+        private Integer unitsPerTask;
         /** Desglose de tallas de la OP (informativo). */
         private Map<String, Integer> sizes;
         private String observations;

@@ -25,6 +25,11 @@ public final class ProductionShift {
     public static final LocalTime LUNCH_START = LocalTime.of(13, 0);
     public static final LocalTime LUNCH_END = LocalTime.of(14, 0);
 
+    /** Horas efectivas de una jornada: 07:00–17:00 menos el almuerzo (9 h). */
+    public static final double EFFECTIVE_HOURS_PER_DAY =
+            (Duration.between(SHIFT_START, LUNCH_START).toMinutes()
+                    + Duration.between(LUNCH_END, SHIFT_END).toMinutes()) / 60.0;
+
     /** Tope de días recorridos: protege de fechas corruptas que harían un bucle largo. */
     private static final int MAX_DIAS = 400;
 
