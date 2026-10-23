@@ -112,4 +112,15 @@ class DayPlanOrderQueryServiceTest {
 
         assertThat(service.listItems(1L, true, 0, 50).getTotalElements()).isEqualTo(5);
     }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("Una OPV con tipo NORMAL se muestra como OPV, no como OPK")
+    void opvConTipoNormal() {
+        assertThat(DayPlanOrderQueryService.planFamily(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity.builder()
+                        .code("OPV-82").orderType("NORMAL").build())).isEqualTo("OPV");
+        assertThat(DayPlanOrderQueryService.planFamily(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity.builder()
+                        .code("OPK-29").orderType("NORMAL").build())).isEqualTo("OPK");
+    }
 }
