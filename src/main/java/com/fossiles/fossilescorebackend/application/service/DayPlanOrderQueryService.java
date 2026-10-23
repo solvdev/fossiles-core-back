@@ -117,7 +117,7 @@ public class DayPlanOrderQueryService {
                     .groupId(group == null ? null : group.getId())
                     .groupCode(group == null ? null : group.getCode())
                     .id(po.getId()).code(po.getCode()).orderType(po.getOrderType())
-                    .family(ProductionPlanningConstants.orderFamilyLabel(po.getOrderType(), po.getCode()))
+                    .family(planFamily(po))
                     .onlineSale(isOnline(po)).status(po.getStatus()).customerName(po.getCustomerName())
                     .luisFelipe(ProductionPlanningConstants.isLuisFelipeVendorOrder(
                             po.getSellerName(), po.getOrderType(), po.getCode()))
@@ -227,6 +227,18 @@ public class DayPlanOrderQueryService {
 
     private static boolean isOnline(ProductionOrderEntity po) {
         return ProductionPlanningConstants.isOnlineSaleOrder(po.getOrderType(), po.getCode());
+    }
+
+    /**
+     * Familia para «Armar el día». Las OPV con tipo NORMAL (casi todas las de Luis Felipe) salían
+     * como OPK por el tipo; el código OPV- manda.
+     */
+    static String planFamily(ProductionOrderEntity po) {
+        String code = po.getCode() == null ? "" : po.getCode().trim().toUpperCase(Locale.ROOT);
+        if (code.startsWith("OPV-")) {
+            return "OPV";
+        }
+        return ProductionPlanningConstants.orderFamilyLabel(po.getOrderType(), po.getCode());
     }
 
     /** OP abierta, autorizada y que no es de cinchos. */
