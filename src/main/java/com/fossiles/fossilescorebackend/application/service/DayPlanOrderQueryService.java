@@ -7,7 +7,10 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderGroupEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderGroupMemberRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderGroupRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
@@ -41,6 +44,8 @@ public class DayPlanOrderQueryService {
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
     private final TaskItemRepository taskItemRepository;
+    private final ProductionOrderGroupRepository groupRepository;
+    private final ProductionOrderGroupMemberRepository groupMemberRepository;
 
     /** Una línea de OP ya medida. */
     private record Line(ProductionOrderItemEntity item, ProductEntity product, int total, int assigned,
@@ -82,6 +87,15 @@ public class DayPlanOrderQueryService {
                 .toList();
 
         Map<Long, List<Line>> linesByOrder = loadLines(orders);
+        // OP consolidada activa de cada orden: el paso 1 las muestra juntas y el paso 2 arma sus tareas juntas.
+        Map<Long, Long> groupIdByOrder = groupMemberRepository.groupIdByOrderId(
+                orders.stream().map(ProductionOrderEntity::getId).toList());
+        Map<Long, ProductionOrderGroupEntity> groups = new HashMap<>();
+        if (!groupIdByOrder.isEmpty()) {
+            groupRepository.findAllById(new HashSet<>(groupIdByOrder.values())).stream()
+                    .filter(g -> ProductionOrderGroupEntity.ACTIVE.equals(g.getStatus()))
+                    .forEach(g -> groups.put(g.getId(), g));
+        }
         List<DayPlanOrderSummaryResponse> all = new ArrayList<>();
         for (ProductionOrderEntity po : orders) {
             List<Line> lines = linesByOrder.getOrDefault(po.getId(), List.of());
@@ -98,10 +112,15 @@ public class DayPlanOrderQueryService {
             if (remainingItems == 0) {
                 continue;
             }
+            ProductionOrderGroupEntity group = groups.get(groupIdByOrder.get(po.getId()));
             all.add(DayPlanOrderSummaryResponse.builder()
+                    .groupId(group == null ? null : group.getId())
+                    .groupCode(group == null ? null : group.getCode())
                     .id(po.getId()).code(po.getCode()).orderType(po.getOrderType())
                     .family(ProductionPlanningConstants.orderFamilyLabel(po.getOrderType(), po.getCode()))
                     .onlineSale(isOnline(po)).status(po.getStatus()).customerName(po.getCustomerName())
+                    .luisFelipe(ProductionPlanningConstants.isLuisFelipeVendorOrder(
+                            po.getSellerName(), po.getOrderType(), po.getCode()))
                     .deliveryDate(po.getDeliveryDate())
                     .totalHours(round2(total)).remainingHours(round2(remaining))
                     .itemCount(lines.size()).remainingItemCount(remainingItems)

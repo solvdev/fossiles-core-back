@@ -211,6 +211,86 @@ class TaskOrganizerServiceCreateTaskTest {
         assertThat(kit.orders.get(1L).getStatus()).isEqualTo("PENDING");
     }
 
+    // ==================== consolidada de Luis Felipe ====================
+
+    /** OPV de Luis Felipe (tipo NORMAL, como casi todas en prod) con un ítem de 1 h por unidad. */
+    private void lfOpv(long id, long itemId, int qty) {
+        kit.order(id, "OPV-" + id, "NORMAL", "PENDING").setSellerName("Luis Felipe");
+        kit.item(itemId, id, 10, qty);
+    }
+
+    private static CreateManualTaskRequest consolidated(long orderId, ManualTaskItemRequest... lines) {
+        return CreateManualTaskRequest.builder().productionOrderId(orderId).items(List.of(lines))
+                .scheduledDate(JUEVES).observations("Urgente").consolidateVendorOrders(true).build();
+    }
+
+    @Test
+    @DisplayName("Las OPV de una OP consolidada van en una tarea; cada línea lleva su OP")
+    void consolidaOpvDeLuisFelipe() throws Exception {
+        lfOpv(5, 500, 2);
+        lfOpv(6, 600, 1);
+        lfOpv(7, 700, 1);
+        kit.group(1, "LF-OPV-001", 5, 6, 7);
+
+        TaskEntity t = kit.service.createManualTask(consolidated(5, line(500, 2), line(600, 1), line(700, 1)));
+
+        assertThat(t.getProductionOrderId()).isEqualTo(5L);
+        assertThat(t.getEstimatedHours()).isEqualTo(4.0);
+        assertThat(t.getObservations()).isEqualTo("Consolidada LF-OPV-001: OPV-5, OPV-6, OPV-7 | Urgente");
+        assertThat(kit.savedTaskItems).extracting("observations").containsExactly("OPV-5", "OPV-6", "OPV-7");
+        assertThat(kit.savedTaskItems).extracting("daySaleExtra").containsOnly(false);
+        // Las tres OP pasan a IN_PROGRESS, no solo la cabecera.
+        assertThat(kit.orders.get(6L).getStatus()).isEqualTo("IN_PROGRESS");
+        assertThat(kit.orders.get(7L).getStatus()).isEqualTo("IN_PROGRESS");
+    }
+
+    @Test
+    @DisplayName("La consolidada sigue con el tope de 5 h")
+    void consolidadaRespetaTope() {
+        lfOpv(5, 500, 4);
+        lfOpv(6, 600, 4);
+        kit.group(1, "LF-OPV-001", 5, 6);
+        assertThatThrownBy(() -> kit.service.createManualTask(consolidated(5, line(500, 3), line(600, 3))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("excede el máximo de 5.0 horas");
+    }
+
+    @Test
+    @DisplayName("Solo se mezclan órdenes de la misma OP consolidada activa")
+    void soloMismaConsolidada() {
+        lfOpv(5, 500, 2);
+        lfOpv(6, 600, 2);
+        lfOpv(7, 700, 2);
+        kit.group(1, "LF-OPV-001", 5, 6);
+        kit.group(2, "LF-OPV-002", 7);
+
+        // OPV-7 es de otra consolidada.
+        assertThatThrownBy(() -> kit.service.createManualTask(consolidated(5, line(500, 1), line(700, 1))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("distinta a la orden base");
+        // Cabecera fuera de toda consolidada.
+        assertThatThrownBy(() -> kit.service.createManualTask(consolidated(1, line(100, 1))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("no está en ninguna OP consolidada activa");
+        // Consolidada desagrupada: ya no vale.
+        kit.groups.get(1L).setStatus("DISSOLVED");
+        assertThatThrownBy(() -> kit.service.createManualTask(consolidated(5, line(500, 1), line(600, 1))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("no está en ninguna OP consolidada activa");
+        assertThat(kit.savedTasks).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Sin la marca de consolidar, dos OPV de la misma consolidada no se mezclan")
+    void sinMarcaNoMezcla() {
+        lfOpv(5, 500, 2);
+        lfOpv(6, 600, 1);
+        kit.group(1, "LF-OPV-001", 5, 6);
+        assertThatThrownBy(() -> kit.service.createManualTask(request(5, line(500, 1), line(600, 1))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("distinta a la orden base");
+    }
+
     @Test
     @DisplayName("persistDraft guarda con la fecha y la mesa que se le indiquen (mesa NULL = sin asignar)")
     void persistDraftSinMesa() throws Exception {

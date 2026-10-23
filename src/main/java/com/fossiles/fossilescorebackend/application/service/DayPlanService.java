@@ -573,6 +573,7 @@ public class DayPlanService {
                     CreateManualTaskRequest.builder()
                             .productionOrderId(host.draft.getProductionOrderId()).items(items).desk(null)
                             .scheduledDate(host.draft.getScheduledDate()).observations(host.draft.getObservations())
+                            .consolidateVendorOrders(host.draft.getConsolidateVendorOrders())
                             .build(),
                     TaskOrganizerService.CreateMode.MANUAL, lockItems, plan.reserved);
             combined.quantityByItemId().forEach((id, q) -> plan.reserved.merge(id, q, Integer::sum));
@@ -639,6 +640,7 @@ public class DayPlanService {
                     .desk(null)
                     .scheduledDate(draft.getScheduledDate())
                     .observations(draft.getObservations())
+                    .consolidateVendorOrders(draft.getConsolidateVendorOrders())
                     .build();
             try {
                 p.prepared = taskOrganizerService.prepareDraft(

@@ -26,6 +26,11 @@ public class CreateManualTaskRequest {
     /** Fecha opcional. */
     private LocalDate scheduledDate;
     private String observations;
+    /**
+     * true = tarea consolidada: admite ítems de otras OPV de Luis Felipe además de la OP base
+     * (que también debe serlo). Sin esto, solo los extras OPL pueden mezclar órdenes.
+     */
+    private Boolean consolidateVendorOrders;
 
     @Data
     @Builder

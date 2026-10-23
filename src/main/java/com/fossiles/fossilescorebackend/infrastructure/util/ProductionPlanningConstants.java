@@ -142,6 +142,31 @@ public final class ProductionPlanningConstants {
         }
     }
 
+    /** Prefijo de las observaciones de una tarea de OP consolidada: «Consolidada LF-OPV-012: OPV-64, …». */
+    public static final String CONSOLIDATED_PREFIX = "Consolidada ";
+
+    /**
+     * OPV de Luis Felipe: vendedor «Luis Felipe» y orden OPV. Son las únicas órdenes que se
+     * pueden juntar en una sola tarea («tarea consolidada»), porque suelen ser muy pequeñas.
+     *
+     * <p>Se mira también el prefijo del código: la mayoría de las OPV de Luis Felipe se guardan
+     * con tipo NORMAL y código {@code OPV-…} (en prod, 76 de 83 al 2026-10-21).
+     */
+    public static boolean isLuisFelipeVendorOrder(String sellerName, String orderType, String code) {
+        String seller = sellerName == null ? "" : sellerName.trim().toUpperCase(Locale.ROOT);
+        if (!seller.contains("LUIS FELIPE")) {
+            return false;
+        }
+        String c = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
+        return c.startsWith("OPV-") || "OPV".equals(orderFamilyLabel(orderType, code));
+    }
+
+    /** OPC (cinchos) de Luis Felipe: también se pueden juntar, en su propia consolidada. */
+    public static boolean isLuisFelipeCinchoOrder(String sellerName, String orderType, String code) {
+        String seller = sellerName == null ? "" : sellerName.trim().toUpperCase(Locale.ROOT);
+        return seller.contains("LUIS FELIPE") && "OPC".equals(orderFamilyLabel(orderType, code));
+    }
+
     /** Solo se trabaja de lunes a viernes: ninguna tarea debe programarse sábado/domingo. */
     public static boolean isWorkday(LocalDate date) {
         if (date == null) {

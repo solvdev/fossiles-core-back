@@ -153,6 +153,28 @@ class DayPlanServiceTest {
     }
 
     @Test
+    @DisplayName("Una consolidada de OPV de Luis Felipe se mide y se crea como una sola tarea")
+    void consolidadaLuisFelipe() throws Exception {
+        kit.order(5, "OPV-5", "MARCAS", "PENDING").setSellerName("LUIS FELIPE");
+        // Como en prod: la mayoría de las OPV de Luis Felipe se guardan con tipo NORMAL.
+        kit.order(6, "OPV-6", "NORMAL", "PENDING").setSellerName("Luis Felipe");
+        kit.item(500, 5, 10, 1);
+        kit.item(600, 6, 10, 2);
+        kit.group(3, "LF-OPV-003", 5, 6);
+        DayPlanRequest.Draft lf = DayPlanRequest.Draft.builder().clientId("lf").productionOrderId(5L)
+                .items(List.of(line(500, 1), line(600, 2))).consolidateVendorOrders(true).build();
+
+        DayPlanPreviewResponse preview = service.preview(plan(JUEVES, lf));
+        assertThat(task(preview, "lf").getStatus()).isEqualTo(Status.OK);
+        assertThat(task(preview, "lf").getBaseHours()).isEqualTo(3.0);
+
+        DayPlanConfirmResponse done = confirmed(plan(JUEVES, lf));
+        assertThat(done.getCreated()).hasSize(1);
+        assertThat(kit.savedTasks).hasSize(1);
+        assertThat(kit.savedTasks.get(0).getObservations()).isEqualTo("Consolidada LF-OPV-003: OPV-5, OPV-6");
+    }
+
+    @Test
     @DisplayName("Devuelve límites, un solo asOf, huella y cargas por día y mesa")
     void contratoDeLaRespuesta() throws Exception {
         existing.put(JUEVES, List.of(existingTask(1, "PENDING", 1, JUEVES, 1.5)));

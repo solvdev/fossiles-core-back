@@ -1209,7 +1209,7 @@ public class TaskController {
                 || ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE.equals(effectiveStatus))) {
             taskDeskBackfillService.backfillFreedDeskAfterCompletion(deskToFreeAfterComplete, backfillAnchorDate, getNumDesks());
         }
-        productionTaskLifecycleService.syncProductionOrderStatusFromTasks(updated.getProductionOrderId());
+        productionTaskLifecycleService.syncProductionOrderStatusesOfTask(updated);
         return ResponseEntity.ok(toResponse(updated));
     }
 
@@ -1221,7 +1221,7 @@ public class TaskController {
                                                   @RequestBody(required = false) Map<String, String> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity task = taskWorkflowService.pause(id, body == null ? null : body.get("reason"));
-        productionTaskLifecycleService.syncProductionOrderStatusFromTasks(task.getProductionOrderId());
+        productionTaskLifecycleService.syncProductionOrderStatusesOfTask(task);
         return ResponseEntity.ok(toResponse(task));
     }
 
@@ -2110,10 +2110,10 @@ public class TaskController {
         if (entity == null) {
             throw new ResourceNotFoundException("Task", id);
         }
-        Long productionOrderId = entity.getProductionOrderId();
+        Set<Long> orderIds = productionTaskLifecycleService.ordersOfTask(entity);
         taskItemRepository.deleteByTaskId(id);
         taskRepository.deleteById(id);
-        productionTaskLifecycleService.syncProductionOrderStatusFromTasks(productionOrderId);
+        orderIds.forEach(productionTaskLifecycleService::syncProductionOrderStatusFromTasks);
         return ResponseEntity.noContent().build();
     }
 

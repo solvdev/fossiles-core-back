@@ -24,7 +24,8 @@ class DayPlanOrderQueryServiceTest {
         kit = new OrganizerTestKit();
         kit.product(10, 0.5);
         service = new DayPlanOrderQueryService(kit.productionOrderRepository, kit.productionOrderItemRepository,
-                kit.productRepository, kit.colorRepository, kit.taskItemRepository);
+                kit.productRepository, kit.colorRepository, kit.taskItemRepository,
+                kit.groupRepository, kit.groupMemberRepository);
         when(kit.productionOrderRepository.findActiveOrders()).thenAnswer(inv -> List.copyOf(kit.orders.values()));
         when(kit.productionOrderItemRepository.findByProductionOrderIdIn(any())).thenAnswer(inv -> {
             java.util.Collection<?> ids = inv.getArgument(0);

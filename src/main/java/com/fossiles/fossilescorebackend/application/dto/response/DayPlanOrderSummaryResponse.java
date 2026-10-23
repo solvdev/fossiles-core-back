@@ -21,6 +21,11 @@ public class DayPlanOrderSummaryResponse {
     private boolean onlineSale;
     private String status;
     private String customerName;
+    /** OPV de Luis Felipe: se puede juntar con otras en una OP consolidada. */
+    private boolean luisFelipe;
+    /** OP consolidada activa a la que pertenece (null si va suelta). */
+    private Long groupId;
+    private String groupCode;
     private LocalDate deliveryDate;
     /** Horas de producción de toda la OP (sin cinchos). */
     private double totalHours;

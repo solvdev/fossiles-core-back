@@ -2,7 +2,10 @@ package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderGroupEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderGroupMemberRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderGroupRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
@@ -40,7 +43,13 @@ final class OrganizerTestKit {
     final ProductRepository productRepository = mock(ProductRepository.class);
     final ColorRepository colorRepository = mock(ColorRepository.class);
     final TaskCodeGenerator taskCodeGenerator = mock(TaskCodeGenerator.class);
+    final ProductionOrderGroupRepository groupRepository = mock(ProductionOrderGroupRepository.class);
+    final ProductionOrderGroupMemberRepository groupMemberRepository = mock(ProductionOrderGroupMemberRepository.class);
     final TaskOrganizerService service;
+
+    /** OP consolidadas en memoria y la consolidada activa de cada OP. */
+    final Map<Long, ProductionOrderGroupEntity> groups = new LinkedHashMap<>();
+    final Map<Long, Long> groupOfOrder = new HashMap<>();
 
     final Map<Long, ProductionOrderEntity> orders = new LinkedHashMap<>();
     final Map<Long, ProductionOrderItemEntity> items = new LinkedHashMap<>();
@@ -53,8 +62,20 @@ final class OrganizerTestKit {
 
     OrganizerTestKit() {
         service = new TaskOrganizerService(taskRepository, taskItemRepository, productionOrderRepository,
-                productionOrderItemRepository, productRepository, colorRepository, taskCodeGenerator);
+                productionOrderItemRepository, productRepository, colorRepository, taskCodeGenerator,
+                groupRepository, groupMemberRepository);
         try {
+            when(groupRepository.findById(anyLong()))
+                    .thenAnswer(inv -> Optional.ofNullable(groups.get(inv.<Long>getArgument(0))));
+            when(groupMemberRepository.groupIdByOrderId(anyCollection())).thenAnswer(inv -> {
+                Map<Long, Long> out = new HashMap<>();
+                for (Object id : (java.util.Collection<?>) inv.getArgument(0)) {
+                    if (groupOfOrder.containsKey(id)) {
+                        out.put((Long) id, groupOfOrder.get(id));
+                    }
+                }
+                return out;
+            });
             when(productionOrderRepository.findById(anyLong()))
                     .thenAnswer(inv -> Optional.ofNullable(orders.get(inv.<Long>getArgument(0))));
             when(productionOrderRepository.findAllById(any())).thenAnswer(inv -> byIds(inv.getArgument(0), orders));
@@ -112,6 +133,17 @@ final class OrganizerTestKit {
     /** OP normal (OPK) pendiente. */
     ProductionOrderEntity order(long id) {
         return order(id, "OPK-" + id, "NORMAL", "PENDING");
+    }
+
+    /** OP consolidada activa con esas órdenes. */
+    ProductionOrderGroupEntity group(long id, String code, long... orderIds) {
+        ProductionOrderGroupEntity g = ProductionOrderGroupEntity.builder()
+                .id(id).code(code).family("OPV").status(ProductionOrderGroupEntity.ACTIVE).build();
+        groups.put(id, g);
+        for (long orderId : orderIds) {
+            groupOfOrder.put(orderId, id);
+        }
+        return g;
     }
 
     ProductionOrderEntity opl(long id) {

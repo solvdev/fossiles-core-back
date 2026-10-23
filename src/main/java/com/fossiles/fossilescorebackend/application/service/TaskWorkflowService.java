@@ -252,7 +252,7 @@ public class TaskWorkflowService {
         }
         record(taskId, TaskEventEntity.ITEMS_ADDED, null, detail.toString().trim(), GuatemalaDateTime.now());
         TaskEntity saved = taskRepository.save(task);
-        productionTaskLifecycleService.syncProductionOrderStatusFromTasks(saved.getProductionOrderId());
+        productionTaskLifecycleService.syncProductionOrderStatusesOfTask(saved);
         return saved;
     }
 
