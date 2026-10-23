@@ -80,4 +80,46 @@ class DeskSlotFinderTest {
         loads.put(2, 0.5);
         assertThat(DeskSlotFinder.pickDeskOnDay(loads, 2, 4.5)).isNull();
     }
+
+    @Test
+    void pickDeskOnDayLowestBreaksTiesWithTheLowestDesk() {
+        Map<Integer, Double> loads = new HashMap<>();
+        loads.put(1, 2.0);
+        // Mesas 2, 3 y 4 vacías: empatan; gana la menor, siempre.
+        for (int i = 0; i < 50; i++) {
+            assertThat(DeskSlotFinder.pickDeskOnDayLowest(loads, 4, 1.0)).isEqualTo(2);
+        }
+    }
+
+    @Test
+    void pickDeskOnDayLowestAgreesWithPickDeskOnDayWhenThereIsNoTie() {
+        Map<Integer, Double> loads = new HashMap<>();
+        loads.put(1, 3.0);
+        loads.put(2, 1.0);
+        loads.put(3, 2.0);
+
+        assertThat(DeskSlotFinder.pickDeskOnDayLowest(loads, 3, 1.5))
+                .isEqualTo(DeskSlotFinder.pickDeskOnDay(loads, 3, 1.5))
+                .isEqualTo(2);
+    }
+
+    @Test
+    void pickDeskOnDayLowestReturnsNullWhenDayIsFullAndOversizedNeedsEmptyDesk() {
+        Map<Integer, Double> loads = new HashMap<>();
+        loads.put(1, 3.5);
+        loads.put(2, 0.5);
+        assertThat(DeskSlotFinder.pickDeskOnDayLowest(loads, 2, 4.0)).isNull();
+        // Una tarea de 4.5 h solo entra en una mesa vacía.
+        assertThat(DeskSlotFinder.pickDeskOnDayLowest(loads, 3, 4.5)).isEqualTo(3);
+        assertThat(DeskSlotFinder.pickDeskOnDayLowest(loads, 2, 4.5)).isNull();
+    }
+
+    @Test
+    void pickDeskOnDayKeepsRandomTieBreak() {
+        Set<Integer> seen = new HashSet<>();
+        for (int i = 0; i < 400; i++) {
+            seen.add(DeskSlotFinder.pickDeskOnDay(new HashMap<>(), 3, 1.0));
+        }
+        assertThat(seen).containsExactlyInAnyOrder(1, 2, 3);
+    }
 }

@@ -89,6 +89,29 @@ public interface TaskItemRepository extends JpaRepository<TaskItemEntity, Long> 
             """)
     List<Object[]> findTaskLinksByProductionOrderIdIn(@Param("orderIds") Collection<Long> orderIds);
 
+    /**
+     * Tareas que trabajan productos de la orden como línea propia (no extra OPL), aunque su OP
+     * base sea otra: las tareas consolidadas de OPV de Luis Felipe.
+     */
+    @Query("""
+            SELECT DISTINCT ti.taskId
+            FROM TaskItemEntity ti, ProductionOrderItemEntity poi
+            WHERE ti.productionOrderItemId = poi.id
+              AND poi.productionOrderId = :orderId
+              AND (ti.daySaleExtra IS NULL OR ti.daySaleExtra = false)
+            """)
+    List<Long> findBaseLineTaskIdsByProductionOrderId(@Param("orderId") Long orderId);
+
+    /** Órdenes de las líneas propias (no extra OPL) de una tarea. */
+    @Query("""
+            SELECT DISTINCT poi.productionOrderId
+            FROM TaskItemEntity ti, ProductionOrderItemEntity poi
+            WHERE ti.productionOrderItemId = poi.id
+              AND ti.taskId = :taskId
+              AND (ti.daySaleExtra IS NULL OR ti.daySaleExtra = false)
+            """)
+    List<Long> findBaseLineOrderIdsByTaskId(@Param("taskId") Long taskId);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM TaskItemEntity t WHERE t.taskId = :taskId")

@@ -21,6 +21,9 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class ProductionCenterCacheInvalidator implements HandlerInterceptor {
 
+    private static final String DAY_PLAN_PREVIEW = "/api/tasks/organizer/day-plan/preview";
+    private static final String DAY_PLAN_CONFIRM = "/api/tasks/organizer/day-plan/confirm";
+
     private static final Set<String> READ_METHODS = Set.of("GET", "HEAD", "OPTIONS");
 
     private final ProductionCenterCache productionCenterCache;
@@ -35,10 +38,16 @@ public class ProductionCenterCacheInvalidator implements HandlerInterceptor {
         if (path.startsWith("/api/production-orders")) {
             productionCenterCache.evictOrders();
             productionCenterCache.evictPanels();
+        } else if (path.startsWith(DAY_PLAN_PREVIEW)) {
+            // La vista previa de «Armar el día» es un POST de solo lectura que el front repite
+            // en cada cambio: vaciar cachés ahí las dejaría siempre frías.
+            return;
         } else if (path.startsWith("/api/tasks")) {
             productionCenterCache.evictPanels();
             // Planificar y generar pasan órdenes de PENDING a IN_PROGRESS.
-            if (path.startsWith("/api/tasks/auto-plan") || path.startsWith("/api/tasks/generate")) {
+            // «Armar el día» (confirmar) también: las OP pasan a IN_PROGRESS.
+            if (path.startsWith("/api/tasks/auto-plan") || path.startsWith("/api/tasks/generate")
+                    || path.startsWith(DAY_PLAN_CONFIRM)) {
                 productionCenterCache.evictOrders();
             }
         } else if (path.startsWith("/api/leather") || path.startsWith("/api/product-variant-leathers")) {

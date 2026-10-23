@@ -38,6 +38,15 @@ public class TaskResponse {
     private LocalDateTime startedAt;
     private LocalDateTime completedAt;
     private Integer actualDurationMinutes;
+    /** Pausada (sigue IN_PROGRESS). */
+    private LocalDateTime pausedAt;
+    private Integer expectedMinutes;
+    private Integer delayMinutes;
+    private Boolean delayed;
+    private Boolean commissionEligible;
+    private Long delayForgivenBy;
+    private LocalDateTime delayForgivenAt;
+    private String delayForgivenReason;
     private Integer wasteQuantity;
     private String wasteNotes;
     private Boolean leatherDelivered;
