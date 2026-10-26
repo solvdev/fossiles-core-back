@@ -450,6 +450,9 @@ public class KioskExchangeService {
                         .colorId(line.getColorId())
                         .quantity(line.getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact())
                         .sizeKey(line.getSize())
+                        .hardwareCondition(resolveReturnedHardware(
+                                kiosk.getId(), line.getSaleItemId(), line.getProductId(), line.getColorId(),
+                                line.getSize()))
                         .build())
                 .collect(Collectors.toList());
         List<KioscoInventoryService.CambioGivenLine> givenLines = previewGivenLines(preview).stream()
@@ -1896,6 +1899,9 @@ public class KioskExchangeService {
                             .colorId(item.getColorId())
                             .quantity(item.getQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact())
                             .sizeKey(item.getSize())
+                            .hardwareCondition(resolveReturnedHardware(
+                                    slip.getKioskLocationId(), item.getOriginalSaleItemId(), item.getProductId(),
+                                    item.getColorId(), item.getSize()))
                             .build())
                     .collect(Collectors.toList());
         }
@@ -1904,7 +1910,33 @@ public class KioskExchangeService {
                 .colorId(slip.getReturnedColorId())
                 .quantity(slip.getReturnedQuantity().setScale(0, RoundingMode.HALF_UP).intValueExact())
                 .sizeKey(slip.getReturnedSize())
+                .hardwareCondition(resolveReturnedHardware(
+                        slip.getKioskLocationId(), slip.getOriginalSaleItemId(), slip.getReturnedProductId(),
+                        slip.getReturnedColorId(), slip.getReturnedSize()))
                 .build());
+    }
+
+    /**
+     * Herraje/marca del producto que el cliente devuelve: la fila de la que salió la venta original
+     * (VENTA/SALIDA) o, si no hay movimiento, la dimensión guardada en la línea. Sin factura (cambio
+     * libre) devuelve null y el ingreso queda en NUEVO como antes.
+     */
+    private String resolveReturnedHardware(
+            Long kioskId, Long originalSaleItemId, Long productId, Long colorId, String size) {
+        if (kioskId == null || originalSaleItemId == null) {
+            return null;
+        }
+        KioskSaleItemEntity item = kioskSaleItemRepository.findById(originalSaleItemId).orElse(null);
+        if (item == null || item.getKioskSale() == null) {
+            return null;
+        }
+        String sold = kioscoInventoryService.resolveSoldHardware(
+                kioskId, productId, colorId, item.getKioskSale().getId(), size);
+        if (sold != null && !sold.isBlank()) {
+            return sold;
+        }
+        String stored = safeTrim(item.getHardwareCondition());
+        return stored.isEmpty() ? null : stored;
     }
 
     private List<KioscoInventoryService.CambioGivenLine> resolveGivenLinesForStock(KioskExchangeSlipEntity slip) {
