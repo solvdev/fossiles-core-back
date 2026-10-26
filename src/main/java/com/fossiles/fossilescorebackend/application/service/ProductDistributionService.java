@@ -111,6 +111,7 @@ public class ProductDistributionService {
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final ProductionOrderPartialReleaseRepository partialReleaseRepository;
     private final ObjectMapper objectMapper;
+    private final EmployeeChargeService employeeChargeService;
 
     // ========== DISTRIBUTION ==========
 
@@ -1635,6 +1636,7 @@ public class ProductDistributionService {
             throw new BusinessException(
                     "Solo se puede regresar a bodega un envío en tránsito (SENT). Estado actual: " + currentStatus);
         }
+        employeeChargeService.assertShipmentCanBeReverted(shipmentId);
 
         if (shipmentDispatchesFromPtWarehouses(shipment)) {
             reverseSentShipmentDispatchInventory(shipment);
@@ -1678,6 +1680,8 @@ public class ProductDistributionService {
                     "Solo se puede anular un envío en borrador, confirmado o en tránsito (antes de recibir en kiosko). Estado actual: "
                             + currentStatus);
         }
+        // Una compra de colaborador ya descontada o cobrada no se anula; si no, su cargo se anula junto con el envío.
+        Optional<EmployeeChargeEntity> purchaseCharge = employeeChargeService.lockCancellableChargeForShipment(shipmentId);
 
         boolean wasConfirmedOrSent = "CONFIRMED".equals(currentStatus) || "SENT".equals(currentStatus);
         if ("SENT".equals(currentStatus) && shipmentDispatchesFromPtWarehouses(shipment)) {
@@ -1712,6 +1716,7 @@ public class ProductDistributionService {
             });
         }
         rotateVendorNumberAfterCancellingShipment(saved);
+        purchaseCharge.ifPresent(employeeChargeService::cancelChargeOfCancelledShipment);
         return toShipmentResponse(saved);
     }
 
