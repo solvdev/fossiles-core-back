@@ -96,13 +96,14 @@ public class CinchoProductionService {
     }
 
     /**
-     * Lo que quedó sin terminar de días anteriores, como en las mesas: una línea de una OP activa
-     * de otro día sigue saliendo hasta quedar completada y entregada. Su estado es lo último que
-     * se marcó en ella hasta ese día (completada o entregada alguna vez cuenta). Solo para días
-     * hábiles de hoy en adelante; un día pasado se ve como fue.
+     * Lo que quedó sin terminar del día hábil anterior, como en las mesas: las líneas de las OP
+     * activas de ese día que no quedaron completadas y entregadas. Solo de ese día, no de más
+     * atrás (las viejas confunden; siguen en «Cinchos en producción»). Su estado es lo último que
+     * se marcó en ella hasta hoy. Solo para días hábiles de hoy en adelante.
      */
     private List<CinchoProductionResponse.Order> carriedOver(LocalDate date) {
-        List<ProductionOrderEntity> before = orderRepository.findCinchoOrdersBefore(allTypes(), DAY_STATUSES, date);
+        List<ProductionOrderEntity> before = orderRepository.findCinchoOrdersForDay(
+                allTypes(), DAY_STATUSES, ProductionPlanningConstants.previousWorkday(date));
         if (before.isEmpty()) {
             return List.of();
         }

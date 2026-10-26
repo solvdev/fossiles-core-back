@@ -85,11 +85,11 @@ class TaskBoardQueriesTest {
     }
 
     private List<String> board(LocalDate day) {
-        return board(day, false);
+        return board(day, null);
     }
 
-    private List<String> board(LocalDate day, boolean withCarryOver) {
-        return tasks.findBoardTasks(day, withCarryOver).stream().map(TaskEntity::getCode).toList();
+    private List<String> board(LocalDate day, LocalDate carryFrom) {
+        return tasks.findBoardTasks(day, carryFrom).stream().map(TaskEntity::getCode).toList();
     }
 
     @Test
@@ -119,10 +119,12 @@ class TaskBoardQueriesTest {
         task("ayer-pendiente", normalOrder, "PENDING", 3, AYER);
         task("ayer-cerrada", normalOrder, "COMPLETED", 3, AYER);
         task("ayer-curso-cincho", cinchoOrder, "IN_PROGRESS", 2, AYER);
+        // Solo lo del día anterior: lo de más atrás confunde y ya está en «No terminadas».
+        task("antier-curso", normalOrder, "IN_PROGRESS", 4, AYER.minusDays(1));
 
-        assertThat(board(HOY, true)).containsExactlyInAnyOrder("hoy-mesa", "ayer-curso", "ayer-curso-sin-mesa");
+        assertThat(board(HOY, AYER)).containsExactlyInAnyOrder("hoy-mesa", "ayer-curso", "ayer-curso-sin-mesa");
         // Viendo un día pasado no se arrastra nada: se ve como fue.
-        assertThat(board(HOY, false)).containsExactlyInAnyOrder("hoy-mesa", "ayer-curso-sin-mesa");
+        assertThat(board(HOY, null)).containsExactlyInAnyOrder("hoy-mesa", "ayer-curso-sin-mesa");
     }
 
     @Test

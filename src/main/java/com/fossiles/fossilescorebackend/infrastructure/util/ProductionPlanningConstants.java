@@ -175,4 +175,13 @@ public final class ProductionPlanningConstants {
         DayOfWeek dow = date.getDayOfWeek();
         return dow != DayOfWeek.SATURDAY && dow != DayOfWeek.SUNDAY;
     }
+
+    /** Día hábil anterior: el del lunes es el viernes. */
+    public static LocalDate previousWorkday(LocalDate date) {
+        LocalDate d = date.minusDays(1);
+        while (!isWorkday(d)) {
+            d = d.minusDays(1);
+        }
+        return d;
+    }
 }

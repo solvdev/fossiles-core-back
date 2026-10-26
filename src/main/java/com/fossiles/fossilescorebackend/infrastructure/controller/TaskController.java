@@ -322,8 +322,10 @@ public class TaskController {
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
         LocalDate day = date != null ? date : GuatemalaDateTime.today();
         LocalDate today = GuatemalaDateTime.today();
-        List<TaskResponse> tasks = toResponses(taskRepository.findBoardTasks(day,
-                !day.isBefore(today) && ProductionPlanningConstants.isWorkday(day))).stream()
+        // Solo lo del día hábil anterior se retoma; un día pasado, sábado o domingo, sin arrastre.
+        LocalDate carryFrom = !day.isBefore(today) && ProductionPlanningConstants.isWorkday(day)
+                ? ProductionPlanningConstants.previousWorkday(day) : null;
+        List<TaskResponse> tasks = toResponses(taskRepository.findBoardTasks(day, carryFrom)).stream()
                 .map(TaskController::withoutCinchoLines)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
