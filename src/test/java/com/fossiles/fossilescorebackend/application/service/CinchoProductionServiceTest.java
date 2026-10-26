@@ -12,6 +12,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -97,9 +98,10 @@ class CinchoProductionServiceTest {
     }
 
     @Test
-    @DisplayName("lo que quedó sin terminar de días anteriores sigue saliendo, con su último estado")
-    void arrastreDeDiasAnteriores() throws Exception {
-        ProductionOrderEntity vieja = order("OPCF-5", "CINCHOS_FOSSILES", "IN_PROGRESS", dia.minusDays(20), dia.plusDays(2));
+    @DisplayName("lo que quedó sin terminar del día hábil anterior sigue saliendo, con su último estado")
+    void arrastreDelDiaAnterior() throws Exception {
+        LocalDate anterior = ProductionPlanningConstants.previousWorkday(dia);
+        ProductionOrderEntity vieja = order("OPCF-5", "CINCHOS_FOSSILES", "IN_PROGRESS", anterior, dia.plusDays(2));
         ProductionOrderItemEntity enMesa = item(vieja, cincho, 4, null);
         ProductionOrderItemEntity terminada = item(vieja, cincho, 6, null);
         item(vieja, cincho, 2, null); // nunca se marcó: sale pendiente
@@ -107,18 +109,21 @@ class CinchoProductionServiceTest {
                 .productionOrderItemId(enMesa.getId()).delivered(false).workStatus("IN_PROGRESS").build());
         statuses.save(ProductionCinchoDayStatusEntity.builder().workDate(dia.minusDays(5)).productionOrderId(vieja.getId())
                 .productionOrderItemId(terminada.getId()).delivered(true).workStatus("COMPLETED").build());
-        // Una OP de otro día ya toda terminada no se arrastra; una cerrada tampoco.
-        ProductionOrderEntity lista = order("OPCF-6", "CINCHOS_FOSSILES", "IN_PROGRESS", dia.minusDays(4), dia);
+        // Del día anterior, una ya toda terminada no se arrastra; una cerrada tampoco.
+        ProductionOrderEntity lista = order("OPCF-6", "CINCHOS_FOSSILES", "IN_PROGRESS", anterior, dia);
         ProductionOrderItemEntity l6 = item(lista, cincho, 1, null);
         statuses.save(ProductionCinchoDayStatusEntity.builder().workDate(dia.minusDays(4)).productionOrderId(lista.getId())
                 .productionOrderItemId(l6.getId()).delivered(true).workStatus("COMPLETED").build());
-        item(order("OPCF-7", "CINCHOS_FOSSILES", "COMPLETED", dia.minusDays(4), dia), cincho, 1, null);
+        item(order("OPCF-7", "CINCHOS_FOSSILES", "COMPLETED", anterior, dia), cincho, 1, null);
+        // Ni lo de más atrás, aunque esté sin terminar: eso confunde.
+        item(order("OPCF-8", "CINCHOS_FOSSILES", "IN_PROGRESS", ProductionPlanningConstants.previousWorkday(anterior), dia),
+                cincho, 3, null);
 
         CinchoProductionResponse.Day day = service.day(dia);
 
         assertThat(day.getOrders()).extracting(CinchoProductionResponse.Order::getCode).containsExactly("OPCF-5");
         CinchoProductionResponse.Order o = day.getOrders().get(0);
-        assertThat(o.getCarriedFrom()).isEqualTo(dia.minusDays(20));
+        assertThat(o.getCarriedFrom()).isEqualTo(anterior);
         assertThat(o.getLines()).extracting(CinchoProductionResponse.Line::getWorkStatus).containsExactly("IN_PROGRESS", "PENDING");
         assertThat(o.getTotalQty()).isEqualTo(6);
 

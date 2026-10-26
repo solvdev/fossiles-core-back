@@ -76,22 +76,6 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
                                                        @Param("statuses") Collection<String> statuses,
                                                        @Param("date") LocalDate date);
 
-    /** Las de días anteriores al cuadro: se arrastran mientras tengan líneas sin terminar (eso se filtra después). */
-    @Query("""
-            SELECT po FROM ProductionOrderEntity po
-            WHERE UPPER(TRIM(po.orderType)) IN :types
-              AND UPPER(COALESCE(po.status, '')) IN :statuses
-              AND COALESCE(po.startDate, po.deliveryDate) < :date
-              AND (UPPER(TRIM(po.orderType)) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
-                   OR EXISTS (SELECT 1 FROM ProductionOrderItemEntity i, ProductEntity p
-                              WHERE i.productionOrderId = po.id AND p.id = i.productId
-                                AND (LOWER(p.name) LIKE '%cincho%' OR LOWER(p.name) LIKE '%pulsera%'
-                                     OR (p.cinchoType IS NOT NULL AND p.cinchoType <> ''))))
-            ORDER BY COALESCE(po.startDate, po.deliveryDate) ASC, po.code ASC
-            """)
-    List<ProductionOrderEntity> findCinchoOrdersBefore(@Param("types") Collection<String> types,
-                                                       @Param("statuses") Collection<String> statuses,
-                                                       @Param("date") LocalDate date);
 
     /** Órdenes abiertas de Luis Felipe: candidatas a una OP consolidada. */
     @Query("""
