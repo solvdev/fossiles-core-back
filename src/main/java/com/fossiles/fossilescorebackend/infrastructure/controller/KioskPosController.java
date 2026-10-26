@@ -5,6 +5,12 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskCashExpense
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionCloseRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeRejectRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosExtraRequestCreateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosHeldCartRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPosExtraRequestResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPosHeldCartResponse;
+import com.fossiles.fossilescorebackend.application.service.KioskPosExtraRequestService;
+import com.fossiles.fossilescorebackend.application.service.KioskPosHeldCartService;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeCompleteRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskExchangePreviewRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSimpleReturnRequest;
@@ -73,6 +79,8 @@ public class KioskPosController {
 
     private final KioskPosService kioskPosService;
     private final KioskExchangeService kioskExchangeService;
+    private final KioskPosExtraRequestService kioskPosExtraRequestService;
+    private final KioskPosHeldCartService kioskPosHeldCartService;
     private final KioscoInternalCountService kioscoInternalCountService;
     private final KioskSalesByProductColorReportService kioskSalesByProductColorReportService;
 
@@ -462,6 +470,76 @@ public class KioskPosController {
             @Valid @RequestBody KioskExchangeRejectRequest request
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskExchangeService.rejectExchange(id, kioskLocationId, request));
+    }
+
+    // --- Complemento extra (solicitud + autorización) ---
+
+    @PostMapping("/extra-requests")
+    public ResponseEntity<KioskPosExtraRequestResponse> createExtraRequest(
+            @Valid @RequestBody KioskPosExtraRequestCreateRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosExtraRequestService.create(request));
+    }
+
+    @GetMapping("/extra-requests")
+    public ResponseEntity<List<KioskPosExtraRequestResponse>> listExtraRequests(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosExtraRequestService.listForKiosk(kioskLocationId));
+    }
+
+    @GetMapping("/extra-requests/pending-authorizations")
+    public ResponseEntity<List<KioskPosExtraRequestResponse>> listPendingExtraRequests(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosExtraRequestService.listPendingAuthorizations(kioskLocationId));
+    }
+
+    @PostMapping("/extra-requests/{id}/authorize")
+    public ResponseEntity<KioskPosExtraRequestResponse> authorizeExtraRequest(@PathVariable Long id)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosExtraRequestService.authorize(id));
+    }
+
+    @PostMapping("/extra-requests/{id}/reject")
+    public ResponseEntity<KioskPosExtraRequestResponse> rejectExtraRequest(
+            @PathVariable Long id,
+            @Valid @RequestBody KioskExchangeRejectRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosExtraRequestService.reject(id, request));
+    }
+
+    @PostMapping("/extra-requests/{id}/cancel")
+    public ResponseEntity<KioskPosExtraRequestResponse> cancelExtraRequest(@PathVariable Long id)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosExtraRequestService.cancel(id));
+    }
+
+    // --- Ventas (carritos) en espera ---
+
+    @PostMapping("/held-carts")
+    public ResponseEntity<KioskPosHeldCartResponse> holdCart(@Valid @RequestBody KioskPosHeldCartRequest request)
+            throws BusinessException {
+        return ResponseEntity.ok(kioskPosHeldCartService.hold(request));
+    }
+
+    @GetMapping("/held-carts")
+    public ResponseEntity<List<KioskPosHeldCartResponse>> listHeldCarts(
+            @RequestParam(required = false) Long kioskLocationId
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskPosHeldCartService.list(kioskLocationId));
+    }
+
+    @PostMapping("/held-carts/{id}/resume")
+    public ResponseEntity<KioskPosHeldCartResponse> resumeHeldCart(@PathVariable Long id)
+            throws BusinessException {
+        return ResponseEntity.ok(kioskPosHeldCartService.resume(id));
+    }
+
+    @DeleteMapping("/held-carts/{id}")
+    public ResponseEntity<Void> discardHeldCart(@PathVariable Long id) throws BusinessException {
+        kioskPosHeldCartService.discard(id);
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/sales/lookup")

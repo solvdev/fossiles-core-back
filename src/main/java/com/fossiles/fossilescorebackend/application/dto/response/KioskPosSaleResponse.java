@@ -145,5 +145,9 @@ public class KioskPosSaleResponse {
         private BigDecimal quantity;
         private BigDecimal unitPrice;
         private BigDecimal lineTotal;
+        /** Complemento extra cobrado POR PIEZA (ya incluido en unitPrice). Null = sin complemento. */
+        private BigDecimal extraAmount;
+        private String extraDescription;
+        private Long extraRequestId;
     }
 }

@@ -4,6 +4,9 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSession
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotionEstimateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosExtraRequestCreateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosHeldCartRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPosExtraRequestResponse;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionTierRequest;
@@ -71,6 +74,12 @@ class KioskPosServiceTest {
 
     @Autowired
     private KioskPosService kioskPosService;
+
+    @Autowired
+    private KioskPosExtraRequestService extraRequestService;
+
+    @Autowired
+    private KioskPosHeldCartService heldCartService;
 
     @Autowired
     private UserRepository userRepository;
@@ -1959,6 +1968,128 @@ class KioskPosServiceTest {
                 .findByLocationIdAndProductIdAndColorId(kioskA.getId(), productId, negro.getId())
                 .map(row -> row.getCurrentStock() != null ? row.getCurrentStock() : 0)
                 .orElse(0);
+    }
+
+    private KioskPosExtraRequestResponse requestExtra(BigDecimal qty, String extra) throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        return extraRequestService.create(KioskPosExtraRequestCreateRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .productId(wallet.getId())
+                .colorId(negro.getId())
+                .quantity(qty)
+                .description("Hebilla grabada")
+                .extraAmount(new BigDecimal(extra))
+                .catalogUnitPrice(new BigDecimal("250.00"))
+                .build());
+    }
+
+    @Test
+    void createSale_withApprovedExtra_chargesExtraWithoutDiscountAndConsumesRequest() throws Exception {
+        KioskPosExtraRequestResponse request = requestExtra(new BigDecimal("2"), "15.00");
+        assertThat(request.getStatus()).isEqualTo("PENDING");
+        assertThat(request.getExtraTotal()).isEqualByComparingTo("30.00");
+
+        KioskPromotionEntity percentPromo = promotionRepository.save(KioskPromotionEntity.builder()
+                .name("10%")
+                .discountType("PERCENT")
+                .discountValue(new BigDecimal("10"))
+                .active(true)
+                .build());
+        KioskPosSaleRequest.ItemRequest withExtra = item(wallet.getId(), negro.getId(), new BigDecimal("2"));
+        withExtra.setExtraRequestId(request.getId());
+        KioskPosSaleRequest sale = KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("1000.00"))
+                .promotionId(percentPromo.getId())
+                .items(List.of(withExtra, item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build();
+
+        // Sin autorizar no se puede cobrar.
+        assertThatThrownBy(() -> kioskPosService.createSale(sale))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("no está autorizado");
+
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+        assertThat(extraRequestService.authorize(request.getId()).getStatus()).isEqualTo("APPROVED");
+
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        KioskPosSaleResponse saved = kioskPosService.createSale(sale);
+
+        // 3 piezas × 250 + extra 2 × 15 = 780; el 10% solo sobre la base (750 → 75).
+        assertThat(saved.getSubtotal()).isEqualByComparingTo("780.00");
+        assertThat(saved.getDiscountAmount()).isEqualByComparingTo("75.00");
+        assertThat(saved.getTotalAmount()).isEqualByComparingTo("705.00");
+        KioskPosSaleResponse.Item extraLine = saved.getItems().stream()
+                .filter(i -> i.getExtraRequestId() != null).findFirst().orElseThrow();
+        assertThat(extraLine.getUnitPrice()).isEqualByComparingTo("265.00");
+        assertThat(extraLine.getExtraAmount()).isEqualByComparingTo("15.00");
+        assertThat(extraLine.getExtraDescription()).isEqualTo("Hebilla grabada");
+
+        // La solicitud queda usada y no se puede reutilizar.
+        assertThat(extraRequestService.listForKiosk(kioskA.getId())).isEmpty();
+        KioskPosSaleRequest reuse = KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("1000.00"))
+                .items(List.of(withExtra))
+                .build();
+        assertThatThrownBy(() -> kioskPosService.createSale(reuse))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("ya se usó");
+    }
+
+    @Test
+    void createSale_extraLineMustMatchRequestedQuantity() throws Exception {
+        KioskPosExtraRequestResponse request = requestExtra(new BigDecimal("2"), "15.00");
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+        extraRequestService.authorize(request.getId());
+
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        KioskPosSaleRequest.ItemRequest wrongQty = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        wrongQty.setExtraRequestId(request.getId());
+        assertThatThrownBy(() -> kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("1000.00"))
+                .items(List.of(wrongQty))
+                .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("no corresponde");
+    }
+
+    @Test
+    void rejectedExtraRequest_blocksSaleAndShowsReason() throws Exception {
+        KioskPosExtraRequestResponse request = requestExtra(BigDecimal.ONE, "20.00");
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+        var rejected = extraRequestService.reject(
+                request.getId(),
+                new com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeRejectRequest("No aplica"));
+        assertThat(rejected.getStatus()).isEqualTo("REJECTED");
+
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        assertThat(extraRequestService.listForKiosk(kioskA.getId()))
+                .singleElement()
+                .satisfies(row -> assertThat(row.getRejectionReason()).isEqualTo("No aplica"));
+        // La encargada no puede autorizar sus propias solicitudes.
+        assertThatThrownBy(() -> extraRequestService.authorize(request.getId()))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void heldCart_roundTripsAndIsRemovedOnResume() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        var held = heldCartService.hold(KioskPosHeldCartRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .label("Cliente gorra")
+                .cartJson("{\"cart\":[{\"key\":\"1\"}]}")
+                .build());
+        assertThat(heldCartService.list(kioskA.getId())).hasSize(1);
+
+        var resumed = heldCartService.resume(held.getId());
+        assertThat(resumed.getCartJson()).contains("\"key\":\"1\"");
+        assertThat(heldCartService.list(kioskA.getId())).isEmpty();
+        assertThatThrownBy(() -> heldCartService.resume(held.getId())).isInstanceOf(BusinessException.class);
     }
 
     private static KioskPosSaleRequest.ItemRequest item(Long productId, Long colorId, BigDecimal qty) {
