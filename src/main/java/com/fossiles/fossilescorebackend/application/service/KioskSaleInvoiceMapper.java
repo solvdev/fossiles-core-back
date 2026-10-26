@@ -93,6 +93,10 @@ public class KioskSaleInvoiceMapper {
             parts.add(line.getColorName().trim());
         }
         String text = String.join(" ", parts).trim();
+        if (line.getExtraRequestId() != null
+                && line.getExtraDescription() != null && !line.getExtraDescription().isBlank()) {
+            text = (text + " + complemento: " + line.getExtraDescription().trim()).trim();
+        }
         if (text.length() > 450) {
             return text.substring(0, 450);
         }

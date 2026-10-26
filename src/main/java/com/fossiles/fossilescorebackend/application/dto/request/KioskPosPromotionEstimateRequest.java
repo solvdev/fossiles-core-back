@@ -38,5 +38,8 @@ public class KioskPosPromotionEstimateRequest {
         @NotNull(message = "La cantidad es obligatoria.")
         @Positive(message = "La cantidad debe ser mayor a cero.")
         private BigDecimal quantity;
+
+        /** Complemento extra autorizado POR PIEZA: suma al total pero no entra a descuentos. */
+        private BigDecimal extraAmount;
     }
 }

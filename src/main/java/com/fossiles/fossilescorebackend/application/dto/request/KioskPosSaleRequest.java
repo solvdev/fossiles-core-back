@@ -86,5 +86,11 @@ public class KioskPosSaleRequest {
 
         /** Precio unitario override (venta de cambio / restore). Null = precio de catálogo POS. */
         private BigDecimal unitPrice;
+
+        /**
+         * Solicitud de complemento extra AUTORIZADA que respalda esta línea. El servidor valida estado,
+         * kiosko, producto y cantidad, y calcula el precio (catálogo + extra por pieza).
+         */
+        private Long extraRequestId;
     }
 }
