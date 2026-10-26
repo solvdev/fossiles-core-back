@@ -50,6 +50,7 @@ class TaxInvoiceServiceFelCfRulesTest {
     @Mock private SecurityUtil securityUtil;
     @Mock private TaxInvoiceAttemptService taxInvoiceAttemptService;
     @Mock private TaxInvoiceAccessGuard taxInvoiceAccessGuard;
+    @Mock private KioscoSaleExitReclassifier kioscoSaleExitReclassifier;
 
     @InjectMocks
     private TaxInvoiceService taxInvoiceService;

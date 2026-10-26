@@ -39,6 +39,10 @@ public class KioskSaleItemEntity {
     @Column(name = "color_name", length = 120)
     private String colorName;
 
+    /** Dimensión de stock vendida (marca, SINTETICO:MARCA, NINO/DAMA o NUEVO/VIEJO). Null en ventas anteriores al campo. */
+    @Column(name = "hardware_condition", length = 40)
+    private String hardwareCondition;
+
     @Column(name = "quantity", precision = 12, scale = 3, nullable = false)
     private BigDecimal quantity;
 

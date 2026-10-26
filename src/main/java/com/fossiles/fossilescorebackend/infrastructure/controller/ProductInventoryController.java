@@ -6,10 +6,12 @@ import com.fossiles.fossilescorebackend.application.dto.response.CriticalProduct
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryKardexResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryLocationResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryOutflowReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ProductKardexHistoricoResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.ProductInventoryOutflowReportService;
 import com.fossiles.fossilescorebackend.application.service.ProductInventoryService;
+import com.fossiles.fossilescorebackend.application.service.ProductKardexHistoricoService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -26,6 +28,7 @@ public class ProductInventoryController {
 
     private final ProductInventoryService productInventoryService;
     private final ProductInventoryOutflowReportService outflowReportService;
+    private final ProductKardexHistoricoService kardexHistoricoService;
 
     // ========== PRODUCT INVENTORY LOCATION ==========
 
@@ -114,6 +117,28 @@ public class ProductInventoryController {
             @PathVariable Long referenceId) {
         List<ProductInventoryKardexResponse> kardex = productInventoryService.getKardexByReference(referenceType, referenceId);
         return ResponseEntity.ok(kardex);
+    }
+
+    // ========== KARDEX HISTÓRICO (archivado por limpiezas, solo consulta) ==========
+
+    @GetMapping("/kardex-historico")
+    public ResponseEntity<ProductKardexHistoricoResponse.Page> searchKardexHistorico(
+            @RequestParam(required = false) Long locationId,
+            @RequestParam(required = false) Long productId,
+            @RequestParam(required = false) String movementType,
+            @RequestParam(required = false) String archiveReference,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(required = false) String reference,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size) {
+        return ResponseEntity.ok(kardexHistoricoService.search(
+                locationId, productId, movementType, archiveReference, from, to, reference, page, size));
+    }
+
+    @GetMapping("/kardex-historico/filters")
+    public ResponseEntity<ProductKardexHistoricoResponse.Filters> kardexHistoricoFilters() {
+        return ResponseEntity.ok(kardexHistoricoService.filters());
     }
 
     @GetMapping("/kardex/outflows-report")

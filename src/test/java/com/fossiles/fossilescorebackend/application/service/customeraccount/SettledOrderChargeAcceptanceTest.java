@@ -15,8 +15,8 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.DUPLICATE_ORDER_CHARGE;
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.PARTIAL_HAS_NO_CHARGE;
+import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.CHARGE_NEEDS_SHIPMENT;
+import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.ORDER_ALREADY_CHARGED;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.TYPE_OPV;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.adjustmentRequest;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.creditRequest;
@@ -44,10 +44,10 @@ class SettledOrderChargeAcceptanceTest extends LfReceivablesH2TestBase {
         ProductionOrderPartialReleaseEntity otherRelease = fx.release(settled.order(), 2);
         ProductShipmentEntity otherShipment = fx.shipment(settled.order(), otherRelease, "ENV-17A-2", "100.00");
 
-        rejectCharge(settled, null, null, DUPLICATE_ORDER_CHARGE);
-        rejectCharge(settled, otherRelease.getId(), otherShipment.getId(), PARTIAL_HAS_NO_CHARGE);
-        rejectCharge(settled, null, otherShipment.getId(), PARTIAL_HAS_NO_CHARGE);
-        rejectCharge(settled, otherRelease.getId(), null, PARTIAL_HAS_NO_CHARGE);
+        rejectCharge(settled, null, null, CHARGE_NEEDS_SHIPMENT);
+        rejectCharge(settled, otherRelease.getId(), otherShipment.getId(), ORDER_ALREADY_CHARGED);
+        rejectCharge(settled, null, otherShipment.getId(), ORDER_ALREADY_CHARGED);
+        rejectCharge(settled, otherRelease.getId(), null, CHARGE_NEEDS_SHIPMENT);
 
         assertThat(fx.balance(settled.customer())).isEqualByComparingTo("0");
         assertThat(activeCharges(settled)).containsExactly(settled.charge().getId());

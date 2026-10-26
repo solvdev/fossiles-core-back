@@ -323,6 +323,56 @@ public interface KioscoMovementRepository extends JpaRepository<KioscoMovementEn
             @Param("sizeKey") String sizeKey
     );
 
+    /**
+     * Igual que {@link #existsPosReferenceMovement} pero distinguiendo la dimension del stock (marca, NINO/DAMA,
+     * NUEVO/VIEJO). Una venta puede traer el mismo producto/color/talla en dos marcas distintas: cada una es
+     * un movimiento propio y la segunda no debe tomarse como "ya aplicada".
+     */
+    @Query("SELECT COUNT(m) > 0 FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
+            + "AND s.productId = :productId "
+            + "AND s.hardwareCondition = :hardwareCondition "
+            + "AND m.referenceId = :referenceId "
+            + "AND m.movementType = :movementType "
+            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
+            + "AND ((:sizeKey IS NULL AND (m.sizeKey IS NULL OR m.sizeKey = '')) "
+            + "OR m.sizeKey = :sizeKey)")
+    boolean existsPosReferenceMovementByHardware(
+            @Param("locationId") Long locationId,
+            @Param("productId") Long productId,
+            @Param("colorId") Long colorId,
+            @Param("referenceId") Long referenceId,
+            @Param("movementType") KioscoMovementType movementType,
+            @Param("sizeKey") String sizeKey,
+            @Param("hardwareCondition") String hardwareCondition
+    );
+
+    /**
+     * Dimension de stock (marca, NINO/DAMA, NUEVO/VIEJO) y cantidad con que quedo registrado el movimiento
+     * original de una linea POS. Cada fila es {@code [hardwareCondition, SUM(quantity)]}, en el orden en que
+     * se registraron. Sirve para que la anulacion devuelva la unidad al MISMO stock que la vendio.
+     */
+    @Query("SELECT s.hardwareCondition, SUM(m.quantity) FROM KioscoMovementEntity m "
+            + "JOIN KioscoStockEntity s ON s.id = m.kioscoStockId "
+            + "WHERE s.locationId = :locationId "
+            + "AND s.productId = :productId "
+            + "AND m.referenceId = :referenceId "
+            + "AND m.movementType = :movementType "
+            + "AND ((:colorId IS NULL AND s.colorId IS NULL) OR s.colorId = :colorId) "
+            + "AND ((:sizeKey IS NULL AND (m.sizeKey IS NULL OR m.sizeKey = '')) "
+            + "OR m.sizeKey = :sizeKey) "
+            + "GROUP BY s.hardwareCondition "
+            + "ORDER BY MIN(m.id)")
+    List<Object[]> sumPosReferenceQuantityByHardware(
+            @Param("locationId") Long locationId,
+            @Param("productId") Long productId,
+            @Param("colorId") Long colorId,
+            @Param("referenceId") Long referenceId,
+            @Param("movementType") KioscoMovementType movementType,
+            @Param("sizeKey") String sizeKey
+    );
+
     @Query("SELECT COUNT(salida) > 0 FROM KioscoMovementEntity salida "
             + "JOIN KioscoStockEntity so ON so.id = salida.kioscoStockId "
             + "JOIN KioscoMovementEntity entrada ON entrada.physicalSlipNumber = salida.physicalSlipNumber "

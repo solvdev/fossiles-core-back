@@ -13,6 +13,8 @@ import com.fossiles.fossilescorebackend.application.dto.response.ProductionDaySa
 import com.fossiles.fossilescorebackend.application.dto.response.TaskResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaskTicketResponse;
 import com.fossiles.fossilescorebackend.application.service.ProductionAutoPlannerService;
+import com.fossiles.fossilescorebackend.application.service.TaskWorkflowService;
+import org.springframework.security.access.prepost.PreAuthorize;
 import com.fossiles.fossilescorebackend.application.service.ProductionDeskCountService;
 import com.fossiles.fossilescorebackend.application.service.TaskDeskHoursService;
 import com.fossiles.fossilescorebackend.application.service.OplDispatchSummaryService;
@@ -87,6 +89,7 @@ public class TaskController {
     private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
     private final ProductionDeskSupervisorRepository productionDeskSupervisorRepository;
     private final ProductionAutoPlannerService productionAutoPlannerService;
+    private final TaskWorkflowService taskWorkflowService;
     private final OplDispatchSummaryService oplDispatchSummaryService;
     private final ProductionPlanningLock productionPlanningLock;
     private final ProductionDeskCountService productionDeskCountService;
@@ -1046,6 +1049,12 @@ public class TaskController {
             throw new BusinessException("Invalid status. Must be: PENDING, IN_PROGRESS, AWAITING_WAREHOUSE, COMPLETED, CANCELLED");
         }
 
+        String reason = body.get("reason");
+        if ("CANCELLED".equals(newStatus) && !newStatus.equals(entity.getStatus())
+                && (reason == null || reason.isBlank())) {
+            throw new BusinessException("Indique el motivo para cancelar la tarea.");
+        }
+
         String effectiveStatus = newStatus;
         if ("COMPLETED".equals(newStatus) && productionTaskLifecycleService.shouldDeferCompletionToWarehouse(entity)) {
             effectiveStatus = ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE;
@@ -1072,6 +1081,7 @@ public class TaskController {
             splitBlockedItemsIntoPendingTask(entity);
         }
 
+        String previousStatus = entity.getStatus();
         entity.setStatus(effectiveStatus);
 
         // Time tracking
@@ -1109,6 +1119,23 @@ public class TaskController {
             entity.setActualDurationMinutes(null);
             entity.setStartTime(null);
         }
+        if ("CANCELLED".equals(effectiveStatus) && !"CANCELLED".equals(previousStatus)) {
+            // Cancelada: sale de la mesa (conserva dónde se trabajó) y sus unidades vuelven a «no
+            // asignado», porque el restante solo cuenta tareas no canceladas.
+            if (entity.getWorkedDesk() == null && entity.getDesk() != null
+                    && "IN_PROGRESS".equals(previousStatus)) {
+                entity.setWorkedDesk(entity.getDesk());
+            }
+            entity.setDesk(null);
+        }
+        if (previousStatus != null && !previousStatus.equals(effectiveStatus)) {
+            // Historial y, al terminar el trabajo, medición del atraso (tiempo sin pausas).
+            Integer worked = taskWorkflowService.onStatusChange(entity, previousStatus, effectiveStatus, reason,
+                    GuatemalaDateTime.now());
+            if (worked != null && "COMPLETED".equals(effectiveStatus)) {
+                entity.setActualDurationMinutes(worked);
+            }
+        }
 
         TaskEntity updated = taskRepository.save(entity);
         if (deskToFreeAfterComplete != null && backfillAnchorDate != null
@@ -1118,6 +1145,53 @@ public class TaskController {
         }
         productionTaskLifecycleService.syncProductionOrderStatusFromTasks(updated.getProductionOrderId());
         return ResponseEntity.ok(toResponse(updated));
+    }
+
+    // ==================== PAUSA, ATRASO E HISTORIAL ====================
+
+    /** Pausa una tarea en proceso. El motivo es obligatorio y el reloj se detiene. */
+    @PutMapping("/{id:\\d+}/pause")
+    public ResponseEntity<TaskResponse> pauseTask(@PathVariable Long id,
+                                                  @RequestBody(required = false) Map<String, String> body)
+            throws ResourceNotFoundException, BusinessException {
+        TaskEntity task = taskWorkflowService.pause(id, body == null ? null : body.get("reason"));
+        productionTaskLifecycleService.syncProductionOrderStatusFromTasks(task.getProductionOrderId());
+        return ResponseEntity.ok(toResponse(task));
+    }
+
+    /** Reanuda una tarea pausada. */
+    @PutMapping("/{id:\\d+}/resume")
+    public ResponseEntity<TaskResponse> resumeTask(@PathVariable Long id,
+                                                   @RequestBody(required = false) Map<String, String> body)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(toResponse(taskWorkflowService.resume(id, body == null ? null : body.get("reason"))));
+    }
+
+    /**
+     * Perdona el atraso de una tarea (queda comisionable otra vez). Solo el jefe: motivo
+     * obligatorio; se guardan usuario y fecha.
+     */
+    @PostMapping("/{id:\\d+}/forgive-delay")
+    @PreAuthorize("hasAnyAuthority('ADMIN')")
+    public ResponseEntity<TaskResponse> forgiveDelay(@PathVariable Long id, @RequestBody Map<String, String> body)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(toResponse(taskWorkflowService.forgiveDelay(id, body == null ? null : body.get("reason"))));
+    }
+
+    /** Agrega productos a una tarea abierta (p. ej. la que se arrastró al día siguiente). */
+    @PostMapping("/{id:\\d+}/items")
+    public ResponseEntity<TaskResponse> addTaskItems(
+            @PathVariable Long id,
+            @RequestBody List<CreateManualTaskRequest.ManualTaskItemRequest> items)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(toResponse(taskWorkflowService.addItems(id, items)));
+    }
+
+    /** Historial de la tarea: qué le pasó, cuándo, quién y por qué. */
+    @GetMapping("/{id:\\d+}/history")
+    public ResponseEntity<List<TaskEventEntity>> taskHistory(@PathVariable Long id)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(taskWorkflowService.history(id));
     }
 
     /** Visible en el paquete (no private) para que la prueba de la compuerta pueda construirlo. */
@@ -2826,6 +2900,14 @@ public class TaskController {
                 .startedAt(entity.getStartedAt())
                 .completedAt(entity.getCompletedAt())
                 .actualDurationMinutes(entity.getActualDurationMinutes())
+                .pausedAt(entity.getPausedAt())
+                .expectedMinutes(entity.getExpectedMinutes())
+                .delayMinutes(entity.getDelayMinutes())
+                .delayed(entity.getDelayed())
+                .commissionEligible(entity.getCommissionEligible())
+                .delayForgivenBy(entity.getDelayForgivenBy())
+                .delayForgivenAt(entity.getDelayForgivenAt())
+                .delayForgivenReason(entity.getDelayForgivenReason())
                 .wasteQuantity(entity.getWasteQuantity())
                 .wasteNotes(entity.getWasteNotes())
                 .leatherDelivered(entity.getLeatherDelivered())
@@ -2860,9 +2942,11 @@ public class TaskController {
     }
 
     /** Primera prioridad que el usuario puede asignar a mano: 0 y 1 son cupos reservados. */
-    private static final int MIN_MANUAL_SCHEDULING_PRIORITY = 2;
+    private static final int MIN_MANUAL_SCHEDULING_PRIORITY =
+            ProductionPlanningConstants.MIN_MANUAL_SCHEDULING_PRIORITY;
     /** Última: 100 es el valor por defecto de las órdenes sin prioridad propia. */
-    private static final int MAX_MANUAL_SCHEDULING_PRIORITY = 99;
+    private static final int MAX_MANUAL_SCHEDULING_PRIORITY =
+            ProductionPlanningConstants.MAX_MANUAL_SCHEDULING_PRIORITY;
 
     private void mergeSchedulingPrioritiesFromRequest(Map<String, Integer> schedulingPriorities) {
         if (schedulingPriorities == null || schedulingPriorities.isEmpty()) {

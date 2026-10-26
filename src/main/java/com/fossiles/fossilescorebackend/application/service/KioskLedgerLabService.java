@@ -960,7 +960,7 @@ public class KioskLedgerLabService {
         int qty = safeInt(movement.getQuantity());
         return switch (movement.getMovementType()) {
             case ENTRADA, TRASLADO_ENTRADA, DEVOLUCION_CLIENTE, ANULACION -> qty;
-            case VENTA, DEVOLUCION_DEPOSITO, DEVOLUCION_A_CLIENTE, TRASLADO_SALIDA, MERMA -> -qty;
+            case VENTA, DEVOLUCION_DEPOSITO, DEVOLUCION_A_CLIENTE, TRASLADO_SALIDA, MERMA, SALIDA -> -qty;
             case AJUSTE, CAMBIO -> safeInt(movement.getStockAfter()) - safeInt(movement.getStockBefore());
         };
     }
@@ -1071,6 +1071,7 @@ public class KioskLedgerLabService {
             return null;
         }
         if ("INVOICE".equals(base.getReferenceType())
+                || KioscoInventoryService.REFERENCE_TYPE_POS_SALE.equals(base.getReferenceType())
                 || entity.getMovementType() == KioscoMovementType.VENTA
                 || entity.getMovementType() == KioscoMovementType.ANULACION) {
             return kioskSaleRepository.findById(entity.getReferenceId())

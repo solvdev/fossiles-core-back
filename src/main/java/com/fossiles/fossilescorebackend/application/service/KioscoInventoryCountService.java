@@ -75,7 +75,6 @@ import java.util.stream.Collectors;
 public class KioscoInventoryCountService {
 
     private static final List<String> COUNT_LOCATION_KEYS = List.of("V1", "V2", "V3", "V4", "V5", "V6", "V7", "E", "BO");
-    private static final List<String> CINCHO_SIZE_LOCATION_KEYS = List.of("E", "BO");
     private static final String UNCATEGORIZED_LABEL = "Sin categoría";
     private static final String PACKAGING_CATEGORY_KEY = "PACKAGING";
     private static final String PACKAGING_CATEGORY_NAME = "Empaques";
@@ -622,10 +621,13 @@ public class KioscoInventoryCountService {
 
             String productColorKey = itemKey(kardexRow.getProductId(), kardexRow.getColorId());
             String rowDimension = ProductBrandNames.resolveDistinctDimension(kardexRow.getHardwareCondition());
-            List<KioscoStockEntity> stocksForRow = stocksByProductColor.getOrDefault(productColorKey, List.of())
-                    .stream()
-                    .filter(s -> rowDimension == null
-                            || rowDimension.equals(ProductBrandNames.resolveDistinctDimension(s.getHardwareCondition())))
+            List<KioscoStockEntity> productColorStocks = stocksByProductColor.getOrDefault(productColorKey, List.of());
+            // Solo los stocks de la MISMA dimensión (NUEVO+VIEJO comparten dimensión nula). Si la fila sin
+            // dimensión tomara también los stocks NINO/DAMA/marca, heredaría sus tallas y movimientos y
+            // saldría repetida y sin contar junto a la fila de la dimensión (cinchos Niño Entre Cueros).
+            List<KioscoStockEntity> stocksForRow = productColorStocks.stream()
+                    .filter(s -> Objects.equals(
+                            rowDimension, ProductBrandNames.resolveDistinctDimension(s.getHardwareCondition())))
                     .collect(Collectors.toList());
             KioscoStockEntity stock = stocksForRow.isEmpty() ? stockByKey.get(productColorKey) : stocksForRow.get(0);
             Map<String, KioscoInventoryService.SizeKardexBucket> sizeKardexForStock = mergeSizeKardexForStocks(
@@ -645,6 +647,11 @@ public class KioscoInventoryCountService {
             Map<String, Integer> counts = new LinkedHashMap<>();
             int total = computePhysicalCountTotal(
                     product, countedValues, physicalSizes, physicalSizesByLocation);
+            // Stock residual sin dimensión: sin kardex, sin existencias, sin nada contado y sin observaciones.
+            if (rowDimension == null && total == 0 && generalObservation.isEmpty() && sizeObservations.isEmpty()
+                    && isEmptyStockWithDimensionedSiblings(kardexRow, stocksForRow, productColorStocks)) {
+                continue;
+            }
 
             for (String key : COUNT_LOCATION_KEYS) {
                 int value = countedValues.getOrDefault(key, BigDecimal.ZERO).intValue();
@@ -860,9 +867,9 @@ public class KioscoInventoryCountService {
         }
         for (Map.Entry<String, Map<String, Integer>> locEntry : raw.entrySet()) {
             String locKey = locEntry.getKey() == null ? "" : locEntry.getKey().trim().toUpperCase(Locale.ROOT);
-            if (!CINCHO_SIZE_LOCATION_KEYS.contains(locKey)) {
+            if (!COUNT_LOCATION_KEYS.contains(locKey)) {
                 throw new BusinessException("Ubicacion de cincho invalida: " + locEntry.getKey()
-                        + ". Solo se admite E (vitrina) o BO (bodega).");
+                        + ". Solo se admite V1..V7, E (vitrinas) o BO (bodega).");
             }
             Map<String, BigDecimal> sizes = normalizePhysicalSizes(locEntry.getValue());
             normalized.put(locKey, sizes);
@@ -920,6 +927,31 @@ public class KioscoInventoryCountService {
             return stock.getHardwareCondition();
         }
         return null;
+    }
+
+    /**
+     * Fila sin dimensión (herraje NUEVO/VIEJO) totalmente vacía mientras el mismo producto/color ya tiene
+     * filas por dimensión (NINO/DAMA/marca): es un stock residual en 0 que solo ensuciaría el conteo.
+     */
+    private boolean isEmptyStockWithDimensionedSiblings(
+            KioscoKardexReportResponse.KioscoKardexRow kardexRow,
+            List<KioscoStockEntity> stocksForRow,
+            List<KioscoStockEntity> productColorStocks
+    ) {
+        boolean hasDimensionedSibling = productColorStocks.stream()
+                .anyMatch(s -> ProductBrandNames.resolveDistinctDimension(s.getHardwareCondition()) != null);
+        if (!hasDimensionedSibling) {
+            return false;
+        }
+        boolean noActivity = !hasKardexActivity(kardexRow)
+                && safeInt(kardexRow.getSalidaDevolucion()) == 0
+                && safeInt(kardexRow.getCambioIn()) == 0
+                && safeInt(kardexRow.getCambioOut()) == 0;
+        boolean noStock = stocksForRow.stream()
+                .allMatch(s -> safeInt(s.getCurrentStock()) == 0
+                        && resolveSystemSizesForStocks(List.of(s)).values().stream()
+                                .allMatch(q -> q == null || q == 0));
+        return noActivity && noStock;
     }
 
     private boolean shouldIncludeInPhysicalCount(KioscoKardexReportResponse.KioscoKardexRow kardexRow) {
@@ -1855,13 +1887,12 @@ public class KioscoInventoryCountService {
         Map<String, Integer> counts = new LinkedHashMap<>();
         boolean foss = CinchoProductUtils.isFossCinchoProduct(product);
 
-        if (foss && base.getPhysicalSizesByLocation() != null) {
-            for (String loc : CINCHO_SIZE_LOCATION_KEYS) {
+        // FOSS (E/BO) y Entre Cueros (V1..V7, E) guardan el conteo por talla desglosado por ubicación.
+        if (base.getPhysicalSizesByLocation() != null
+                && (foss || hasSizesByLocation(base.getPhysicalSizesByLocation()))) {
+            for (String loc : COUNT_LOCATION_KEYS) {
                 Map<String, Integer> locSizes = base.getPhysicalSizesByLocation().get(loc);
                 counts.put(loc, locSizes != null ? locSizes.getOrDefault(size, 0) : 0);
-            }
-            for (String key : COUNT_LOCATION_KEYS) {
-                counts.putIfAbsent(key, 0);
             }
             return counts;
         }
@@ -1889,19 +1920,26 @@ public class KioscoInventoryCountService {
         return counts;
     }
 
+    private static boolean hasSizesByLocation(Map<String, Map<String, Integer>> byLocation) {
+        return byLocation != null && !byLocation.isEmpty();
+    }
+
     private int resolvePhysicalTotalForSize(
             KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow base,
             ProductEntity product,
             String size,
             Map<String, Integer> counts
     ) {
-        if (CinchoProductUtils.isFossCinchoProduct(product) && base.getPhysicalSizesByLocation() != null) {
-            int vitrine = Optional.ofNullable(base.getPhysicalSizesByLocation().get("E"))
-                    .map(m -> m.getOrDefault(size, 0)).orElse(0);
-            int warehouse = Optional.ofNullable(base.getPhysicalSizesByLocation().get("BO"))
-                    .map(m -> m.getOrDefault(size, 0)).orElse(0);
-            if (vitrine + warehouse > 0) {
-                return vitrine + warehouse;
+        if (base.getPhysicalSizesByLocation() != null
+                && (CinchoProductUtils.isFossCinchoProduct(product)
+                        || hasSizesByLocation(base.getPhysicalSizesByLocation()))) {
+            int byLocationTotal = 0;
+            for (String loc : COUNT_LOCATION_KEYS) {
+                byLocationTotal += Optional.ofNullable(base.getPhysicalSizesByLocation().get(loc))
+                        .map(m -> m.getOrDefault(size, 0)).orElse(0);
+            }
+            if (byLocationTotal > 0) {
+                return byLocationTotal;
             }
         }
         if (base.getPhysicalSizes() != null) {
@@ -1921,7 +1959,7 @@ public class KioscoInventoryCountService {
             return null;
         }
         Map<String, Map<String, Integer>> result = new LinkedHashMap<>();
-        for (String loc : CINCHO_SIZE_LOCATION_KEYS) {
+        for (String loc : COUNT_LOCATION_KEYS) {
             Map<String, Integer> locSizes = byLocation.get(loc);
             if (locSizes != null && locSizes.containsKey(size)) {
                 int qty = locSizes.get(size);

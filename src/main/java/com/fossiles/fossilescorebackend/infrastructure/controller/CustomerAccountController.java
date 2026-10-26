@@ -100,6 +100,16 @@ public class CustomerAccountController {
         return ResponseEntity.ok(customerAccountService.quoteOrderCharge(productionOrderId));
     }
 
+    /**
+     * Cargo por despacho de un envío, calculado en el servidor: productos realmente enviados más su costo de envío.
+     * No usa el monto del cliente.
+     */
+    @GetMapping("/shipments/{productShipmentId}/charge-quote")
+    public ResponseEntity<OrderChargeQuoteResponse> quoteShipmentCharge(@PathVariable Long productShipmentId)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(customerAccountService.quoteShipmentCharge(productShipmentId));
+    }
+
     @GetMapping("/customers/{customerId}/balance")
     public ResponseEntity<CustomerAccountBalanceResponse> getBalance(@PathVariable Long customerId)
             throws ResourceNotFoundException {

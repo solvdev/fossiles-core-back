@@ -115,7 +115,8 @@ public class KioscoInventoryController {
                 request.getPhysicalSlipNumber(),
                 request.getReason(),
                 request.getPhysicalCountId(),
-                request.getHardwareCondition()
+                request.getHardwareCondition(),
+                request.getApto()
         ));
     }
 

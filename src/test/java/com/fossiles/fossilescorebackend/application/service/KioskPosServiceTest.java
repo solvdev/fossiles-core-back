@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSessionOpenRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotionEstimateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
@@ -14,6 +15,8 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskPosReports
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosSaleResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoMovementType;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskDailySalesHistEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
@@ -28,6 +31,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.RoleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioscoStockRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskDailySalesHistRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskPromotionRepository;
@@ -97,6 +101,9 @@ class KioskPosServiceTest {
 
     @Autowired
     private KioskSaleRepository saleRepository;
+
+    @Autowired
+    private KioscoMovementRepository kioscoMovementRepository;
 
     @Autowired
     private TaxInvoiceService taxInvoiceService;
@@ -226,6 +233,184 @@ class KioskPosServiceTest {
                 .findByProductIdAndLocationIdAndColorId(wallet.getId(), kioskA.getId(), negro.getId())
                 .orElseThrow();
         assertThat(legacy.getQuantity()).isEqualByComparingTo("5");
+    }
+
+    @Test
+    void createSale_keepsSoldBrandOnSaleLineAndDetail() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kioskA.getId())
+                .productId(wallet.getId())
+                .colorId(negro.getId())
+                .hardwareCondition("LEVIS")
+                .currentStock(4)
+                .build());
+
+        KioskPosSaleRequest.ItemRequest levis = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        levis.setHardwareCondition("LEVIS");
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .items(List.of(levis, item(wallet.getId(), negro.getId(), new BigDecimal("1"))))
+                .build());
+
+        KioskPosSaleResponse.Item branded = sale.getItems().get(0);
+        assertThat(branded.getHardwareCondition()).isEqualTo("LEVIS");
+        assertThat(branded.getHardwareLabel()).isEqualTo("LEVIS");
+
+        KioskPosSaleResponse.Item defaultLine = sale.getItems().get(1);
+        assertThat(defaultLine.getHardwareCondition()).isEqualTo("NUEVO");
+    }
+
+    @Test
+    void createSale_discountsEachBrandWhenSameProductAndColorAreSoldInTwoBrands() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        for (String brand : List.of("LEVIS", "NAUTICA")) {
+            kioscoStockRepository.save(KioscoStockEntity.builder()
+                    .locationId(kioskA.getId())
+                    .productId(wallet.getId())
+                    .colorId(negro.getId())
+                    .hardwareCondition(brand)
+                    .currentStock(4)
+                    .build());
+        }
+
+        KioskPosSaleRequest.ItemRequest levis = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        levis.setHardwareCondition("LEVIS");
+        KioskPosSaleRequest.ItemRequest nautica = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        nautica.setHardwareCondition("NAUTICA");
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .items(List.of(levis, nautica))
+                .build());
+
+        // Las dos marcas deben descontar su propia unidad (antes la segunda se descartaba).
+        assertThat(stockOf("LEVIS")).isEqualTo(3);
+        assertThat(stockOf("NAUTICA")).isEqualTo(3);
+
+        kioskPosService.voidSale(
+                sale.getId(), kioskA.getId(), KioskSaleVoidRequest.builder().reason("error de venta").build());
+
+        assertThat(stockOf("LEVIS")).isEqualTo(4);
+        assertThat(stockOf("NAUTICA")).isEqualTo(4);
+        assertThat(stockOf("NUEVO")).isEqualTo(5);
+    }
+
+    @Test
+    void createSale_entrecuerosWithoutInvoice_registersStockExitInsteadOfSale() throws Exception {
+        enableEntrecuerosKiosk();
+        wallet.setEntrecuerosEnabled(true);
+        wallet = productRepository.save(wallet);
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .requestInvoice(false)
+                .shippingSheetNumber("1842")
+                .items(List.of(item(wallet.getId(), negro.getId(), new BigDecimal("2"))))
+                .build());
+
+        assertThat(sale.getFelStatus()).isEqualTo("SKIPPED");
+        assertThat(currentStock(wallet.getId())).isEqualTo(3);
+        List<KioscoMovementEntity> movements = movementsOfSale(sale.getId());
+        assertThat(movements).hasSize(1);
+        KioscoMovementEntity exit = movements.get(0);
+        // Sin factura no es venta: el kardex lo cuenta como salida (Sal.) y el motivo trae el número de venta.
+        assertThat(exit.getMovementType()).isEqualTo(KioscoMovementType.SALIDA);
+        assertThat(exit.getReason()).isEqualTo("Venta sin factura " + sale.getSaleNumber());
+        assertThat(exit.getStockBefore() - exit.getStockAfter()).isEqualTo(2);
+        assertThat(KioscoInventoryService.isSalidaVentaSinFactura(exit)).isTrue();
+
+        // La anulación devuelve las unidades al mismo stock aunque no exista un movimiento VENTA.
+        kioskPosService.voidSale(
+                sale.getId(), kioskA.getId(), KioskSaleVoidRequest.builder().reason("error de venta").build());
+
+        assertThat(currentStock(wallet.getId())).isEqualTo(5);
+        assertThat(movementsOfSale(sale.getId()))
+                .extracting(KioscoMovementEntity::getMovementType)
+                .containsExactlyInAnyOrder(KioscoMovementType.SALIDA, KioscoMovementType.ANULACION);
+    }
+
+    @Test
+    void createSale_entrecuerosWithInvoice_keepsSaleMovement() throws Exception {
+        enableEntrecuerosKiosk();
+        wallet.setEntrecuerosEnabled(true);
+        wallet = productRepository.save(wallet);
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .requestInvoice(true)
+                .shippingSheetNumber("1843")
+                .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        List<KioscoMovementEntity> movements = movementsOfSale(sale.getId());
+        assertThat(movements).hasSize(1);
+        assertThat(movements.get(0).getMovementType()).isEqualTo(KioscoMovementType.VENTA);
+        assertThat(KioscoInventoryService.isSalidaVentaSinFactura(movements.get(0))).isFalse();
+    }
+
+    private List<KioscoMovementEntity> movementsOfSale(Long saleId) {
+        return kioscoMovementRepository.findAll().stream()
+                .filter(m -> saleId.equals(m.getReferenceId()))
+                .toList();
+    }
+
+    private int stockOf(String hardware) {
+        return kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        kioskA.getId(), wallet.getId(), negro.getId(), hardware)
+                .orElseThrow()
+                .getCurrentStock();
+    }
+
+    @Test
+    void voidSale_returnsUnitsToTheBrandStockTheyWereSoldFrom() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kioskA.getId())
+                .productId(wallet.getId())
+                .colorId(negro.getId())
+                .hardwareCondition("LEVIS")
+                .currentStock(4)
+                .build());
+
+        // Dos líneas de la misma marca: se descuentan juntas y deben regresar juntas.
+        KioskPosSaleRequest.ItemRequest first = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        first.setHardwareCondition("LEVIS");
+        KioskPosSaleRequest.ItemRequest second = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        second.setHardwareCondition("LEVIS");
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .items(List.of(first, second))
+                .build());
+
+        kioskPosService.voidSale(
+                sale.getId(), kioskA.getId(), KioskSaleVoidRequest.builder().reason("error de venta").build());
+
+        KioscoStockEntity levis = kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        kioskA.getId(), wallet.getId(), negro.getId(), "LEVIS")
+                .orElseThrow();
+        KioscoStockEntity nuevo = kioscoStockRepository
+                .findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        kioskA.getId(), wallet.getId(), negro.getId(), "NUEVO")
+                .orElseThrow();
+        assertThat(levis.getCurrentStock()).isEqualTo(4);
+        // La fila genérica NUEVO no debe recibir unidades fantasma de la anulación.
+        assertThat(nuevo.getCurrentStock()).isEqualTo(5);
     }
 
     @Test
@@ -1418,6 +1603,14 @@ class KioskPosServiceTest {
         assertThat(KioskPosService.qualifiesForBankDepositReport(industrial)).isTrue();
         assertThat(KioskPosService.qualifiesForBankDepositReport(gt)).isTrue();
         assertThat(KioskPosService.qualifiesForBankDepositReport(withoutSlip)).isFalse();
+    }
+
+    @Test
+    void normalizeDepositBankCode_recognizesBanrural() {
+        assertThat(KioskPosService.normalizeDepositBankCode("BANRURAL")).isEqualTo("BANRURAL");
+        assertThat(KioskPosService.normalizeDepositBankCode("Banrural")).isEqualTo("BANRURAL");
+        assertThat(KioskPosService.normalizeDepositBankCode("Banco Industrial")).isEqualTo("INDUSTRIAL");
+        assertThat(KioskPosService.normalizeDepositBankCode("otro")).isNull();
     }
 
     @Test

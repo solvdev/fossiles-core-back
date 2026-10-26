@@ -7,6 +7,8 @@ public enum KioscoMovementType {
     DEVOLUCION_CLIENTE,
     /** Producto entregado al cliente (egreso manual) → Sal. El egreso de boleta con diferencia a cobrar se clasifica como venta en el kardex. */
     DEVOLUCION_A_CLIENTE,
+    /** Salida de inventario que no es venta ni devolución (p. ej. venta POS sin factura) → Sal. en kardex y conteo. */
+    SALIDA,
     TRASLADO_SALIDA,
     TRASLADO_ENTRADA,
     MERMA,

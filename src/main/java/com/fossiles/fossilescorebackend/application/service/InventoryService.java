@@ -1822,17 +1822,34 @@ public class InventoryService {
                 throw new BusinessException("Stock insuficiente en ubicación origen. Disponible: " + available + ", Solicitado: " + request.getQuantity());
             }
         } else {
+            ProductEntity transferProduct = productRepository.findById(request.getProductId()).orElse(null);
+            String size = ProductInventorySizesJson.normalizeKey(request.getSizeKey());
+            if (isCinchoProduct(transferProduct) && size.isEmpty()) {
+                String code = transferProduct.getCode() != null ? transferProduct.getCode() : "#" + transferProduct.getId();
+                throw new BusinessException("El cincho " + code + " debe trasladarse indicando la talla.");
+            }
             // Para productos, SIEMPRE considerar colorId para soportar variantes de color
             ProductInventoryLocation originInventory = productInventoryLocationRepository
                     .findByProductIdAndLocationIdAndColorId(
-                        request.getProductId(), 
+                        request.getProductId(),
                         request.getFromLocationId(),
                         request.getColorId()) // Puede ser null, pero se busca específicamente con null
                     .orElse(null);
-            
+
             if (originInventory == null || originInventory.getQuantity().compareTo(request.getQuantity()) < 0) {
                 BigDecimal available = originInventory != null ? originInventory.getQuantity() : BigDecimal.ZERO;
                 throw new BusinessException("Stock insuficiente en ubicación origen. Disponible: " + available + ", Solicitado: " + request.getQuantity());
+            }
+            if (!size.isEmpty() && !kioskInventoryGuard.isKioskLocation(
+                    locationRepository.findById(request.getFromLocationId()).orElse(null))) {
+                BigDecimal availableSize = productInventoryService.getAvailableQuantity(
+                        request.getProductId(), request.getFromLocationId(), request.getColorId(), size);
+                if (CinchoProductUtils.isFossCinchoProduct(transferProduct)
+                        && availableSize.compareTo(request.getQuantity()) < 0) {
+                    throw new BusinessException("Stock insuficiente de talla " + size + " en ubicación origen. Disponible: "
+                            + availableSize.stripTrailingZeros().toPlainString() + ", Solicitado: "
+                            + request.getQuantity().stripTrailingZeros().toPlainString());
+                }
             }
         }
 
@@ -1846,6 +1863,9 @@ public class InventoryService {
                 .materialId(request.getMaterialId())
                 .productId(request.getProductId())
                 .colorId(request.getColorId()) // Incluir colorId para productos con variantes
+                .sizeLabel(request.getProductId() == null ? null
+                        : (ProductInventorySizesJson.normalizeKey(request.getSizeKey()).isEmpty() ? null
+                                : ProductInventorySizesJson.normalizeKey(request.getSizeKey())))
                 .quantity(request.getQuantity())
                 .reason(request.getReason())
                 .physicalSlipNumber(physicalSlipNumber)
@@ -1911,6 +1931,7 @@ public class InventoryService {
                     .materialId(item.getMaterialId())
                     .productId(item.getProductId())
                     .colorId(item.getColorId())
+                    .sizeKey(item.getSizeKey())
                     .quantity(item.getQuantity())
                     .reason(request.getReason())
                     .physicalSlipNumber(bulkPhysicalSlip)
@@ -2055,15 +2076,17 @@ public class InventoryService {
 
             // Decrementar origen (esto consumirá los lotes FIFO si existen)
             // Pasar colorId para soportar variantes de color
+            String sizeLabel = transfer.getSizeLabel();
             productInventoryService.decrementInventory(
-                transfer.getProductId(), 
-                transfer.getFromLocationId(), 
+                transfer.getProductId(),
+                transfer.getFromLocationId(),
                 colorId, // Pasar colorId de la transferencia
                 transfer.getQuantity(),
                 "TRANSFER",
                 transfer.getId(),
                 "TRF-" + transfer.getId(),
-                "Transferencia a " + (toLocation != null ? toLocation.getName() : "")
+                "Transferencia a " + (toLocation != null ? toLocation.getName() : ""),
+                sizeLabel
             );
             
             // Incrementar destino con el costo FIFO calculado (esto creará un nuevo lote FIFO)
@@ -2079,15 +2102,22 @@ public class InventoryService {
                         transfer.getId(),
                         "TRF-" + transfer.getId(),
 
-                        "Transferencia desde " + (fromLocation != null ? fromLocation.getName() : "")
+                        "Transferencia desde " + (fromLocation != null ? fromLocation.getName() : ""),
+                        sizeLabel
                 );
             } else {
                 // Si no hay costo FIFO, solo incrementar sin crear lote FIFO
                 productInventoryService.incrementInventory(
-                    transfer.getProductId(), 
-                    transfer.getToLocationId(), 
+                    transfer.getProductId(),
+                    transfer.getToLocationId(),
                     colorId, // Pasar colorId de la transferencia
-                    transfer.getQuantity());
+                    transfer.getQuantity(),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    sizeLabel);
             }
 
             // Obtener inventarios después de modificar (considerando colorId)
@@ -2107,20 +2137,26 @@ public class InventoryService {
             BigDecimal originAfterQty = originAfter != null ? originAfter.getQuantity() : BigDecimal.ZERO;
             BigDecimal destAfterQty = destAfter != null ? destAfter.getQuantity() : BigDecimal.ZERO;
 
-            productInventoryService.recordProductMovementIfAbsent(
-                    transfer.getProductId(),
-                    transfer.getToLocationId(),
-                    colorId,
-                    "TRANSFER_IN",
-                    transfer.getQuantity(),
-                    destBefore,
-                    destAfterQty,
-                    null,
-                    "TRANSFER",
-                    transfer.getId(),
-                    "TRF-" + transfer.getId(),
-                    "Transferencia desde " + (fromLocation != null ? fromLocation.getName() : "")
-            );
+            if (!kioskInventoryGuard.isKioskLocation(toLocation)
+                    && !productInventoryService.hasProductKardexMovement("TRANSFER", transfer.getId(), "TRANSFER_IN",
+                    transfer.getProductId(), transfer.getToLocationId(), colorId)) {
+                productInventoryService.recordMovement(
+                        transfer.getProductId(),
+                        transfer.getToLocationId(),
+                        colorId,
+                        "TRANSFER_IN",
+                        transfer.getQuantity(),
+                        destBefore,
+                        destAfterQty,
+                        null,
+                        "TRANSFER",
+                        transfer.getId(),
+                        "TRF-" + transfer.getId(),
+                        "Transferencia desde " + (fromLocation != null ? fromLocation.getName() : ""),
+                        sizeLabel,
+                        null
+                );
+            }
 
             if (kioskInventoryGuard.isKioskLocation(fromLocation) && kioskInventoryGuard.isKioskLocation(toLocation)) {
                 kioscoInventoryService.registrarTrasladoDesdeIntegracion(
@@ -2130,7 +2166,8 @@ public class InventoryService {
                         colorId,
                         transfer.getQuantity(),
                         transfer.getUpdatedBy(),
-                        transfer.getId()
+                        transfer.getId(),
+                        sizeLabel
                 );
             } else if (kioskInventoryGuard.isKioskLocation(toLocation)) {
                 kioscoInventoryService.registrarEntradaPorTransferenciaInventario(
@@ -2140,7 +2177,8 @@ public class InventoryService {
                         colorId,
                         transfer.getQuantity(),
                         transfer.getId(),
-                        transfer.getUpdatedBy()
+                        transfer.getUpdatedBy(),
+                        sizeLabel
                 );
             } else if (kioskInventoryGuard.isKioskLocation(fromLocation)) {
                 kioscoInventoryService.registrarSalidaPorTransferenciaInventario(
@@ -2150,7 +2188,8 @@ public class InventoryService {
                         colorId,
                         transfer.getQuantity(),
                         transfer.getId(),
-                        transfer.getUpdatedBy()
+                        transfer.getUpdatedBy(),
+                        sizeLabel
                 );
             }
         }
@@ -2240,6 +2279,7 @@ public class InventoryService {
                 .productName(product != null ? product.getName() : null)
                 .colorId(entity.getColorId())
                 .colorName(color != null ? color.getName() : null)
+                .sizeLabel(entity.getSizeLabel())
                 .quantity(entity.getQuantity())
                 .reason(entity.getReason())
                 .physicalSlipNumber(entity.getPhysicalSlipNumber())
@@ -2288,6 +2328,7 @@ public class InventoryService {
                 throw new ResourceNotFoundException("Location", request.getLocationId());
             }
             kioskInventoryGuard.assertSupervisorMayModifyKioskInventory(request.getLocationId());
+            assertProductSystemStockIsCurrent(request);
         }
 
         boolean allowZeroDifference = Boolean.TRUE.equals(request.getAllowZeroDifference());
@@ -2374,6 +2415,34 @@ public class InventoryService {
         executeAdjustment(saved);
 
         return toInventoryAdjustmentResponse(saved);
+    }
+
+    /**
+     * El ajuste fija el stock en el conteo físico y registra en kardex físico − sistema. Si el stock
+     * del sistema que vio quien contó ya no es el de la base (hubo envíos o recepciones entre el conteo
+     * y el ajuste), el kardex quedaría descuadrado: se rechaza para que se recargue y se vuelva a contar.
+     */
+    private void assertProductSystemStockIsCurrent(InventoryAdjustmentRequest request) throws BusinessException {
+        LocationEntity location = locationRepository.findById(request.getLocationId()).orElse(null);
+        if (kioskInventoryGuard.isKioskLocation(location) || request.getSystemStock() == null) {
+            return;
+        }
+        BigDecimal current = productInventoryLocationRepository
+                .findWithLockByProductIdAndLocationIdAndColorId(
+                        request.getProductId(), request.getLocationId(), request.getColorId())
+                .map(pil -> pil.getQuantity() != null ? pil.getQuantity() : BigDecimal.ZERO)
+                .orElse(BigDecimal.ZERO);
+        if (current.compareTo(request.getSystemStock()) != 0) {
+            throw new BusinessException("El stock del sistema cambió mientras se hacía el conteo (ahora "
+                    + current.stripTrailingZeros().toPlainString() + ", el ajuste indica "
+                    + request.getSystemStock().stripTrailingZeros().toPlainString()
+                    + "). Recargue el inventario y vuelva a registrar el ajuste.");
+        }
+    }
+
+    /** Cinchos (FOSS o línea de cinchos): siempre se mueven indicando la talla. */
+    private static boolean isCinchoProduct(ProductEntity product) {
+        return CinchoProductUtils.isFossCinchoProduct(product) || CinchoProductUtils.isCinchoLineForProduction(product);
     }
 
     /**
@@ -2477,7 +2546,9 @@ public class InventoryService {
                 productInventoryLocationRepository.save(inventory);
             }
 
-            if (adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) != 0) {
+            if (fossWithSizes) {
+                recordSizedAdjustmentMovements(adjustment, quantityBefore);
+            } else if (adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) != 0) {
                 String movementType = adjustment.getAdjustmentQuantity().compareTo(BigDecimal.ZERO) > 0
                         ? "ADJUSTMENT_IN"
                         : "ADJUSTMENT_OUT";
@@ -2497,6 +2568,44 @@ public class InventoryService {
                         adjustment.getReason()
                 );
             }
+        }
+    }
+
+    /**
+     * Cinchos: un movimiento por talla con su diferencia. Con un solo movimiento sin talla, un
+     * recálculo del kardex (Product Ledger Lab) perdería el desglose por talla.
+     */
+    private void recordSizedAdjustmentMovements(InventoryAdjustment adjustment, BigDecimal quantityBefore)
+            throws ResourceNotFoundException {
+        Map<String, BigDecimal> system = ProductInventorySizesJson.parse(adjustment.getSystemSizesData());
+        Map<String, BigDecimal> physical = ProductInventorySizesJson.parse(adjustment.getPhysicalSizesData());
+        java.util.TreeSet<String> sizes = new java.util.TreeSet<>();
+        sizes.addAll(system.keySet());
+        sizes.addAll(physical.keySet());
+        BigDecimal running = quantityBefore;
+        for (String size : sizes) {
+            BigDecimal diff = physical.getOrDefault(size, BigDecimal.ZERO)
+                    .subtract(system.getOrDefault(size, BigDecimal.ZERO));
+            if (diff.compareTo(BigDecimal.ZERO) == 0) {
+                continue;
+            }
+            BigDecimal after = running.add(diff);
+            productInventoryService.recordMovement(
+                    adjustment.getProductId(),
+                    adjustment.getLocationId(),
+                    adjustment.getColorId(),
+                    diff.compareTo(BigDecimal.ZERO) > 0 ? "ADJUSTMENT_IN" : "ADJUSTMENT_OUT",
+                    diff,
+                    running,
+                    after,
+                    null,
+                    "ADJUSTMENT",
+                    adjustment.getId(),
+                    "AJT-" + adjustment.getId(),
+                    adjustment.getReason(),
+                    size,
+                    null);
+            running = after;
         }
     }
 

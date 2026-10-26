@@ -42,4 +42,10 @@ public class KioscoInventoryDevolucionDepositoRequest {
 
     /** Herraje: NUEVO o VIEJO. */
     private String hardwareCondition;
+
+    /**
+     * Condición del producto que regresa a bodega: true/null entra a Devoluciones (revendible),
+     * false a Devoluciones no aptas.
+     */
+    private Boolean apto;
 }

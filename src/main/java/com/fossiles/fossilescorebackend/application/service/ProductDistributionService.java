@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.dto.request.OpcShipmentGenerateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ConfirmReceiptRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.PendingShipmentReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductDistributionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentDestinationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentObservationsRequest;
@@ -37,6 +38,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -59,16 +61,18 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional
 public class ProductDistributionService {
 
     /**
-     * Temporal: Preparar envíos marca SENT aunque falte stock en Devoluciones / Bodega PT.
-     * Descuenta lo disponible y no bloquea el envío por el faltante.
+     * Si es true, Preparar envíos marca SENT aunque falte stock en Devoluciones / Bodega PT y solo
+     * descuenta lo disponible. Se mantiene en false: enviar sin stock crea inventario en el kiosko
+     * que nunca salió de bodega.
      */
-    static final boolean SKIP_DISPATCH_STOCK_CHECK = true;
+    static final boolean SKIP_DISPATCH_STOCK_CHECK = false;
 
     private static final java.util.Set<String> TERMINAL_SHIPMENT_STATUSES =
             java.util.Set.of("SENT", "DELIVERED", "COMPLETED", "RECEIVED", "CANCELLED");
@@ -110,6 +114,7 @@ public class ProductDistributionService {
     private final SecurityUtil securityUtil;
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final ProductionOrderPartialReleaseRepository partialReleaseRepository;
+    private final CustomerAccountService customerAccountService;
     private final ObjectMapper objectMapper;
     private final EmployeeChargeService employeeChargeService;
 
@@ -1342,6 +1347,7 @@ public class ProductDistributionService {
     /**
      * Asigna o limpia el costo de envío del documento (Preparar envíos / parciales).
      */
+    @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse updateShipmentShippingCost(
             Long shipmentId,
             ProductShipmentShippingCostRequest request)
@@ -1355,7 +1361,9 @@ public class ProductDistributionService {
             shipment.setShippingCost(normalizeShippingCost(request.getShippingCost()));
         }
         shipment.setUpdatedBy(securityUtil.getCurrentUserId());
-        return toShipmentResponse(shipmentRepository.save(shipment));
+        ProductShipmentEntity saved = shipmentRepository.save(shipment);
+        customerAccountService.syncShipmentEntries(shipmentId);
+        return toShipmentResponse(saved);
     }
 
     /**
@@ -1470,7 +1478,7 @@ public class ProductDistributionService {
      * Si el envío ya salió de PT, revierte la salida anterior y aplica la nueva composición.
      */
     @Transactional(rollbackFor = Exception.class)
-    public ProductShipmentResponse updateShipmentProducts(Long shipmentId, List<ProductShipmentRequest.ProductShipmentDetailRequest> products) 
+    public ProductShipmentResponse updateShipmentProducts(Long shipmentId, List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
@@ -1531,6 +1539,8 @@ public class ProductDistributionService {
 
         shipment.setUpdatedBy(securityUtil.getCurrentUserId());
         shipmentRepository.save(shipment);
+        // Si el envío ya está despachado, su cargo sigue lo realmente enviado.
+        customerAccountService.syncShipmentEntries(shipmentId);
         return toShipmentResponse(shipment);
     }
 
@@ -1573,12 +1583,36 @@ public class ProductDistributionService {
     }
 
     private void reverseSentShipmentDispatchInventory(ProductShipmentEntity shipment) throws BusinessException {
+        productInventoryService.clearTransitForShipment(
+                shipment.getId(),
+                shipment.getShipmentNumber(),
+                "Reversión de tránsito del envío " + shipment.getShipmentNumber());
         productInventoryService.reverseDispatchOutflows(
                 "SHIPMENT",
                 shipment.getId(),
                 ProductInventoryService.MOVEMENT_SHIPMENT,
                 shipment.getShipmentNumber(),
                 "Reversión de salida del envío " + shipment.getShipmentNumber());
+    }
+
+    /**
+     * Lo que sale de bodega hacia un destino que confirma recepción queda en "En tránsito" hasta
+     * que se recibe; sin destino (OPC / ENVI interno) no hay recepción y no pasa por tránsito.
+     */
+    private void creditShipmentLineInTransit(ProductShipmentEntity shipment, ProductShipmentDetailEntity detail,
+            BigDecimal qty, String destinationLabel) throws BusinessException {
+        if (shipment.getLocationId() == null) {
+            return;
+        }
+        productInventoryService.creditTransitForLine(
+                detail.getProductId(),
+                detail.getColorId(),
+                detail.getSizeLabel(),
+                qty,
+                shipment.getId(),
+                shipment.getShipmentNumber(),
+                "En tránsito hacia " + destinationLabel,
+                detail.getId());
     }
 
     private void redispatchShipmentProducts(ProductShipmentEntity shipment) throws BusinessException {
@@ -1604,7 +1638,9 @@ public class ProductDistributionService {
                     shipment.getShipmentNumber(),
                     "Reenvío tras edición hacia " + destinationLabel,
                     ProductInventoryService.MOVEMENT_SHIPMENT,
-                    detail.getId());
+                    detail.getId(),
+                    !SKIP_DISPATCH_STOCK_CHECK);
+            creditShipmentLineInTransit(shipment, detail, qty, destinationLabel);
         }
     }
 
@@ -1627,6 +1663,7 @@ public class ProductDistributionService {
      * Revierte un envío en tránsito (SENT) a confirmado y devuelve el inventario a PT/Devoluciones.
      * No aplica si el kiosko ya recibió el envío (DELIVERED u otros estados finales).
      */
+    @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse revertSentShipment(Long shipmentId)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
@@ -1637,6 +1674,9 @@ public class ProductDistributionService {
                     "Solo se puede regresar a bodega un envío en tránsito (SENT). Estado actual: " + currentStatus);
         }
         employeeChargeService.assertShipmentCanBeReverted(shipmentId);
+        // Lo que ya no salió no se cobra: se anula el cargo del despacho (o se rechaza si ya tiene pagos).
+        customerAccountService.voidEntriesForShipment(shipmentId,
+                "Despacho revertido del envío " + shipment.getShipmentNumber());
 
         if (shipmentDispatchesFromPtWarehouses(shipment)) {
             reverseSentShipmentDispatchInventory(shipment);
@@ -1665,6 +1705,7 @@ public class ProductDistributionService {
      * En SENT revierte primero la salida de Bodega PT/Devoluciones.
      * No aplica a envíos ya recibidos en kiosko (DELIVERED u otros finales).
      */
+    @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse cancelShipment(Long shipmentId)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
@@ -1682,6 +1723,9 @@ public class ProductDistributionService {
         }
         // Una compra de colaborador ya descontada o cobrada no se anula; si no, su cargo se anula junto con el envío.
         Optional<EmployeeChargeEntity> purchaseCharge = employeeChargeService.lockCancellableChargeForShipment(shipmentId);
+        // Un envío anulado no se cobra: se anula el cargo del despacho (o se rechaza si ya tiene pagos).
+        customerAccountService.voidEntriesForShipment(shipmentId,
+                "Envío anulado " + shipment.getShipmentNumber());
 
         boolean wasConfirmedOrSent = "CONFIRMED".equals(currentStatus) || "SENT".equals(currentStatus);
         if ("SENT".equals(currentStatus) && shipmentDispatchesFromPtWarehouses(shipment)) {
@@ -1940,6 +1984,24 @@ public class ProductDistributionService {
         if (!"CONFIRMED".equals(currentStatus)) {
             throw new BusinessException("El envío debe estar confirmado para poder enviarse. Estado actual: " + currentStatus);
         }
+        // Aplica a todo envío, también a los OPI de solo documento: ningún cincho sale sin talla.
+        assertShipmentDetailsHaveCinchoSize(shipmentId);
+
+        if (CustomerAccountService.isHistoricalShipment(shipment)) {
+            // Envío histórico (orden anterior a Preparar envíos): no tiene productos, destino ni inventario que mover.
+            // Solo se marca como despachado, con su fecha original, y entra a cuentas por cobrar.
+            shipment.setStatus("SENT");
+            shipment.setSentAt(shipment.getCreatedAt() != null ? shipment.getCreatedAt() : LocalDateTime.now());
+            shipment.setSentBy(securityUtil.getCurrentUserId());
+            shipment.setUpdatedBy(securityUtil.getCurrentUserId());
+            ProductShipmentEntity historical = shipmentRepository.save(shipment);
+            try {
+                customerAccountService.createChargeForDispatchedShipment(shipmentId);
+            } catch (BusinessException ex) {
+                log.warn("Envío histórico {} sin cargo de cuentas por cobrar: {}", historical.getShipmentNumber(), ex.getMessage());
+            }
+            return toShipmentResponse(historical);
+        }
 
         Long shipmentLocationId = shipment.getLocationId();
         Optional<ProductionOrderEntity> linkedPoOpt = shipment.getProductionOrderId() == null
@@ -2042,6 +2104,7 @@ public class ProductDistributionService {
                     ProductInventoryService.MOVEMENT_SHIPMENT,
                     detail.getId(),
                     !SKIP_DISPATCH_STOCK_CHECK);
+            creditShipmentLineInTransit(shipment, detail, qtyToSend, destinationLabel);
         }
 
         return transitionConfirmedShipmentToSent(shipmentId, shipment);
@@ -2080,6 +2143,14 @@ public class ProductDistributionService {
 
         if (saved.getDistributionId() != null) {
             markDistributionDispatchedIfAllSent(saved.getDistributionId());
+        }
+
+        // El cargo de cuentas por cobrar nace al despachar. Si no corresponde o falla una validación, no se
+        // bloquea la salida física: el envío queda visible en cartera como despachado sin cargo.
+        try {
+            customerAccountService.createChargeForDispatchedShipment(shipmentId);
+        } catch (BusinessException ex) {
+            log.warn("Envío {} despachado sin cargo de cuentas por cobrar: {}", saved.getShipmentNumber(), ex.getMessage());
         }
 
         return toShipmentResponse(saved);
@@ -2177,6 +2248,16 @@ public class ProductDistributionService {
             }
 
             applyReceiptInventoryForDetail(shipment, detail, qtyReceived, shipmentReceiptLineReference(shipment, detail));
+            // Lo recibido sale de tránsito; la diferencia queda en tránsito como pendiente de recepción.
+            productInventoryService.debitTransitForLine(
+                    detail.getProductId(),
+                    detail.getColorId(),
+                    detail.getSizeLabel(),
+                    qtyReceived,
+                    shipment.getId(),
+                    shipment.getShipmentNumber(),
+                    "Recepción en kiosko del envío " + shipment.getShipmentNumber(),
+                    detail.getId());
         }
 
         applyReceiptPackingItemsToKioskStock(shipment, details);
@@ -2201,6 +2282,99 @@ public class ProductDistributionService {
             }
         }
 
+        return toShipmentResponse(shipmentRepository.findById(shipmentId).orElse(shipment));
+    }
+
+    /**
+     * Resuelve unidades que quedaron pendientes (en tránsito) al confirmar la recepción: se reciben
+     * en el kiosko o, solo un administrador, se regresan a Bodega PT.
+     */
+    public ProductShipmentResponse resolvePendingReceipt(Long shipmentId, PendingShipmentReceiptRequest body)
+            throws ResourceNotFoundException, BusinessException {
+        ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Shipment", shipmentId));
+        String currentStatus = shipment.getStatus() == null ? "" : shipment.getStatus().trim().toUpperCase();
+        if (!"DELIVERED".equals(currentStatus)) {
+            throw new BusinessException(
+                    "Solo se resuelven pendientes de envíos ya recibidos. Estado actual: " + shipment.getStatus());
+        }
+        if (shipment.getLocationId() == null) {
+            throw new BusinessException("El envío no tiene kiosko destino.");
+        }
+        if (body == null || body.getItems() == null || body.getItems().isEmpty()) {
+            throw new BusinessException("Indique las líneas pendientes a resolver.");
+        }
+        Set<Long> scope = resolveReceiptLocationScope();
+        assertMayAccessKioskLocation(shipment.getLocationId(), scope);
+
+        Map<Long, ProductShipmentDetailEntity> detailsById = shipmentDetailRepository.findByShipmentId(shipmentId)
+                .stream()
+                .collect(Collectors.toMap(ProductShipmentDetailEntity::getId, d -> d));
+        String number = shipment.getShipmentNumber();
+        boolean anyReturned = false;
+        for (PendingShipmentReceiptRequest.Item item : body.getItems()) {
+            if (item == null || item.getDetailId() == null) {
+                continue;
+            }
+            ProductShipmentDetailEntity detail = detailsById.get(item.getDetailId());
+            if (detail == null) {
+                throw new BusinessException("La línea " + item.getDetailId() + " no pertenece al envío " + number);
+            }
+            BigDecimal qty = item.getQuantity() != null ? item.getQuantity() : BigDecimal.ZERO;
+            if (qty.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            if (qty.stripTrailingZeros().scale() > 0) {
+                throw new BusinessException("La cantidad pendiente debe ser un número entero.");
+            }
+            BigDecimal sent = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
+            BigDecimal received = detail.getQuantityReceived() != null ? detail.getQuantityReceived() : sent;
+            BigDecimal pending = sent.subtract(received).max(BigDecimal.ZERO);
+            if (qty.compareTo(pending) > 0) {
+                throw new BusinessException("La línea " + detail.getId() + " solo tiene "
+                        + pending.stripTrailingZeros().toPlainString() + " unidades pendientes.");
+            }
+
+            String action = item.getAction() == null || item.getAction().isBlank()
+                    ? PendingShipmentReceiptRequest.ACTION_RECEIVE
+                    : item.getAction().trim().toUpperCase(Locale.ROOT);
+            if (PendingShipmentReceiptRequest.ACTION_RECEIVE.equals(action)) {
+                // Referencia propia por recepción (#R + recibido previo): no choca con la recepción
+                // original de la línea y un reintento con el mismo estado no duplica la entrada.
+                String lineRef = shipmentReceiptLineReference(shipment, detail) + "#R" + received.intValue();
+                applyReceiptInventoryForDetail(shipment, detail, qty, lineRef);
+                productInventoryService.debitTransitForLine(
+                        detail.getProductId(), detail.getColorId(), detail.getSizeLabel(), qty,
+                        shipment.getId(), number, "Recepción pendiente del envío " + number, detail.getId());
+                detail.setQuantityReceived(received.add(qty));
+            } else if (PendingShipmentReceiptRequest.ACTION_RETURN_TO_WAREHOUSE.equals(action)) {
+                if (scope != null) {
+                    throw new BusinessException("Solo un administrador puede regresar pendientes a Bodega PT.");
+                }
+                productInventoryService.returnTransitToBodegaPt(
+                        detail.getProductId(), detail.getColorId(), detail.getSizeLabel(), qty,
+                        shipment.getId(), number, "Pendiente del envío " + number + " regresa a Bodega PT",
+                        detail.getId());
+                // Lo que vuelve a bodega deja de estar pendiente y deja de contar como enviado.
+                detail.setQuantity(sent.subtract(qty));
+                anyReturned = true;
+            } else {
+                throw new BusinessException("Acción no válida para pendientes: " + item.getAction());
+            }
+            BigDecimal newSent = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
+            BigDecimal newReceived = detail.getQuantityReceived() != null ? detail.getQuantityReceived() : newSent;
+            detail.setQuantityDifference(newSent.subtract(newReceived).max(BigDecimal.ZERO));
+            if (item.getLineNotes() != null && !item.getLineNotes().isBlank()) {
+                String prev = detail.getReceivedLineNotes();
+                String merged = (prev == null || prev.isBlank() ? "" : prev + " | ") + item.getLineNotes().trim();
+                detail.setReceivedLineNotes(merged.length() > 500 ? merged.substring(0, 500) : merged);
+            }
+            shipmentDetailRepository.save(detail);
+        }
+        if (anyReturned) {
+            // El cargo del despacho sigue lo realmente enviado.
+            customerAccountService.syncShipmentEntries(shipmentId);
+        }
         return toShipmentResponse(shipmentRepository.findById(shipmentId).orElse(shipment));
     }
 

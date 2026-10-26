@@ -1,6 +1,5 @@
 package com.fossiles.fossilescorebackend.application.service.customeraccount;
 
-import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.CustomerEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
@@ -28,15 +27,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.DUPLICATE_ORDER_CHARGE;
 import static com.fossiles.fossilescorebackend.application.service.customeraccount.LfReceivablesFixture.TYPE_OPC;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Two order-level charges at once, on throwaway PostgreSQL, with phase 1 applied and phase 2 not yet applied.
- * Skipped when Docker is unavailable.
+ * Two dispatches of the same shipment at once, on throwaway PostgreSQL, with phase 1 applied and phase 2 not yet
+ * applied; then the unique indexes of phase 2 and of the dispatch-charge migration. Skipped when Docker is unavailable.
  */
 @Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest
@@ -44,6 +42,7 @@ class ConcurrentDuplicateChargeAcceptanceTest {
 
     private static final String PHASE1 = "scripts/migration-customer-account-lf-phase1.sql";
     private static final String PHASE2 = "scripts/migration-customer-account-lf-phase2.sql";
+    private static final String SHIPMENT_CHARGE = "scripts/migration-customer-account-shipment-charge.sql";
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
@@ -68,8 +67,8 @@ class ConcurrentDuplicateChargeAcceptanceTest {
     private JdbcTemplate jdbc;
 
     @Test
-    @DisplayName("Phase 1 only: the customer lock leaves one charge; phase 2 then rejects a duplicate insert")
-    void concurrentIdenticalChargesAreBothInserted() throws Exception {
+    @DisplayName("Phase 1 only: the customer lock leaves one charge per shipment; the indexes then reject duplicates")
+    void concurrentDispatchesOfOneShipmentCreateOneCharge() throws Exception {
         LfMigrationScripts.apply(POSTGRES, PHASE1);
         assertThat(indexCount("uq_cae_one_active_charge_per_order")).isZero();
 
@@ -81,26 +80,25 @@ class ConcurrentDuplicateChargeAcceptanceTest {
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
         int created = 0;
-        int rejected = 0;
+        int skipped = 0;
         List<Throwable> unexpected = new ArrayList<>();
         try {
-            Callable<Object> submit = () -> {
+            Callable<Object> dispatch = () -> {
                 try {
-                    return fx.charge(customer, order, null, null, "1968.00");
+                    return fx.dispatch(shipment);
                 } catch (Exception ex) {
                     return ex;
                 }
             };
-            List<Future<Object>> results = pool.invokeAll(List.of(submit, submit), 30, TimeUnit.SECONDS);
+            List<Future<Object>> results = pool.invokeAll(List.of(dispatch, dispatch), 30, TimeUnit.SECONDS);
             for (Future<Object> result : results) {
                 Object value = result.get();
-                if (value instanceof BusinessException business) {
-                    assertThat(business).hasMessage(DUPLICATE_ORDER_CHARGE);
-                    rejected++;
-                } else if (value instanceof Throwable failure) {
+                if (value instanceof Throwable failure) {
                     unexpected.add(failure);
-                } else {
+                } else if (((java.util.Optional<?>) value).isPresent()) {
                     created++;
+                } else {
+                    skipped++;
                 }
             }
         } finally {
@@ -109,15 +107,29 @@ class ConcurrentDuplicateChargeAcceptanceTest {
 
         assertThat(unexpected).isEmpty();
         assertThat(created).isEqualTo(1);
-        assertThat(rejected).isEqualTo(1);
+        assertThat(skipped).isEqualTo(1);
         assertThat(fx.activeCharges(customer)).hasSize(1);
         assertThat(fx.activeCharges(customer).get(0).getAmount()).isEqualByComparingTo("1968.00");
-        assertThat(fx.activeCharges(customer).get(0).getProductionOrderId()).isEqualTo(order.getId());
+        assertThat(fx.activeCharges(customer).get(0).getProductShipmentId()).isEqualTo(shipment.getId());
         assertThatCode(() -> fx.catalogRows(customer)).doesNotThrowAnyException();
         assertThat(fx.catalogRow(customer, shipment).isHasCharge()).isTrue();
 
         LfMigrationScripts.apply(POSTGRES, PHASE2);
+        LfMigrationScripts.apply(POSTGRES, SHIPMENT_CHARGE);
         assertThat(indexCount("uq_cae_one_active_charge_per_order")).isEqualTo(1);
+        assertThat(indexCount("uq_cae_one_active_charge_per_shipment")).isEqualTo(1);
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO customer_account_entry
+                    (customer_id, entry_type, entry_date, amount, status, production_order_id, product_shipment_id)
+                VALUES (?, 'CHARGE', DATE '2026-09-01', 10.00, 'ACTIVE', ?, ?)
+                """, customer.getId(), order.getId(), shipment.getId()))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("uq_cae_one_active_charge_per_shipment");
+        jdbc.update("""
+                INSERT INTO customer_account_entry
+                    (customer_id, entry_type, entry_date, amount, status, production_order_id)
+                VALUES (?, 'CHARGE', DATE '2026-09-01', 10.00, 'ACTIVE', ?)
+                """, customer.getId(), order.getId());
         assertThatThrownBy(() -> jdbc.update("""
                 INSERT INTO customer_account_entry
                     (customer_id, entry_type, entry_date, amount, status, production_order_id)
@@ -132,7 +144,7 @@ class ConcurrentDuplicateChargeAcceptanceTest {
                 """, customer.getId()))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .hasMessageContaining("chk_customer_account_entry_charge_order");
-        assertThat(fx.activeCharges(customer)).hasSize(1);
+        assertThat(fx.activeCharges(customer)).hasSize(2);
     }
 
     private int indexCount(String indexName) {

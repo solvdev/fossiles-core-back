@@ -334,6 +334,53 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
+    void upsertItems_guardaCinchoPorTallaEnVitrinasV1aV7() throws Exception {
+        KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder()
+                .id(countId)
+                .locationId(locationId)
+                .periodFrom(from)
+                .periodTo(to)
+                .status(KioscoPhysicalCountStatus.DRAFT)
+                .generatedBy(userId)
+                .build();
+        when(countRepository.findById(countId)).thenReturn(Optional.of(count));
+        stubPrincipalKardex(List.of(kardexRow(10)));
+
+        AtomicReference<KioscoPhysicalCountItemEntity> savedItemRef = new AtomicReference<>();
+        when(itemRepository.findByCountIdAndProductIdAndColorIdAndHardwareCondition(countId, productId, colorId, "NUEVO")).thenReturn(Optional.empty());
+        when(itemRepository.save(any(KioscoPhysicalCountItemEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountItemEntity item = inv.getArgument(0);
+            if (item.getId() == null) {
+                item.setId(901L);
+            }
+            savedItemRef.set(item);
+            return item;
+        });
+        when(itemRepository.findByCountId(countId)).thenAnswer(inv -> {
+            KioscoPhysicalCountItemEntity saved = savedItemRef.get();
+            return saved != null ? List.of(saved) : List.of();
+        });
+
+        java.util.Map<String, java.util.Map<String, Integer>> byLocation = new java.util.LinkedHashMap<>();
+        byLocation.put("V1", java.util.Map.of("28", 2));
+        byLocation.put("V3", java.util.Map.of("28", 1, "30", 4));
+        byLocation.put("E", java.util.Map.of("30", 1));
+
+        KioscoPhysicalCountItemUpsertRequest request = KioscoPhysicalCountItemUpsertRequest.builder()
+                .productId(productId)
+                .colorId(colorId)
+                .counts(java.util.Map.of("V1", 2, "V3", 5, "E", 1))
+                .physicalSizes(java.util.Map.of("28", 3, "30", 5))
+                .physicalSizesByLocation(byLocation)
+                .build();
+
+        service.upsertItems(countId, List.of(request));
+
+        String stored = savedItemRef.get().getSizeLocationCountsData();
+        assertThat(stored).contains("V1").contains("V3").contains("E");
+    }
+
+    @Test
     void upsertItems_falla_siTallaNegativa() {
         KioscoPhysicalCountEntity count = KioscoPhysicalCountEntity.builder().id(countId).locationId(locationId).build();
         when(countRepository.findById(countId)).thenReturn(Optional.of(count));
@@ -675,6 +722,160 @@ class KioscoInventoryCountServiceTest {
         assertThat(rows.stream().map(r -> r.getEntradas())).containsExactly(1, 2, 3);
         assertThat(rows.stream().map(r -> r.getInventarioFinal())).containsExactly(1, 2, 3);
         assertThat(report.getTotalGeneral().getInventarioFinal()).isEqualTo(6);
+    }
+
+    private com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity cinchoJrStock(
+            long id, Long cinchoProductId, String hardware, int current, String sizesJson
+    ) {
+        return com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity.builder()
+                .id(id)
+                .locationId(locationId)
+                .productId(cinchoProductId)
+                .colorId(colorId)
+                .hardwareCondition(hardware)
+                .currentStock(current)
+                .sizesData(sizesJson)
+                .build();
+    }
+
+    private KioscoKardexReportResponse.KioscoKardexRow cinchoJrKardex(
+            Long cinchoProductId, String hardware, int entradas
+    ) {
+        return KioscoKardexReportResponse.KioscoKardexRow.builder()
+                .productId(cinchoProductId).productCode("L-04JR").productName("CINCHO CASUAL LEVIS")
+                .colorId(colorId).colorName("CAFE").hardwareCondition(hardware).entradas(entradas).build();
+    }
+
+    /** El servicio consulta el kardex con {@link LocalDateTime}; se stubea esa sobrecarga. */
+    private void stubKardexDateTime(
+            List<KioscoKardexReportResponse.KioscoKardexRow> rows,
+            Map<Long, Map<String, KioscoInventoryService.SizeKardexBucket>> bySize
+    ) throws BusinessException, ResourceNotFoundException {
+        when(kioscoInventoryService.buildKardexRows(
+                eq(locationId), any(LocalDateTime.class), any(LocalDateTime.class), eq(true),
+                any(LocalDateTime.class), eq(countId)))
+                .thenReturn(rows);
+        when(kioscoInventoryService.buildKardexByStockAndSize(
+                eq(locationId), any(LocalDateTime.class), any(LocalDateTime.class), eq(countId)))
+                .thenReturn(bySize);
+    }
+
+    @Test
+    void buildReport_cinchoJrNoRepiteFilasDeNinoYDamaEnStockNuevoVacio() throws Exception {
+        // Entre Cueros: stock NINO (talla 20), DAMA (talla 30) y un NUEVO residual en 0.
+        // El NUEVO vacío no debe heredar las tallas de NINO/DAMA ni salir como líneas repetidas sin contar.
+        Long cinchoProductId = 77L;
+        long stockNuevo = 9001L;
+        long stockNino = 9002L;
+        long stockDama = 9003L;
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(cinchoProductId).code("L-04JR").name("CINCHO CASUAL LEVIS")
+                        .categoryId(categoryId).cinchoType("CASUAL").build()
+        ));
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
+                cinchoJrStock(stockNuevo, cinchoProductId, "NUEVO", 0, "{}"),
+                cinchoJrStock(stockNino, cinchoProductId, "NINO", 2, "{\"20\":2}"),
+                cinchoJrStock(stockDama, cinchoProductId, "DAMA", 3, "{\"30\":3}")
+        ));
+        stubKardexDateTime(
+                List.of(
+                        cinchoJrKardex(cinchoProductId, "NUEVO", 0),
+                        cinchoJrKardex(cinchoProductId, "NINO", 2),
+                        cinchoJrKardex(cinchoProductId, "DAMA", 3)),
+                Map.of(
+                        stockNino, Map.of("20", KioscoInventoryService.SizeKardexBucket.of(0, 0, 2, 0, 0, 0)),
+                        stockDama, Map.of("30", KioscoInventoryService.SizeKardexBucket.of(0, 0, 3, 0, 0, 0))));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
+
+        var rows = report.getCategories().get(0).getRows();
+        assertThat(rows).hasSize(2);
+        assertThat(rows.stream().map(r -> r.getHardwareCondition())).containsExactlyInAnyOrder("NINO", "DAMA");
+        assertThat(rows.stream().map(r -> r.getSizeLabel())).containsExactlyInAnyOrder("20", "30");
+        assertThat(report.getTotalGeneral().getInventarioFinal()).isEqualTo(5);
+    }
+
+    @Test
+    void buildReport_cinchoJrOcultaStockNuevoVacioAunqueTengaConteoGuardadoEnCeros() throws Exception {
+        Long cinchoProductId = 79L;
+        long stockNuevo = 9201L;
+        long stockNino = 9202L;
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(cinchoProductId).code("L-04JR").name("CINCHO CASUAL LEVIS")
+                        .categoryId(categoryId).cinchoType("CASUAL").build()
+        ));
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
+                cinchoJrStock(stockNuevo, cinchoProductId, "NUEVO", 0, "{}"),
+                cinchoJrStock(stockNino, cinchoProductId, "NINO", 2, "{\"20\":2}")
+        ));
+        // El front guardó la fila NUEVO con ceros al editar el producto.
+        when(itemRepository.findByCountId(any())).thenReturn(List.of(
+                com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountItemEntity.builder()
+                        .countId(countId).productId(cinchoProductId).colorId(colorId)
+                        .hardwareCondition("NUEVO").countsData("{}").build()));
+        stubKardexDateTime(
+                List.of(
+                        cinchoJrKardex(cinchoProductId, "NUEVO", 0),
+                        cinchoJrKardex(cinchoProductId, "NINO", 2)),
+                Map.of(stockNino, Map.of("20", KioscoInventoryService.SizeKardexBucket.of(0, 0, 2, 0, 0, 0))));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
+
+        var rows = report.getCategories().get(0).getRows();
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getHardwareCondition()).isEqualTo("NINO");
+    }
+
+    @Test
+    void buildReport_cinchoJrStockNuevoConMovimientoPropioNoHeredaTallasDeNinoYDama() throws Exception {
+        Long cinchoProductId = 78L;
+        long stockNuevo = 9101L;
+        long stockNino = 9102L;
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(cinchoProductId).code("L-04JR").name("CINCHO CASUAL LEVIS")
+                        .categoryId(categoryId).cinchoType("CASUAL").build()
+        ));
+        when(kioscoStockRepository.findByLocationIdOrderByProductIdAscColorIdAscHardwareConditionAsc(any())).thenReturn(List.of(
+                cinchoJrStock(stockNuevo, cinchoProductId, "NUEVO", 1, "{\"22\":1}"),
+                cinchoJrStock(stockNino, cinchoProductId, "NINO", 2, "{\"20\":2}")
+        ));
+        stubKardexDateTime(
+                List.of(
+                        cinchoJrKardex(cinchoProductId, "NUEVO", 1),
+                        cinchoJrKardex(cinchoProductId, "NINO", 2)),
+                Map.of(
+                        stockNuevo, Map.of("22", KioscoInventoryService.SizeKardexBucket.of(0, 0, 1, 0, 0, 0)),
+                        stockNino, Map.of("20", KioscoInventoryService.SizeKardexBucket.of(0, 0, 2, 0, 0, 0))));
+        when(countRepository.findByLocationIdAndPeriodFromAndPeriodTo(locationId, from, to)).thenReturn(Optional.empty());
+        when(countRepository.save(any(KioscoPhysicalCountEntity.class))).thenAnswer(inv -> {
+            KioscoPhysicalCountEntity entity = inv.getArgument(0);
+            entity.setId(countId);
+            return entity;
+        });
+
+        KioscoPhysicalCountReportResponse report = service.startOrGetSession(locationId, from.toString(), to.toString());
+
+        var rows = report.getCategories().get(0).getRows();
+        assertThat(rows).hasSize(2);
+        var ninoRow = rows.stream().filter(r -> "NINO".equals(r.getHardwareCondition())).findFirst().orElseThrow();
+        var nuevoRow = rows.stream().filter(r -> !"NINO".equals(r.getHardwareCondition())).findFirst().orElseThrow();
+        assertThat(ninoRow.getSizeLabel()).isEqualTo("20");
+        assertThat(ninoRow.getInventarioFinal()).isEqualTo(2);
+        assertThat(nuevoRow.getSizeLabel()).isEqualTo("22");
+        assertThat(nuevoRow.getInventarioFinal()).isEqualTo(1);
+        assertThat(report.getTotalGeneral().getInventarioFinal()).isEqualTo(3);
     }
 
     @Test

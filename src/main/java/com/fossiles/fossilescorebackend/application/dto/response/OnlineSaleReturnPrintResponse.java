@@ -19,6 +19,8 @@ public class OnlineSaleReturnPrintResponse {
     private Long onlineSaleId;
     private String saleNumber;
     private String relatedShipmentNumber;
+    /** ENVL del envío de cambio asignado (solo en documentos de CAMBIO). */
+    private String exchangeShipmentNumber;
 
     private String customerName;
     private String address;

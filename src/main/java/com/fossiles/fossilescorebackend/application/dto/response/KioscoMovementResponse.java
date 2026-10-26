@@ -22,6 +22,10 @@ public class KioscoMovementResponse {
     private String productName;
     private Long colorId;
     private String colorName;
+    /** Dimensión de la fila de stock afectada (marca, SINTETICO:MARCA, NINO/DAMA, NUEVO/VIEJO). */
+    private String hardwareCondition;
+    /** Etiqueta legible de la dimensión (ej. "LEVIS", "Sintética · LEVIS"). */
+    private String hardwareLabel;
     private KioscoMovementType movementType;
     private Integer quantity;
     /** Talla del movimiento si aplica (p. ej. recepción de envío FOSS). */
@@ -29,7 +33,7 @@ public class KioscoMovementResponse {
     private Integer stockBefore;
     private Integer stockAfter;
     private Long referenceId;
-    /** Tipo de documento asociado: SHIPMENT, TRANSFER, INVOICE, TRASLADO. */
+    /** Tipo de documento asociado: SHIPMENT, TRANSFER, INVOICE, TRASLADO, POS_SALE (venta sin factura). */
     private String referenceType;
     /** Número legible del documento (ej. ENVI-00123, TRF-45). */
     private String referenceNumber;
