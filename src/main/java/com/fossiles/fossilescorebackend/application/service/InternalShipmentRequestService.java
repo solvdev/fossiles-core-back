@@ -28,6 +28,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -64,6 +65,7 @@ public class InternalShipmentRequestService {
     private final ObjectMapper objectMapper;
     private final SecurityUtil securityUtil;
     private final InternalShipmentRequestAccessGuard accessGuard;
+    private final EmployeeChargeService employeeChargeService;
 
     @Transactional(readOnly = true)
     public List<InternalShipmentRequestResponse> list(String status, String requestType)
@@ -91,14 +93,16 @@ public class InternalShipmentRequestService {
         return toResponse(entity);
     }
 
-    @Transactional
+    // rollbackFor: la solicitud se guarda antes de validar la boleta; si la boleta se rechaza
+    // (BusinessException es checked), no debe quedar una solicitud PENDIENTE huérfana.
+    @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestResponse createRequest(InternalShipmentRequestCreateRequest request)
             throws BusinessException, ResourceNotFoundException {
         accessGuard.assertCanCreateRequest();
         return createRequestInternal(request);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestResponse createRequestFromLegacy(StandaloneInternalShipmentRequest request)
             throws BusinessException, ResourceNotFoundException {
         accessGuard.assertCanCreateRequest();
@@ -128,6 +132,10 @@ public class InternalShipmentRequestService {
                     "Las solicitudes de producción OPI se autorizan con «Autorizar producción», no con envío.");
         }
         List<ProductShipmentRequest.ProductShipmentDetailRequest> products = toProductLines(entity);
+        boolean employeePurchase = "PLANILLA".equalsIgnoreCase(safe(entity.getRequestType()));
+        if (employeePurchase) {
+            employeeChargeService.assertChargeable(entity);
+        }
 
         if (entity.getProductionOrderId() == null) {
             // Primera autorización: solo aquí se evalúa el stock y, si falta, se genera la OPI.
@@ -166,22 +174,33 @@ public class InternalShipmentRequestService {
             throw ex;
         }
 
-        ProductShipmentResponse shipment = productDistributionService.dispatchStandaloneInternal(
-                entity.getRecipientName(),
-                entity.getRecipientPhone(),
-                entity.getRecipientTaxId(),
-                entity.getNotes(),
-                entity.getDocumentDate(),
-                entity.getRequestType(),
-                entity.getDiscountPercent(),
-                entity.getDiscountAmount(),
-                products);
+        ProductShipmentResponse shipment;
+        try {
+            shipment = productDistributionService.dispatchStandaloneInternal(
+                    entity.getRecipientName(),
+                    entity.getRecipientPhone(),
+                    entity.getRecipientTaxId(),
+                    entity.getNotes(),
+                    entity.getDocumentDate(),
+                    entity.getRequestType(),
+                    entity.getDiscountPercent(),
+                    entity.getDiscountAmount(),
+                    products);
+        } catch (BusinessException | ResourceNotFoundException ex) {
+            // El despacho ya marcó la transacción para revertir; marcarla aquí devuelve este mensaje en lugar de
+            // UnexpectedRollbackException.
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            throw ex;
+        }
 
         entity.setStatus("APROBADA");
         entity.setReviewedBy(securityUtil.getCurrentUserId());
         entity.setReviewedAt(LocalDateTime.now());
         entity.setProductShipmentId(shipment.getId());
         requestRepository.save(entity);
+        if (employeePurchase) {
+            employeeChargeService.chargeInternalShipment(entity, shipment.getShipmentNumber());
+        }
         return toResponse(entity);
     }
 
@@ -336,9 +355,19 @@ public class InternalShipmentRequestService {
     @Transactional(readOnly = true)
     public InternalShipmentEligibilityResponse getEmployeePlanillaEligibility(Long employeeId, String month)
             throws ResourceNotFoundException {
-        employeeRepository.findById(employeeId)
+        EmployeeEntity employee = employeeRepository.findById(employeeId)
                 .orElseThrow(() -> new ResourceNotFoundException("Employee", employeeId));
         YearMonth ym = parseMonth(month);
+        try {
+            employeeChargeService.assertEmployeeMayBuy(employee);
+        } catch (BusinessException ex) {
+            return InternalShipmentEligibilityResponse.builder()
+                    .employeeId(employeeId)
+                    .month(ym.toString())
+                    .eligible(false)
+                    .message(ex.getMessage())
+                    .build();
+        }
         LocalDateTime from = ym.atDay(1).atStartOfDay();
         LocalDateTime to = ym.plusMonths(1).atDay(1).atStartOfDay();
         var existing = requestRepository.findActivePlanillaRequestsForEmployeeInMonth(employeeId, from, to);
@@ -378,6 +407,7 @@ public class InternalShipmentRequestService {
             }
             EmployeeEntity employee = employeeRepository.findById(employeeId)
                     .orElseThrow(() -> new ResourceNotFoundException("Employee", employeeId));
+            employeeChargeService.assertEmployeeMayBuy(employee);
             recipient = formatEmployeeName(employee);
             if (recipientPhone == null) {
                 recipientPhone = trimToNull(employee.getPhone());
