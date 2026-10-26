@@ -113,9 +113,16 @@ public class GlobalExceptionHandler {
                 errors.put("message", "No se puede eliminar el producto porque tiene BOM(s) asociada(s). Elimine primero las BOMs asociadas antes de eliminar el producto.");
             } else if (message.contains("bom_item_bom_id_fkey")) {
                 errors.put("message", "No se puede eliminar la BOM porque tiene items asociados. Elimine primero los items de la BOM.");
+            } else if (message.contains("payroll_run_line_employee_id_fkey") || message.contains("employee_charge_employee_id_fkey")) {
+                errors.put("message", "El colaborador tiene planillas o cargos registrados; márquelo inactivo con su fecha de baja en lugar de eliminarlo.");
             } else {
                 errors.put("message", "No se puede realizar esta operación porque existen registros relacionados. Elimine primero los registros asociados.");
             }
+        } else if (message != null && message.contains("idx_internal_shipment_request_slip_number")) {
+            // El INSERT de la solicitud también nombra product_shipment_id; por eso va antes de los casos de envío.
+            errors.put("message", "Esa boleta de solicitud ya se registró en otra solicitud. Use el número de la boleta física.");
+        } else if (message != null && message.contains("uq_payroll_run_active_date")) {
+            errors.put("message", "Ya existe una planilla activa para ese grupo y fecha. Recargue la lista.");
         } else if (message != null && message.contains("location_id") && message.contains("product_shipment")) {
             errors.put("message",
                     "La base de datos exige kiosko en envíos, pero esta orden va solo con dirección. "
