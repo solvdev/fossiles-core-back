@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence;
 
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
@@ -52,7 +53,9 @@ class TaskBoardQueriesTest {
         @Bean
         PersistenceManagedTypes managedTypes() {
             return PersistenceManagedTypes.of(TaskEntity.class.getName(), TaskItemEntity.class.getName(),
-                    ProductionOrderEntity.class.getName(), ProductionOrderItemEntity.class.getName());
+                    ProductionOrderEntity.class.getName(), ProductionOrderItemEntity.class.getName(),
+                    // Lo usan las consultas de cinchos de ProductionOrderRepository.
+                    ProductEntity.class.getName());
         }
     }
 
@@ -82,7 +85,11 @@ class TaskBoardQueriesTest {
     }
 
     private List<String> board(LocalDate day) {
-        return tasks.findBoardTasks(day).stream().map(TaskEntity::getCode).toList();
+        return board(day, false);
+    }
+
+    private List<String> board(LocalDate day, boolean withCarryOver) {
+        return tasks.findBoardTasks(day, withCarryOver).stream().map(TaskEntity::getCode).toList();
     }
 
     @Test
@@ -102,6 +109,20 @@ class TaskBoardQueriesTest {
 
         assertThat(board(HOY)).containsExactlyInAnyOrder(
                 "hoy-mesa", "hoy-curso", "hoy-bodega", "sin-mesa-ayer", "sin-mesa-sin-fecha");
+    }
+
+    @Test
+    void lasEmpezadasAyerSeRetomanHoyEnSuMesa() {
+        task("hoy-mesa", normalOrder, "PENDING", 1, HOY);
+        task("ayer-curso", normalOrder, "IN_PROGRESS", 3, AYER);
+        task("ayer-curso-sin-mesa", normalOrder, "IN_PROGRESS", null, AYER);
+        task("ayer-pendiente", normalOrder, "PENDING", 3, AYER);
+        task("ayer-cerrada", normalOrder, "COMPLETED", 3, AYER);
+        task("ayer-curso-cincho", cinchoOrder, "IN_PROGRESS", 2, AYER);
+
+        assertThat(board(HOY, true)).containsExactlyInAnyOrder("hoy-mesa", "ayer-curso", "ayer-curso-sin-mesa");
+        // Viendo un día pasado no se arrastra nada: se ve como fue.
+        assertThat(board(HOY, false)).containsExactlyInAnyOrder("hoy-mesa", "ayer-curso-sin-mesa");
     }
 
     @Test
