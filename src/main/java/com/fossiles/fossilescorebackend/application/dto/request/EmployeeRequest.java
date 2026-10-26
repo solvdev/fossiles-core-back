@@ -37,6 +37,7 @@ public class EmployeeRequest {
     @Size(max = 100, message = "Position must not exceed 100 characters")
     private String position;
 
+    @jakarta.validation.constraints.DecimalMin(value = "0", message = "El salario no puede ser negativo")
     private BigDecimal salary;
 
     @Size(max = 50, message = "Bank account must not exceed 50 characters")
@@ -50,6 +51,30 @@ public class EmployeeRequest {
     private BigDecimal quincenaBruta;
 
     private BigDecimal quincenaNeta;
+
+    @jakarta.validation.constraints.DecimalMin(value = "0", message = "La bonificación no puede ser negativa")
+    private BigDecimal bonification;
+
+    /** PLANILLA o SERVICIOS. */
+    @Size(max = 20, message = "Employment type must not exceed 20 characters")
+    private String employmentType;
+
+    /** PLANTA (5 y 20) o ADMINISTRACION (15 y fin de mes); si no se indica, sale del departamento. */
+    @Size(max = 20, message = "Pay group must not exceed 20 characters")
+    private String payGroup;
+
+    @Size(max = 20, message = "NIT must not exceed 20 characters")
+    private String nit;
+
+    @Size(max = 30, message = "IGSS affiliation must not exceed 30 characters")
+    private String igssAffiliation;
+
+    private LocalDate terminationDate;
+
+    /** En una edición, un campo vacío conserva el valor; estos indicadores lo borran a propósito. */
+    private Boolean clearBonification;
+
+    private Boolean clearTerminationDate;
 
     private Long departmentId;
 
