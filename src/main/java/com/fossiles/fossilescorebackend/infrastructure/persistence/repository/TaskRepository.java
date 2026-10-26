@@ -166,6 +166,11 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
      * más las pendientes o en proceso sin mesa cuya fecha es nula o anterior. Las
      * AWAITING_WAREHOUSE (sin mesa por diseño) solo entran si son de ese día: de otro modo todas
      * las que esperan bodega inundarían el tablero. Sin tareas de OPs de cinchos.
+     *
+     * <p>Con {@code withCarryOver} entran también las IN_PROGRESS con mesa de un día anterior
+     * (las que quedaron a medias a las 17:00): se retoman en la misma mesa, que es la de su
+     * boleta. Solo para días hábiles de hoy en adelante: un día pasado se ve como fue y sábado y
+     * domingo no se produce.
      */
     @Query("""
             SELECT t FROM TaskEntity t
@@ -175,6 +180,10 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
                  OR (t.status IN ('PENDING', 'IN_PROGRESS')
                      AND t.desk IS NULL
                      AND (t.scheduledDate IS NULL OR t.scheduledDate < :date))
+                 OR (:withCarryOver = TRUE
+                     AND t.status = 'IN_PROGRESS'
+                     AND t.desk IS NOT NULL
+                     AND t.scheduledDate < :date)
               )
               AND NOT EXISTS (
                 SELECT 1 FROM ProductionOrderEntity po
@@ -183,7 +192,7 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
               )
             ORDER BY t.desk ASC NULLS LAST, COALESCE(t.priority, 9999), t.id
             """)
-    List<TaskEntity> findBoardTasks(@Param("date") LocalDate date);
+    List<TaskEntity> findBoardTasks(@Param("date") LocalDate date, @Param("withCarryOver") boolean withCarryOver);
 
     /** Cuántas tareas trae {@link #findPendingWithUncutItems()} (pestaña «Por cortar»). */
     @Query("""

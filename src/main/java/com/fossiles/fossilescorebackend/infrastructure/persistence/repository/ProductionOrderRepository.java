@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -9,7 +10,9 @@ import org.springframework.stereotype.Repository;
 
 import jakarta.persistence.LockModeType;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -20,6 +23,75 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
     List<ProductionOrderEntity> findByOrderType(String orderType);
     List<ProductionOrderEntity> findByStatus(String status);
     List<ProductionOrderEntity> findByCustomerId(Long customerId);
+
+    /**
+     * Órdenes que llevan trabajo de mesa cinchos (OPL, OPCK y OPC) en ciertos estados, las más
+     * urgentes primero. De las ventas solo las que tienen algún producto cincho o pulsera (por
+     * nombre o tipo); la regla exacta, sin tildes, se aplica después por producto.
+     */
+    @Query("""
+            SELECT po FROM ProductionOrderEntity po
+            WHERE UPPER(TRIM(po.orderType)) IN :types
+              AND UPPER(COALESCE(po.status, '')) IN :statuses
+              AND (UPPER(TRIM(po.orderType)) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+                   OR EXISTS (SELECT 1 FROM ProductionOrderItemEntity i, ProductEntity p
+                              WHERE i.productionOrderId = po.id AND p.id = i.productId
+                                AND (LOWER(p.name) LIKE '%cincho%' OR LOWER(p.name) LIKE '%pulsera%'
+                                     OR (p.cinchoType IS NOT NULL AND p.cinchoType <> ''))))
+            ORDER BY po.deliveryDate ASC NULLS LAST, po.id ASC
+            """)
+    List<ProductionOrderEntity> findCinchoOrders(@Param("types") Collection<String> types,
+                                                 @Param("statuses") Collection<String> statuses);
+
+    /** Las cerradas más recientes (completadas o canceladas), con tope: el histórico no se baja entero. */
+    @Query("""
+            SELECT po FROM ProductionOrderEntity po
+            WHERE UPPER(TRIM(po.orderType)) IN :types
+              AND UPPER(COALESCE(po.status, '')) IN :statuses
+              AND (UPPER(TRIM(po.orderType)) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+                   OR EXISTS (SELECT 1 FROM ProductionOrderItemEntity i, ProductEntity p
+                              WHERE i.productionOrderId = po.id AND p.id = i.productId
+                                AND (LOWER(p.name) LIKE '%cincho%' OR LOWER(p.name) LIKE '%pulsera%'
+                                     OR (p.cinchoType IS NOT NULL AND p.cinchoType <> ''))))
+            ORDER BY COALESCE(po.deliveryDate, po.startDate) DESC NULLS LAST, po.id DESC
+            """)
+    List<ProductionOrderEntity> findRecentCinchoOrders(@Param("types") Collection<String> types,
+                                                       @Param("statuses") Collection<String> statuses,
+                                                       Pageable pageable);
+
+    /** Cuadro de cinchos de un día: la orden va el día de su inicio (o de su entrega si no tiene inicio). */
+    @Query("""
+            SELECT po FROM ProductionOrderEntity po
+            WHERE UPPER(TRIM(po.orderType)) IN :types
+              AND UPPER(COALESCE(po.status, '')) IN :statuses
+              AND COALESCE(po.startDate, po.deliveryDate) = :date
+              AND (UPPER(TRIM(po.orderType)) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+                   OR EXISTS (SELECT 1 FROM ProductionOrderItemEntity i, ProductEntity p
+                              WHERE i.productionOrderId = po.id AND p.id = i.productId
+                                AND (LOWER(p.name) LIKE '%cincho%' OR LOWER(p.name) LIKE '%pulsera%'
+                                     OR (p.cinchoType IS NOT NULL AND p.cinchoType <> ''))))
+            ORDER BY po.code ASC
+            """)
+    List<ProductionOrderEntity> findCinchoOrdersForDay(@Param("types") Collection<String> types,
+                                                       @Param("statuses") Collection<String> statuses,
+                                                       @Param("date") LocalDate date);
+
+    /** Las de días anteriores al cuadro: se arrastran mientras tengan líneas sin terminar (eso se filtra después). */
+    @Query("""
+            SELECT po FROM ProductionOrderEntity po
+            WHERE UPPER(TRIM(po.orderType)) IN :types
+              AND UPPER(COALESCE(po.status, '')) IN :statuses
+              AND COALESCE(po.startDate, po.deliveryDate) < :date
+              AND (UPPER(TRIM(po.orderType)) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+                   OR EXISTS (SELECT 1 FROM ProductionOrderItemEntity i, ProductEntity p
+                              WHERE i.productionOrderId = po.id AND p.id = i.productId
+                                AND (LOWER(p.name) LIKE '%cincho%' OR LOWER(p.name) LIKE '%pulsera%'
+                                     OR (p.cinchoType IS NOT NULL AND p.cinchoType <> ''))))
+            ORDER BY COALESCE(po.startDate, po.deliveryDate) ASC, po.code ASC
+            """)
+    List<ProductionOrderEntity> findCinchoOrdersBefore(@Param("types") Collection<String> types,
+                                                       @Param("statuses") Collection<String> statuses,
+                                                       @Param("date") LocalDate date);
 
     /** Órdenes abiertas de Luis Felipe: candidatas a una OP consolidada. */
     @Query("""

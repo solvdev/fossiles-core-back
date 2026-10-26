@@ -322,7 +322,8 @@ public class TaskController {
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
         LocalDate day = date != null ? date : GuatemalaDateTime.today();
         LocalDate today = GuatemalaDateTime.today();
-        List<TaskResponse> tasks = toResponses(taskRepository.findBoardTasks(day)).stream()
+        List<TaskResponse> tasks = toResponses(taskRepository.findBoardTasks(day,
+                !day.isBefore(today) && ProductionPlanningConstants.isWorkday(day))).stream()
                 .map(TaskController::withoutCinchoLines)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
@@ -1640,6 +1641,69 @@ public class TaskController {
     }
 
     /**
+     * Marca el corte de todos los productos de la tarea que falten, de una vez.
+     *
+     * <p>Es el «Cortar todo» de Armar el día y de la lista por troquelar: marcar producto por
+     * producto, con un diálogo cada uno, era lo tedioso. Con {@code deliverLeather} entrega
+     * antes el cuero de los que no lo tienen (el cuero va antes del troquel); sin él, esos se
+     * saltan y la respuesta dice cuántos. Todo en una transacción y la mesa se asigna una vez.
+     */
+    @PutMapping("/{id:\\d+}/die-cut/all")
+    @Transactional(rollbackFor = Exception.class)
+    public ResponseEntity<Map<String, Object>> setTaskDieCutAll(
+            @PathVariable Long id,
+            @RequestBody(required = false) Map<String, Object> body)
+            throws ResourceNotFoundException, BusinessException {
+        TaskEntity entity = taskRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Task", id));
+        if (!"PENDING".equals(entity.getStatus())) {
+            throw new BusinessException("La tarea " + entity.getCode() + " ya no está pendiente: el corte se marca antes de empezar.");
+        }
+        boolean deliverLeather = body != null && body.get("deliverLeather") != null
+                && Boolean.parseBoolean(body.get("deliverLeather").toString());
+
+        int cut = 0;
+        int leather = 0;
+        int withoutLeather = 0;
+        for (TaskItemEntity item : taskItemRepository.findByTaskId(entity.getId())) {
+            if (Boolean.TRUE.equals(item.getDieCutReady())) {
+                continue;
+            }
+            if (!hasLeatherForItem(entity, item)) {
+                if (!deliverLeather) {
+                    withoutLeather++;
+                    continue;
+                }
+                item.setLeatherDelivered(true);
+                item.setLeatherDeliveredAt(GuatemalaDateTime.now());
+                leather++;
+            }
+            item.setDieCutReady(true);
+            item.setDieCutDate(GuatemalaDateTime.today());
+            taskItemRepository.save(item);
+            cut++;
+        }
+
+        entity.setLeatherDelivered(areTaskItemsLeatherDelivered(entity) || Boolean.TRUE.equals(entity.getLeatherDelivered()));
+        if (Boolean.TRUE.equals(entity.getLeatherDelivered()) && entity.getLeatherDeliveredAt() == null) {
+            entity.setLeatherDeliveredAt(GuatemalaDateTime.now());
+        }
+        entity.setDieCutReady(areTaskItemsDieCut(entity));
+        entity.setDieCutDate(Boolean.TRUE.equals(entity.getDieCutReady()) ? GuatemalaDateTime.today() : null);
+        TaskEntity updated = taskRepository.save(entity);
+        if (Boolean.TRUE.equals(updated.getDieCutReady())) {
+            updated = taskDeskAssignerService.assignIfReady(updated.getId()).orElse(updated);
+        }
+
+        Map<String, Object> out = new HashMap<>();
+        out.put("task", toResponse(updated));
+        out.put("cutItems", cut);
+        out.put("leatherDeliveredItems", leather);
+        out.put("skippedWithoutLeather", withoutLeather);
+        return ResponseEntity.ok(out);
+    }
+
+    /**
      * Fija para que dia esta previsto troquelar un producto.
      *
      * <p>No toca {@code dieCutDate}, que dice cuando se marco. Esta dice cuando toca, y es la
@@ -1819,11 +1883,41 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(taskDeskAssignerService.assignOrExplain(id)));
     }
 
+    /**
+     * Una tarea empezada un día anterior y aún en proceso se termina en la misma mesa y con su
+     * fecha: la boleta impresa lleva esa mesa y el encargado de esa mesa en esa fecha. Mandar el
+     * mismo valor que ya tiene no es mover, así que se deja pasar.
+     */
+    private static void rejectMovingCarryOver(TaskEntity entity, Map<String, Object> body) throws BusinessException {
+        if (!"IN_PROGRESS".equals(entity.getStatus()) || entity.getScheduledDate() == null
+                || !entity.getScheduledDate().isBefore(GuatemalaDateTime.today())) {
+            return;
+        }
+        boolean deskChange = false;
+        if (body.containsKey("desk")) {
+            Object deskVal = body.get("desk");
+            Integer nueva = deskVal != null ? Integer.parseInt(deskVal.toString()) : null;
+            deskChange = !Objects.equals(nueva, entity.getDesk());
+        }
+        boolean dateChange = false;
+        if (body.containsKey("scheduledDate")) {
+            String dateStr = (String) body.get("scheduledDate");
+            LocalDate nueva = dateStr != null && !dateStr.isEmpty() ? LocalDate.parse(dateStr) : null;
+            dateChange = !Objects.equals(nueva, entity.getScheduledDate());
+        }
+        if (deskChange || dateChange) {
+            throw new BusinessException("La tarea " + entity.getCode() + " se empezó el " + entity.getScheduledDate()
+                    + (entity.getDesk() != null ? " en la mesa " + entity.getDesk() : "")
+                    + " y sigue en proceso: se termina en la misma mesa para que coincida con su boleta.");
+        }
+    }
+
     @PutMapping("/{id:\\d+}/schedule")
     public ResponseEntity<TaskResponse> scheduleTask(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity entity = taskRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
+        rejectMovingCarryOver(entity, body);
 
         if (body.containsKey("scheduledDate")) {
             String dateStr = (String) body.get("scheduledDate");
