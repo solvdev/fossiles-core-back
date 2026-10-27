@@ -37,6 +37,7 @@ public class ReconciliationController {
     private final ReconciliationReceiptService receiptService;
     private final ReconciliationDifferenceService differenceService;
     private final ReconciliationBatchService batchService;
+    private final ReconciliationSettlementService settlementService;
     private final ReconciliationCommissionService commissionService;
     private final ReconciliationSellerService sellerService;
     private final ReconciliationGuideImportService guideImportService;
@@ -196,6 +197,13 @@ public class ReconciliationController {
         return ResponseEntity.ok(queryService.detail(id));
     }
 
+    /** Pagos escritos de varias ventas a la vez (pantalla de liquidación). Cada pago se valida y guarda por separado. */
+    @PostMapping("/cases/receipts/bulk")
+    public ResponseEntity<BulkReceiptResult> bulkReceipts(@RequestBody BulkReceiptRequest body) throws BusinessException {
+        guard.assertCanImport();
+        return ResponseEntity.ok(settlementService.recordMany(body == null ? null : body.items()));
+    }
+
     @PostMapping("/receipts/auto-apply")
     public ResponseEntity<ImportResult> autoApply() throws BusinessException {
         guard.assertCanImport();
@@ -257,6 +265,14 @@ public class ReconciliationController {
     public ResponseEntity<BatchDto> createBatch(@RequestBody BatchCreateRequest body) throws BusinessException {
         guard.assertCanClose();
         return ResponseEntity.ok(batchService.create(body));
+    }
+
+    /** Liquidar las ventas elegidas: acepta avisos de las que cuadran, crea el lote y lo cierra. El Excel se baja con /batches/{id}/export. */
+    @PostMapping("/batches/settle")
+    public ResponseEntity<SettleResult> settle(@RequestBody SettleRequest body, @RequestHeader(value = "Idempotency-Key", required = false) String key)
+            throws BusinessException, ResourceNotFoundException {
+        guard.assertCanClose();
+        return ResponseEntity.ok(settlementService.settle(body == null ? null : body.caseIds(), key));
     }
 
     @GetMapping("/batches")

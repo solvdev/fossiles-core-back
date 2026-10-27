@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.recon.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.recon.*;
@@ -45,6 +46,7 @@ public class ReconciliationQueryService {
     private final ReconLedgerEntryRepository ledgerRepository;
     private final ReconSellerRepository sellerRepository;
     private final OnlineSaleRepository saleRepository;
+    private final OnlineSaleItemRepository itemRepository;
     private final ReconciliationProperties props;
     private final ReconciliationRecomputeService recompute;
     private final UserRepository userRepository;
@@ -102,6 +104,12 @@ public class ReconciliationQueryService {
                 c.getProblemType() == null ? null : c.getProblemType().name(), hasReceipts);
     }
 
+    private List<SaleItemInfo> saleItems(Long saleId) {
+        return itemRepository.findByOnlineSaleIdInOrderByIdAsc(List.of(saleId)).stream()
+                .map(i -> new SaleItemInfo(i.getProductCode(), i.getProductName(), i.getColorName(), i.getSize(), i.getQuantity(), i.getUnitPrice(), i.getSubtotal()))
+                .toList();
+    }
+
     public CaseDetail detail(Long id) throws ResourceNotFoundException {
         ReconCaseEntity c = caseRepository.findById(id).orElseThrow(() -> new ResourceNotFoundException("Caso no encontrado: " + id));
         OnlineSaleEntity sale = saleRepository.findById(c.getOnlineSaleId()).orElse(null);
@@ -138,7 +146,7 @@ public class ReconciliationQueryService {
         SaleInfo saleInfo = sale == null ? null : new SaleInfo(sale.getSaleNumber(), sale.getShipmentNumber(), sale.getSaleDate(), sale.getCustomerName(),
                 sale.getStatus(), sale.getPaymentMethod(), sale.getPaymentAuthorization(), sale.getShippingCarrier(), sale.getGuideNumber(),
                 sale.getSalesperson(), sale.getNetAmount(), sale.getShippingCost(), sale.getTotalAmount(), sale.getInvoiceId(), sale.getDispatchedAt(),
-                sale.getUpdatedAt());
+                sale.getUpdatedAt(), saleItems(sale.getId()));
         BigDecimal net = sale == null ? BigDecimal.ZERO : money(sale.getNetAmount());
         BigDecimal expectedCommission = net.multiply(props.getCommissionRate()).setScale(2, RoundingMode.HALF_UP);
         CommissionDto commission = commissionRepository.findByCaseId(id)

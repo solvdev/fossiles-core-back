@@ -76,7 +76,8 @@ class ReconciliationFlowTest {
     @Import({ReconActor.class, ReconciliationCaseService.class, ReconciliationRecomputeService.class, ReconciliationRuleEngine.class, ReconEventService.class,
             ReconciliationLedgerService.class, ReconciliationReceiptService.class, ReconciliationDifferenceService.class,
             ReconciliationBatchService.class, ReconciliationCommissionService.class, ReconciliationQueryService.class,
-            ReconciliationDashboardService.class, ReconciliationSellerService.class, ReconciliationGuideImportService.class})
+            ReconciliationDashboardService.class, ReconciliationSellerService.class, ReconciliationGuideImportService.class,
+            ReconciliationSettlementService.class})
     static class Cfg {
         @Bean
         PersistenceManagedTypes managedTypes() {
@@ -112,6 +113,7 @@ class ReconciliationFlowTest {
     @Autowired ReconciliationDashboardService dashboardService;
     @Autowired ReconciliationGuideImportService guideImportService;
     @Autowired ReconciliationLedgerService ledgerService;
+    @Autowired ReconciliationSettlementService settlementService;
 
     @Autowired OnlineSaleRepository saleRepository;
     @Autowired OnlineSaleItemRepository itemRepository;
@@ -580,5 +582,99 @@ class ReconciliationFlowTest {
         receiptService.recordForCase(id, new CaseReceiptRequest(null, "LIQ-GX-10", null, new BigDecimal("180.00"), null));
         assertThat(caseOf(s5).getReceivedAmount()).isEqualByComparingTo("280.00");
         assertThat(receiptRepository.count()).isEqualTo(2);
+    }
+
+    // ───────── liquidación simplificada: guardar varios pagos y liquidar lo elegido ─────────
+
+    @Test
+    void pagosEnBloque_atajoRecibidoIgualCobrado_ySoloRegistraLoQueLeCorresponde() throws Exception {
+        caseService.generate(FROM, TO);
+        Long c1 = caseOf(s1).getId();
+        Long c2 = caseOf(s2).getId();
+
+        BulkReceiptResult r = settlementService.recordMany(List.of(
+                new BulkReceiptItem(c1, null, true, "LIQ-FZ-400"),                          // Recibido = cobrado
+                new BulkReceiptItem(c2, new BigDecimal("100.00"), false, "LIQ-FZ-400"),     // escrito a mano, faltan Q5
+                new BulkReceiptItem(c1, null, true, null),                                  // ya tiene pago: se rechaza
+                new BulkReceiptItem(999999L, null, true, null)));                           // no existe
+
+        assertThat(r.saved()).isEqualTo(2);
+        assertThat(r.failed()).isEqualTo(2);
+        assertThat(r.rows().get(0).ok()).isTrue();
+        assertThat(r.rows().get(0).received()).isEqualByComparingTo("480.00");
+        assertThat(r.rows().get(1).difference()).isEqualByComparingTo("-5.00");
+        assertThat(r.rows().get(2).message()).contains("Ya tiene un pago");
+        assertThat(r.rows().get(3).message()).contains("no existe");
+        // la regla no se movió: cobrado = recibido exacto, la diferencia sigue visible y sin ajuste
+        assertThat(caseOf(s1).getStatus()).isEqualTo(Recon.Status.CONCILIADO_AUTO);
+        assertThat(caseOf(s2).getStatus()).isEqualTo(Recon.Status.CON_DIFERENCIAS);
+        assertThat(caseOf(s2).getPendingBalance()).isEqualByComparingTo("5.00");
+        assertThat(receiptRepository.count()).isEqualTo(2);
+        assertThatThrownBy(() -> settlementService.recordMany(List.of())).isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void liquidar_cierraSoloLoElegido_aceptaAvisosDeLoQueCuadra_yNuncaLoQueTieneDiferencia() throws Exception {
+        caseService.generate(FROM, TO);
+        Long c1 = caseOf(s1).getId();
+        Long c2 = caseOf(s2).getId();
+        Long c3 = caseOf(s3).getId();
+        settlementService.recordMany(List.of(
+                new BulkReceiptItem(c1, null, true, "LIQ-FZ-401"),
+                new BulkReceiptItem(c2, new BigDecimal("100.00"), false, "LIQ-FZ-401"),
+                new BulkReceiptItem(c3, null, true, null)));   // depósito sin referencia: cuadra, pero con aviso (R08)
+        assertThat(caseOf(s3).getStatus()).isEqualTo(Recon.Status.PENDIENTE_REVISION);
+
+        SettleResult r = settlementService.settle(List.of(c1, c2, c3), "liquidar-1");
+
+        assertThat(r.close().closedCases()).isEqualTo(2);
+        assertThat(r.acceptedWithWarnings()).isEqualTo(1);
+        assertThat(r.skipped()).singleElement().satisfies(x -> {
+            assertThat(x.caseId()).isEqualTo(c2);
+            assertThat(x.reason()).contains("No cuadra");
+        });
+        assertThat(caseOf(s1).isClosed()).isTrue();
+        assertThat(caseOf(s3).isClosed()).isTrue();
+        assertThat(caseOf(s3).getStatus()).isEqualTo(Recon.Status.CONCILIADO_MANUAL);
+        assertThat(caseOf(s2).isClosed()).isFalse();
+        assertThat(caseOf(s2).getBatchId()).isNull();
+        assertThat(ledgerService.balance(c1)).isEqualByComparingTo("0.00");
+        assertThat(ledgerService.balance(c3)).isEqualByComparingTo("0.00");
+        assertThat(ledgerService.balance(c2)).isEqualByComparingTo("105.00");   // la deuda de la que no cuadra sigue
+        // los avisos aceptados quedan en el historial
+        assertThat(queryService.detail(c3).events()).filteredOn(e -> e.type().equals("CONCILIADO_MANUAL"))
+                .singleElement().satisfies(e -> assertThat(e.payload()).contains("R08"));
+
+        // reintentar con la misma clave devuelve el mismo cierre y no duplica nada
+        long entries = ledgerRepository.count();
+        SettleResult again = settlementService.settle(List.of(c1, c2, c3), "liquidar-1");
+        assertThat(again.close().alreadyClosed()).isTrue();
+        assertThat(again.close().batch().id()).isEqualTo(r.close().batch().id());
+        assertThat(ledgerRepository.count()).isEqualTo(entries);
+        assertThat(batchRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void liquidar_sinNingunaListaFalla_yNoDejaNadaAMedias() throws Exception {
+        caseService.generate(FROM, TO);
+        Long c2 = caseOf(s2).getId();
+        settlementService.recordMany(List.of(new BulkReceiptItem(c2, new BigDecimal("100.00"), false, "LIQ-FZ-402")));
+
+        assertThatThrownBy(() -> settlementService.settle(List.of(c2, caseOf(s5).getId()), null)).isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Ninguna");
+        assertThat(batchRepository.count()).isZero();
+        assertThatThrownBy(() -> settlementService.settle(List.of(), null)).isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void detalle_traeLasLineasDeLaVentaParaVerlasSinSalirDeLaLiquidacion() throws Exception {
+        caseService.generate(FROM, TO);
+
+        SaleInfo sale = queryService.detail(caseOf(s1).getId()).sale();
+
+        assertThat(sale.items()).singleElement().satisfies(i -> {
+            assertThat(i.quantity()).isEqualTo(1);
+            assertThat(i.subtotal()).isEqualByComparingTo("450.00");
+        });
     }
 }
