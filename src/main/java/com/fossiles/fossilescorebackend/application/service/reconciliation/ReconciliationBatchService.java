@@ -65,12 +65,25 @@ public class ReconciliationBatchService {
         if (available.isEmpty()) {
             throw new BusinessException("No hay casos conciliados sin lote en ese período. Concilie casos en la bandeja primero.");
         }
-        String prefix = "LC-" + req.to().format(DateTimeFormatter.ofPattern("yyyyMM")) + "-";
+        return buildBatch(req.from(), req.to(), available);
+    }
+
+    /** Lote con exactamente los casos elegidos (los ya conciliados y sin lote); el período sale de sus fechas de venta. */
+    @Transactional
+    public BatchDto createForCases(List<ReconCaseEntity> cases) throws BusinessException {
+        if (cases == null || cases.isEmpty()) throw new BusinessException("No hay casos para liquidar.");
+        LocalDate from = cases.stream().map(ReconCaseEntity::getSaleDate).min(Comparator.naturalOrder()).orElseThrow();
+        LocalDate to = cases.stream().map(ReconCaseEntity::getSaleDate).max(Comparator.naturalOrder()).orElseThrow();
+        return buildBatch(from, to, cases);
+    }
+
+    private BatchDto buildBatch(LocalDate from, LocalDate to, List<ReconCaseEntity> available) {
+        String prefix = "LC-" + to.format(DateTimeFormatter.ofPattern("yyyyMM")) + "-";
         long n = batchRepository.countByCodeStartingWith(prefix) + 1;
         String code = prefix + String.format("%03d", n);
         while (batchRepository.findByCode(code).isPresent()) code = prefix + String.format("%03d", ++n);
 
-        ReconBatchEntity batch = batchRepository.save(ReconBatchEntity.builder().code(code).periodFrom(req.from()).periodTo(req.to())
+        ReconBatchEntity batch = batchRepository.save(ReconBatchEntity.builder().code(code).periodFrom(from).periodTo(to)
                 .createdBy(actor.id()).build());
         for (ReconCaseEntity c : available) {
             c.setBatchId(batch.getId());
@@ -80,6 +93,12 @@ public class ReconciliationBatchService {
         refreshTotals(batch, available);
         events.record(null, batch.getId(), "LOTE_CREADO", null, null, Map.of("codigo", code, "casos", available.size()));
         return toDto(batch, available);
+    }
+
+    /** Lote ya cerrado con esa clave de cierre, si existe (para que reintentar una liquidación no la duplique). */
+    @Transactional(readOnly = true)
+    public Optional<Long> findByIdempotencyKey(String key) {
+        return blank(key) ? Optional.empty() : batchRepository.findByIdempotencyKey(key.trim()).map(ReconBatchEntity::getId);
     }
 
     @Transactional(readOnly = true)

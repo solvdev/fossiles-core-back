@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.reconciliation.ReconciliationDtos;
 import com.fossiles.fossilescorebackend.application.dto.reconciliation.ReconciliationDtos.CaseFilter;
 import com.fossiles.fossilescorebackend.application.dto.reconciliation.ReconciliationDtos.CasePage;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -34,12 +35,13 @@ class ReconciliationControllerTest {
     private final ReconciliationBatchService batches = Mockito.mock(ReconciliationBatchService.class);
     private final ReconciliationReceiptService receipts = Mockito.mock(ReconciliationReceiptService.class);
     private final ReconciliationCaseService cases = Mockito.mock(ReconciliationCaseService.class);
+    private final ReconciliationSettlementService settlement = Mockito.mock(ReconciliationSettlementService.class);
     private MockMvc mvc;
 
     @BeforeEach
     void setUp() {
         ReconciliationController controller = new ReconciliationController(guard, cases, query,
-                Mockito.mock(ReconciliationDashboardService.class), receipts, Mockito.mock(ReconciliationDifferenceService.class), batches,
+                Mockito.mock(ReconciliationDashboardService.class), receipts, Mockito.mock(ReconciliationDifferenceService.class), batches, settlement,
                 Mockito.mock(ReconciliationCommissionService.class), Mockito.mock(ReconciliationSellerService.class),
                 Mockito.mock(ReconciliationGuideImportService.class));
         mvc = MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(new GlobalExceptionHandler()).build();
@@ -110,5 +112,37 @@ class ReconciliationControllerTest {
     void generarCasos_conFechaInvalida_pideElFormato() throws Exception {
         mvc.perform(post("/api/reconciliation/cases/generate").contentType("application/json").content("{\"from\":\"ayer\",\"to\":\"2026-10-14\"}"))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("AAAA-MM-DD")));
+    }
+
+    @Test
+    void liquidar_exigePermisoDeCerrar_yPasaLasVentasElegidasYLaClave() throws Exception {
+        mvc.perform(post("/api/reconciliation/batches/settle").header("Idempotency-Key", "liq-1").contentType("application/json")
+                .content("{\"caseIds\":[4,5]}")).andExpect(status().isOk());
+
+        verify(guard).assertCanClose();
+        verify(settlement).settle(List.of(4L, 5L), "liq-1");
+    }
+
+    @Test
+    void liquidarSinPermiso_noLlegaAlServicio() throws Exception {
+        doThrow(new BusinessException("No tiene permiso para cerrar lotes.")).when(guard).assertCanClose();
+
+        mvc.perform(post("/api/reconciliation/batches/settle").contentType("application/json").content("{\"caseIds\":[4]}"))
+                .andExpect(status().isBadRequest());
+
+        Mockito.verifyNoInteractions(settlement);
+    }
+
+    @Test
+    void pagosEnBloque_exigenPermisoDeImportar() throws Exception {
+        mvc.perform(post("/api/reconciliation/cases/receipts/bulk").contentType("application/json")
+                .content("{\"items\":[{\"caseId\":4,\"matchExpected\":true,\"reference\":\"R-1\"},{\"caseId\":5,\"amount\":100.50}]}")).andExpect(status().isOk());
+
+        verify(guard).assertCanImport();
+        ArgumentCaptor<List<ReconciliationDtos.BulkReceiptItem>> captor = ArgumentCaptor.forClass(List.class);
+        verify(settlement).recordMany(captor.capture());
+        assertThat(captor.getValue()).hasSize(2);
+        assertThat(captor.getValue().get(0).matchExpected()).isTrue();
+        assertThat(captor.getValue().get(1).amount()).isEqualByComparingTo("100.50");
     }
 }

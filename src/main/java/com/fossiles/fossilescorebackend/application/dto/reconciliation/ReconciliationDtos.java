@@ -65,10 +65,14 @@ public final class ReconciliationDtos {
     public record LedgerDto(Long id, String type, BigDecimal amount, Long batchId, String note, LocalDateTime at) {
     }
 
+    public record SaleItemInfo(String code, String name, String color, String size, Integer quantity, BigDecimal unitPrice,
+                               BigDecimal subtotal) {
+    }
+
     public record SaleInfo(String saleNumber, String shipmentNumber, LocalDate saleDate, String customerName, String saleStatus,
                            String paymentMethod, String paymentAuthorization, String carrier, String guideNumber,
                            String salesperson, BigDecimal net, BigDecimal shipping, BigDecimal total, Long invoiceId,
-                           LocalDateTime dispatchedAt, LocalDateTime lastUpdatedAt) {
+                           LocalDateTime dispatchedAt, LocalDateTime lastUpdatedAt, List<SaleItemInfo> items) {
     }
 
     public record CommissionDto(String month, BigDecimal base, BigDecimal rate, BigDecimal expected, BigDecimal registered,
@@ -126,6 +130,20 @@ public final class ReconciliationDtos {
                                      String status, String message) {
     }
 
+    /** Un pago escrito dentro de la liquidación: monto escrito, o {@code matchExpected} para registrar exactamente lo cobrado. */
+    public record BulkReceiptItem(Long caseId, BigDecimal amount, boolean matchExpected, String reference) {
+    }
+
+    public record BulkReceiptRequest(List<BulkReceiptItem> items) {
+    }
+
+    public record BulkReceiptRow(Long caseId, String shipmentNumber, boolean ok, String message, BigDecimal received,
+                                 BigDecimal difference, String status) {
+    }
+
+    public record BulkReceiptResult(int saved, int failed, List<BulkReceiptRow> rows) {
+    }
+
     public record RowReport(int row, String status, String message) {
     }
 
@@ -157,6 +175,13 @@ public final class ReconciliationDtos {
 
     public record BatchCloseResult(BatchDto batch, boolean alreadyClosed, String contentSha256, Long exportId,
                                    int exportedCases, int closedCases) {
+    }
+
+    /** Liquidar: lote, cierre y Excel en un solo paso para exactamente los casos elegidos. */
+    public record SettleRequest(List<Long> caseIds) {
+    }
+
+    public record SettleResult(BatchCloseResult close, int acceptedWithWarnings, List<InvalidCaseRef> skipped) {
     }
 
     public record ExportDto(Long id, Long batchId, String batchCode, String sha256, int rows, String kind,
