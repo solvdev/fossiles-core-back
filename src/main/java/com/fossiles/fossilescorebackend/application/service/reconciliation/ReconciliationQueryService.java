@@ -7,12 +7,16 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.recon.
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleReturnRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.recon.*;
+import jakarta.persistence.criteria.Root;
+import jakarta.persistence.criteria.Subquery;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,6 +51,7 @@ public class ReconciliationQueryService {
     private final ReconSellerRepository sellerRepository;
     private final OnlineSaleRepository saleRepository;
     private final OnlineSaleItemRepository itemRepository;
+    private final OnlineSaleReturnRepository returnRepository;
     private final ReconciliationProperties props;
     private final ReconciliationRecomputeService recompute;
     private final UserRepository userRepository;
@@ -55,9 +60,29 @@ public class ReconciliationQueryService {
         int pageSize = Math.max(1, Math.min(size, 200));
         String field = SORTABLE.getOrDefault(sort == null ? "" : sort, "saleDate");
         Sort.Direction direction = "asc".equalsIgnoreCase(dir) ? Sort.Direction.ASC : Sort.Direction.DESC;
-        PageRequest pr = PageRequest.of(Math.max(0, page), pageSize, Sort.by(direction, field).and(Sort.by(Sort.Direction.DESC, "id")));
-        Page<ReconCaseEntity> result = caseRepository.findAll(ReconciliationSpecs.of(filter, caseIdsByReference(filter)), pr);
+        Specification<ReconCaseEntity> spec = ReconciliationSpecs.of(filter, caseIdsByReference(filter));
+        PageRequest pr;
+        if ("customerName".equals(sort)) {
+            // El nombre vive en la venta, no en el caso: se ordena con la venta de cada caso, sin copiar el nombre a otra tabla.
+            spec = spec.and(orderByCustomerName(direction));
+            pr = PageRequest.of(Math.max(0, page), pageSize);
+        } else {
+            pr = PageRequest.of(Math.max(0, page), pageSize, Sort.by(direction, field).and(Sort.by(Sort.Direction.DESC, "id")));
+        }
+        Page<ReconCaseEntity> result = caseRepository.findAll(spec, pr);
         return new CasePage(rows(result.getContent()), result.getTotalElements(), result.getNumber(), pageSize);
+    }
+
+    private static Specification<ReconCaseEntity> orderByCustomerName(Sort.Direction direction) {
+        return (root, query, cb) -> {
+            if (query.getResultType() != Long.class && query.getResultType() != long.class) {
+                Subquery<String> name = query.subquery(String.class);
+                Root<OnlineSaleEntity> sale = name.from(OnlineSaleEntity.class);
+                name.select(cb.lower(sale.get("customerName"))).where(cb.equal(sale.get("id"), root.get("onlineSaleId")));
+                query.orderBy(direction == Sort.Direction.ASC ? cb.asc(name) : cb.desc(name), cb.desc(root.get("id")));
+            }
+            return null;
+        };
     }
 
     /** Casos cuyos fondos coinciden exactamente con el texto buscado (referencia, autorización o transacción). */
@@ -82,6 +107,12 @@ public class ReconciliationQueryService {
                 .collect(Collectors.toMap(ReconCommissionLineEntity::getCaseId, l -> l));
         Map<Long, OnlineSaleEntity> sales = saleRepository.findAllById(cases.stream().map(ReconCaseEntity::getOnlineSaleId).toList()).stream()
                 .collect(Collectors.toMap(OnlineSaleEntity::getId, s -> s));
+        // Número de la devolución (el mismo que lleva su documento impreso): la más reciente de las ventas que están en DEVOLUCION.
+        Map<Long, String> returnNumbers = new HashMap<>();
+        List<Long> returnedSales = sales.values().stream().filter(s -> "DEVOLUCION".equals(s.getStatus())).map(OnlineSaleEntity::getId).toList();
+        if (!returnedSales.isEmpty()) {
+            returnRepository.findByOnlineSaleIdInOrderByIdAsc(returnedSales).forEach(r -> returnNumbers.put(r.getOnlineSaleId(), String.valueOf(r.getId())));
+        }
         List<CaseRow> out = new ArrayList<>();
         for (ReconCaseEntity c : cases) {
             String reference = apps.getOrDefault(c.getId(), List.of()).stream().map(a -> receipts.get(a.getReceiptId())).filter(Objects::nonNull)
@@ -91,17 +122,17 @@ public class ReconciliationQueryService {
             OnlineSaleEntity sale = sales.get(c.getOnlineSaleId());
             BigDecimal commission = line != null ? line.getCommissionAmount()
                     : money(sale == null ? null : sale.getNetAmount()).multiply(props.getCommissionRate()).setScale(2, RoundingMode.HALF_UP);
-            out.add(row(c, reference, commission, batchCodes.get(c.getBatchId()), apps.containsKey(c.getId()), sale == null ? null : sale.getCustomerName()));
+            out.add(row(c, reference, commission, batchCodes.get(c.getBatchId()), apps.containsKey(c.getId()), sale == null ? null : sale.getCustomerName(), returnNumbers.get(c.getOnlineSaleId())));
         }
         return out;
     }
 
-    private CaseRow row(ReconCaseEntity c, String reference, BigDecimal commission, String batchCode, boolean hasReceipts, String customerName) {
+    private CaseRow row(ReconCaseEntity c, String reference, BigDecimal commission, String batchCode, boolean hasReceipts, String customerName, String returnNumber) {
         return new CaseRow(c.getId(), c.getOnlineSaleId(), c.getSaleDate(), c.getSaleNumber(), c.getShipmentNumber(), c.getGuideNumber(), c.getCarrier(),
                 c.getPaymentMethod(), reference, money(c.getExpectedAmount()), money(c.getReceivedAmount()), money(c.getDifference()),
                 money(c.getAuthorizedAdjustment()), money(c.getPendingBalance()), commission, c.getSalesperson(), c.getStatus().name(),
                 c.getOrigin().name(), c.getBatchId(), batchCode, c.getCriticalCount(), c.getWarningCount(),
-                c.getProblemType() == null ? null : c.getProblemType().name(), hasReceipts, customerName);
+                c.getProblemType() == null ? null : c.getProblemType().name(), hasReceipts, customerName, returnNumber);
     }
 
     private List<SaleItemInfo> saleItems(Long saleId) {

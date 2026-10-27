@@ -5,8 +5,10 @@ import com.fossiles.fossilescorebackend.application.dto.reconciliation.Reconcili
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleReturnEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.recon.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleReturnRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaxInvoiceRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
@@ -72,7 +74,7 @@ class ReconciliationFlowTest {
                     ReconReceiptRepository.class, ReconReceiptApplicationRepository.class, ReconCheckResultRepository.class,
                     ReconDifferenceRepository.class, ReconCommissionLineRepository.class, ReconExportRepository.class,
                     ReconExportLineRepository.class, ReconLedgerEntryRepository.class, ReconEventRepository.class,
-                    OnlineSaleRepository.class, OnlineSaleItemRepository.class}))
+                    OnlineSaleRepository.class, OnlineSaleItemRepository.class, OnlineSaleReturnRepository.class}))
     @Import({ReconActor.class, ReconciliationCaseService.class, ReconciliationRecomputeService.class, ReconciliationRuleEngine.class, ReconEventService.class,
             ReconciliationLedgerService.class, ReconciliationReceiptService.class, ReconciliationDifferenceService.class,
             ReconciliationBatchService.class, ReconciliationCommissionService.class, ReconciliationQueryService.class,
@@ -86,7 +88,8 @@ class ReconciliationFlowTest {
                     ReconCaseEntity.class.getName(), ReconReceiptEntity.class.getName(), ReconReceiptApplicationEntity.class.getName(),
                     ReconCheckResultEntity.class.getName(), ReconDifferenceEntity.class.getName(), ReconCommissionLineEntity.class.getName(),
                     ReconExportEntity.class.getName(), ReconExportLineEntity.class.getName(), ReconLedgerEntryEntity.class.getName(),
-                    ReconEventEntity.class.getName(), OnlineSaleEntity.class.getName(), OnlineSaleItemEntity.class.getName());
+                    ReconEventEntity.class.getName(), OnlineSaleEntity.class.getName(), OnlineSaleItemEntity.class.getName(),
+                    OnlineSaleReturnEntity.class.getName());
         }
 
         @Bean
@@ -117,6 +120,7 @@ class ReconciliationFlowTest {
 
     @Autowired OnlineSaleRepository saleRepository;
     @Autowired OnlineSaleItemRepository itemRepository;
+    @Autowired OnlineSaleReturnRepository returnRepository;
     @Autowired ReconCaseRepository caseRepository;
     @Autowired ReconSellerRepository sellerRepository;
     @Autowired ReconLedgerEntryRepository ledgerRepository;
@@ -155,6 +159,7 @@ class ReconciliationFlowTest {
         caseRepository.deleteAll();
         batchRepository.deleteAll();
         receiptRepository.deleteAll();
+        returnRepository.deleteAll();
         itemRepository.deleteAll();
         saleRepository.deleteAll();
         sellerRepository.deleteAll();
@@ -676,5 +681,73 @@ class ReconciliationFlowTest {
             assertThat(i.quantity()).isEqualTo(1);
             assertThat(i.subtotal()).isEqualByComparingTo("450.00");
         });
+    }
+
+    @Test
+    void listado_traeElClienteYElNumeroDeDevolucionSoloDeLasDevueltas() throws Exception {
+        caseService.generate(FROM, TO);
+        Long saleId = s4;
+        returnRepository.save(OnlineSaleReturnEntity.builder().onlineSaleId(saleId).relatedShipmentNumber("ENVL-01604").createdAt(LocalDateTime.now()).build());
+        OnlineSaleReturnEntity last = returnRepository.save(OnlineSaleReturnEntity.builder().onlineSaleId(saleId).relatedShipmentNumber("ENVL-01604").createdAt(LocalDateTime.now()).build());
+
+        List<CaseRow> rows = queryService.list(new CaseFilter(null, null, null, null, null, List.of(), null, false, null, null, null), 0, 50, "saleDate", "asc").rows();
+
+        CaseRow devuelta = rows.stream().filter(r -> r.shipmentNumber().equals("ENVL-01604")).findFirst().orElseThrow();
+        assertThat(devuelta.customerName()).isEqualTo("Devuelta");
+        assertThat(devuelta.returnNumber()).isEqualTo(String.valueOf(last.getId()));
+        assertThat(rows.stream().filter(r -> !r.shipmentNumber().equals("ENVL-01604"))).allSatisfy(r -> {
+            assertThat(r.returnNumber()).isNull();
+            assertThat(r.customerName()).isNotBlank();
+        });
+    }
+
+    @Test
+    void listado_seOrdenaPorNombreDelCliente() throws Exception {
+        caseService.generate(FROM, TO);
+        CaseFilter all = new CaseFilter(null, null, null, null, null, List.of(), null, false, null, null, null);
+
+        List<String> asc = queryService.list(all, 0, 50, "customerName", "asc").rows().stream().map(CaseRow::customerName).toList();
+        List<String> desc = queryService.list(all, 0, 50, "customerName", "desc").rows().stream().map(CaseRow::customerName).toList();
+
+        assertThat(asc).containsExactly("COD Forza", "COD Forza 2", "Deposito", "Devuelta", "Sin guia");
+        assertThat(desc).containsExactly("Sin guia", "Devuelta", "Deposito", "COD Forza 2", "COD Forza");
+        assertThat(queryService.list(all, 0, 2, "customerName", "asc").total()).isEqualTo(5);
+    }
+
+    @Test
+    void corregirPago_anulaElAnteriorYRegistraElNuevo_dejandoElMotivoEnElHistorial() throws Exception {
+        caseService.generate(FROM, TO);
+        Long c2 = caseOf(s2).getId();
+        settlementService.recordMany(List.of(new BulkReceiptItem(c2, new BigDecimal("100.00"), false, "AUT-1")));
+        assertThat(caseOf(s2).getReceivedAmount()).isEqualByComparingTo("100.00");
+
+        BulkReceiptRow row = settlementService.replace(c2, new ReplaceReceiptRequest(new BigDecimal("105.00"), false, "AUT-2"));
+
+        assertThat(row.ok()).isTrue();
+        assertThat(caseOf(s2).getReceivedAmount()).isEqualByComparingTo("105.00");
+        assertThat(caseOf(s2).getDifference()).isEqualByComparingTo("0.00");
+        assertThat(applicationRepository.findByCaseIdAndStatus(c2, Recon.RowStatus.ACTIVE)).hasSize(1);
+        assertThat(queryService.detail(c2).events()).filteredOn(e -> e.type().equals("APLICACION_ANULADA"))
+                .singleElement().satisfies(e -> assertThat(e.payload()).contains("Corregido en la pantalla de liquidación"));
+        // «= cobrado» también sirve para corregir
+        settlementService.replace(c2, new ReplaceReceiptRequest(null, true, null));
+        assertThat(caseOf(s2).getReceivedAmount()).isEqualByComparingTo("105.00");
+    }
+
+    @Test
+    void corregirPago_noTocaPagosImportadosNiVentasSinPagoNiLasQueYaEstanEnUnLote() throws Exception {
+        generateAndImportCarrierFile();
+        Long c1 = caseOf(s1).getId();
+        Long c5 = caseOf(s5).getId();
+
+        assertThatThrownBy(() -> settlementService.replace(c1, new ReplaceReceiptRequest(new BigDecimal("480.00"), false, null)))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("archivo importado");
+        assertThatThrownBy(() -> settlementService.replace(c5, new ReplaceReceiptRequest(new BigDecimal("10.00"), false, null)))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("no tiene un pago");
+        assertThat(caseOf(s1).getReceivedAmount()).isEqualByComparingTo("480.00");
+
+        settlementService.settle(List.of(c1), "liquidar-corregir");
+        assertThatThrownBy(() -> settlementService.replace(c1, new ReplaceReceiptRequest(new BigDecimal("480.00"), false, null)))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("lote");
     }
 }

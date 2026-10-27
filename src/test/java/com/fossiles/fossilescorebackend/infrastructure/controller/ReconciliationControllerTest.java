@@ -145,4 +145,17 @@ class ReconciliationControllerTest {
         assertThat(captor.getValue().get(0).matchExpected()).isTrue();
         assertThat(captor.getValue().get(1).amount()).isEqualByComparingTo("100.50");
     }
+
+    @Test
+    void corregirPago_exigePermisoDeImportarYConciliar() throws Exception {
+        mvc.perform(put("/api/reconciliation/cases/7/receipt").contentType("application/json")
+                .content("{\"amount\":120.00,\"matchExpected\":false,\"reference\":\"AUT-1\"}")).andExpect(status().isOk());
+
+        verify(guard).assertCanImport();
+        verify(guard).assertCanReconcile();
+        ArgumentCaptor<ReconciliationDtos.ReplaceReceiptRequest> captor = ArgumentCaptor.forClass(ReconciliationDtos.ReplaceReceiptRequest.class);
+        verify(settlement).replace(org.mockito.ArgumentMatchers.eq(7L), captor.capture());
+        assertThat(captor.getValue().amount()).isEqualByComparingTo("120.00");
+        assertThat(captor.getValue().reference()).isEqualTo("AUT-1");
+    }
 }

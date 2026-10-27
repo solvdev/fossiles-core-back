@@ -204,6 +204,15 @@ public class ReconciliationController {
         return ResponseEntity.ok(settlementService.recordMany(body == null ? null : body.items()));
     }
 
+    /** Corrige el pago guardado de una venta que aún no está en un lote (anula el anterior y registra el nuevo). */
+    @PutMapping("/cases/{id}/receipt")
+    public ResponseEntity<BulkReceiptRow> replaceReceipt(@PathVariable Long id, @RequestBody ReplaceReceiptRequest body)
+            throws BusinessException, ResourceNotFoundException {
+        guard.assertCanImport();
+        guard.assertCanReconcile();
+        return ResponseEntity.ok(settlementService.replace(id, body));
+    }
+
     @PostMapping("/receipts/auto-apply")
     public ResponseEntity<ImportResult> autoApply() throws BusinessException {
         guard.assertCanImport();

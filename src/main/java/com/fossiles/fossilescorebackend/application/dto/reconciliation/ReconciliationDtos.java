@@ -38,7 +38,7 @@ public final class ReconciliationDtos {
             String carrier, String paymentMethod, String reference, BigDecimal expected, BigDecimal received,
             BigDecimal difference, BigDecimal authorizedAdjustment, BigDecimal pendingBalance, BigDecimal commission,
             String seller, String status, String origin, Long batchId, String batchCode, int criticalCount,
-            int warningCount, String problemType, boolean hasReceipts, String customerName) {
+            int warningCount, String problemType, boolean hasReceipts, String customerName, String returnNumber) {
     }
 
     public record CasePage(List<CaseRow> rows, long total, int page, int size) {
@@ -132,6 +132,10 @@ public final class ReconciliationDtos {
 
     /** Un pago escrito dentro de la liquidación: monto escrito, o {@code matchExpected} para registrar exactamente lo cobrado. */
     public record BulkReceiptItem(Long caseId, BigDecimal amount, boolean matchExpected, String reference) {
+    }
+
+    /** Corrección del pago ya guardado de una venta: el monto nuevo (o «= cobrado») y su No. de autorización o referencia. */
+    public record ReplaceReceiptRequest(BigDecimal amount, boolean matchExpected, String reference) {
     }
 
     public record BulkReceiptRequest(List<BulkReceiptItem> items) {
