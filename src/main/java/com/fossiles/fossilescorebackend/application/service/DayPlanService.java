@@ -509,7 +509,9 @@ public class DayPlanService {
                 .plannedHours(round2(plannedHours)).totalHours(round2(total))
                 .remainingHours(round2(Math.max(0, total - plannedHours)))
                 .requestedHours(round2(requestedHours))
-                .excessHours(round2(Math.max(0, plannedHours + requestedHours - total)))
+                // Un día que ya venía pasado de cupo no bloquea un plan que no le suma horas (p. ej. solo OPL).
+                .excessHours(requestedHours <= EPS ? 0.0
+                        : round2(Math.max(0, plannedHours + requestedHours - total)))
                 .build();
     }
 

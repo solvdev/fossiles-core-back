@@ -693,6 +693,10 @@ public class TaskOrganizerService {
         if (po == null) {
             return;
         }
+        // Las OPL nunca esperan autorización (solo las OPI); siempre se pueden programar.
+        if (isOnlineSaleOrder(po)) {
+            return;
+        }
         if ("DRAFT".equalsIgnoreCase(String.valueOf(po.getStatus()).trim())) {
             String code = po.getCode() != null ? po.getCode() : "OPI";
             throw new BusinessException(
