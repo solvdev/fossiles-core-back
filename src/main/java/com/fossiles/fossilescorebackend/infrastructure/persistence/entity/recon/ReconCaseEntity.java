@@ -73,6 +73,10 @@ public class ReconCaseEntity {
     private Long batchId;
     @Column(name = "closed_at")
     private LocalDateTime closedAt;
+    @Column(name = "real_shipping", precision = 12, scale = 2)
+    private BigDecimal realShipping;
+    @Column(name = "carrier_commission_rate", precision = 5, scale = 4)
+    private BigDecimal carrierCommissionRate;
     @Version
     @Column(name = "version", nullable = false)
     private int version;

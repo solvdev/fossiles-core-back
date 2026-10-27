@@ -5,7 +5,10 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.recon.Recon;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.recon.ReconCaseEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.recon.ReconReceiptApplicationEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.recon.ReconReceiptEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.recon.ReconCaseRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.recon.ReconReceiptRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.recon.ReconReceiptApplicationRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -39,6 +42,7 @@ public class ReconciliationSettlementService {
     private final ReconciliationCaseService caseService;
     private final ReconciliationBatchService batchService;
     private final ReconciliationRecomputeService recompute;
+    private final ReconReceiptRepository receiptRepository;
 
     public BulkReceiptResult recordMany(List<BulkReceiptItem> items) throws BusinessException {
         if (items == null || items.isEmpty()) throw new BusinessException("No hay pagos por guardar.");
@@ -65,6 +69,33 @@ public class ReconciliationSettlementService {
             }
         }
         return new BulkReceiptResult(saved, rows.size() - saved, rows);
+    }
+
+    /**
+     * Corrige el pago ya guardado de una venta que todavía no está en un lote: anula el pago anterior (con su motivo en el historial)
+     * y registra el nuevo, todo o nada. No toca pagos de archivos importados ni ventas con varios pagos: esos se corrigen en el detalle.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public BulkReceiptRow replace(Long caseId, ReplaceReceiptRequest req) throws BusinessException, ResourceNotFoundException {
+        ReconCaseEntity c = caseRepository.findById(caseId).orElseThrow(() -> new ResourceNotFoundException("Caso no encontrado: " + caseId));
+        if (req == null) throw new BusinessException("Escriba el monto recibido.");
+        if (c.isClosed() || c.getBatchId() != null) throw new BusinessException("La venta está en un lote cerrado. Solo se corrige anulando el lote completo.");
+        List<ReconReceiptApplicationEntity> active = applicationRepository.findByCaseIdAndStatus(c.getId(), Recon.RowStatus.ACTIVE);
+        if (active.isEmpty()) throw new BusinessException("La venta no tiene un pago guardado: escríbalo y guárdelo.");
+        if (active.size() > 1) throw new BusinessException("La venta tiene varios pagos. Ábrala y corríjalos en el detalle.");
+        ReconReceiptApplicationEntity app = active.get(0);
+        ReconReceiptEntity old = receiptRepository.findById(app.getReceiptId()).orElseThrow(() -> new ResourceNotFoundException("Fondo no encontrado: " + app.getReceiptId()));
+        if (old.getImportFileId() != null) {
+            throw new BusinessException("Este pago viene de un archivo importado (transportista, banco o tarjeta). Corríjalo desde el detalle de la venta.");
+        }
+        var amount = req.matchExpected() ? money(c.getExpectedAmount()) : req.amount();
+        if (amount == null || amount.signum() <= 0) throw new BusinessException("Escriba el monto recibido (mayor a cero).");
+        String reason = "Corregido en la pantalla de liquidación (antes " + q(old.getAmount())
+                + (blank(old.getReference()) ? "" : ", ref. " + old.getReference()) + ")";
+        receiptService.voidApplication(app.getId(), reason);
+        receiptService.voidReceipt(old.getId(), reason);
+        QuickReceiptResult r = receiptService.recordForCase(c.getId(), new CaseReceiptRequest(null, req.reference(), null, amount, null));
+        return new BulkReceiptRow(c.getId(), c.getShipmentNumber(), true, r.message(), r.received(), r.difference(), r.status());
     }
 
     @Transactional(rollbackFor = Exception.class)

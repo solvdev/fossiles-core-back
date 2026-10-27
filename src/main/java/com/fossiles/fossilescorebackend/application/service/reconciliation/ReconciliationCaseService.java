@@ -113,6 +113,46 @@ public class ReconciliationCaseService {
         return cases.size();
     }
 
+    /** Comisión fija de Forza y Guatex. */
+    public static final java.math.BigDecimal FIXED_COMMISSION_RATE = new java.math.BigDecimal("0.035");
+    /** Porcentajes que se pueden elegir para las demás ventas. */
+    public static final List<java.math.BigDecimal> COMMISSION_CHOICES = List.of(new java.math.BigDecimal("0.03"), new java.math.BigDecimal("0.035"), new java.math.BigDecimal("0.04"));
+
+    /**
+     * Guarda el envío real y el porcentaje de comisión de una venta. Es solo un registro: no cambia lo esperado, lo recibido ni la diferencia.
+     * Forza y Guatex llevan 3.5% fijo (no se elige); en las demás se elige 3, 3.5 o 4%. Una venta en un lote cerrado ya no se toca.
+     */
+    @Transactional
+    public ReconCaseEntity updateShippingCommission(Long id, java.math.BigDecimal realShipping, java.math.BigDecimal rate) throws ResourceNotFoundException, BusinessException {
+        ReconCaseEntity c = caseRepository.findById(id).orElseThrow(() -> new ResourceNotFoundException("Caso no encontrado: " + id));
+        if (c.isClosed() || c.getBatchId() != null) throw new BusinessException("La venta está en un lote cerrado y no se puede modificar.");
+        if (c.getExcludedReason() != null) throw new BusinessException("La venta está excluida de la conciliación.");
+        if (realShipping != null) {
+            if (realShipping.signum() < 0) throw new BusinessException("El envío real no puede ser negativo.");
+            if (realShipping.stripTrailingZeros().scale() > 2) throw new BusinessException("El envío real no puede tener más de 2 decimales.");
+        }
+        java.math.BigDecimal stored = null;
+        if (rate != null) {
+            if (isCarrierWithGuide(c.getCarrier())) {
+                if (rate.compareTo(FIXED_COMMISSION_RATE) != 0) throw new BusinessException("Forza y Guatex llevan 3.5% fijo: no se cambia.");
+            } else if (COMMISSION_CHOICES.stream().noneMatch(r -> r.compareTo(rate) == 0)) {
+                throw new BusinessException("Elija 3%, 3.5% o 4% de comisión.");
+            } else {
+                stored = rate.setScale(4, java.math.RoundingMode.HALF_UP);
+            }
+        }
+        c.setRealShipping(realShipping == null ? null : money(realShipping));
+        c.setCarrierCommissionRate(stored);
+        c.setUpdatedBy(actor.id());
+        c.setUpdatedAt(java.time.LocalDateTime.now());
+        caseRepository.save(c);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("envioReal", c.getRealShipping() == null ? null : c.getRealShipping().toPlainString());
+        payload.put("comision", rate == null ? null : rate.multiply(new java.math.BigDecimal(100)).stripTrailingZeros().toPlainString() + "%");
+        events.record(c.getId(), null, "ENVIO_COMISION", c.getStatus(), c.getStatus(), payload);
+        return c;
+    }
+
     /** Concilia a mano un caso que solo tiene advertencias. Un caso con diferencias o fallas críticas no se puede forzar. */
     @Transactional
     public ReconCaseEntity reconcile(Long id, String observation) throws ResourceNotFoundException, BusinessException {

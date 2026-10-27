@@ -145,4 +145,30 @@ class ReconciliationControllerTest {
         assertThat(captor.getValue().get(0).matchExpected()).isTrue();
         assertThat(captor.getValue().get(1).amount()).isEqualByComparingTo("100.50");
     }
+
+    @Test
+    void corregirPago_exigePermisoDeImportarYConciliar() throws Exception {
+        mvc.perform(put("/api/reconciliation/cases/7/receipt").contentType("application/json")
+                .content("{\"amount\":120.00,\"matchExpected\":false,\"reference\":\"AUT-1\"}")).andExpect(status().isOk());
+
+        verify(guard).assertCanImport();
+        verify(guard).assertCanReconcile();
+        ArgumentCaptor<ReconciliationDtos.ReplaceReceiptRequest> captor = ArgumentCaptor.forClass(ReconciliationDtos.ReplaceReceiptRequest.class);
+        verify(settlement).replace(org.mockito.ArgumentMatchers.eq(7L), captor.capture());
+        assertThat(captor.getValue().amount()).isEqualByComparingTo("120.00");
+        assertThat(captor.getValue().reference()).isEqualTo("AUT-1");
+    }
+
+    @Test
+    void envioYComision_exigenPermisoDeConciliar() throws Exception {
+        Mockito.when(cases.updateShippingCommission(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(Mockito.mock(com.fossiles.fossilescorebackend.infrastructure.persistence.entity.recon.ReconCaseEntity.class));
+        Mockito.when(query.rows(org.mockito.ArgumentMatchers.anyList())).thenReturn(java.util.Arrays.asList((ReconciliationDtos.CaseRow) null));
+        mvc.perform(put("/api/reconciliation/cases/8/shipping-commission").contentType("application/json")
+                .content("{\"realShipping\":25.00,\"commissionRate\":0.04}")).andExpect(status().isOk());
+
+        verify(guard).assertCanReconcile();
+        verify(cases).updateShippingCommission(org.mockito.ArgumentMatchers.eq(8L), org.mockito.ArgumentMatchers.argThat(v -> v.compareTo(new java.math.BigDecimal("25.00")) == 0),
+                org.mockito.ArgumentMatchers.argThat(v -> v.compareTo(new java.math.BigDecimal("0.04")) == 0));
+    }
 }

@@ -11,5 +11,6 @@ import java.util.List;
 public interface OnlineSaleReturnRepository extends JpaRepository<OnlineSaleReturnEntity, Long> {
     List<OnlineSaleReturnEntity> findByCreatedAtBetweenOrderByIdDesc(LocalDateTime start, LocalDateTime end);
     List<OnlineSaleReturnEntity> findAllByOrderByIdDesc();
+    List<OnlineSaleReturnEntity> findByOnlineSaleIdInOrderByIdAsc(java.util.Collection<Long> onlineSaleIds);
 }
 
