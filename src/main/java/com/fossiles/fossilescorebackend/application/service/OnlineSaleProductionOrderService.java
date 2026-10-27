@@ -817,7 +817,11 @@ public class OnlineSaleProductionOrderService {
                 sale.getSaleNumber(),
                 desc,
                 ProductInventoryService.REF_ONLINE_SALE_PREPARE,
-                saleItemId);
+                saleItemId,
+                // Venta normal: Bodega PT primero. Un cambio usa la pieza que acaba de volver a Devoluciones.
+                OnlineSaleService.isExchangeSale(sale)
+                        ? ProductInventoryService.DispatchSource.RETURNS_FIRST
+                        : ProductInventoryService.DispatchSource.PT_FIRST);
     }
 
     /**

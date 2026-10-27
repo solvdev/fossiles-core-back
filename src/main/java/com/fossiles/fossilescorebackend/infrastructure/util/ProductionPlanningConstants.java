@@ -167,6 +167,15 @@ public final class ProductionPlanningConstants {
         return seller.contains("LUIS FELIPE") && "OPC".equals(orderFamilyLabel(orderType, code));
     }
 
+    /**
+     * OPV y OPC de Luis Felipe: todo lo que se produce ya está vendido, así que se guarda en la reserva
+     * (no en stock ni en Devoluciones) hasta que bodega cierra la recepción de la orden.
+     */
+    public static boolean isLuisFelipeReserveOrder(String sellerName, String orderType, String code) {
+        return isLuisFelipeVendorOrder(sellerName, orderType, code)
+                || isLuisFelipeCinchoOrder(sellerName, orderType, code);
+    }
+
     /** Solo se trabaja de lunes a viernes: ninguna tarea debe programarse sábado/domingo. */
     public static boolean isWorkday(LocalDate date) {
         if (date == null) {
