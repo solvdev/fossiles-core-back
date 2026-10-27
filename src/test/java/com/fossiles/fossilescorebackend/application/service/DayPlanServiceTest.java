@@ -467,6 +467,36 @@ class DayPlanServiceTest {
     }
 
     @Test
+    @DisplayName("Una OPL nunca se bloquea por borrador: solo las OPI esperan autorización")
+    void oplEnBorradorNoSeBloquea() throws Exception {
+        kit.order(3, "OPL-3", "VENTA_EN_LINEA", "DRAFT");
+        kit.item(300, 3, 10, 30);
+        kit.order(4, "OPI-4", "NORMAL", "DRAFT");
+        kit.item(400, 4, 10, 2);
+
+        DayPlanPreviewResponse preview = service.preview(plan(JUEVES,
+                draft("opl", 3, line(300, 1)), draft("opi", 4, line(400, 1))));
+
+        assertThat(task(preview, "opl").getStatus()).isNotEqualTo(Status.BLOCKED);
+        assertThat(task(preview, "opi").getStatus()).isEqualTo(Status.BLOCKED);
+    }
+
+    @Test
+    @DisplayName("Un día ya pasado de cupo no bloquea un plan que no le suma horas (solo OPL)")
+    void diaPasadoNoBloqueaOplSinHoras() throws Exception {
+        numDesks = 1;
+        existing.put(JUEVES, List.of(existingTask(1, "PENDING", 1, JUEVES, 4.0),
+                existingTask(2, "PENDING", 1, JUEVES, 4.0)));
+        kit.opl(3);
+        kit.item(300, 3, 10, 30);
+
+        DayPlanPreviewResponse preview = service.preview(plan(JUEVES, draft("opl", 3, line(300, 1))));
+
+        assertThat(preview.getCapacity().getExcessHours()).isZero();
+        assertThat(preview.isBlocked()).isFalse();
+    }
+
+    @Test
     @DisplayName("Lo que no cabe no se crea: va a leftovers por ítem con su cantidad")
     void loQueNoCabeNoSeCrea() throws Exception {
         numDesks = 1;
