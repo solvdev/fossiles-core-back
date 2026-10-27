@@ -91,17 +91,17 @@ public class ReconciliationQueryService {
             OnlineSaleEntity sale = sales.get(c.getOnlineSaleId());
             BigDecimal commission = line != null ? line.getCommissionAmount()
                     : money(sale == null ? null : sale.getNetAmount()).multiply(props.getCommissionRate()).setScale(2, RoundingMode.HALF_UP);
-            out.add(row(c, reference, commission, batchCodes.get(c.getBatchId()), apps.containsKey(c.getId())));
+            out.add(row(c, reference, commission, batchCodes.get(c.getBatchId()), apps.containsKey(c.getId()), sale == null ? null : sale.getCustomerName()));
         }
         return out;
     }
 
-    private CaseRow row(ReconCaseEntity c, String reference, BigDecimal commission, String batchCode, boolean hasReceipts) {
+    private CaseRow row(ReconCaseEntity c, String reference, BigDecimal commission, String batchCode, boolean hasReceipts, String customerName) {
         return new CaseRow(c.getId(), c.getOnlineSaleId(), c.getSaleDate(), c.getSaleNumber(), c.getShipmentNumber(), c.getGuideNumber(), c.getCarrier(),
                 c.getPaymentMethod(), reference, money(c.getExpectedAmount()), money(c.getReceivedAmount()), money(c.getDifference()),
                 money(c.getAuthorizedAdjustment()), money(c.getPendingBalance()), commission, c.getSalesperson(), c.getStatus().name(),
                 c.getOrigin().name(), c.getBatchId(), batchCode, c.getCriticalCount(), c.getWarningCount(),
-                c.getProblemType() == null ? null : c.getProblemType().name(), hasReceipts);
+                c.getProblemType() == null ? null : c.getProblemType().name(), hasReceipts, customerName);
     }
 
     private List<SaleItemInfo> saleItems(Long saleId) {
