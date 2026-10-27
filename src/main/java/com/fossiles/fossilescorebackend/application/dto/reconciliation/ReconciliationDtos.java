@@ -38,7 +38,7 @@ public final class ReconciliationDtos {
             String carrier, String paymentMethod, String reference, BigDecimal expected, BigDecimal received,
             BigDecimal difference, BigDecimal authorizedAdjustment, BigDecimal pendingBalance, BigDecimal commission,
             String seller, String status, String origin, Long batchId, String batchCode, int criticalCount,
-            int warningCount, String problemType, boolean hasReceipts) {
+            int warningCount, String problemType, boolean hasReceipts, String customerName) {
     }
 
     public record CasePage(List<CaseRow> rows, long total, int page, int size) {
