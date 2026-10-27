@@ -213,6 +213,15 @@ public class ReconciliationController {
         return ResponseEntity.ok(settlementService.replace(id, body));
     }
 
+    /** Envío real y porcentaje de comisión de la venta. Solo registro: no cambia el cuadre. */
+    @PutMapping("/cases/{id}/shipping-commission")
+    public ResponseEntity<CaseRow> shippingCommission(@PathVariable Long id, @RequestBody ShippingCommissionRequest body)
+            throws BusinessException, ResourceNotFoundException {
+        guard.assertCanReconcile();
+        var c = caseService.updateShippingCommission(id, body == null ? null : body.realShipping(), body == null ? null : body.commissionRate());
+        return ResponseEntity.ok(queryService.rows(List.of(c)).get(0));
+    }
+
     @PostMapping("/receipts/auto-apply")
     public ResponseEntity<ImportResult> autoApply() throws BusinessException {
         guard.assertCanImport();

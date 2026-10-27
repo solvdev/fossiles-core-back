@@ -158,4 +158,17 @@ class ReconciliationControllerTest {
         assertThat(captor.getValue().amount()).isEqualByComparingTo("120.00");
         assertThat(captor.getValue().reference()).isEqualTo("AUT-1");
     }
+
+    @Test
+    void envioYComision_exigenPermisoDeConciliar() throws Exception {
+        Mockito.when(cases.updateShippingCommission(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(Mockito.mock(com.fossiles.fossilescorebackend.infrastructure.persistence.entity.recon.ReconCaseEntity.class));
+        Mockito.when(query.rows(org.mockito.ArgumentMatchers.anyList())).thenReturn(java.util.Arrays.asList((ReconciliationDtos.CaseRow) null));
+        mvc.perform(put("/api/reconciliation/cases/8/shipping-commission").contentType("application/json")
+                .content("{\"realShipping\":25.00,\"commissionRate\":0.04}")).andExpect(status().isOk());
+
+        verify(guard).assertCanReconcile();
+        verify(cases).updateShippingCommission(org.mockito.ArgumentMatchers.eq(8L), org.mockito.ArgumentMatchers.argThat(v -> v.compareTo(new java.math.BigDecimal("25.00")) == 0),
+                org.mockito.ArgumentMatchers.argThat(v -> v.compareTo(new java.math.BigDecimal("0.04")) == 0));
+    }
 }

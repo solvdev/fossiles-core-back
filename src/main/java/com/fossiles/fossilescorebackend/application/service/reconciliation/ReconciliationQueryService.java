@@ -122,17 +122,22 @@ public class ReconciliationQueryService {
             OnlineSaleEntity sale = sales.get(c.getOnlineSaleId());
             BigDecimal commission = line != null ? line.getCommissionAmount()
                     : money(sale == null ? null : sale.getNetAmount()).multiply(props.getCommissionRate()).setScale(2, RoundingMode.HALF_UP);
-            out.add(row(c, reference, commission, batchCodes.get(c.getBatchId()), apps.containsKey(c.getId()), sale == null ? null : sale.getCustomerName(), returnNumbers.get(c.getOnlineSaleId())));
+            out.add(row(c, reference, commission, batchCodes.get(c.getBatchId()), apps.containsKey(c.getId()), sale, returnNumbers.get(c.getOnlineSaleId())));
         }
         return out;
     }
 
-    private CaseRow row(ReconCaseEntity c, String reference, BigDecimal commission, String batchCode, boolean hasReceipts, String customerName, String returnNumber) {
+    private CaseRow row(ReconCaseEntity c, String reference, BigDecimal commission, String batchCode, boolean hasReceipts, OnlineSaleEntity sale, String returnNumber) {
+        // Comisión del transportista: sobre el total con el envío cobrado. Forza y Guatex llevan 3.5% fijo; el resto, el que se eligió (3, 3.5 o 4%).
+        boolean fixed = isCarrierWithGuide(c.getCarrier());
+        BigDecimal rate = fixed ? ReconciliationCaseService.FIXED_COMMISSION_RATE : c.getCarrierCommissionRate();
+        BigDecimal carrierCommission = rate == null ? null : money(c.getExpectedAmount()).multiply(rate).setScale(2, RoundingMode.HALF_UP);
         return new CaseRow(c.getId(), c.getOnlineSaleId(), c.getSaleDate(), c.getSaleNumber(), c.getShipmentNumber(), c.getGuideNumber(), c.getCarrier(),
                 c.getPaymentMethod(), reference, money(c.getExpectedAmount()), money(c.getReceivedAmount()), money(c.getDifference()),
                 money(c.getAuthorizedAdjustment()), money(c.getPendingBalance()), commission, c.getSalesperson(), c.getStatus().name(),
                 c.getOrigin().name(), c.getBatchId(), batchCode, c.getCriticalCount(), c.getWarningCount(),
-                c.getProblemType() == null ? null : c.getProblemType().name(), hasReceipts, customerName, returnNumber);
+                c.getProblemType() == null ? null : c.getProblemType().name(), hasReceipts, sale == null ? null : sale.getCustomerName(), returnNumber,
+                sale == null ? null : money(sale.getShippingCost()), c.getRealShipping(), rate, carrierCommission, fixed, c.getExcludedReason());
     }
 
     private List<SaleItemInfo> saleItems(Long saleId) {
@@ -177,7 +182,7 @@ public class ReconciliationQueryService {
         SaleInfo saleInfo = sale == null ? null : new SaleInfo(sale.getSaleNumber(), sale.getShipmentNumber(), sale.getSaleDate(), sale.getCustomerName(),
                 sale.getStatus(), sale.getPaymentMethod(), sale.getPaymentAuthorization(), sale.getShippingCarrier(), sale.getGuideNumber(),
                 sale.getSalesperson(), sale.getNetAmount(), sale.getShippingCost(), sale.getTotalAmount(), sale.getInvoiceId(), sale.getDispatchedAt(),
-                sale.getUpdatedAt(), saleItems(sale.getId()));
+                sale.getUpdatedAt(), saleItems(sale.getId()), sale.getAddress());
         BigDecimal net = sale == null ? BigDecimal.ZERO : money(sale.getNetAmount());
         BigDecimal expectedCommission = net.multiply(props.getCommissionRate()).setScale(2, RoundingMode.HALF_UP);
         CommissionDto commission = commissionRepository.findByCaseId(id)

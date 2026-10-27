@@ -750,4 +750,86 @@ class ReconciliationFlowTest {
         assertThatThrownBy(() -> settlementService.replace(c1, new ReplaceReceiptRequest(new BigDecimal("480.00"), false, null)))
                 .isInstanceOf(BusinessException.class).hasMessageContaining("lote");
     }
+
+    @Test
+    void comision_enForzaYGuatexEsFijaEn3punto5_yElEnvioRealSeRegistraSinCambiarElCuadre() throws Exception {
+        caseService.generate(FROM, TO);
+        Long c1 = caseOf(s1).getId();
+
+        caseService.updateShippingCommission(c1, new BigDecimal("25.00"), null);
+
+        CaseRow row = queryService.rows(List.of(caseOf(s1))).get(0);
+        assertThat(row.carrierCommissionFixed()).isTrue();
+        assertThat(row.carrierCommissionRate()).isEqualByComparingTo("0.035");
+        assertThat(row.carrierCommission()).isEqualByComparingTo("16.80");       // 3.5% de 480.00 (total con envío cobrado)
+        assertThat(row.chargedShipping()).isEqualByComparingTo("30.00");
+        assertThat(row.realShipping()).isEqualByComparingTo("25.00");
+        assertThat(row.expected()).isEqualByComparingTo("480.00");               // lo esperado no se mueve
+        assertThat(caseOf(s1).getCarrierCommissionRate()).isNull();               // el fijo no se guarda
+        assertThatThrownBy(() -> caseService.updateShippingCommission(c1, null, new BigDecimal("0.04")))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("3.5% fijo");
+        assertThat(queryService.detail(c1).events()).anyMatch(e -> e.type().equals("ENVIO_COMISION"));
+    }
+
+    @Test
+    void comision_enLasDemasSeEligeEntre3_3punto5y4_yNoAdmiteOtroPorcentaje() throws Exception {
+        Long moto = sale("6", "Moto", "CONTRA_ENTREGA", "MOTORISTA", "200.00", "30.00", "ENVL-01606", null, null, "ENVIADO",
+                LocalDate.of(2026, 10, 8), "Eduardo Ramirez");
+        caseService.generate(FROM, TO);
+        Long id = caseOf(moto).getId();
+        assertThat(queryService.rows(List.of(caseOf(moto))).get(0).carrierCommission()).isNull();   // sin elegir no hay comisión
+
+        caseService.updateShippingCommission(id, new BigDecimal("20.00"), new BigDecimal("0.04"));
+
+        CaseRow row = queryService.rows(List.of(caseOf(moto))).get(0);
+        assertThat(row.carrierCommissionFixed()).isFalse();
+        assertThat(row.carrierCommissionRate()).isEqualByComparingTo("0.04");
+        assertThat(row.carrierCommission()).isEqualByComparingTo("9.20");        // 4% de 230.00
+        assertThatThrownBy(() -> caseService.updateShippingCommission(id, null, new BigDecimal("0.05")))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("3%, 3.5% o 4%");
+        assertThatThrownBy(() -> caseService.updateShippingCommission(id, new BigDecimal("-1"), null))
+                .isInstanceOf(BusinessException.class);
+        // vaciar los dos campos borra lo escrito
+        caseService.updateShippingCommission(id, null, null);
+        assertThat(queryService.rows(List.of(caseOf(moto))).get(0).realShipping()).isNull();
+    }
+
+    @Test
+    void comision_unaVentaYaLiquidadaNoSeEdita() throws Exception {
+        generateAndImportCarrierFile();
+        Long c1 = caseOf(s1).getId();
+        settlementService.settle(List.of(c1), "liquidar-comision");
+
+        assertThatThrownBy(() -> caseService.updateShippingCommission(c1, new BigDecimal("25.00"), null))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("lote");
+    }
+
+    @Test
+    void detalle_traeLaDireccionDeEnvio() throws Exception {
+        OnlineSaleEntity s = saleRepository.findById(s1).orElseThrow();
+        s.setAddress("5a avenida 10-20 zona 1, Guatemala");
+        s.setSkipAmountCalculation(true);
+        saleRepository.save(s);
+        caseService.generate(FROM, TO);
+
+        assertThat(queryService.detail(caseOf(s1).getId()).sale().address()).isEqualTo("5a avenida 10-20 zona 1, Guatemala");
+    }
+
+    @Test
+    void listado_trae_elMotivoDeLasVentasAnuladasYSeAnulaConElMotivoEscrito() throws Exception {
+        caseService.generate(FROM, TO);
+        CaseRow devuelta = queryService.rows(List.of(caseOf(s4))).get(0);
+        assertThat(devuelta.status()).isEqualTo("EXCLUIDO");
+        assertThat(devuelta.excludedReason()).isEqualTo("Venta en estado DEVOLUCION");
+
+        // «Anular» una venta que físicamente está anulada: se excluye con su motivo y queda a la vista
+        Long c5 = caseOf(s5).getId();
+        assertThatThrownBy(() -> caseService.exclude(c5, "corto")).isInstanceOf(BusinessException.class);
+        caseService.exclude(c5, "El paquete regresó al almacén sin entregar");
+
+        CaseRow anulada = queryService.rows(List.of(caseOf(s5))).get(0);
+        assertThat(anulada.status()).isEqualTo("EXCLUIDO");
+        assertThat(anulada.excludedReason()).isEqualTo("El paquete regresó al almacén sin entregar");
+        assertThat(queryService.detail(c5).events()).anyMatch(e -> e.type().equals("EXCLUIDO"));
+    }
 }

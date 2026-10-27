@@ -38,7 +38,8 @@ public final class ReconciliationDtos {
             String carrier, String paymentMethod, String reference, BigDecimal expected, BigDecimal received,
             BigDecimal difference, BigDecimal authorizedAdjustment, BigDecimal pendingBalance, BigDecimal commission,
             String seller, String status, String origin, Long batchId, String batchCode, int criticalCount,
-            int warningCount, String problemType, boolean hasReceipts, String customerName, String returnNumber) {
+            int warningCount, String problemType, boolean hasReceipts, String customerName, String returnNumber, BigDecimal chargedShipping, BigDecimal realShipping,
+            BigDecimal carrierCommissionRate, BigDecimal carrierCommission, boolean carrierCommissionFixed, String excludedReason) {
     }
 
     public record CasePage(List<CaseRow> rows, long total, int page, int size) {
@@ -72,7 +73,7 @@ public final class ReconciliationDtos {
     public record SaleInfo(String saleNumber, String shipmentNumber, LocalDate saleDate, String customerName, String saleStatus,
                            String paymentMethod, String paymentAuthorization, String carrier, String guideNumber,
                            String salesperson, BigDecimal net, BigDecimal shipping, BigDecimal total, Long invoiceId,
-                           LocalDateTime dispatchedAt, LocalDateTime lastUpdatedAt, List<SaleItemInfo> items) {
+                           LocalDateTime dispatchedAt, LocalDateTime lastUpdatedAt, List<SaleItemInfo> items, String address) {
     }
 
     public record CommissionDto(String month, BigDecimal base, BigDecimal rate, BigDecimal expected, BigDecimal registered,
@@ -136,6 +137,10 @@ public final class ReconciliationDtos {
 
     /** Corrección del pago ya guardado de una venta: el monto nuevo (o «= cobrado») y su No. de autorización o referencia. */
     public record ReplaceReceiptRequest(BigDecimal amount, boolean matchExpected, String reference) {
+    }
+
+    /** Envío real y porcentaje de comisión de una venta (los dos nulos borran lo escrito). El porcentaje solo se elige fuera de Forza y Guatex. */
+    public record ShippingCommissionRequest(BigDecimal realShipping, BigDecimal commissionRate) {
     }
 
     public record BulkReceiptRequest(List<BulkReceiptItem> items) {
