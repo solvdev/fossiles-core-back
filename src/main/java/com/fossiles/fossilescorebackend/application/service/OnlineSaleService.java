@@ -940,7 +940,7 @@ public class OnlineSaleService {
 
         String baseObs = original.getObservations() != null ? original.getObservations() : "";
         String rel = original.getShipmentNumber() != null ? ("ENVIO_REL=" + original.getShipmentNumber()) : ("VENTA_REL=" + original.getId());
-        String changeTag = "CAMBIO_Q0(" + rel + ")";
+        String changeTag = EXCHANGE_TAG_PREFIX + rel + ")";
         String extra = (req != null && req.getObservations() != null && !req.getObservations().isBlank())
                 ? " " + req.getObservations().trim()
                 : "";
@@ -1018,7 +1018,7 @@ public class OnlineSaleService {
         String extra = (req.getObservations() != null && !req.getObservations().isBlank())
                 ? " " + req.getObservations().trim()
                 : "";
-        String tag = "CAMBIO_Q0(" + rel + ")" + extra;
+        String tag = EXCHANGE_TAG_PREFIX + rel + ")" + extra;
         String currentObs = target.getObservations();
         target.setObservations((currentObs == null || currentObs.isBlank()) ? tag : currentObs + " | " + tag);
 
@@ -1200,6 +1200,18 @@ public class OnlineSaleService {
                     .createdBy(securityUtil.getCurrentUserId())
                     .build());
         }
+    }
+
+    /** Marca que deja `createExchange` en las observaciones de la venta de reemplazo. */
+    public static final String EXCHANGE_TAG_PREFIX = "CAMBIO_Q0(";
+
+    /**
+     * True si la venta es un cambio (envío Q0 de reemplazo). La pieza regresó a Devoluciones al crear el
+     * cambio, así que el despacho debe consumir Devoluciones primero.
+     */
+    public static boolean isExchangeSale(OnlineSaleEntity sale) {
+        return sale != null && sale.getObservations() != null
+                && sale.getObservations().contains(EXCHANGE_TAG_PREFIX);
     }
 
     private void noteOriginalSaleExchange(OnlineSaleEntity original, String exchangeShipmentNumber) {

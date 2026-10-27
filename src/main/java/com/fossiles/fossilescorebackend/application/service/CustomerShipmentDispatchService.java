@@ -221,7 +221,9 @@ public class CustomerShipmentDispatchService {
                     referenceNumber,
                     description,
                     ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
-                    unit.getId());
+                    unit.getId(),
+                    // La pieza se produjo para esta venta y entró a Bodega PT: sale de PT.
+                    ProductInventoryService.DispatchSource.PT_FIRST);
         }
     }
 

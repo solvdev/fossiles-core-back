@@ -36,6 +36,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -1602,11 +1603,49 @@ public class ProductDistributionService {
         if (shipmentLocationId != null) {
             return true;
         }
+        if (isVendorReserveShipment(shipment, linkedPoOpt)) {
+            return false;
+        }
         boolean opcPtOutOnly = linkedPoOpt
                 .map(po -> isCinchoOrderType(po.getOrderType())
                         && !extractDestinationFromNotes(shipment.getNotes()).isBlank())
                 .orElse(false);
         return opcPtOutOnly || standaloneInternalEnvi;
+    }
+
+    /**
+     * De qué bodega sale primero un envío. Las OP hechas a pedido (kiosko cliente, interna, cinchos)
+     * entraron a Bodega PT al recibirse, así que salen de PT; las distribuciones de OPK y los envíos
+     * sin OP consumen Devoluciones primero.
+     */
+    private ProductInventoryService.DispatchSource resolveDispatchSource(ProductShipmentEntity shipment) {
+        if (shipment == null || shipment.getDistributionId() != null || shipment.getProductionOrderId() == null) {
+            return ProductInventoryService.DispatchSource.RETURNS_FIRST;
+        }
+        return productionOrderRepository.findById(shipment.getProductionOrderId())
+                .map(po -> {
+                    String type = po.getOrderType() == null ? "" : po.getOrderType().trim().toUpperCase();
+                    boolean madeToOrder = "INTERNA".equals(type)
+                            || "CLIENTE_KIOSKO".equals(type)
+                            || isCinchoOrderType(type);
+                    return madeToOrder
+                            ? ProductInventoryService.DispatchSource.PT_FIRST
+                            : ProductInventoryService.DispatchSource.RETURNS_FIRST;
+                })
+                .orElse(ProductInventoryService.DispatchSource.RETURNS_FIRST);
+    }
+
+    /**
+     * Envío de una OP de Luis Felipe sin kiosko destino. Esas piezas ya están vendidas: viven en la
+     * reserva desde que se reciben y salen de ella al cerrar la recepción en bodega, así que el envío
+     * no vuelve a mover inventario.
+     */
+    private boolean isVendorReserveShipment(ProductShipmentEntity shipment, Optional<ProductionOrderEntity> linkedPoOpt) {
+        return shipment.getLocationId() == null
+                && linkedPoOpt
+                .map(po -> ProductionPlanningConstants.isLuisFelipeReserveOrder(
+                        po.getSellerName(), po.getOrderType(), po.getCode()))
+                .orElse(false);
     }
 
     private void reverseSentShipmentDispatchInventory(ProductShipmentEntity shipment) throws BusinessException {
@@ -1666,7 +1705,8 @@ public class ProductDistributionService {
                     "Reenvío tras edición hacia " + destinationLabel,
                     ProductInventoryService.MOVEMENT_SHIPMENT,
                     detail.getId(),
-                    !SKIP_DISPATCH_STOCK_CHECK);
+                    !SKIP_DISPATCH_STOCK_CHECK,
+                    resolveDispatchSource(shipment));
             creditShipmentLineInTransit(shipment, detail, qty, destinationLabel);
         }
     }
@@ -2050,7 +2090,8 @@ public class ProductDistributionService {
             return toShipmentResponse(shipmentRepository.save(shipment));
         }
 
-        if (shipmentLocationId == null && !ptWarehouseOut) {
+        boolean vendorReserveShipment = isVendorReserveShipment(shipment, linkedPoOpt);
+        if (shipmentLocationId == null && !ptWarehouseOut && !vendorReserveShipment) {
             throw new BusinessException("El envío no tiene destino (kiosko); no se puede registrar salida de PT.");
         }
 
@@ -2063,6 +2104,9 @@ public class ProductDistributionService {
         // Empaques SUM- solos: no hay líneas de producto ni salida de Bodega PT;
         // al recibir en kiosko el material se convierte en producto de stock.
         if (details.isEmpty()) {
+            return transitionConfirmedShipmentToSent(shipmentId, shipment);
+        }
+        if (vendorReserveShipment) {
             return transitionConfirmedShipmentToSent(shipmentId, shipment);
         }
 
@@ -2126,7 +2170,8 @@ public class ProductDistributionService {
                     "Salida a envio en transito hacia " + destinationLabel,
                     ProductInventoryService.MOVEMENT_SHIPMENT,
                     detail.getId(),
-                    !SKIP_DISPATCH_STOCK_CHECK);
+                    !SKIP_DISPATCH_STOCK_CHECK,
+                    resolveDispatchSource(shipment));
             creditShipmentLineInTransit(shipment, detail, qtyToSend, destinationLabel);
         }
 

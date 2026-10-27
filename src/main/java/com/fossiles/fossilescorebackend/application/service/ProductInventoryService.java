@@ -19,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -81,10 +82,26 @@ public class ProductInventoryService {
     }
 
     /**
+     * De qué bodega se descuenta primero una salida. Las piezas hechas a pedido (OPL, OPCK, OPI, OPC)
+     * entran a Bodega PT al recibirse, así que su salida debe salir de PT; si se descontara
+     * Devoluciones, PT quedaría con la pieza de más y Devoluciones con una de menos. El stock libre y
+     * los cambios de venta en línea (la pieza acaba de regresar a Devoluciones) consumen Devoluciones primero.
+     */
+    public enum DispatchSource {
+        RETURNS_FIRST,
+        PT_FIRST
+    }
+
+    /**
      * Bodegas de despacho PT: Devoluciones primero, luego Bodega PT (misma regla que venta en línea).
      */
     @Transactional(readOnly = true)
     public List<LocationEntity> getDispatchSourceWarehouses() throws BusinessException {
+        return getDispatchSourceWarehouses(DispatchSource.RETURNS_FIRST);
+    }
+
+    @Transactional(readOnly = true)
+    public List<LocationEntity> getDispatchSourceWarehouses(DispatchSource source) throws BusinessException {
         List<LocationEntity> warehouses = new ArrayList<>();
         returnsWarehouseLocator.find().ifPresent(warehouses::add);
         LocationEntity bodegaPt = findBodegaPtLocation();
@@ -95,6 +112,10 @@ public class ProductInventoryService {
                 .anyMatch(loc -> Objects.equals(loc.getId(), bodegaPt.getId()));
         if (!ptAlreadyListed) {
             warehouses.add(bodegaPt);
+        }
+        if (source == DispatchSource.PT_FIRST) {
+            // Bodega PT al frente; Devoluciones queda como respaldo si PT no alcanza.
+            warehouses.sort(Comparator.comparing((LocationEntity loc) -> !Objects.equals(loc.getId(), bodegaPt.getId())));
         }
         return warehouses;
     }
@@ -214,7 +235,25 @@ public class ProductInventoryService {
             String kardexMovementType,
             Long referenceLineId) throws BusinessException {
         decrementFromDispatchWarehouses(productId, colorId, sizeLabel, quantity, referenceType,
-                referenceId, referenceNumber, description, kardexMovementType, referenceLineId, true);
+                referenceId, referenceNumber, description, kardexMovementType, referenceLineId, true,
+                DispatchSource.RETURNS_FIRST);
+    }
+
+    /** Igual que la anterior, indicando de qué bodega se descuenta primero. */
+    public void decrementFromDispatchWarehouses(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String kardexMovementType,
+            Long referenceLineId,
+            DispatchSource source) throws BusinessException {
+        decrementFromDispatchWarehouses(productId, colorId, sizeLabel, quantity, referenceType,
+                referenceId, referenceNumber, description, kardexMovementType, referenceLineId, true, source);
     }
 
     public void decrementFromDispatchWarehouses(
@@ -229,6 +268,24 @@ public class ProductInventoryService {
             String kardexMovementType,
             Long referenceLineId,
             boolean requireSufficientStock) throws BusinessException {
+        decrementFromDispatchWarehouses(productId, colorId, sizeLabel, quantity, referenceType,
+                referenceId, referenceNumber, description, kardexMovementType, referenceLineId,
+                requireSufficientStock, DispatchSource.RETURNS_FIRST);
+    }
+
+    public void decrementFromDispatchWarehouses(
+            Long productId,
+            Long colorId,
+            String sizeLabel,
+            BigDecimal quantity,
+            String referenceType,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            String kardexMovementType,
+            Long referenceLineId,
+            boolean requireSufficientStock,
+            DispatchSource source) throws BusinessException {
         if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
@@ -246,7 +303,7 @@ public class ProductInventoryService {
             return;
         }
 
-        for (LocationEntity loc : getDispatchSourceWarehouses()) {
+        for (LocationEntity loc : getDispatchSourceWarehouses(source)) {
             if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
                 break;
             }
@@ -687,6 +744,22 @@ public class ProductInventoryService {
                         .code(TRANSIT_LOCATION_CODE)
                         .name("En tránsito")
                         .categoria("TRANSITO")
+                        .build()));
+    }
+
+    /**
+     * Reserva de Luis Felipe: las piezas de sus OPV/OPC ya están vendidas, así que desde que se reciben
+     * en bodega hasta que se cierra la recepción viven aquí y no en Bodega PT ni en Devoluciones.
+     */
+    public static final String RESERVE_LOCATION_CODE = "RESERVA_LF";
+    public static final String MOVEMENT_RESERVE_RELEASE = "RESERVE_RELEASE";
+
+    public LocationEntity getOrCreateReserveLocation() {
+        return locationRepository.findByCode(RESERVE_LOCATION_CODE)
+                .orElseGet(() -> locationRepository.save(LocationEntity.builder()
+                        .code(RESERVE_LOCATION_CODE)
+                        .name("Reserva Luis Felipe (vendido)")
+                        .categoria("RESERVA")
                         .build()));
     }
 
