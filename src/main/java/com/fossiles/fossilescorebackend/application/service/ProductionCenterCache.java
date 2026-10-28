@@ -34,6 +34,15 @@ public class ProductionCenterCache {
         return get(CacheConfig.PRODUCTION_CENTER_PANELS_CACHE, key, loader);
     }
 
+    /** Dashboard de Producción ({@code /dashboard-v2} por rango, {@code /leather-demand}). */
+    public <T> T dashboard(String key, Supplier<T> loader) {
+        return get(CacheConfig.PRODUCTION_DASHBOARD_CACHE, key, loader);
+    }
+
+    public void evictDashboard() {
+        clear(CacheConfig.PRODUCTION_DASHBOARD_CACHE);
+    }
+
     public void evictOrders() {
         clear(CacheConfig.PRODUCTION_ORDERS_LIST_CACHE);
     }

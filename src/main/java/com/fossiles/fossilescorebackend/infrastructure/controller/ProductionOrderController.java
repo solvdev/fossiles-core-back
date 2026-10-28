@@ -100,6 +100,7 @@ public class ProductionOrderController {
     private final InternalShipmentRequestService internalShipmentRequestService;
     private final ProductionOrderTimeEstimateService productionOrderTimeEstimateService;
     private final ProductionOrderLeatherEstimateService productionOrderLeatherEstimateService;
+    private final com.fossiles.fossilescorebackend.application.service.ProductionLeatherDemandService productionLeatherDemandService;
     private final ProductionOrderMaterialsEstimateService productionOrderMaterialsEstimateService;
     private final com.fossiles.fossilescorebackend.application.service.ProductionDeskCountService productionDeskCountService;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -135,9 +136,7 @@ public class ProductionOrderController {
     }
 
     private List<ProductionOrderResponse> listAllOrders() {
-        return productionOrderRepository.findAll().stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
+        return toResponses(productionOrderRepository.findAll());
     }
 
     /**
@@ -325,17 +324,13 @@ public class ProductionOrderController {
 
     @GetMapping("/type/{orderType}")
     public ResponseEntity<List<ProductionOrderResponse>> getByType(@PathVariable String orderType) {
-        List<ProductionOrderResponse> orders = productionOrderRepository.findByOrderType(orderType).stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
+        List<ProductionOrderResponse> orders = toResponses(productionOrderRepository.findByOrderType(orderType));
         return ResponseEntity.ok(orders);
     }
 
     @GetMapping("/status/{status}")
     public ResponseEntity<List<ProductionOrderResponse>> getByStatus(@PathVariable String status) {
-        List<ProductionOrderResponse> orders = productionOrderRepository.findByStatus(status).stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
+        List<ProductionOrderResponse> orders = toResponses(productionOrderRepository.findByStatus(status));
         return ResponseEntity.ok(orders);
     }
 
@@ -667,13 +662,21 @@ public class ProductionOrderController {
 
         List<Long> saleIds = productionOrderItemRepository.findDistinctOnlineSaleIdsByProductionOrderId(id);
         List<CustomerShipmentResponse> shipments = new ArrayList<>();
+        if (saleIds.isEmpty()) {
+            return ResponseEntity.ok(shipments);
+        }
+        // Líneas de la OP, productos y colores una sola vez (antes por venta y por línea).
+        List<ProductionOrderItemEntity> orderItems = productionOrderItemRepository.findByProductionOrderId(id);
+        Map<Long, ProductEntity> productsById = byIds(orderItems, ProductionOrderItemEntity::getProductId,
+                productRepository::findAllById, ProductEntity::getId);
+        Map<Long, ColorEntity> colorsById = byIds(orderItems, ProductionOrderItemEntity::getColorId,
+                colorRepository::findAllById, ColorEntity::getId);
 
         for (Long saleId : saleIds) {
             OnlineSaleEntity sale = onlineSaleRepository.findById(saleId).orElse(null);
             if (sale == null) continue;
 
-            List<ProductionOrderItemEntity> items = productionOrderItemRepository
-                    .findByProductionOrderId(id).stream()
+            List<ProductionOrderItemEntity> items = orderItems.stream()
                     .filter(i -> saleId.equals(i.getOnlineSaleId()))
                     .toList();
 
@@ -684,16 +687,17 @@ public class ProductionOrderController {
             List<CustomerShipmentResponse.ShipmentItem> shipmentItems = items.stream()
                     .map(item -> {
                         ProductEntity product = item.getProductId() != null
-                                ? productRepository.findById(item.getProductId()).orElse(null) : null;
+                                ? productsById.get(item.getProductId()) : null;
                         ColorEntity color = item.getColorId() != null
-                                ? colorRepository.findById(item.getColorId()).orElse(null) : null;
+                                ? colorsById.get(item.getColorId()) : null;
 
-                        // Find matching sale item for size info
+                        // Find matching sale item for size info (talla null = sin talla; antes reventaba con NPE)
                         String size = saleItems.stream()
                                 .filter(si -> Objects.equals(si.getProductId(), item.getProductId())
                                         && Objects.equals(si.getColorId(), item.getColorId()))
+                                .findFirst()
                                 .map(OnlineSaleItemEntity::getSize)
-                                .findFirst().orElse(null);
+                                .orElse(null);
 
                         return CustomerShipmentResponse.ShipmentItem.builder()
                                 .productionOrderItemId(item.getId())
@@ -822,9 +826,12 @@ public class ProductionOrderController {
     @GetMapping("/{id}/consumption-history")
     public ResponseEntity<List<Map<String, Object>>> getConsumptionHistory(@PathVariable Long id) {
         List<MaterialConsumptionEntity> consumptions = materialConsumptionRepository.findByProductionOrderId(id);
+        // Materiales en una consulta (antes una por consumo; hay OP con más de 700).
+        Map<Long, MaterialEntity> materialsById = byIds(consumptions, MaterialConsumptionEntity::getMaterialId,
+                materialRepository::findAllById, MaterialEntity::getId);
         List<Map<String, Object>> result = new ArrayList<>();
         for (MaterialConsumptionEntity c : consumptions) {
-            MaterialEntity mat = materialRepository.findById(c.getMaterialId()).orElse(null);
+            MaterialEntity mat = c.getMaterialId() != null ? materialsById.get(c.getMaterialId()) : null;
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("id", c.getId());
             map.put("materialId", c.getMaterialId());
@@ -840,11 +847,32 @@ public class ProductionOrderController {
 
     // ==================== DASHBOARD & REPORTS ====================
 
+    /**
+     * Cuero que piden todas las OP activas: por color, por cuero y por orden (total, entregado, falta).
+     *
+     * <p>Desde la caché del Dashboard de Producción (hasta 2 min; se suelta con cualquier escritura de órdenes,
+     * tareas, cuero, recetas o materiales, ver {@code ProductionCenterCacheInvalidator}).
+     */
+    @GetMapping("/leather-demand")
+    @Transactional(readOnly = true)
+    public ResponseEntity<com.fossiles.fossilescorebackend.application.dto.response.ProductionLeatherDemandResponse> getLeatherDemand() {
+        return ResponseEntity.ok(productionCenterCache.dashboard("leather-demand", productionLeatherDemandService::report));
+    }
+
+    /**
+     * KPIs del Dashboard de Producción para un rango. Desde la caché del Dashboard (hasta 2 min, por from/to;
+     * sin {@code to} el día de referencia es hoy y entra en la clave).
+     */
     @GetMapping("/dashboard-v2")
     @Transactional(readOnly = true)
     public ResponseEntity<ProductionDashboardV2Response> getDashboardV2(
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate to) {
+        String key = "dashboard-v2|" + from + "|" + (to != null ? to : "hoy:" + GuatemalaDateTime.today());
+        return ResponseEntity.ok(productionCenterCache.dashboard(key, () -> buildDashboardV2(from, to)));
+    }
+
+    private ProductionDashboardV2Response buildDashboardV2(java.time.LocalDate from, java.time.LocalDate to) {
         // Sin "from": arranca en el corte post-saneamiento KPI (misma base de eficiencia).
         java.time.LocalDate rangeFrom = from != null
                 ? from
@@ -895,7 +923,7 @@ public class ProductionOrderController {
                 .productStages(buildProductStages(scopedTasks))
                 .build();
 
-        return ResponseEntity.ok(response);
+        return response;
     }
 
     @GetMapping("/dashboard-stats")
@@ -1250,16 +1278,63 @@ public class ProductionOrderController {
         return ResponseEntity.ok(report);
     }
 
+    /**
+     * Productos, colores y materiales ya cargados para armar respuestas de OP. Cada orden carga en una consulta
+     * solo los que faltan (antes era una consulta por línea); en los listados se comparte entre todas las órdenes.
+     */
+    private static final class OrderRefs {
+        private final Map<Long, ProductEntity> products = new HashMap<>();
+        private final Map<Long, ColorEntity> colors = new HashMap<>();
+        private final Map<Long, MaterialEntity> materials = new HashMap<>();
+    }
+
+    /** Agrega a {@code cache} los ids que falten, en una consulta; los que no existen quedan en null. */
+    private static <E> void loadMissing(Map<Long, E> cache, Collection<Long> ids,
+                                        java.util.function.Function<Set<Long>, List<E>> loader,
+                                        java.util.function.Function<E, Long> entityId) {
+        Set<Long> missing = ids.stream()
+                .filter(Objects::nonNull)
+                .filter(id -> !cache.containsKey(id))
+                .collect(Collectors.toSet());
+        if (missing.isEmpty()) {
+            return;
+        }
+        missing.forEach(id -> cache.put(id, null));
+        for (E e : loader.apply(missing)) {
+            cache.put(entityId.apply(e), e);
+        }
+    }
+
+    private List<ProductionOrderResponse> toResponses(List<ProductionOrderEntity> orders) {
+        OrderRefs refs = new OrderRefs();
+        return orders.stream()
+                .map(order -> toResponse(order, refs))
+                .collect(Collectors.toList());
+    }
+
     private ProductionOrderResponse toResponse(ProductionOrderEntity entity) {
+        return toResponse(entity, new OrderRefs());
+    }
+
+    private ProductionOrderResponse toResponse(ProductionOrderEntity entity, OrderRefs refs) {
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(entity.getId());
         OrderMeta meta = parseOrderMeta(entity.getObservations());
+        loadMissing(refs.products, items.stream().map(ProductionOrderItemEntity::getProductId).toList(),
+                productRepository::findAllById, ProductEntity::getId);
+        loadMissing(refs.colors, items.stream().map(ProductionOrderItemEntity::getColorId).toList(),
+                colorRepository::findAllById, ColorEntity::getId);
+        loadMissing(refs.materials, meta.packingItems.stream().map(item -> item.materialId).toList(),
+                materialRepository::findAllById, MaterialEntity::getId);
+        Map<Long, ProductEntity> productsById = refs.products;
+        Map<Long, ColorEntity> colorsById = refs.colors;
+        Map<Long, MaterialEntity> packingMaterialsById = refs.materials;
         
         List<ProductionOrderItemResponse> itemResponses = items.stream()
                 .map(item -> {
                     ProductEntity product = item.getProductId() != null ? 
-                            productRepository.findById(item.getProductId()).orElse(null) : null;
+                            productsById.get(item.getProductId()) : null;
                     ColorEntity color = item.getColorId() != null ? 
-                            colorRepository.findById(item.getColorId()).orElse(null) : null;
+                            colorsById.get(item.getColorId()) : null;
 
                     Map<String, Integer> sizes = null;
                     if (item.getSizesData() != null && !item.getSizesData().isEmpty()) {
@@ -1331,7 +1406,7 @@ public class ProductionOrderController {
                 .shippingCost(meta.shippingCost)
                 .packingItems(meta.packingItems.stream().map(item -> {
                     MaterialEntity material = item.materialId != null
-                            ? materialRepository.findById(item.materialId).orElse(null)
+                            ? packingMaterialsById.get(item.materialId)
                             : null;
                     return ProductionOrderResponse.PackingItemResponse.builder()
                             .materialId(item.materialId)
@@ -1373,6 +1448,19 @@ public class ProductionOrderController {
         builder.distributionShipments(mergedShipments);
 
         return builder.build();
+    }
+
+    /** Carga en una consulta las entidades referidas por {@code idOf} en {@code rows}, indexadas por id. */
+    private static <R, E> Map<Long, E> byIds(Collection<R> rows,
+                                             java.util.function.Function<R, Long> idOf,
+                                             java.util.function.Function<Set<Long>, List<E>> loader,
+                                             java.util.function.Function<E, Long> entityId) {
+        Set<Long> ids = rows.stream().map(idOf).filter(Objects::nonNull).collect(Collectors.toSet());
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return loader.apply(ids).stream()
+                .collect(Collectors.toMap(entityId, e -> e, (a, b) -> a));
     }
 
     private ProductionOrderEntity toEntity(ProductionOrderRequest request) {

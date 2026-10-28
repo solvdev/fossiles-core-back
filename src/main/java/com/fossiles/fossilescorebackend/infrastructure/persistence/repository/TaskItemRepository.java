@@ -74,6 +74,19 @@ public interface TaskItemRepository extends JpaRepository<TaskItemEntity, Long> 
         return out;
     }
 
+    /**
+     * Avance de cuero por línea de OP: [productionOrderItemId, cantidad, estado tarea,
+     * cuero entregado (tarea), cuero entregado (línea)]. Sin tareas canceladas.
+     */
+    @Query("""
+            SELECT ti.productionOrderItemId, ti.quantity, t.status, t.leatherDelivered, ti.leatherDelivered
+            FROM TaskItemEntity ti, TaskEntity t
+            WHERE t.id = ti.taskId
+              AND ti.productionOrderItemId IN :itemIds
+              AND t.status <> 'CANCELLED'
+            """)
+    List<Object[]> findLeatherProgressRowsByItemIds(@Param("itemIds") Collection<Long> itemIds);
+
     boolean existsByProductionOrderItemIdAndDaySaleExtraTrue(Long productionOrderItemId);
     List<TaskItemEntity> findByProductionOrderItemIdInAndDaySaleExtraTrue(List<Long> productionOrderItemIds);
     List<TaskItemEntity> findByDaySaleExtraTrue();

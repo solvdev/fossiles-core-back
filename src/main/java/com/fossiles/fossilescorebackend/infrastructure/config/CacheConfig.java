@@ -39,6 +39,22 @@ public class CacheConfig {
     private static final long PRODUCTION_CENTER_PANELS_MAX_ENTRIES = 100;
 
     /**
+     * Dashboard de Producción: {@code /dashboard-v2} (por rango de fechas) y {@code /leather-demand}. Cada uno
+     * carga cientos de OP y miles de tareas; se invalida con cualquier escritura de órdenes, tareas, cuero,
+     * recetas o materiales (ver {@code ProductionCenterCacheInvalidator}); el TTL cubre lo demás.
+     */
+    public static final String PRODUCTION_DASHBOARD_CACHE = "productionDashboard";
+    private static final Duration PRODUCTION_DASHBOARD_TTL = Duration.ofMinutes(2);
+    private static final long PRODUCTION_DASHBOARD_MAX_ENTRIES = 50;
+
+    /**
+     * Recetas de cuero ({@code product_variant_leather}) más los colores y materiales con que se deriva la receta
+     * de un color que no la tiene. Cambian poco: TTL largo, y se invalida al editar recetas, materiales o colores.
+     */
+    public static final String LEATHER_RECIPES_CACHE = "leatherRecipes";
+    private static final Duration LEATHER_RECIPES_TTL = Duration.ofMinutes(10);
+
+    /**
      * Lecturas de la vista de Ventas en línea (por fecha, rango, resumen, elegibles, devoluciones). Se invalidan
      * con cualquier escritura de los módulos que las alimentan (ver {@code OnlineSalesCacheInvalidator}); el TTL
      * cubre lo que se escriba fuera de HTTP (jobs).
@@ -95,10 +111,22 @@ public class CacheConfig {
                         .expireAfterWrite(WAREHOUSE_VIEW_TTL)
                         .maximumSize(WAREHOUSE_VIEW_MAX_ENTRIES)
                         .build());
+        CaffeineCache productionDashboard = new CaffeineCache(
+                PRODUCTION_DASHBOARD_CACHE,
+                Caffeine.newBuilder()
+                        .expireAfterWrite(PRODUCTION_DASHBOARD_TTL)
+                        .maximumSize(PRODUCTION_DASHBOARD_MAX_ENTRIES)
+                        .build());
+        CaffeineCache leatherRecipes = new CaffeineCache(
+                LEATHER_RECIPES_CACHE,
+                Caffeine.newBuilder()
+                        .expireAfterWrite(LEATHER_RECIPES_TTL)
+                        .maximumSize(1)
+                        .build());
         SimpleCacheManager manager = new SimpleCacheManager();
         manager.setCaches(List.of(
                 salesDashboard, productionOrdersList, productionCenterPanels,
-                onlineSalesReads, catalogReads, warehouseView));
+                onlineSalesReads, catalogReads, warehouseView, productionDashboard, leatherRecipes));
         return manager;
     }
 }
