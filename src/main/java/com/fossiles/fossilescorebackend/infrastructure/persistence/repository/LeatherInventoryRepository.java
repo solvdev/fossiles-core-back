@@ -4,11 +4,15 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Leathe
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 
 @Repository
 public interface LeatherInventoryRepository extends JpaRepository<LeatherInventoryEntity, Long> {
 
     Optional<LeatherInventoryEntity> findByMaterialId(Long materialId);
+
+    List<LeatherInventoryEntity> findByMaterialIdIn(Collection<Long> materialIds);
 }
 
