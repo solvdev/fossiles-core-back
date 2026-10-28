@@ -28,6 +28,7 @@ class CustomerShipmentDispatchGuideWarningTest {
 
     @Mock private OnlineSaleRepository onlineSaleRepository;
     @Mock private OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
+    @Mock private ProductInventoryService productInventoryService;
 
     @InjectMocks
     private CustomerShipmentDispatchService service;

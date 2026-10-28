@@ -3,9 +3,11 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderWarehouseUnitEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
@@ -32,6 +34,7 @@ public class CustomerShipmentDispatchService {
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final ProductionOrderWarehouseUnitRepository warehouseUnitRepository;
     private final OnlineSaleRepository onlineSaleRepository;
+    private final OnlineSaleItemRepository onlineSaleItemRepository;
     private final OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final ProductInventoryService productInventoryService;
@@ -53,7 +56,9 @@ public class CustomerShipmentDispatchService {
             throw new BusinessException("Solo se pueden despachar ventas directas en estado PRODUCIDO. Estado actual: " + sale.getStatus());
         }
 
-        // Inventario ya salió en prepare (ONLINE_SALE_PREPARE); aquí solo cambia estado.
+        // Inventario ya salió en prepare (ONLINE_SALE_PREPARE); aquí solo cambia estado. Si un «Anular envío»
+        // regresó esa salida a Devoluciones, la pieza vuelve a salir de ahí.
+        redeductPrepareReversedToReturns(sale);
         onlineSaleShipmentNumberService.assignIfMissing(sale);
         String shipmentNumber = sale.getShipmentNumber();
         String guideWarning = markDispatched(sale, body);
@@ -193,6 +198,12 @@ public class CustomerShipmentDispatchService {
                 : sale.getSaleNumber();
         String description = "Despacho venta online a cliente #"
                 + (referenceNumber != null ? referenceNumber : sale.getId());
+        // La pieza se produjo para esta venta y entró a Bodega PT: sale de PT. Si antes se anuló su envío, la
+        // pieza quedó en Devoluciones y sale de ahí.
+        ProductInventoryService.DispatchSource source = productInventoryService.hasAnyMovementForReference(
+                ProductInventoryService.REF_ONLINE_SALE_WH_RETURN, sale.getId())
+                ? ProductInventoryService.DispatchSource.RETURNS_FIRST
+                : ProductInventoryService.DispatchSource.PT_FIRST;
 
         for (ProductionOrderWarehouseUnitEntity unit : units) {
             if (!ProductionOrderWarehouseUnitService.STATUS_RECEIVED.equals(
@@ -222,8 +233,43 @@ public class CustomerShipmentDispatchService {
                     description,
                     ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
                     unit.getId(),
-                    // La pieza se produjo para esta venta y entró a Bodega PT: sale de PT.
-                    ProductInventoryService.DispatchSource.PT_FIRST);
+                    source);
+        }
+    }
+
+    /**
+     * Venta directa preparada desde inventario cuyo envío se anuló: la anulación devolvió la salida
+     * {@code ONLINE_SALE_PREPARE} a Devoluciones, así que al despacharla de nuevo hay que descontarla otra
+     * vez (Devoluciones primero). Sin esto la pieza salía físicamente y seguía en Devoluciones.
+     */
+    private void redeductPrepareReversedToReturns(OnlineSaleEntity sale) throws BusinessException {
+        if (!productInventoryService.hasAnyMovementForReference(ProductInventoryService.REF_ONLINE_SALE_PREPARE, sale.getId())
+                || productInventoryService.hasNetOutboundForReference(ProductInventoryService.REF_ONLINE_SALE_PREPARE, sale.getId())) {
+            return;
+        }
+        String description = "Despacho venta online #" + (sale.getSaleNumber() != null ? sale.getSaleNumber() : sale.getId())
+                + " tras anular envío";
+        for (OnlineSaleItemEntity item : onlineSaleItemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId())) {
+            if (item.getProductId() == null) {
+                continue;
+            }
+            int qty = item.getQuantity() != null ? item.getQuantity() : 1;
+            if (qty <= 0) {
+                continue;
+            }
+            productInventoryService.decrementFromDispatchWarehouses(
+                    item.getProductId(),
+                    item.getColorId(),
+                    item.getSize(),
+                    BigDecimal.valueOf(qty),
+                    ProductInventoryService.REF_ONLINE_SALE_PREPARE,
+                    sale.getId(),
+                    sale.getSaleNumber(),
+                    description,
+                    ProductInventoryService.REF_ONLINE_SALE_PREPARE,
+                    item.getId(),
+                    false,
+                    ProductInventoryService.DispatchSource.RETURNS_FIRST);
         }
     }
 

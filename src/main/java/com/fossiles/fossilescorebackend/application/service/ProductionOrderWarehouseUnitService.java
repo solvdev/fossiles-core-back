@@ -49,6 +49,70 @@ public class ProductionOrderWarehouseUnitService {
     private final ProductShipmentDetailRepository shipmentDetailRepository;
     private final OnlineSaleItemRepository onlineSaleItemRepository;
     private final OnlineSaleRepository onlineSaleRepository;
+    private final OnlineSaleReturnsWarehouseLocator returnsWarehouseLocator;
+
+    /** Estados de venta en línea que ya no se despachan: sus piezas son stock de Devoluciones. */
+    private static final Set<String> CLOSED_ONLINE_SALE_STATUSES = Set.of("ANULADA", "CANCELADO", "DEVOLUCION");
+
+    private boolean isClosedOnlineSale(Long onlineSaleId) {
+        if (onlineSaleId == null) {
+            return false;
+        }
+        return onlineSaleRepository.findById(onlineSaleId)
+                .map(s -> s.getStatus() != null && CLOSED_ONLINE_SALE_STATUSES.contains(s.getStatus().trim()))
+                .orElse(false);
+    }
+
+    /**
+     * Al anular una venta en línea, las piezas de su OPL que ya se recibieron en Bodega PT y no salieron
+     * pasan a Devoluciones (TRANSFER_OUT en PT + RETURN en Devoluciones). Idempotente por pieza.
+     *
+     * @return unidades trasladadas en esta llamada
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public BigDecimal moveReceivedUnitsToReturns(Long onlineSaleId, String saleRef, String description)
+            throws BusinessException {
+        if (onlineSaleId == null) {
+            return BigDecimal.ZERO;
+        }
+        LocationEntity returns = returnsWarehouseLocator.find().orElse(null);
+        if (returns == null) {
+            return BigDecimal.ZERO;
+        }
+        LocationEntity bodega = getFinishedGoodsLocation();
+        BigDecimal moved = BigDecimal.ZERO;
+        for (ProductionOrderItemEntity item : productionOrderItemRepository.findByOnlineSaleId(onlineSaleId)) {
+            if (item.getProductId() == null) {
+                continue;
+            }
+            for (ProductionOrderWarehouseUnitEntity unit
+                    : unitRepository.findByProductionOrderItemIdOrderBySizeKeyAscUnitSeqAsc(item.getId())) {
+                if (!STATUS_RECEIVED.equals(normalizeReceiptStatus(unit.getReceiptStatus()))
+                        || unit.getShippedAt() != null) {
+                    continue;
+                }
+                // Solo lo que entró a PT; lo recibido directo en Devoluciones ya está ahí.
+                boolean enteredPt = productInventoryService.hasProductKardexMovement(
+                        "PRODUCTION_ORDER_WH_UNIT", unit.getId(), "PRODUCTION_ENTRY",
+                        item.getProductId(), bodega.getId(), item.getColorId());
+                if (!enteredPt) {
+                    continue;
+                }
+                String sizeKey = unit.getSizeKey() == null || unit.getSizeKey().isBlank() ? null : unit.getSizeKey();
+                moved = moved.add(productInventoryService.transferFromBodegaPtToReturns(
+                        item.getProductId(),
+                        item.getColorId(),
+                        sizeKey,
+                        BigDecimal.ONE,
+                        returns.getId(),
+                        onlineSaleId,
+                        saleRef,
+                        description,
+                        unit.getId()));
+            }
+        }
+        return moved;
+    }
 
     @Transactional
     public WarehouseWorkspaceResponse getWorkspace(Long productionOrderId) throws ResourceNotFoundException {
@@ -536,7 +600,12 @@ public class ProductionOrderWarehouseUnitService {
 
         String receiptRefNumber = po.getCode() + "-WH-UNIT-" + unit.getId();
         // OPV/OPC de Luis Felipe ya están vendidas: entran a la reserva y no a Bodega PT.
-        LocationEntity target = isReserveOrder(po) ? productInventoryService.getOrCreateReserveLocation() : bodega;
+        // La pieza de una venta en línea ya anulada o devuelta no tiene a quién despacharse: es stock
+        // libre que vuelve por una anulación, así que entra a Devoluciones.
+        boolean closedSale = isClosedOnlineSale(item.getOnlineSaleId());
+        LocationEntity target = isReserveOrder(po)
+                ? productInventoryService.getOrCreateReserveLocation()
+                : (closedSale ? returnsWarehouseLocator.find().orElse(bodega) : bodega);
         boolean alreadyRecorded = productInventoryService.hasProductKardexMovement(
                 "PRODUCTION_ORDER_WH_UNIT",
                 unit.getId(),
@@ -559,7 +628,7 @@ public class ProductionOrderWarehouseUnitService {
                     "PRODUCTION_ORDER_WH_UNIT",
                     unit.getId(),
                     receiptRefNumber,
-                    "Ingreso pieza bodega PT",
+                    closedSale ? "Ingreso pieza de venta anulada a Devoluciones" : "Ingreso pieza bodega PT",
                     sizeKey != null && !sizeKey.isBlank() ? sizeKey : null
             );
             BigDecimal after = productInventoryService

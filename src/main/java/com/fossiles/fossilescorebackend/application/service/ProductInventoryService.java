@@ -353,6 +353,14 @@ public class ProductInventoryService {
                 .compareTo(BigDecimal.ZERO) < 0;
     }
 
+    /** True si el documento tiene cualquier movimiento de kardex (aunque su neto ya sea cero). */
+    public boolean hasAnyMovementForReference(String referenceType, Long referenceId) {
+        if (referenceType == null || referenceId == null) {
+            return false;
+        }
+        return !productInventoryKardexRepository.findByReferenceTypeAndReferenceId(referenceType, referenceId).isEmpty();
+    }
+
     /**
      * Devuelve al inventario las salidas de un documento y deja constancia en el kardex.
      * <p>

@@ -66,7 +66,7 @@ public class OnlineSaleController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException {
+    public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException, BusinessException {
         saleService.delete(id);
         return ResponseEntity.noContent().build();
     }
