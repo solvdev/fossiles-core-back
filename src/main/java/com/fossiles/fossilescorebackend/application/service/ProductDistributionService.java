@@ -35,6 +35,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
@@ -1533,7 +1534,9 @@ public class ProductDistributionService {
 
         if (sentStatus && dispatchInventory) {
             reverseSentShipmentDispatchInventory(shipment);
-            assertDispatchStockAvailable(normalized);
+            assertDispatchStockAvailable(normalized.stream()
+                    .filter(line -> !skipsWarehouseForLine(shipment, line.getProductId()))
+                    .collect(Collectors.toList()));
         }
 
         shipmentDetailRepository.deleteByShipmentId(shipmentId);
@@ -1614,6 +1617,27 @@ public class ProductDistributionService {
     }
 
     /**
+     * Cincho con destino Entrecueros (kiosko Entrecueros, o destino "Entrecueros" en las notas de un
+     * envío sin kiosko): no pasa por Devoluciones/Bodega PT, así que no valida stock, no sale de
+     * bodega ni queda en tránsito.
+     */
+    private boolean skipsWarehouseForLine(ProductShipmentEntity shipment, Long productId) {
+        if (shipment == null || productId == null || !isShipmentDestinationEntrecueros(shipment)) {
+            return false;
+        }
+        ProductEntity product = productRepository.findById(productId).orElse(null);
+        return KioscoInventoryInitRules.isCinchoProduct(product)
+                || CinchoProductUtils.isCinchoLineForProduction(product);
+    }
+
+    private boolean isShipmentDestinationEntrecueros(ProductShipmentEntity shipment) {
+        if (shipment.getLocationId() != null) {
+            return KioskPosMode.isEntrecueros(locationRepository.findById(shipment.getLocationId()).orElse(null));
+        }
+        return normalizeEntreCuerosToken(extractDestinationFromNotes(shipment.getNotes())).contains("ENTRECUEROS");
+    }
+
+    /**
      * De qué bodega sale primero un envío. Las OP hechas a pedido (kiosko cliente, interna, cinchos)
      * entraron a Bodega PT al recibirse, así que salen de PT; las distribuciones de OPK y los envíos
      * sin OP consumen Devoluciones primero.
@@ -1691,7 +1715,7 @@ public class ProductDistributionService {
             if (qty.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
-            if (isPackagingProduct(detail.getProductId())) {
+            if (isPackagingProduct(detail.getProductId()) || skipsWarehouseForLine(shipment, detail.getProductId())) {
                 continue;
             }
             productInventoryService.decrementFromDispatchWarehouses(
@@ -2122,6 +2146,7 @@ public class ProductDistributionService {
                 BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
                 if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
                 if (isPackagingProduct(detail.getProductId())) continue;
+                if (skipsWarehouseForLine(shipment, detail.getProductId())) continue;
 
                 String sizeLabel = detail.getSizeLabel();
                 BigDecimal alreadyOut = productInventoryService.getNetConsumedForLine(
@@ -2158,6 +2183,7 @@ public class ProductDistributionService {
             BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
             if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
             if (isPackagingProduct(detail.getProductId())) continue;
+            if (skipsWarehouseForLine(shipment, detail.getProductId())) continue;
 
             productInventoryService.decrementFromDispatchWarehouses(
                     detail.getProductId(),
@@ -2419,10 +2445,12 @@ public class ProductDistributionService {
                 if (scope != null) {
                     throw new BusinessException("Solo un administrador puede regresar pendientes a Bodega PT.");
                 }
-                productInventoryService.returnTransitToBodegaPt(
-                        detail.getProductId(), detail.getColorId(), detail.getSizeLabel(), qty,
-                        shipment.getId(), number, "Pendiente del envío " + number + " regresa a Bodega PT",
-                        detail.getId());
+                if (!skipsWarehouseForLine(shipment, detail.getProductId())) {
+                    productInventoryService.returnTransitToBodegaPt(
+                            detail.getProductId(), detail.getColorId(), detail.getSizeLabel(), qty,
+                            shipment.getId(), number, "Pendiente del envío " + number + " regresa a Bodega PT",
+                            detail.getId());
+                }
                 // Lo que vuelve a bodega deja de estar pendiente y deja de contar como enviado.
                 detail.setQuantity(sent.subtract(qty));
                 anyReturned = true;
