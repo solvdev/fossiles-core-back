@@ -2601,7 +2601,8 @@ public class TaskController {
 
     /**
      * Si {@code targetDate} es hoy (GT): suma tareas activas sin programar, atrasadas, o con mesa asignada
-     * (aunque {@code scheduledDate} sea futura — ya están en mesa).
+     * (aunque {@code scheduledDate} sea futura — ya están en mesa), y las completadas de los últimos días
+     * a las que bodega aún no les registró materiales.
      */
     private List<TaskEntity> mergeActiveMaterialsBacklogForToday(LocalDate targetDate, List<TaskEntity> base) {
         Map<Long, TaskEntity> byId = new LinkedHashMap<>();
@@ -2615,6 +2616,11 @@ public class TaskController {
             if (shouldAugmentMaterialsDayWithTask(t, targetDate)) {
                 byId.putIfAbsent(t.getId(), t);
             }
+        }
+        // Completadas en producción sin materiales entregados: bodega todavía las debe despachar.
+        for (TaskEntity t : taskRepository.findCompletedWithoutMaterialsSince(
+                GuatemalaDateTime.now().minusDays(MaterialsTaskViewService.COMPLETED_PENDING_MATERIALS_DAYS))) {
+            byId.putIfAbsent(t.getId(), t);
         }
         return new ArrayList<>(byId.values());
     }
