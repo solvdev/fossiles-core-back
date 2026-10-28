@@ -124,6 +124,19 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     @Query("SELECT t FROM TaskEntity t WHERE t.status NOT IN ('COMPLETED', 'CANCELLED') ORDER BY t.scheduledDate, t.desk, t.priority")
     List<TaskEntity> findPendingAndInProgressOrdered();
 
+    /**
+     * Tareas completadas desde {@code since} sin materiales entregados: producción las cerró antes de que
+     * bodega las despachara. La vista de materiales las sigue mostrando para poder registrar la entrega.
+     */
+    @Query("""
+            SELECT t FROM TaskEntity t
+            WHERE t.status = 'COMPLETED'
+              AND t.completedAt >= :since
+              AND (t.materialsDelivered IS NULL OR t.materialsDelivered = FALSE)
+            ORDER BY t.completedAt DESC
+            """)
+    List<TaskEntity> findCompletedWithoutMaterialsSince(@Param("since") LocalDateTime since);
+
     @Query("""
             SELECT t FROM TaskEntity t
             WHERE t.status = 'COMPLETED'
