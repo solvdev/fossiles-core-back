@@ -1,3 +1,5 @@
+-- Cuero por producto: la salida del kardex guarda su ítem de tarea; una sola salida activa por ítem.
+-- Correr antes de arrancar el backend que la usa (ddl-auto=validate). Se puede repetir.
 BEGIN;
 ALTER TABLE leather_movement ADD COLUMN IF NOT EXISTS task_item_id BIGINT;
 DO $$ BEGIN

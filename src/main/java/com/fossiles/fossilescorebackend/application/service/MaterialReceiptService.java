@@ -12,6 +12,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.*;
 
+/**
+ * Crea, edita y anula recepciones de compra con la compra bloqueada; inventario, lotes y asientos se ajustan en la
+ * misma transacción.
+ */
 @Service
 @RequiredArgsConstructor
 @Transactional(rollbackFor = Exception.class)

@@ -10,6 +10,11 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 
+/**
+ * Edita los ítems de una orden por diferencias y conserva sus ids. Un ítem con tareas, recepción en bodega,
+ * liberaciones, estado de cincho o venta en línea conserva variante, cantidad y tallas y no se quita;
+ * su precio sí cambia.
+ */
 @Service
 @RequiredArgsConstructor
 public class ProductionOrderItemUpdateService {

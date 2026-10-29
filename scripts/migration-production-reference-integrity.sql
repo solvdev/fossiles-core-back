@@ -1,3 +1,7 @@
+-- Órdenes de producción: tareas e ítems de tarea solo apuntan a ítems de orden existentes, y una unidad
+-- recibida en bodega impide borrar su ítem (RESTRICT en lugar de CASCADE). Se puede repetir.
+-- Correr junto con el despliegue del backend que conserva los ítems al editar una orden: el backend
+-- anterior los borra y los vuelve a crear, y estas llaves rechazarían esa edición.
 -- NOT VALID conserva los casos históricos pendientes y exige referencias válidas para nuevas escrituras.
 BEGIN;
 SET LOCAL lock_timeout = '5s';

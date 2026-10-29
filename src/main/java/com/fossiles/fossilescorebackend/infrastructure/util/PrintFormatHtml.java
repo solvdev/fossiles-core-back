@@ -5,6 +5,10 @@ import org.owasp.html.PolicyFactory;
 
 import java.util.regex.Pattern;
 
+/**
+ * Limpia el HTML de los formatos de impresión con una lista permitida (OWASP): quita scripts, eventos e iframes y
+ * conserva tablas, estilos, imágenes y variables {{...}}.
+ */
 public final class PrintFormatHtml {
     // Imágenes: URL web, variable de plantilla o imagen incrustada en base64, igual que acepta el editor.
     private static final Pattern IMAGE_SOURCE = Pattern.compile(

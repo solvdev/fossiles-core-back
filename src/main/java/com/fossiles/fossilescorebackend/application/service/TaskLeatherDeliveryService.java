@@ -17,6 +17,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+/**
+ * Entrega de cuero por producto: registra o revierte la salida del kardex según la receta, una sola por ítem, y
+ * mantiene las banderas de cuero de la orden.
+ */
 @Service
 @RequiredArgsConstructor
 public class TaskLeatherDeliveryService {
