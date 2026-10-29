@@ -80,6 +80,25 @@ public class EmployeeEntity {
     @Column(name = "variable_deduction", precision = 10, scale = 2)
     private java.math.BigDecimal variableDeduction;
 
+    // PLANILLA lleva IGSS, bonificación e ISR; SERVICIOS solo admite el descuento de compras de colaborador.
+    @Column(name = "employment_type", length = 20, nullable = false)
+    @Builder.Default
+    private String employmentType = "PLANILLA";
+
+    // PLANTA cobra el 5 y el 20; ADMINISTRACION, que incluye kioscos, el 15 y a fin de mes.
+    @Column(name = "pay_group", length = 20, nullable = false)
+    @Builder.Default
+    private String payGroup = "ADMINISTRACION";
+
+    @Column(length = 20)
+    private String nit;
+
+    @Column(name = "igss_affiliation", length = 30)
+    private String igssAffiliation;
+
+    @Column(name = "termination_date")
+    private LocalDate terminationDate;
+
     @Column(name = "department_id")
     private Long departmentId;
 

@@ -37,6 +37,9 @@ public class PrintFormatEntity {
     @Column(name = "header", columnDefinition = "TEXT")
     private String header; // HTML or template content
 
+    @Column(name = "body", columnDefinition = "TEXT")
+    private String body;
+
     @Column(name = "footer", columnDefinition = "TEXT")
     private String footer; // HTML or template content
 

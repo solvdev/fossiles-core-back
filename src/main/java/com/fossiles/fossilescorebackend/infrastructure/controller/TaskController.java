@@ -77,6 +77,7 @@ public class TaskController {
     private final BomItemRepository bomItemRepository;
     private final MaterialRepository materialRepository;
     private final LeatherMovementRepository leatherMovementRepository;
+    private final com.fossiles.fossilescorebackend.application.service.TaskLeatherDeliveryService taskLeatherDeliveryService;
     private final MaterialConsumptionService materialConsumptionService;
     private final ProductionTaskGenerationService productionTaskGenerationService;
     private final TaskCodeGenerator taskCodeGenerator;
@@ -1204,18 +1205,20 @@ public class TaskController {
     ) {}
 
     @PutMapping("/move-item")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<MoveTaskItemResult> moveTaskItem(@RequestBody MoveTaskItemRequest req)
             throws ResourceNotFoundException, BusinessException {
         if (req == null || req.taskItemId() == null) {
             throw new BusinessException("taskItemId es requerido");
         }
 
+        Long sourceId = taskItemRepository.findTaskIdByItemId(req.taskItemId())
+                .orElseThrow(() -> new ResourceNotFoundException("Task Item", req.taskItemId()));
+        TaskEntity sourceTask = taskRepository.findByIdForUpdate(sourceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Task", sourceId));
         TaskItemEntity item = taskItemRepository.findById(req.taskItemId())
                 .orElseThrow(() -> new ResourceNotFoundException("Task Item", req.taskItemId()));
-
-        TaskEntity sourceTask = taskRepository.findById(item.getTaskId())
-                .orElseThrow(() -> new ResourceNotFoundException("Task", item.getTaskId()));
+        if (!Objects.equals(sourceId, item.getTaskId())) throw new BusinessException("El producto ya fue trasladado; actualice la tarea antes de moverlo.");
 
         if ("CANCELLED".equals(sourceTask.getStatus()) || "COMPLETED".equals(sourceTask.getStatus())) {
             throw new BusinessException("No se puede redistribuir items de una tarea cancelada/completada.");
@@ -1265,6 +1268,7 @@ public class TaskController {
         List<TaskItemEntity> sourceItems = taskItemRepository.findByTaskId(sourceTaskId);
         if (!sourceItems.isEmpty()) {
             recalculateTaskTotals(sourceTask, sourceItems);
+            syncTaskProductionGates(sourceTask, sourceItems);
             sourceTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(sourceTask));
             sourceTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? GuatemalaDateTime.now() : null);
             sourceResponse = toResponse(taskRepository.save(sourceTask));
@@ -1284,6 +1288,7 @@ public class TaskController {
 
         List<TaskItemEntity> targetItems = taskItemRepository.findByTaskId(targetTaskId);
         recalculateTaskTotals(targetTask, targetItems);
+        syncTaskProductionGates(targetTask, targetItems);
         targetTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(targetTask));
         targetTask.setMaterialsDeliveredAt(Boolean.TRUE.equals(targetTask.getMaterialsDelivered()) ? GuatemalaDateTime.now() : null);
         TaskResponse targetResponse = toResponse(taskRepository.save(targetTask));
@@ -1313,10 +1318,10 @@ public class TaskController {
      * <p>No hace nada si estan todos cortados o ninguno lo esta: la tarea ya es homogenea.
      */
     @PostMapping("/{id:\\d+}/die-cut/split-uncut")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> splitUncutDieCutItems(@PathVariable Long id)
             throws ResourceNotFoundException, BusinessException {
-        TaskEntity sourceTask = taskRepository.findById(id)
+        TaskEntity sourceTask = taskRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
 
         // Mismas guardas que move-item: una tarea que ya arranco no se reparte en dos.
@@ -1362,8 +1367,7 @@ public class TaskController {
         // que ya no lleva y el reparto le reservaria mesa de mas.
         List<TaskItemEntity> itemsOrigen = taskItemRepository.findByTaskId(sourceTask.getId());
         recalculateTaskTotals(sourceTask, itemsOrigen);
-        sourceTask.setDieCutReady(areTaskItemsDieCut(sourceTask));
-        sourceTask.setDieCutDate(Boolean.TRUE.equals(sourceTask.getDieCutReady()) ? LocalDate.now() : null);
+        syncTaskProductionGates(sourceTask, itemsOrigen);
         sourceTask.setMaterialsDelivered(areRequiredTaskItemsDelivered(sourceTask));
         sourceTask.setMaterialsDeliveredAt(
                 Boolean.TRUE.equals(sourceTask.getMaterialsDelivered()) ? LocalDateTime.now() : null);
@@ -1371,7 +1375,7 @@ public class TaskController {
 
         List<TaskItemEntity> itemsHermana = taskItemRepository.findByTaskId(hermana.getId());
         recalculateTaskTotals(hermana, itemsHermana);
-        hermana.setDieCutReady(areTaskItemsDieCut(hermana));
+        syncTaskProductionGates(hermana, itemsHermana);
         hermana.setMaterialsDelivered(areRequiredTaskItemsDelivered(hermana));
         hermana.setMaterialsDeliveredAt(
                 Boolean.TRUE.equals(hermana.getMaterialsDelivered()) ? LocalDateTime.now() : null);
@@ -1397,9 +1401,7 @@ public class TaskController {
 
         // Buscar una tarea PENDING compatible en la mesa/fecha destino (mesa o sin mesa).
         if (targetDate != null) {
-            List<TaskEntity> base = targetDesk != null
-                    ? taskRepository.findByDeskAndScheduledDate(targetDesk, targetDate)
-                    : taskRepository.findByDeskIsNullAndScheduledDate(targetDate);
+            List<TaskEntity> base = taskRepository.findMoveTargetsForUpdate(poId, targetDesk, targetDate);
             List<TaskEntity> candidates = base.stream()
                     .filter(t -> Objects.equals(t.getProductionOrderId(), poId))
                     .filter(t -> "PENDING".equals(t.getStatus()))
@@ -1454,9 +1456,10 @@ public class TaskController {
     }
 
     @PutMapping("/{id:\\d+}/leather-delivery")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<TaskResponse> setLeatherDelivery(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
-        TaskEntity entity = taskRepository.findById(id)
+        TaskEntity entity = taskRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
 
         boolean delivered = body.get("delivered") != null && Boolean.parseBoolean(body.get("delivered").toString());
@@ -1470,27 +1473,25 @@ public class TaskController {
         List<TaskItemEntity> taskItems = taskItemRepository.findByTaskId(entity.getId());
         if (!taskItems.isEmpty()) {
             for (TaskItemEntity item : taskItems) {
-                item.setLeatherDelivered(delivered);
-                item.setLeatherDeliveredAt(delivered ? GuatemalaDateTime.now() : null);
-                taskItemRepository.save(item);
+                taskLeatherDeliveryService.setDelivered(entity, item, delivered);
             }
             entity.setLeatherDelivered(areTaskItemsLeatherDelivered(entity));
             entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? GuatemalaDateTime.now() : null);
         } else {
-            entity.setLeatherDelivered(delivered);
-            entity.setLeatherDeliveredAt(delivered ? GuatemalaDateTime.now() : null);
+            throw new BusinessException("La tarea debe tener productos detallados para registrar la entrega de cuero.");
         }
         TaskEntity updated = taskRepository.save(entity);
         return ResponseEntity.ok(toResponse(updated));
     }
 
     @PutMapping("/{id:\\d+}/leather-delivery/item/{taskItemId}")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<TaskResponse> setTaskItemLeatherDelivery(
             @PathVariable Long id,
             @PathVariable Long taskItemId,
             @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
-        TaskEntity entity = taskRepository.findById(id)
+        TaskEntity entity = taskRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
         TaskItemEntity item = taskItemRepository.findById(taskItemId)
                 .orElseThrow(() -> new ResourceNotFoundException("Task Item", taskItemId));
@@ -1507,9 +1508,7 @@ public class TaskController {
             throw new BusinessException("No se puede desmarcar cuero entregado porque la tarea ya avanzó a una fase posterior.");
         }
 
-        item.setLeatherDelivered(delivered);
-        item.setLeatherDeliveredAt(delivered ? GuatemalaDateTime.now() : null);
-        taskItemRepository.save(item);
+        taskLeatherDeliveryService.setDelivered(entity, item, delivered);
 
         entity.setLeatherDelivered(areTaskItemsLeatherDelivered(entity));
         entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? GuatemalaDateTime.now() : null);
@@ -1517,27 +1516,15 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(updated));
     }
 
-    /**
-     * Marca o desmarca el troquelado de UN producto de la tarea.
-     *
-     * <p>Clon de {@link #setTaskItemLeatherDelivery}, con una diferencia que importa: la
-     * compuerta del cuero se comprueba con un O y no con el flag del item a secas.
-     *
-     * <p><b>Por que el O.</b> El cuero se entrega por orden: cuando bodega lo registra,
-     * {@code LeatherInventoryService.markLeatherDeliveredForProductionOrder} marca la TAREA y
-     * no baja a sus productos. Exigir el flag del item dejaria sin poder troquelarse a toda
-     * tarea con el cuero ya entregado, que son la mayoria, asi que se acepta el de la tarea,
-     * igual que hace el DTO al pintarlo.
-     *
-     * <p>El flag de la tarea pasa a ser el Y-logico de sus productos, igual que el cuero.
-     */
+    /** El troquelado por producto consolida la compuerta de la tarea al completar todos sus ítems. */
     @PutMapping("/{id:\\d+}/die-cut/item/{taskItemId}")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<TaskResponse> setTaskItemDieCut(
             @PathVariable Long id,
             @PathVariable Long taskItemId,
             @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
-        TaskEntity entity = taskRepository.findById(id)
+        TaskEntity entity = taskRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
         TaskItemEntity item = taskItemRepository.findById(taskItemId)
                 .orElseThrow(() -> new ResourceNotFoundException("Task Item", taskItemId));
@@ -1613,9 +1600,11 @@ public class TaskController {
     }
 
     @PutMapping("/{id:\\d+}/materials-delivery")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<TaskResponse> setMaterialsDelivery(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
-        TaskEntity entity = taskRepository.findById(id)
+        // Todos los productos se consumen en una sola transacción: un faltante a mitad no deja consumos sueltos.
+        TaskEntity entity = taskRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
 
         boolean delivered = body.get("delivered") != null && Boolean.parseBoolean(body.get("delivered").toString());
@@ -1891,7 +1880,7 @@ public class TaskController {
     }
 
     @PutMapping("/{id:\\d+}/day-sale-items")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<TaskResponse> addDaySaleItemsToTask(
             @PathVariable Long id,
             @RequestBody Map<String, Object> body) throws ResourceNotFoundException, BusinessException {
@@ -1975,20 +1964,16 @@ public class TaskController {
     // ==================== DIE-CUT (TROQUELADO) ====================
 
     @PutMapping("/{id:\\d+}/die-cut")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<TaskResponse> toggleDieCut(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
-        TaskEntity entity = taskRepository.findById(id)
+        TaskEntity entity = taskRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
 
         boolean ready = body.get("dieCutReady") != null && Boolean.parseBoolean(body.get("dieCutReady").toString());
         if (ready && !Boolean.TRUE.equals(entity.getLeatherDelivered())) {
-            // Backward compatibility: if leather movement exists for the PO, sync gate automatically.
-            if (hasActiveLeatherDelivery(entity.getProductionOrderId())) {
-                entity.setLeatherDelivered(true);
-                if (entity.getLeatherDeliveredAt() == null) {
-                    entity.setLeatherDeliveredAt(GuatemalaDateTime.now());
-                }
-            } else {
+            taskLeatherDeliveryService.syncOrderDeliveries(entity.getProductionOrderId());
+            if (!Boolean.TRUE.equals(entity.getLeatherDelivered())) {
                 throw new BusinessException("No se puede troquelar sin entrega de cuero.");
             }
         }
@@ -1996,8 +1981,16 @@ public class TaskController {
                 || "IN_PROGRESS".equals(entity.getStatus()) || "COMPLETED".equals(entity.getStatus()))) {
             throw new BusinessException("No se puede desmarcar troquelado porque la tarea ya avanzó de fase.");
         }
+        List<TaskItemEntity> detail = taskItemRepository.findByTaskId(id);
+        validateTaskDieCut(entity, detail, ready);
+        LocalDate today = GuatemalaDateTime.today();
+        detail.forEach(item -> {
+            item.setDieCutDate(keptDieCutDate(item.getDieCutReady(), item.getDieCutDate(), ready, today));
+            item.setDieCutReady(ready);
+        });
+        taskItemRepository.saveAll(detail);
+        entity.setDieCutDate(keptDieCutDate(entity.getDieCutReady(), entity.getDieCutDate(), ready, today));
         entity.setDieCutReady(ready);
-        entity.setDieCutDate(ready ? GuatemalaDateTime.today() : null);
 
         TaskEntity updated = taskRepository.save(entity);
         if (ready) {
@@ -2007,10 +2000,11 @@ public class TaskController {
     }
 
     @PutMapping("/production-order/{productionOrderId}/die-cut")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<List<TaskResponse>> bulkDieCut(
             @PathVariable Long productionOrderId, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
-        List<TaskEntity> tasks = taskRepository.findByProductionOrderId(productionOrderId);
+        List<TaskEntity> tasks = taskRepository.findByProductionOrderIdForUpdate(productionOrderId);
         if (tasks.isEmpty()) {
             throw new ResourceNotFoundException("Tasks for Production Order", productionOrderId);
         }
@@ -2021,11 +2015,22 @@ public class TaskController {
         List<TaskResponse> responses = new ArrayList<>();
         for (TaskEntity task : tasks) {
             if (!"CANCELLED".equals(task.getStatus())) {
+                validateTaskDieCut(task, taskItemRepository.findByTaskId(task.getId()), ready);
                 if (ready && !Boolean.TRUE.equals(task.getLeatherDelivered())) {
                     throw new BusinessException("No se puede troquelar masivamente: hay tareas sin entrega de cuero.");
                 }
+            }
+        }
+        for (TaskEntity task : tasks) {
+            if (!"CANCELLED".equals(task.getStatus())) {
+                var detail = taskItemRepository.findByTaskId(task.getId());
+                detail.forEach(item -> {
+                    item.setDieCutDate(keptDieCutDate(item.getDieCutReady(), item.getDieCutDate(), ready, dieCutDate));
+                    item.setDieCutReady(ready);
+                });
+                taskItemRepository.saveAll(detail);
+                task.setDieCutDate(keptDieCutDate(task.getDieCutReady(), task.getDieCutDate(), ready, dieCutDate));
                 task.setDieCutReady(ready);
-                task.setDieCutDate(dieCutDate);
                 TaskEntity saved = taskRepository.save(task);
                 if (ready) {
                     saved = taskDeskAssignerService.assignIfReady(saved.getId()).orElse(saved);
@@ -2037,13 +2042,23 @@ public class TaskController {
     }
 
     @DeleteMapping("/{id:\\d+}")
-    @Transactional
-    public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException {
-        TaskEntity entity = taskRepository.findById(id).orElse(null);
+    @Transactional(rollbackFor = Exception.class)
+    public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException, BusinessException {
+        TaskEntity entity = taskRepository.findByIdForUpdate(id).orElse(null);
         if (entity == null) {
             throw new ResourceNotFoundException("Task", id);
         }
         Long productionOrderId = entity.getProductionOrderId();
+        var detail = taskItemRepository.findByTaskId(id);
+        // Las tareas de cinchos nacen con cuero, corte y a veces materiales marcados: esas marcas no son avance.
+        boolean bornWithGates = isCinchoTask(entity);
+        if (!"PENDING".equals(entity.getStatus()) || Boolean.TRUE.equals(entity.getMaterialsDelivered())
+                || (!bornWithGates && (Boolean.TRUE.equals(entity.getLeatherDelivered()) || Boolean.TRUE.equals(entity.getDieCutReady())
+                || detail.stream().anyMatch(item -> Boolean.TRUE.equals(item.getLeatherDelivered())
+                || Boolean.TRUE.equals(item.getDieCutReady()) || Boolean.TRUE.equals(item.getMaterialsDelivered()))))
+                || (!detail.isEmpty() && leatherMovementRepository.existsByTaskItemIdIn(detail.stream().map(TaskItemEntity::getId).toList()))) {
+            throw new BusinessException("La tarea tiene entregas o producción registrada; debe conservarse para mantener su historial.");
+        }
         taskItemRepository.deleteByTaskId(id);
         taskRepository.deleteById(id);
         productionTaskLifecycleService.syncProductionOrderStatusFromTasks(productionOrderId);
@@ -2551,13 +2566,42 @@ public class TaskController {
         return items.stream().allMatch(item -> Boolean.TRUE.equals(item.getDieCutReady()));
     }
 
-    /**
-     * Si este producto tiene cuero para poder troquelarse.
-     *
-     * <p>Acepta el cuero del producto O el de la tarea. La entrega de cuero se registra por
-     * orden y marca la tarea sin bajar a los productos, asi que mirar solo el producto
-     * dejaria fuera a casi todo. Es el mismo criterio con el que el DTO lo pinta.
-     */
+    // Tras mover productos, las compuertas de la tarea se recalculan desde sus ítems actuales.
+    // Una compuerta que ya estaba abierta conserva su fecha original.
+    private void syncTaskProductionGates(TaskEntity task, List<TaskItemEntity> detail) {
+        boolean leather = !detail.isEmpty() && detail.stream().allMatch(item -> Boolean.TRUE.equals(item.getLeatherDelivered()));
+        boolean cut = !detail.isEmpty() && detail.stream().allMatch(item -> Boolean.TRUE.equals(item.getDieCutReady()));
+        if (!leather) task.setLeatherDeliveredAt(null);
+        else if (!Boolean.TRUE.equals(task.getLeatherDelivered()) || task.getLeatherDeliveredAt() == null) task.setLeatherDeliveredAt(GuatemalaDateTime.now());
+        task.setLeatherDelivered(leather);
+        task.setDieCutDate(keptDieCutDate(task.getDieCutReady(), task.getDieCutDate(), cut, GuatemalaDateTime.today()));
+        task.setDieCutReady(cut);
+    }
+
+    private static LocalDate keptDieCutDate(Boolean wasReady, LocalDate previous, boolean ready, LocalDate today) {
+        if (!ready) return null;
+        return Boolean.TRUE.equals(wasReady) && previous != null ? previous : today;
+    }
+
+    private static boolean isCinchoTask(TaskEntity task) {
+        String observations = task.getObservations() == null ? "" : task.getObservations().trim();
+        return observations.startsWith("Auto-plan cinchos") || observations.startsWith("Materiales cincho");
+    }
+
+    private void validateTaskDieCut(TaskEntity task, List<TaskItemEntity> detail, boolean ready) throws BusinessException {
+        if ("CANCELLED".equals(task.getStatus())) throw new BusinessException("No se puede cambiar el troquelado de una tarea cancelada.");
+        if (ready && (!Boolean.TRUE.equals(task.getLeatherDelivered())
+                || detail.stream().anyMatch(item -> !hasLeatherForItem(task, item)))) {
+            throw new BusinessException("No se puede troquelar sin entrega de cuero de todos los productos.");
+        }
+        if (!ready && (Boolean.TRUE.equals(task.getMaterialsDelivered())
+                || detail.stream().anyMatch(item -> Boolean.TRUE.equals(item.getMaterialsDelivered()))
+                || "IN_PROGRESS".equals(task.getStatus()) || "COMPLETED".equals(task.getStatus()))) {
+            throw new BusinessException("No se puede desmarcar troquelado porque la tarea ya avanzó de fase.");
+        }
+    }
+
+    /** El estado de la tarea mantiene la compatibilidad con entregas históricas consolidadas. */
     private static boolean hasLeatherForItem(TaskEntity task, TaskItemEntity item) {
         return Boolean.TRUE.equals(item.getLeatherDelivered())
                 || Boolean.TRUE.equals(task.getLeatherDelivered());

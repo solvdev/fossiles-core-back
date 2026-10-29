@@ -30,6 +30,7 @@ public class LeatherInventoryService {
     private final TaskRepository taskRepository;
     private final SecurityUtil securityUtil;
     private final ProductionAutoPlannerService productionAutoPlannerService;
+    private final TaskLeatherDeliveryService taskLeatherDeliveryService;
 
     // ─── Inventario ──────────────────────────────────────────────────
 
@@ -110,7 +111,7 @@ public class LeatherInventoryService {
 
     // ─── Recepción (ENTRADA) ─────────────────────────────────────────
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public LeatherMovementResponse createReception(LeatherMovementRequest req) throws BusinessException, ResourceNotFoundException {
         validateReception(req);
 
@@ -118,7 +119,7 @@ public class LeatherInventoryService {
                 .orElseThrow(() -> new ResourceNotFoundException("Material no encontrado: " + req.getMaterialId()));
 
         // Obtener o crear inventario
-        LeatherInventoryEntity inventory = inventoryRepository.findByMaterialId(req.getMaterialId())
+        LeatherInventoryEntity inventory = inventoryRepository.findByMaterialIdForUpdate(req.getMaterialId())
                 .orElseGet(() -> {
                     LeatherInventoryEntity newInv = new LeatherInventoryEntity();
                     newInv.setMaterialId(req.getMaterialId());
@@ -151,14 +152,14 @@ public class LeatherInventoryService {
 
     // ─── Entrega a Producción (SALIDA) ───────────────────────────────
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public LeatherMovementResponse createDelivery(LeatherMovementRequest req) throws BusinessException, ResourceNotFoundException {
         validateDelivery(req);
 
         MaterialEntity material = materialRepository.findById(req.getMaterialId())
                 .orElseThrow(() -> new ResourceNotFoundException("Material no encontrado: " + req.getMaterialId()));
 
-        LeatherInventoryEntity inventory = inventoryRepository.findByMaterialId(req.getMaterialId())
+        LeatherInventoryEntity inventory = inventoryRepository.findByMaterialIdForUpdate(req.getMaterialId())
                 .orElseThrow(() -> new BusinessException(
                         "No hay inventario de cuero para: " + material.getName()));
 
@@ -175,6 +176,7 @@ public class LeatherInventoryService {
             productionOrderRepository.findById(req.getProductionOrderId())
                     .orElseThrow(() -> new ResourceNotFoundException(
                             "Orden de producción no encontrada: " + req.getProductionOrderId()));
+            taskLeatherDeliveryService.assertManualDeliveryFits(req.getProductionOrderId(), req.getMaterialId(), req.getQuantity());
         }
 
         // Actualizar inventario
@@ -198,7 +200,7 @@ public class LeatherInventoryService {
 
         LeatherMovementEntity savedMovement = movementRepository.save(movement);
 
-        // Sync workflow gate: once leather is delivered for the PO, mark all pending tasks as leather delivered.
+        // La compuerta se abre cuando el movimiento cubre el cuero requerido por los productos.
         markLeatherDeliveredForProductionOrder(req.getProductionOrderId());
         productionAutoPlannerService.planAllQuietly();
 
@@ -229,16 +231,19 @@ public class LeatherInventoryService {
 
     // ─── Anular movimiento (reversa) ─────────────────────────────
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public LeatherMovementResponse cancelMovement(Long id, String reason) throws ResourceNotFoundException, BusinessException {
-        LeatherMovementEntity original = movementRepository.findById(id)
+        // El bloqueo serializa dos anulaciones simultáneas del mismo movimiento.
+        LeatherMovementEntity original = movementRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Movimiento no encontrado: " + id));
 
         if ("ANULADO".equals(original.getMovementType())) {
             throw new BusinessException("Este movimiento ya fue anulado.");
         }
 
-        LeatherInventoryEntity inventory = inventoryRepository.findByMaterialId(original.getMaterialId())
+        taskLeatherDeliveryService.assertMovementCanReverse(original);
+
+        LeatherInventoryEntity inventory = inventoryRepository.findByMaterialIdForUpdate(original.getMaterialId())
                 .orElseThrow(() -> new BusinessException("No se encontró inventario para este material."));
 
         // Revertir el efecto en inventario
@@ -262,6 +267,7 @@ public class LeatherInventoryService {
         // Crear movimiento de anulación (reversa)
         LeatherMovementEntity reversal = LeatherMovementEntity.builder()
                 .movementType("ANULADO")
+                .taskItemId(original.getTaskItemId())
                 .materialId(original.getMaterialId())
                 .quantity(original.getQuantity())
                 .unitCost(original.getUnitCost())
@@ -284,6 +290,8 @@ public class LeatherInventoryService {
         original.setObservations((original.getObservations() != null ? original.getObservations() + " | " : "")
                 + "ANULADO" + (reason != null && !reason.isBlank() ? ": " + reason : ""));
         movementRepository.save(original);
+
+        taskLeatherDeliveryService.revokeAfterCancellation(original);
 
         return toMovementResponse(reversal);
     }
@@ -381,21 +389,8 @@ public class LeatherInventoryService {
         return baseObservations + " | " + details;
     }
 
-    private void markLeatherDeliveredForProductionOrder(Long productionOrderId) {
-        if (productionOrderId == null) return;
-
-        LocalDateTime now = LocalDateTime.now();
-        List<TaskEntity> tasks = taskRepository.findByProductionOrderId(productionOrderId);
-        for (TaskEntity task : tasks) {
-            if ("CANCELLED".equals(task.getStatus())) continue;
-            if (!Boolean.TRUE.equals(task.getLeatherDelivered())) {
-                task.setLeatherDelivered(true);
-                if (task.getLeatherDeliveredAt() == null) {
-                    task.setLeatherDeliveredAt(now);
-                }
-                taskRepository.save(task);
-            }
-        }
+    private void markLeatherDeliveredForProductionOrder(Long productionOrderId) throws BusinessException {
+        taskLeatherDeliveryService.syncOrderDeliveries(productionOrderId);
     }
 
     // ─── Mappers ─────────────────────────────────────────────────────

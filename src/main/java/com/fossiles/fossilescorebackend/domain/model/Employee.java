@@ -28,6 +28,12 @@ public class Employee {
     private BigDecimal igssDeduction;
     private BigDecimal quincenaBruta;
     private BigDecimal quincenaNeta;
+    private BigDecimal bonification;
+    private String employmentType;
+    private String payGroup;
+    private String nit;
+    private String igssAffiliation;
+    private LocalDate terminationDate;
     private Long departmentId;
     private Long costCenterId;
     private Long operationalUnitId;

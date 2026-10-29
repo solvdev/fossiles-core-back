@@ -11,6 +11,9 @@ import java.util.Optional;
 
 @Repository
 public interface MaterialRepository extends JpaRepository<MaterialEntity, Long> {
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select m from MaterialEntity m where m.id = :id")
+    Optional<MaterialEntity> findByIdForUpdate(@Param("id") Long id);
     Optional<MaterialEntity> findBySku(String sku);
     boolean existsBySku(String sku);
     

@@ -11,6 +11,7 @@ import java.util.List;
 
 @Repository
 public interface ProductionOrderPartialReleaseLineRepository extends JpaRepository<ProductionOrderPartialReleaseLineEntity, Long> {
+    boolean existsByProductionOrderItemId(Long productionOrderItemId);
 
     List<ProductionOrderPartialReleaseLineEntity> findByReleaseId(Long releaseId);
 

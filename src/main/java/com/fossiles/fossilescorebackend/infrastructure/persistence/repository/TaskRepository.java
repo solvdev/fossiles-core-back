@@ -16,6 +16,18 @@ import java.util.Optional;
 
 @Repository
 public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select t from TaskEntity t where t.productionOrderId = :orderId order by t.id")
+    List<TaskEntity> findByProductionOrderIdForUpdate(@Param("orderId") Long orderId);
+
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select t from TaskEntity t where t.productionOrderId = :orderId and t.status = 'PENDING' "
+            + "and t.scheduledDate = :date and (t.desk = :desk or (:desk is null and t.desk is null)) order by t.id")
+    List<TaskEntity> findMoveTargetsForUpdate(@Param("orderId") Long orderId, @Param("desk") Integer desk, @Param("date") LocalDate date);
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT t FROM TaskEntity t WHERE t.id = :id")
+    java.util.Optional<TaskEntity> findByIdForUpdate(@Param("id") Long id);
+    boolean existsByProductionOrderItemId(Long productionOrderItemId);
     Optional<TaskEntity> findByCode(String code);
     boolean existsByCode(String code);
     List<TaskEntity> findByProductionOrderId(Long productionOrderId);

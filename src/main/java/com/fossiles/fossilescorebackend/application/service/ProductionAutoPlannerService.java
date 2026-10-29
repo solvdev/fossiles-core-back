@@ -13,6 +13,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LeatherMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
@@ -66,6 +67,7 @@ public class ProductionAutoPlannerService {
     private final ObjectProvider<ProductionAutoPlannerService> selfProvider;
     private final ProductionTaskLifecycleService productionTaskLifecycleService;
     private final TaskItemMaterialPickRepository taskItemMaterialPickRepository;
+    private final LeatherMovementRepository leatherMovementRepository;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -182,8 +184,10 @@ public class ProductionAutoPlannerService {
                 : taskItemMaterialPickRepository.findByTaskItemIdIn(allItemIds).stream()
                         .map(pick -> pick.getTaskItemId())
                         .collect(java.util.stream.Collectors.toSet());
+        Set<Long> itemsWithLeather = allItemIds.isEmpty() ? Set.of()
+                : new HashSet<>(leatherMovementRepository.findTaskItemIdsWithMovements(allItemIds));
         List<TaskEntity> candidates = autoPlan.stream()
-                .filter(t -> !hasProgress(t, itemsByTask.getOrDefault(t.getId(), List.of()), itemsWithPicks))
+                .filter(t -> !hasProgress(t, itemsByTask.getOrDefault(t.getId(), List.of()), itemsWithPicks, itemsWithLeather))
                 .toList();
         int kept = autoPlan.size() - candidates.size();
         Set<Long> orderIds = new HashSet<>();
@@ -216,9 +220,11 @@ public class ProductionAutoPlannerService {
     /**
      * Regenerar borra y vuelve a crear; una tarea que ya tiene trabajo encima no se puede
      * borrar sin perderlo. Las de cinchos nacen con cuero y corte marcados, así que en ellas
-     * esas dos marcas no cuentan como avance.
+     * esas dos marcas no cuentan como avance. Un ítem con movimiento de cuero, aunque esté
+     * anulado, conserva su historial y no puede borrarse.
      */
-    private static boolean hasProgress(TaskEntity task, List<TaskItemEntity> items, Set<Long> itemsWithPicks) {
+    private static boolean hasProgress(TaskEntity task, List<TaskItemEntity> items, Set<Long> itemsWithPicks,
+                                       Set<Long> itemsWithLeather) {
         boolean cincho = String.valueOf(task.getObservations()).trim().startsWith("Auto-plan cinchos");
         // En una tarea de OPL todo nace como venta del día; en las demás, una línea así la
         // agregó alguien con «+ Del día».
@@ -230,7 +236,8 @@ public class ProductionAutoPlannerService {
             return true;
         }
         for (TaskItemEntity item : items) {
-            if (itemsWithPicks.contains(item.getId()) || item.getDieCutPlannedDate() != null) {
+            if (itemsWithPicks.contains(item.getId()) || itemsWithLeather.contains(item.getId())
+                    || item.getDieCutPlannedDate() != null) {
                 return true;
             }
             if (!oplTask && Boolean.TRUE.equals(item.getDaySaleExtra())) {

@@ -56,7 +56,7 @@ public class EmployeeController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteEmployee(@PathVariable Long id) throws ResourceNotFoundException {
+    public ResponseEntity<Void> deleteEmployee(@PathVariable Long id) throws ResourceNotFoundException, BusinessException {
         employeeService.deleteEmployee(id);
         return ResponseEntity.noContent().build();
     }

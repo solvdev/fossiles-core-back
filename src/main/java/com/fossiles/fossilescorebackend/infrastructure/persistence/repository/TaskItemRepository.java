@@ -16,6 +16,8 @@ import java.util.Map;
 
 @Repository
 public interface TaskItemRepository extends JpaRepository<TaskItemEntity, Long> {
+    @Query("select i.taskId from TaskItemEntity i where i.id = :id")
+    java.util.Optional<Long> findTaskIdByItemId(@Param("id") Long id);
     List<TaskItemEntity> findByTaskId(Long taskId);
     List<TaskItemEntity> findByTaskIdIn(List<Long> taskIds);
     boolean existsByProductionOrderItemId(Long productionOrderItemId);

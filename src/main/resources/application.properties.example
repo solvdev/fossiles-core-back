@@ -156,3 +156,7 @@ fel.emission.sandbox.direccion=
 fel.emission.sandbox.municipio=Guatemala
 fel.emission.sandbox.departamento=GUATEMALA
 
+
+# Planilla: borrador automatico de cada grupo cuando faltan estos dias para la fecha de pago
+payroll.auto-draft.enabled=true
+payroll.auto-draft.days-ahead=3

@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.config;
 
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -10,11 +11,13 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.util.AntPathMatcher;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.Arrays;
+import java.util.List;
 
 @Configuration
 @EnableWebSecurity
@@ -22,6 +25,23 @@ import java.util.Arrays;
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    private static final AntPathMatcher PATHS = new AntPathMatcher();
+
+    /** Rutas sin sesión. El filtro JWT usa la misma lista para dejar pasar como anónimo un token vencido. */
+    static final List<String> PUBLIC_PATHS = List.of(
+            "/api/auth/**",
+            "/api/public/**",
+            "/api/system-announcements/stream", "/api/system-announcements/active",
+            // Flujo móvil Bodega PT sin login (dispositivo dedicado)
+            "/api/product-distributions/**",
+            "/api/public/online-warehouse/**",
+            "/error");
+
+    public static boolean isPublicRequest(HttpServletRequest request) {
+        String path = request.getRequestURI().substring(request.getContextPath().length());
+        return PUBLIC_PATHS.stream().anyMatch(pattern -> PATHS.match(pattern, path));
+    }
     private final UserActivityFilter userActivityFilter;
 
     @Bean
@@ -36,13 +56,7 @@ public class SecurityConfig {
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .authorizeHttpRequests(auth -> auth
                 // Permitir endpoints públicos
-                .requestMatchers("/api/auth/**").permitAll()
-                .requestMatchers("/api/public/**").permitAll()
-                .requestMatchers("/api/system-announcements/stream", "/api/system-announcements/active").permitAll()
-                // Flujo móvil Bodega PT sin login (dispositivo dedicado)
-                .requestMatchers("/api/product-distributions/**").permitAll()
-                .requestMatchers("/api/public/online-warehouse/**").permitAll()
-                .requestMatchers("/error").permitAll()
+                .requestMatchers(PUBLIC_PATHS.toArray(String[]::new)).permitAll()
                 // Todos los demás endpoints requieren autenticación
                 .anyRequest().authenticated()
             )

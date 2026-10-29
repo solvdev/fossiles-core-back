@@ -24,7 +24,8 @@ public class MaterialReceiptRequest {
     @Size(max = 1000, message = "Observations must not exceed 1000 characters")
     private String observations;
 
-    // Items recibidos (opcional, si no se envía se usa la cantidad ordenada)
+    // La creación exige cantidades explícitas; la edición sin ítems solo cambia los datos generales.
+    @jakarta.validation.Valid
     private List<MaterialReceiptItemRequest> items;
 }
 
