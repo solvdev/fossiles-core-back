@@ -159,8 +159,8 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
               AND UPPER(TRIM(COALESCE(s.status, ''))) = UPPER(TRIM(:status))
               AND UPPER(TRIM(COALESCE(po.code, ''))) LIKE 'OPV-%'
               AND UPPER(TRIM(COALESCE(po.orderType, ''))) NOT IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS', 'MARCAS')
-              AND (:productionOrderId IS NULL OR s.productionOrderId = :productionOrderId)
-              AND (:q IS NULL OR LOWER(COALESCE(po.code, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+              AND (CAST(:productionOrderId AS Long) IS NULL OR s.productionOrderId = CAST(:productionOrderId AS Long))
+              AND (:q = '' OR LOWER(COALESCE(po.code, '')) LIKE LOWER(CONCAT('%', :q, '%'))
                    OR LOWER(COALESCE(s.shipmentNumber, '')) LIKE LOWER(CONCAT('%', :q, '%')))
               AND UPPER(TRIM(COALESCE(s.notes, ''))) NOT LIKE 'ENVIO HISTORICO%'
             ORDER BY s.id DESC

@@ -4360,7 +4360,7 @@ public class ProductDistributionService {
 
         List<ProductShipmentEntity> shipments = new ArrayList<>(shipmentRepository.findLfDispatchShipments(
                 normalizedStatus,
-                query.isEmpty() ? null : query,
+                query,
                 productionOrderId,
                 PageRequest.of(0, LF_DISPATCH_MAX_LIMIT)));
 
