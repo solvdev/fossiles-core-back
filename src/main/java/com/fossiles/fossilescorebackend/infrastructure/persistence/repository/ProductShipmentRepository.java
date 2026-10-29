@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
@@ -144,6 +145,31 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
             ORDER BY s.id DESC
             """)
     List<ProductShipmentEntity> searchByShipmentNumberContaining(@Param("q") String q);
+
+    /**
+     * Envíos de mercancía OPV Luis Felipe para despacho móvil: con OP, código OPV-,
+     * sin distribución, sin tipo cincho/MARCAS, sin nota de envío histórico.
+     * El vendedor LF y las líneas cincho se filtran en servicio.
+     */
+    @Query("""
+            SELECT s FROM ProductShipmentEntity s
+            JOIN s.productionOrder po
+            WHERE s.productionOrderId IS NOT NULL
+              AND s.distributionId IS NULL
+              AND UPPER(TRIM(COALESCE(s.status, ''))) = UPPER(TRIM(:status))
+              AND UPPER(TRIM(COALESCE(po.code, ''))) LIKE 'OPV-%'
+              AND UPPER(TRIM(COALESCE(po.orderType, ''))) NOT IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS', 'MARCAS')
+              AND (:productionOrderId IS NULL OR s.productionOrderId = :productionOrderId)
+              AND (:q IS NULL OR LOWER(COALESCE(po.code, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+                   OR LOWER(COALESCE(s.shipmentNumber, '')) LIKE LOWER(CONCAT('%', :q, '%')))
+              AND UPPER(TRIM(COALESCE(s.notes, ''))) NOT LIKE 'ENVIO HISTORICO%'
+            ORDER BY s.id DESC
+            """)
+    List<ProductShipmentEntity> findLfDispatchShipments(
+            @Param("status") String status,
+            @Param("q") String q,
+            @Param("productionOrderId") Long productionOrderId,
+            Pageable pageable);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s FROM ProductShipmentEntity s WHERE s.id = :id")
