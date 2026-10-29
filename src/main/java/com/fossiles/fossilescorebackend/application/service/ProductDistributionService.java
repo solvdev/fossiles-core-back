@@ -42,6 +42,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -91,6 +92,8 @@ public class ProductDistributionService {
     private static final String APPLY_HALF_PRICE_TAG = "APPLY_HALF_PRICE:";
     private static final String COLABORADOR_PHONE_TAG = "COLABORADOR_PHONE:";
     private static final String COLABORADOR_TAX_TAG = "COLABORADOR_NIT:";
+    private static final int LF_DISPATCH_DEFAULT_LIMIT = 50;
+    private static final int LF_DISPATCH_MAX_LIMIT = 200;
 
     private final ProductDistributionRepository distributionRepository;
     private final ProductShipmentRepository shipmentRepository;
@@ -4339,6 +4342,72 @@ public class ProductDistributionService {
 
     private String receiptProductColorKey(Long productId, Long colorId) {
         return productId + ":" + (colorId != null ? colorId : "null");
+    }
+
+    /**
+     * Envíos OPV Luis Felipe para despacho móvil. Solo lectura.
+     * Con {@code productionOrderId} se usa el tope 200 para no truncar la orden del QR.
+     */
+    @Transactional(readOnly = true)
+    public List<ProductShipmentResponse> getLfDispatchShipments(
+            String status, String q, Long productionOrderId, Integer limit) {
+        String normalizedStatus = (status == null || status.isBlank()) ? "CONFIRMED" : status.trim();
+        String query = q == null ? "" : q.trim();
+        int requested = limit == null
+                ? LF_DISPATCH_DEFAULT_LIMIT
+                : Math.min(Math.max(limit, 1), LF_DISPATCH_MAX_LIMIT);
+        int max = productionOrderId != null ? LF_DISPATCH_MAX_LIMIT : requested;
+
+        List<ProductShipmentEntity> shipments = new ArrayList<>(shipmentRepository.findLfDispatchShipments(
+                normalizedStatus,
+                query.isEmpty() ? null : query,
+                productionOrderId,
+                PageRequest.of(0, LF_DISPATCH_MAX_LIMIT)));
+
+        Map<Long, ProductionOrderEntity> ordersById = loadById(
+                collectIds(shipments, ProductShipmentEntity::getProductionOrderId),
+                productionOrderRepository::findAllById,
+                ProductionOrderEntity::getId);
+        shipments.removeIf(s -> {
+            ProductionOrderEntity po = ordersById.get(s.getProductionOrderId());
+            return po == null
+                    || po.getCode() == null
+                    || po.getCode().isBlank()
+                    || !ProductionOrderCodeService.normalizeForSellerMatch(po.getSellerName()).contains("LUIS FELIPE");
+        });
+
+        Set<Long> cinchoShipmentIds = findShipmentIdsWithCinchoLines(shipments);
+        if (!cinchoShipmentIds.isEmpty()) {
+            shipments.removeIf(s -> cinchoShipmentIds.contains(s.getId()));
+        }
+        if (shipments.size() > max) {
+            shipments = new ArrayList<>(shipments.subList(0, max));
+        }
+
+        List<ProductShipmentResponse> responses = toShipmentResponses(shipments);
+        responses.removeIf(r -> r.getProductionOrderCode() == null || r.getProductionOrderCode().isBlank());
+        return responses;
+    }
+
+    /** Excluye el envío entero si alguna línea es cincho; no se recortan líneas del DTO. */
+    private Set<Long> findShipmentIdsWithCinchoLines(Collection<ProductShipmentEntity> shipments) {
+        Set<Long> shipmentIds = collectIds(shipments, ProductShipmentEntity::getId);
+        if (shipmentIds.isEmpty()) {
+            return Set.of();
+        }
+        List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentIdIn(shipmentIds);
+        Set<Long> productIds = details.stream()
+                .map(ProductShipmentDetailEntity::getProductId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, ProductEntity> productsById = loadById(productIds, productRepository::findAllById, ProductEntity::getId);
+        Set<Long> cinchoShipmentIds = new HashSet<>();
+        for (ProductShipmentDetailEntity detail : details) {
+            if (CinchoProductUtils.isCinchoLineForProduction(productsById.get(detail.getProductId()))) {
+                cinchoShipmentIds.add(detail.getShipmentId());
+            }
+        }
+        return cinchoShipmentIds;
     }
 
     /**

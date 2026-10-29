@@ -105,6 +105,17 @@ public class ProductDistributionController {
         return ResponseEntity.ok(distributionService.searchShipmentsByNumber(q, limit));
     }
 
+    /** Envíos OPV Luis Felipe para la vista de despacho móvil (solo lectura). */
+    @GetMapping("/shipments/lf-dispatch")
+    public ResponseEntity<List<ProductShipmentResponse>> getLfDispatchShipments(
+            @RequestParam(required = false, defaultValue = "CONFIRMED") String status,
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) Long productionOrderId,
+            @RequestParam(required = false) Integer limit) {
+        return ResponseEntity.ok(distributionService.getLfDispatchShipments(
+                status, q, productionOrderId, limit));
+    }
+
     @GetMapping("/shipments/{id}")
     public ResponseEntity<ProductShipmentResponse> getShipmentById(@PathVariable Long id) 
             throws ResourceNotFoundException {
