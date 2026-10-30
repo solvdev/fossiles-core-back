@@ -19,8 +19,6 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.application.service.CustomerShipmentDispatchService;
 import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestService;
 import com.fossiles.fossilescorebackend.application.service.OnlineSaleService;
-import com.fossiles.fossilescorebackend.application.service.OpiVendorShipmentNumberService;
-import com.fossiles.fossilescorebackend.application.service.OpvVendorShipmentNumberService;
 import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderPartialReleaseService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderCodeService;
@@ -76,7 +74,6 @@ public class ProductionOrderController {
     private final com.fossiles.fossilescorebackend.application.service.ProductionCenterCache productionCenterCache;
     private final com.fossiles.fossilescorebackend.application.service.OnlineSalesReadCache onlineSalesReadCache;
     private final ProductionOrderCodeService productionOrderCodeService;
-    private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
     private final CustomerShipmentDispatchService customerShipmentDispatchService;
     private final OnlineSaleService onlineSaleService;
@@ -211,8 +208,7 @@ public class ProductionOrderController {
     public ResponseEntity<ProductionOrderResponse> getById(@PathVariable Long id) throws ResourceNotFoundException {
         ProductionOrderEntity entity = productionOrderRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
-        ProductionOrderEntity resolved = ensureOpvVendorShipmentNumber(entity);
-        return ResponseEntity.ok(toResponse(resolved));
+        return ResponseEntity.ok(toResponse(entity));
     }
 
     /**
@@ -367,11 +363,6 @@ public class ProductionOrderController {
         }
         ProductionOrderEntity saved = productionOrderRepository.save(entity);
 
-        if (isOpvVendorShipmentFlow(saved)) {
-            opvVendorShipmentNumberService.assignIfMissing(saved);
-            saved = productionOrderRepository.save(saved);
-        }
-
         // Guardar items
         if (request.getItems() != null && !request.getItems().isEmpty()) {
             // Validar items antes de procesarlos
@@ -449,11 +440,6 @@ public class ProductionOrderController {
         applyDefaultSchedulingPriority(entity, effectiveOrderType);
         applyCustomerFields(entity, request, effectiveOrderType);
         ProductionOrderEntity updated = productionOrderRepository.save(entity);
-
-        if (isOpvVendorShipmentFlow(updated)) {
-            opvVendorShipmentNumberService.assignIfMissing(updated);
-            updated = productionOrderRepository.save(updated);
-        }
 
         // Actualizar items: eliminar existentes y crear nuevos
         if (request.getItems() != null) {
@@ -2075,15 +2061,6 @@ public class ProductionOrderController {
             entity.setCustomerId(c.getId());
             entity.setCustomerName(c.getName());
         });
-    }
-
-    private ProductionOrderEntity ensureOpvVendorShipmentNumber(ProductionOrderEntity entity) {
-        if (isOpvVendorShipmentFlow(entity)
-                && (entity.getVendorShipmentNumber() == null || entity.getVendorShipmentNumber().isBlank())) {
-            opvVendorShipmentNumberService.assignIfMissing(entity);
-            return productionOrderRepository.save(entity);
-        }
-        return entity;
     }
 
     /** OPV vendedor: Luis Felipe (incluye cinchos OPC; correlativo ENVP de envío). */

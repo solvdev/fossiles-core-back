@@ -110,6 +110,7 @@ public class ProductDistributionService {
     private final DocumentSeriesRepository documentSeriesRepository;
     private final OpiVendorShipmentNumberService opiVendorShipmentNumberService;
     private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
+    private final ShipmentNumberCounterService shipmentNumberCounterService;
     private final CustomerRepository customerRepository;
     private final UserRepository userRepository;
     private final ColorRepository colorRepository;
@@ -331,9 +332,11 @@ public class ProductDistributionService {
         String shipmentNumber;
         if (location != null) {
             shipmentNumber = generateShipmentNumber(location);
+        } else if (isLuisFelipeVendorOrder(order) && isCincho) {
+            order = ensureLfEnvpOnOrderIfMissing(order);
+            shipmentNumber = generateOpcShipmentNumber(order);
         } else if (isLuisFelipeVendorOrder(order)) {
-            order = ensureOpvVendorShipmentNumberOnOrder(order);
-            shipmentNumber = allocateLfCinchoPhysicalShipmentNumber(order);
+            shipmentNumber = allocateLfEnvpShipmentNumber(order);
         } else if (isCincho || isEntreCuerosCustomerOpv(order)) {
             shipmentNumber = generateOpcShipmentNumber(order);
         } else {
@@ -384,7 +387,6 @@ public class ProductDistributionService {
         clearVendorShipmentVoidFlag(order);
 
         if (isLuisFelipeVendorOrder(order)) {
-            order = ensureOpvVendorShipmentNumberOnOrder(order);
             assertNoDuplicateLfShipment(productionOrderId, request.getLocationId());
         }
 
@@ -436,10 +438,6 @@ public class ProductDistributionService {
         }
         if (products == null || products.isEmpty()) {
             throw new BusinessException("La liberación no tiene productos con cantidad.");
-        }
-
-        if (isLuisFelipeVendorOrder(order)) {
-            order = ensureOpvVendorShipmentNumberOnOrder(order);
         }
 
         String destination = request.getDestinationAddress() == null ? "" : request.getDestinationAddress().trim();
@@ -1198,9 +1196,13 @@ public class ProductDistributionService {
                 .orElse(BigDecimal.ZERO);
     }
 
-    private String generateOpcShipmentNumber(ProductionOrderEntity order) {
+    private String generateOpcShipmentNumber(ProductionOrderEntity order) throws BusinessException {
         String opCode = order.getCode() == null ? "OPC" : order.getCode().trim().toUpperCase();
         opCode = opCode.replaceAll("[^A-Za-z0-9_-]", "_");
+        if (isLuisFelipeVendorOrder(order)) {
+            long sequence = shipmentNumberCounterService.nextOpcSequence();
+            return String.format("%s-ENV-%05d", opCode, sequence);
+        }
         int maxSequence = shipmentRepository.findByProductionOrderId(order.getId()).stream()
                 .map(ProductShipmentEntity::getShipmentNumber)
                 .mapToInt(this::extractTrailingSequence)
@@ -1244,7 +1246,8 @@ public class ProductDistributionService {
     }
 
     /**
-     * Obtiene un envío por ID
+     * GET /shipments/{id} para reimpresión: products[] (size, hardwareCondition, unitPrice,
+     * brandName derivado), packingItems, notes, shippingCost y shipmentNumber.
      */
     public ProductShipmentResponse getShipmentById(Long id) throws ResourceNotFoundException {
         ProductShipmentEntity entity = shipmentRepository.findById(id)
@@ -1512,8 +1515,8 @@ public class ProductDistributionService {
     }
 
     /**
-     * Actualiza los productos de un envío (borrador, confirmado o en tránsito).
-     * Si el envío ya salió de PT, revierte la salida anterior y aplica la nueva composición.
+     * PUT /shipments/{id}/products: reemplazo total. Persiste size, hardwareCondition y unitPrice
+     * de cada línea (reimpresión). Si el envío ya salió de PT, revierte y reaplica inventario.
      */
     @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse updateShipmentProducts(Long shipmentId, List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
@@ -4708,6 +4711,8 @@ public class ProductDistributionService {
         }
         Map<Long, MaterialEntity> materialsById = loadById(materialIds, materialRepository::findAllById,
                 MaterialEntity::getId);
+        Map<String, String> brandByProductColor = loadBrandNamesByProductColor(
+                collectIds(shipments, ProductShipmentEntity::getProductionOrderId));
 
         List<ProductShipmentResponse> result = new ArrayList<>(shipments.size());
         for (ProductShipmentEntity entity : shipments) {
@@ -4751,7 +4756,8 @@ public class ProductDistributionService {
                     .receivedBy(entity.getReceivedBy())
                     .receivedNotes(entity.getReceivedNotes())
                     .products(details.stream()
-                            .map(d -> toShipmentDetailResponse(d, productsById, colorNames, categoryNames))
+                            .map(d -> toShipmentDetailResponse(
+                                    d, productsById, colorNames, categoryNames, brandByProductColor))
                             .collect(Collectors.toList()))
                     .createdAt(entity.getCreatedAt())
                     .createdBy(entity.getCreatedBy())
@@ -4827,11 +4833,16 @@ public class ProductDistributionService {
             ProductShipmentDetailEntity entity,
             Map<Long, ProductEntity> productsById,
             Map<Long, String> colorNames,
-            Map<Long, String> categoryNames) {
+            Map<Long, String> categoryNames,
+            Map<String, String> brandByProductColor) {
         ProductEntity product = entity.getProductId() == null ? null : productsById.get(entity.getProductId());
         String colorName = entity.getColorId() == null ? null : colorNames.get(entity.getColorId());
         Long categoryId = product != null ? product.getCategoryId() : null;
         String categoryName = categoryId == null ? null : categoryNames.get(categoryId);
+        String brandName = brandByProductColor.get(receiptProductColorKey(entity.getProductId(), entity.getColorId()));
+        if (brandName == null || brandName.isBlank()) {
+            brandName = ProductBrandNames.normalize(entity.getHardwareCondition());
+        }
 
         return ProductShipmentDetailResponse.builder()
                 .id(entity.getId())
@@ -4846,12 +4857,29 @@ public class ProductDistributionService {
                 .colorName(colorName)
                 .size(entity.getSizeLabel())
                 .hardwareCondition(entity.getHardwareCondition())
+                .brandName(brandName)
                 .quantity(entity.getQuantity())
                 .unitPrice(entity.getUnitPrice())
                 .quantityReceived(entity.getQuantityReceived())
                 .quantityDifference(entity.getQuantityDifference())
                 .receivedLineNotes(entity.getReceivedLineNotes())
                 .build();
+    }
+
+    private Map<String, String> loadBrandNamesByProductColor(Set<Long> productionOrderIds) {
+        Map<String, String> brands = new HashMap<>();
+        if (productionOrderIds == null || productionOrderIds.isEmpty()) {
+            return brands;
+        }
+        for (ProductionOrderItemEntity item : productionOrderItemRepository.findByProductionOrderIdIn(productionOrderIds)) {
+            if (item.getBrandName() == null || item.getBrandName().isBlank()) {
+                continue;
+            }
+            brands.putIfAbsent(
+                    receiptProductColorKey(item.getProductId(), item.getColorId()),
+                    item.getBrandName().trim());
+        }
+        return brands;
     }
 
     private String resolveProductCategoryName(Long categoryId) {
@@ -5037,47 +5065,34 @@ public class ProductDistributionService {
         }
     }
 
-    /**
-     * Número en product_shipment para cinchos Luis Felipe: siempre ENVP-xxxxx-ENV-nnnnn (o OPC-ENV si no hay ENVP).
-     * El impreso sigue usando vendorShipmentNumber de la OP (ENVP puro), sin colisión con envíos de otras OP.
-     */
-    private String allocateLfCinchoPhysicalShipmentNumber(ProductionOrderEntity order) throws BusinessException {
-        String envp = order.getVendorShipmentNumber();
-        String base = (envp != null && !envp.isBlank())
-                ? envp.trim().toUpperCase()
-                : (order.getCode() == null ? "OPC" : order.getCode().trim().toUpperCase().replaceAll("[^A-Za-z0-9_-]", "_"));
-        return nextUniqueShipmentNumberWithPrefix(order.getId(), base + "-ENV-");
+    /** ENVP-nnnnn en el envío. En la OP solo se copia el primero, nunca se pisa. */
+    private String allocateLfEnvpShipmentNumber(ProductionOrderEntity order) throws BusinessException {
+        String number = opvVendorShipmentNumberService.nextNumber();
+        ensureLfEnvpOnOrderIfMissing(order, number);
+        return number;
     }
 
-    private String nextUniqueShipmentNumberWithPrefix(Long productionOrderId, String prefix) throws BusinessException {
-        int maxOnOrder = shipmentRepository.findByProductionOrderId(productionOrderId).stream()
-                .map(ProductShipmentEntity::getShipmentNumber)
-                .filter(n -> n != null && n.toUpperCase().startsWith(prefix.toUpperCase()))
-                .mapToInt(this::extractTrailingSequence)
-                .max()
-                .orElse(0);
-        for (int seq = maxOnOrder + 1; seq < maxOnOrder + 10000; seq++) {
-            String candidate = String.format("%s%05d", prefix, seq);
-            if (!shipmentRepository.existsByShipmentNumber(candidate)) {
-                return candidate;
-            }
+    /** Cinchos LF: si la OP no tiene ENVP, lo toma del correlativo (nunca fallback OPC-ENV). */
+    private ProductionOrderEntity ensureLfEnvpOnOrderIfMissing(ProductionOrderEntity order) throws BusinessException {
+        if (order.getVendorShipmentNumber() != null && !order.getVendorShipmentNumber().isBlank()) {
+            return order;
         }
-        throw new BusinessException("No se pudo generar un número de envío único para la orden.");
+        return ensureLfEnvpOnOrderIfMissing(order, opvVendorShipmentNumberService.nextNumber());
     }
 
-    private ProductionOrderEntity ensureOpvVendorShipmentNumberOnOrder(ProductionOrderEntity order) {
-        rotateVendorShipmentNumberIfTaken(order);
-        String before = order.getVendorShipmentNumber();
-        opvVendorShipmentNumberService.assignIfMissing(order);
-        boolean reconciled = opvVendorShipmentNumberService.reconcileVendorNumberIfColliding(order);
-        if (reconciled || !java.util.Objects.equals(before, order.getVendorShipmentNumber())) {
-            return productionOrderRepository.save(order);
+    private ProductionOrderEntity ensureLfEnvpOnOrderIfMissing(ProductionOrderEntity order, String envp)
+            throws BusinessException {
+        if (order.getVendorShipmentNumber() != null && !order.getVendorShipmentNumber().isBlank()) {
+            return order;
         }
-        return order;
+        order.setVendorShipmentNumber(envp);
+        order.setUpdatedBy(securityUtil.getCurrentUserId());
+        return productionOrderRepository.save(order);
     }
 
     /**
      * El documento anulado conserva su número. El siguiente envío de esa OP usa correlativo nuevo.
+     * Luis Felipe no rota: vendor_shipment_number es el ENVP de la primera entrega y no se pisa.
      */
     private void rotateVendorNumberAfterCancellingShipment(ProductShipmentEntity cancelled) {
         if (cancelled == null || cancelled.getProductionOrderId() == null) {
@@ -5085,7 +5100,7 @@ public class ProductDistributionService {
         }
         ProductionOrderEntity order = productionOrderRepository.findById(cancelled.getProductionOrderId())
                 .orElse(null);
-        if (order == null || !vendorNumberAppliesToShipment(order, cancelled)) {
+        if (order == null || isLuisFelipeVendorOrder(order) || !vendorNumberAppliesToShipment(order, cancelled)) {
             return;
         }
         boolean otherActive = shipmentRepository.findByProductionOrderId(order.getId()).stream()
@@ -5098,7 +5113,7 @@ public class ProductDistributionService {
     }
 
     private void rotateVendorShipmentNumberIfTaken(ProductionOrderEntity order) {
-        if (order == null) {
+        if (order == null || isLuisFelipeVendorOrder(order)) {
             return;
         }
         String vendor = safeTrim(order.getVendorShipmentNumber());
@@ -5111,12 +5126,10 @@ public class ProductDistributionService {
     }
 
     private void assignNextVendorShipmentNumber(ProductionOrderEntity order) {
-        if (order == null) {
+        if (order == null || isLuisFelipeVendorOrder(order)) {
             return;
         }
-        String next = isLuisFelipeVendorOrder(order)
-                ? opvVendorShipmentNumberService.nextNumber()
-                : opiVendorShipmentNumberService.nextNumber();
+        String next = opiVendorShipmentNumberService.nextNumber();
         order.setVendorShipmentNumber(next);
         order.setUpdatedBy(securityUtil.getCurrentUserId());
         productionOrderRepository.save(order);

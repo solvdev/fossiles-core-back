@@ -29,8 +29,6 @@ import java.util.stream.Collectors;
 @Service
 public class ProductionOrderPartialReleaseService {
 
-    private static final Set<String> ALLOCATING_STATUSES = Set.of("CONFIRMED", "SHIPPED");
-
     private final ProductionOrderPartialReleaseRepository releaseRepository;
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final ProductionOrderPartialReleaseLineRepository releaseLineRepository;
@@ -39,6 +37,7 @@ public class ProductionOrderPartialReleaseService {
     private final ColorRepository colorRepository;
     private final CustomerRepository customerRepository;
     private final ProductShipmentRepository shipmentRepository;
+    private final ProductShipmentDetailRepository shipmentDetailRepository;
     private final ProductDistributionService productDistributionService;
     private final SecurityUtil securityUtil;
     private final ObjectMapper objectMapper;
@@ -53,6 +52,7 @@ public class ProductionOrderPartialReleaseService {
             ColorRepository colorRepository,
             CustomerRepository customerRepository,
             ProductShipmentRepository shipmentRepository,
+            ProductShipmentDetailRepository shipmentDetailRepository,
             @Lazy ProductDistributionService productDistributionService,
             SecurityUtil securityUtil,
             ObjectMapper objectMapper,
@@ -65,6 +65,7 @@ public class ProductionOrderPartialReleaseService {
         this.colorRepository = colorRepository;
         this.customerRepository = customerRepository;
         this.shipmentRepository = shipmentRepository;
+        this.shipmentDetailRepository = shipmentDetailRepository;
         this.productDistributionService = productDistributionService;
         this.securityUtil = securityUtil;
         this.objectMapper = objectMapper;
@@ -358,8 +359,10 @@ public class ProductionOrderPartialReleaseService {
             List<ProductionOrderItemEntity> orderItems,
             List<ProductionOrderPartialReleaseEntity> releases,
             Long excludeReleaseId) {
+        Long orderId = orderItems.isEmpty() ? null : orderItems.get(0).getProductionOrderId();
+        ShippedAllocation shipped = loadShippedAllocation(orderId);
         return orderItems.stream()
-                .map(item -> toAvailabilityRow(item, releases, excludeReleaseId))
+                .map(item -> toAvailabilityRow(item, releases, excludeReleaseId, shipped))
                 .collect(Collectors.toList());
     }
 
@@ -367,6 +370,19 @@ public class ProductionOrderPartialReleaseService {
             ProductionOrderItemEntity item,
             List<ProductionOrderPartialReleaseEntity> releases,
             Long excludeReleaseId) {
+        return toAvailabilityRow(item, releases, excludeReleaseId, loadShippedAllocation(item.getProductionOrderId()));
+    }
+
+    /**
+     * Pendiente = pedido − envíos no anulados (product/color/talla) − otros parciales CONFIRMED.
+     * Un envío CANCELLED/VOID devuelve cantidad al pendiente. Los SHIPPED se cubren con el detalle
+     * del envío para no restar dos veces.
+     */
+    private PartialReleaseLineResponse toAvailabilityRow(
+            ProductionOrderItemEntity item,
+            List<ProductionOrderPartialReleaseEntity> releases,
+            Long excludeReleaseId,
+            ShippedAllocation shipped) {
         Map<String, Integer> orderedSizes = parseSizesMap(item.getSizesData());
         int orderedTotal = orderedSizes.isEmpty()
                 ? Math.max(0, item.getQuantity() != null ? item.getQuantity() : 0)
@@ -374,11 +390,17 @@ public class ProductionOrderPartialReleaseService {
 
         Map<String, Integer> allocatedSizes = new LinkedHashMap<>();
         int allocatedTotal = 0;
+        mergeShippedIntoAllocated(item, orderedSizes, shipped, allocatedSizes);
+        if (orderedSizes.isEmpty()) {
+            allocatedTotal += shipped.totalFor(item.getProductId(), item.getColorId());
+        }
+
         for (ProductionOrderPartialReleaseEntity r : releases) {
             if (excludeReleaseId != null && excludeReleaseId.equals(r.getId())) {
                 continue;
             }
-            if (!ALLOCATING_STATUSES.contains(r.getStatus() == null ? "" : r.getStatus().toUpperCase())) {
+            String status = r.getStatus() == null ? "" : r.getStatus().toUpperCase(Locale.ROOT);
+            if (!"CONFIRMED".equals(status)) {
                 continue;
             }
             for (ProductionOrderPartialReleaseLineEntity line : loadLines(r.getId())) {
@@ -614,21 +636,25 @@ public class ProductionOrderPartialReleaseService {
             Map<String, Integer> newSizes = parseSizesMap(line.getSizesData());
 
             if (avail.getOrderedSizes() != null && !avail.getOrderedSizes().isEmpty()) {
+                Map<String, Integer> pendingSizes = avail.getPendingSizes() == null
+                        ? Map.of()
+                        : avail.getPendingSizes();
                 for (Map.Entry<String, Integer> e : newSizes.entrySet()) {
-                    int ordered = avail.getOrderedSizes().getOrDefault(e.getKey(), 0);
-                    if (e.getValue() > ordered) {
+                    int pending = pendingSizes.getOrDefault(e.getKey(), 0);
+                    if (e.getValue() > pending) {
                         throw new BusinessException(
                                 "En " + resolveProductCode(item) + ", talla " + e.getKey()
                                         + ": intentó liberar " + e.getValue()
-                                        + " pero la orden solo tiene " + ordered + ".");
+                                        + " pero el pendiente es " + pending + ".");
                     }
                 }
             } else {
                 int newQty = line.getQuantity() != null ? line.getQuantity() : 0;
-                if (newQty > avail.getOrderedTotal()) {
+                int pending = avail.getPendingTotal() != null ? avail.getPendingTotal() : 0;
+                if (newQty > pending) {
                     throw new BusinessException(
-                            "Cantidad excede lo pedido en " + resolveProductCode(item)
-                                    + " (pedido " + avail.getOrderedTotal() + ").");
+                            "Cantidad excede el pendiente en " + resolveProductCode(item)
+                                    + " (pendiente " + pending + ").");
                 }
             }
         }
@@ -845,6 +871,91 @@ public class ProductionOrderPartialReleaseService {
             return "-";
         }
         return colorRepository.findById(item.getColorId()).map(ColorEntity::getName).orElse("-");
+    }
+
+    private ShippedAllocation loadShippedAllocation(Long productionOrderId) {
+        if (productionOrderId == null) {
+            return ShippedAllocation.empty();
+        }
+        List<ProductShipmentEntity> active = shipmentRepository.findByProductionOrderId(productionOrderId).stream()
+                .filter(s -> !isVoidShipmentStatus(s.getStatus()))
+                .collect(Collectors.toList());
+        if (active.isEmpty()) {
+            return ShippedAllocation.empty();
+        }
+        Set<Long> shipmentIds = active.stream()
+                .map(ProductShipmentEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<String, Integer> bySize = new HashMap<>();
+        Map<String, Integer> byProductColor = new HashMap<>();
+        for (ProductShipmentDetailEntity detail : shipmentDetailRepository.findByShipmentIdIn(shipmentIds)) {
+            int qty = detail.getQuantity() == null ? 0 : detail.getQuantity().intValue();
+            if (qty <= 0) {
+                continue;
+            }
+            String sizeKey = shippedSizeKey(detail.getProductId(), detail.getColorId(), detail.getSizeLabel());
+            String pcKey = productColorKey(detail.getProductId(), detail.getColorId());
+            bySize.merge(sizeKey, qty, Integer::sum);
+            byProductColor.merge(pcKey, qty, Integer::sum);
+        }
+        return new ShippedAllocation(bySize, byProductColor);
+    }
+
+    private static void mergeShippedIntoAllocated(
+            ProductionOrderItemEntity item,
+            Map<String, Integer> orderedSizes,
+            ShippedAllocation shipped,
+            Map<String, Integer> allocatedSizes) {
+        if (orderedSizes.isEmpty() || shipped.isEmpty()) {
+            return;
+        }
+        for (String size : orderedSizes.keySet()) {
+            int qty = shipped.forSize(item.getProductId(), item.getColorId(), size);
+            if (qty > 0) {
+                allocatedSizes.merge(size, qty, Integer::sum);
+            }
+        }
+    }
+
+    private static boolean isVoidShipmentStatus(String status) {
+        String st = status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
+        return "CANCELLED".equals(st) || "VOID".equals(st) || "VOIDED".equals(st);
+    }
+
+    private static String shippedSizeKey(Long productId, Long colorId, String size) {
+        String normalized = size == null ? "" : size.trim().toUpperCase(Locale.ROOT);
+        return productColorKey(productId, colorId) + ":" + normalized;
+    }
+
+    private static String productColorKey(Long productId, Long colorId) {
+        return (productId == null ? "null" : productId) + ":" + (colorId == null ? "null" : colorId);
+    }
+
+    private static final class ShippedAllocation {
+        private final Map<String, Integer> bySize;
+        private final Map<String, Integer> byProductColor;
+
+        private ShippedAllocation(Map<String, Integer> bySize, Map<String, Integer> byProductColor) {
+            this.bySize = bySize;
+            this.byProductColor = byProductColor;
+        }
+
+        static ShippedAllocation empty() {
+            return new ShippedAllocation(Map.of(), Map.of());
+        }
+
+        boolean isEmpty() {
+            return bySize.isEmpty() && byProductColor.isEmpty();
+        }
+
+        int forSize(Long productId, Long colorId, String size) {
+            return bySize.getOrDefault(shippedSizeKey(productId, colorId, size), 0);
+        }
+
+        int totalFor(Long productId, Long colorId) {
+            return byProductColor.getOrDefault(productColorKey(productId, colorId), 0);
+        }
     }
 
     private Map<String, Integer> parseSizesMap(String json) {
