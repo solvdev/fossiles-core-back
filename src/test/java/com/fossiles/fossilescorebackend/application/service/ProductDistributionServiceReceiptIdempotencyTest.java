@@ -64,6 +64,7 @@ class ProductDistributionServiceReceiptIdempotencyTest {
     @Mock private DocumentSeriesRepository documentSeriesRepository;
     @Mock private OpiVendorShipmentNumberService opiVendorShipmentNumberService;
     @Mock private OpvVendorShipmentNumberService opvVendorShipmentNumberService;
+    @Mock private ShipmentNumberCounterService shipmentNumberCounterService;
     @Mock private CustomerRepository customerRepository;
     @Mock private UserRepository userRepository;
     @Mock private ColorRepository colorRepository;

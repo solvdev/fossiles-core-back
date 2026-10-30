@@ -15,36 +15,26 @@ around lines 331–340). ENVL is assigned outside this method.
 CLIENTE_KIOSKO / cincho type, customer name contains Entrecueros after accent-stripping
 (lines 5158–5172).
 
-## Selection (first match wins)
+## Selection (first match wins) — after this PR
 
 | Label | Code condition | Method | Format |
 | --- | --- | --- | --- |
-| **Kiosk / distribution** | `location != null` (`request.locationId` resolved to a `LocationEntity`) | `generateShipmentNumber(location)` ~4576 | `{KIOSK_CODE}-ENV-{nnnnn}` from max trailing sequence of shipments for that `locationId` |
-| **LF OPV** and **LF cinchos** | `else if (isLuisFelipeVendorOrder(order))` — any Luis Felipe seller, including cincho types | `ensureOpvVendorShipmentNumberOnOrder(order)` ~5068 then `allocateLfCinchoPhysicalShipmentNumber(order)` ~5044 | See below |
-| **LF OPC** (non-LF seller) / **Entrecueros** / non-LF cinchos | `else if (isCincho \|\| isEntreCuerosCustomerOpv(order))` | `generateOpcShipmentNumber(order)` ~1201 | `{OPCODE}-ENV-{nnnnn}` per-order max trailing sequence + 1 |
-| **ENVI** (OPI / leftover) | `else` | `generateShipmentNumberForOpiDocument(order)` ~4559 | `ENVI-nnnnn` via `OpiVendorShipmentNumberService` |
-| **ENVL** | not in this branch | `OnlineSaleShipmentNumberService.assignIfMissing` | `ENVL-nnnnn` on `online_sale.shipment_number` |
+| **Kiosk / distribution** | `location != null` | `generateShipmentNumber(location)` | `{KIOSK_CODE}-ENV-{nnnnn}` per location (unchanged) |
+| **LF OPC / LF cinchos** | `else if (isLuisFelipeVendorOrder && isCincho)` | `ensureLfEnvpOnOrderIfMissing` then `generateOpcShipmentNumber` | Shipment `{OPCODE}-ENV-{nnnnn}` from counter `LF_OPC`. Order `vendor_shipment_number` gets `ENVP-nnnnn` from `LF_ENVP` only if null (never OPC-ENV fallback, never overwrite) |
+| **LF OPV** | `else if (isLuisFelipeVendorOrder)` | `allocateLfEnvpShipmentNumber` | `ENVP-nnnnn` from `LF_ENVP` on `product_shipment.shipment_number`. Copied to the OP only if null |
+| **Entrecueros / non-LF OPC** | `else if (isCincho \|\| isEntreCuerosCustomerOpv)` | `generateOpcShipmentNumber` | `{OPCODE}-ENV-{nnnnn}` per-order max+1 (unchanged) |
+| **ENVI** | `else` | `generateShipmentNumberForOpiDocument` | `ENVI-nnnnn` (unchanged) |
+| **ENVL** | not in this branch | `OnlineSaleShipmentNumberService.assignIfMissing` | `ENVL-nnnnn` (unchanged) |
 
-Luis Felipe OPC (cinchos) **never** reach `generateOpcShipmentNumber`: they match the LF branch first.
+Counters: `shipment_number_counter` rows `LF_ENVP` / `LF_OPC`. `UPDATE … RETURNING last_value` in the shipment transaction. Missing row → Spanish `BusinessException`.
 
-## LF OPV / LF cinchos (shared branch)
+No early reservation: `ProductionOrderController` no longer calls `assignIfMissing` on create/update/GET.
 
-1. `ensureOpvVendorShipmentNumberOnOrder` ~5068
-   - `rotateVendorShipmentNumberIfTaken` ~5100: if `production_order.vendor_shipment_number` already exists as `product_shipment.shipment_number`, calls `assignNextVendorShipmentNumber`.
-   - `OpvVendorShipmentNumberService.assignIfMissing`: if the OP has no vendor number, scans max `ENVP-(\d+)` in `production_order.vendor_shipment_number` and `product_shipment.shipment_number` (`findEnvpPrefixShipmentNumbers`) and writes `ENVP-nnnnn` on the **order**.
-   - `reconcileVendorNumberIfColliding`: if that ENVP is already a shipment of **another** OP, allocates the next free ENVP.
-2. `allocateLfCinchoPhysicalShipmentNumber` ~5044 writes **`product_shipment.shipment_number`**:
-   - prefix = order `vendor_shipment_number` if present, else sanitized `order.code` (OPC-ENV fallback).
-   - `nextUniqueShipmentNumberWithPrefix(orderId, prefix + "-ENV-")` ~5052 → `{ENVP-nnnnn}-ENV-{nnnnn}` (or `{OPCODE}-ENV-{nnnnn}` if no ENVP).
-3. Early reservation (not in the 331–340 branch): `ProductionOrderController` `assignIfMissing` on create ~371, update ~454, GET-by-id `ensureOpvVendorShipmentNumber` ~2083.
+## Rotation
 
-## Rotation (~5077–5122)
+Luis Felipe does **not** rotate `vendor_shipment_number` (first ENVP, never overwritten).
+ENVI still rotates when the cancelled shipment used the OP number and no other active shipment remains.
 
-- `rotateVendorNumberAfterCancellingShipment` ~5082: if the cancelled shipment used the OP vendor number and no other active (non-DRAFT, non-CANCELLED) shipment remains, `assignNextVendorShipmentNumber`.
-- `assignNextVendorShipmentNumber` ~5113: LF seller → `opvVendorShipmentNumberService.nextNumber()` (`ENVP-nnnnn`); otherwise `opiVendorShipmentNumberService.nextNumber()` (`ENVI-nnnnn`).
-- `vendorNumberAppliesToShipment` ~5125: shipment number equals the vendor number or starts with `{vendor}-`.
+## Unchanged by design
 
-## Unchanged by design (this PR)
-
-Kiosk/distribution per location, ENVI, ENVL, Entrecueros, non-LF OPC stay on the generators above.
-LF cinchos keep the physical `{ENVP}-ENV-n` allocator; the OPC-ENV fallback when the OP has no ENVP is removed in the numbering step (counter instead).
+Kiosk/distribution per location, ENVI, ENVL, Entrecueros, non-LF OPC.
