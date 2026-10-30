@@ -152,6 +152,112 @@ class ProductPriceTemplateServiceTest {
     }
 
     @Test
+    void buildTemplate_soloLasCategoriasElegidas() throws Exception {
+        when(productRepository.findByCategoryId(2L)).thenReturn(List.of(billetera, sinPrecio));
+        when(productRepository.findByCategoryId(15L)).thenReturn(List.of(cincho));
+
+        byte[] bytes = service.buildTemplate(List.of(2L, 2L), "kiosco");
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = workbook.getSheet("Precios");
+            assertThat(sheet.getRow(1).getCell(1).getStringCellValue()).isEqualTo("BILLETERAS (2)");
+            assertThat(sheet.getLastRowNum()).isEqualTo(3);
+            assertThat(sheet.getRow(3).getCell(1).getStringCellValue()).isEqualTo("B-1");
+        }
+    }
+
+    @Test
+    void buildTemplate_entrecuerosEsOtraPlantillaYUnaFilaPorProducto() throws Exception {
+        ProductEntity empaque = ProductEntity.builder().id(10L).code("SUM-CAJA").name("CAJA")
+                .categoryId(1L).entrecuerosEnabled(true).entrecuerosPriceUnit(new BigDecimal("5.00")).build();
+        ProductEntity cinchoEc = ProductEntity.builder().id(11L).code("L-19").name("CINCHO CASUAL LEVIS")
+                .categoryId(15L).salePrice(new BigDecimal("110.00")).entrecuerosEnabled(true).cinchoType("CASUAL")
+                .entrecuerosPriceUnit(new BigDecimal("100.00")).entrecuerosPriceQty3(new BigDecimal("90.00"))
+                .entrecuerosPriceQty6(new BigDecimal("80.00")).entrecuerosPriceQty12(new BigDecimal("75.00")).build();
+        ProductEntity billeteraEc = ProductEntity.builder().id(12L).code("B-14").name("BILLETERA SANTIAGO")
+                .categoryId(2L).salePrice(new BigDecimal("346.00")).entrecuerosEnabled(true)
+                .entrecuerosPriceUnit(new BigDecimal("100.00")).build();
+        when(productRepository.findByCategoryId(2L)).thenReturn(List.of(billeteraEc, billetera));
+        when(productRepository.findByCategoryId(15L)).thenReturn(List.of(cinchoEc, cincho, empaque));
+        when(productCategoryRepository.findAll()).thenReturn(List.of(
+                ProductCategoryEntity.builder().id(1L).name("ACCESORIOS").build(),
+                ProductCategoryEntity.builder().id(2L).name("BILLETERAS").build(),
+                ProductCategoryEntity.builder().id(15L).name("CINCHOS").build()));
+
+        byte[] bytes = service.buildTemplate(List.of(2L, 15L), "entrecueros");
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = workbook.getSheet("Precios");
+            Row header = sheet.getRow(0);
+            assertThat(header.getCell(3).getStringCellValue()).isEqualTo("Precio 1 actual");
+            assertThat(header.getCell(4).getStringCellValue()).isEqualTo("Precio 1 nuevo");
+            assertThat(header.getCell(10).getStringCellValue()).isEqualTo("Precio 12 nuevo");
+            assertThat(sheet.getRow(1).getCell(1).getStringCellValue()).isEqualTo("BILLETERAS (1)");
+            assertThat(sheet.getRow(2).getCell(1).getStringCellValue()).isEqualTo("B-14");
+            assertThat(sheet.getRow(2).getCell(4).getCellType().name()).isEqualTo("BLANK");
+            assertThat(sheet.getRow(3).getCell(1).getStringCellValue()).isEqualTo("CINCHOS (1)");
+            Row cinchoRow = sheet.getRow(4);
+            assertThat(cinchoRow.getCell(1).getStringCellValue()).isEqualTo("L-19");
+            assertThat(cinchoRow.getCell(3).getNumericCellValue()).isEqualTo(100.0);
+            assertThat(cinchoRow.getCell(5).getNumericCellValue()).isEqualTo(90.0);
+            assertThat(cinchoRow.getCell(7).getNumericCellValue()).isEqualTo(80.0);
+            assertThat(cinchoRow.getCell(9).getNumericCellValue()).isEqualTo(75.0);
+            assertThat(workbook.getSheet("Instrucciones").getRow(2).getCell(0).getStringCellValue())
+                    .contains("variantes");
+        }
+    }
+
+    @Test
+    void import_entrecuerosActualizaSoloLasEscalasEscritas() throws Exception {
+        cincho.setCode("L-19");
+        cincho.setName("CINCHO CASUAL LEVIS");
+        cincho.setSalePrice(new BigDecimal("110.00"));
+        cincho.setEntrecuerosEnabled(true);
+        cincho.setCinchoType("CASUAL");
+        cincho.setEntrecuerosPriceUnit(new BigDecimal("100.00"));
+        cincho.setEntrecuerosPriceQty3(new BigDecimal("90.00"));
+        cincho.setEntrecuerosPriceQty6(new BigDecimal("80.00"));
+        cincho.setEntrecuerosPriceQty12(new BigDecimal("75.00"));
+        when(productRepository.findByCategoryId(15L)).thenReturn(List.of(cincho));
+        when(productCategoryRepository.findAll()).thenReturn(List.of(
+                ProductCategoryEntity.builder().id(15L).name("CINCHOS").build()));
+        byte[] template = service.buildTemplate(List.of(15L), "entrecueros");
+        byte[] filled;
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(template));
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Row row = workbook.getSheet("Precios").getRow(2);
+            row.getCell(4).setCellValue(120.0);
+            row.getCell(8).setCellValue(70.0);
+            workbook.write(out);
+            filled = out.toByteArray();
+        }
+
+        ProductPriceTemplateService.ImportResult result = service.importTemplate(filled, true);
+
+        assertThat(result.errors()).isEmpty();
+        assertThat(result.applied()).isTrue();
+        assertThat(result.changes()).extracting(ProductPriceTemplateService.Change::price).containsExactly("1", "6");
+        assertThat(cincho.getEntrecuerosPriceUnit()).isEqualByComparingTo("120.00");
+        assertThat(cincho.getEntrecuerosPriceQty3()).isEqualByComparingTo("90.00");
+        assertThat(cincho.getEntrecuerosPriceQty6()).isEqualByComparingTo("70.00");
+        assertThat(cincho.getEntrecuerosPriceQty12()).isEqualByComparingTo("75.00");
+        assertThat(cincho.getSalePrice()).isEqualByComparingTo("110.00");
+    }
+
+    @Test
+    void import_entrecuerosRechazaElProductoQueNoEstaHabilitado() throws Exception {
+        byte[] file = entrecuerosFile(2L, "foss-est", "CINCHO ESTEBAN", 80.0);
+
+        ProductPriceTemplateService.ImportResult result = service.importTemplate(file, true);
+
+        assertThat(result.applied()).isFalse();
+        assertThat(result.errors()).hasSize(1);
+        assertThat(result.errors().get(0).message()).contains("no está habilitado");
+        verify(productRepository, never()).saveAll(any());
+        assertThat(cincho.getSalePrice()).isEqualByComparingTo("357.00");
+    }
+
+    @Test
     void buildTemplate_filtraPorCategoria() throws Exception {
         when(productRepository.findByCategoryId(15L)).thenReturn(List.of(cincho));
 
@@ -313,6 +419,30 @@ class ProductPriceTemplateServiceTest {
         assertThat(ProductPriceTemplateService.parsePriceText("1,183")).isEqualByComparingTo("1183.00");
         assertThatThrownBy(() -> ProductPriceTemplateService.parsePriceText("abc"))
                 .isInstanceOf(NumberFormatException.class);
+    }
+
+    private static byte[] entrecuerosFile(long id, String code, String name, Double price1) throws Exception {
+        try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("Precios");
+            Row header = sheet.createRow(0);
+            String[] titles = {
+                    "ID", "Código", "Producto",
+                    "Precio 1 actual", "Precio 1 nuevo",
+                    "Precio 3 actual", "Precio 3 nuevo",
+                    "Precio 6 actual", "Precio 6 nuevo",
+                    "Precio 12 actual", "Precio 12 nuevo"
+            };
+            for (int i = 0; i < titles.length; i++) {
+                header.createCell(i).setCellValue(titles[i]);
+            }
+            Row row = sheet.createRow(1);
+            row.createCell(0).setCellValue(id);
+            row.createCell(1).setCellValue(code);
+            row.createCell(2).setCellValue(name);
+            row.createCell(4).setCellValue(price1);
+            workbook.write(out);
+            return out.toByteArray();
+        }
     }
 
     private static Object[] row(long id, String code, String name, String current, Object newPrice) {
