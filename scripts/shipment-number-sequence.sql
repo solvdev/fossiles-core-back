@@ -1,8 +1,9 @@
 -- Correlativos LF_ENVP (ENVP-nnnnn) y LF_OPC ({OPCODE}-ENV-n).
+-- ORDEN DE DESPLIEGUE: COMMIT este script ANTES de desplegar #184 (ddl-auto=validate).
+-- Rollback: revertir la app primero, luego correr scripts/shipment-number-sequence-rollback.sql.
 -- DataGrip: corre el archivo completo. Por defecto termina en ROLLBACK (vista previa).
 -- Para aplicar, cambie el ROLLBACK final por COMMIT después de que Index revise las previews.
--- No lo ejecuta el backend (ddl-auto=validate). Eduardo lo corre a mano en fosstest, luego prod.
--- Rollback: scripts/shipment-number-sequence-rollback.sql
+-- No lo ejecuta el backend. Eduardo lo corre a mano en fosstest, luego prod.
 
 BEGIN;
 SET LOCAL lock_timeout = '5s';
@@ -30,7 +31,7 @@ BEGIN
 END $$;
 
 CREATE TABLE IF NOT EXISTS shipment_number_counter (
-    type text PRIMARY KEY,
+    type varchar(32) PRIMARY KEY,
     last_value bigint NOT NULL
 );
 
@@ -52,7 +53,7 @@ SELECT
     s.id AS shipment_id,
     s.shipment_number,
     po.code AS order_code,
-    (regexp_match(s.shipment_number, '-ENV-(\d+)$'))[1]::bigint AS seq
+    substr(s.shipment_number, length(btrim(po.code)) + 6)::bigint AS seq
 FROM product_shipment s
 JOIN production_order po ON po.id = s.production_order_id
 WHERE upper(coalesce(po.seller_name, '')) LIKE '%LUIS FELIPE%'
@@ -65,8 +66,8 @@ WHERE upper(coalesce(po.seller_name, '')) LIKE '%LUIS FELIPE%'
         '[^A-Z0-9]', '', 'g') NOT LIKE '%ENTRECUEROS%'
   AND po.code IS NOT NULL
   AND btrim(po.code) <> ''
-  AND s.shipment_number ~ ('^' || regexp_replace(upper(btrim(po.code)), '([\\[\\](){}.+*?^$|\\\\])', '\\\1', 'g')
-      || '-ENV-\d+$');
+  AND left(s.shipment_number, length(btrim(po.code)) + 5) = upper(btrim(po.code)) || '-ENV-'
+  AND substr(s.shipment_number, length(btrim(po.code)) + 6) ~ '^\d+$';
 
 CREATE TEMP TABLE lf_opc_unmatched ON COMMIT DROP AS
 SELECT

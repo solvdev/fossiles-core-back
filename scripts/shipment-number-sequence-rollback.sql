@@ -1,4 +1,6 @@
 -- Quita shipment_number_counter creado por scripts/shipment-number-sequence.sql.
+-- ORDEN DE DESPLIEGUE: revertir la app (PR #184) primero, luego COMMIT este rollback.
+-- El seed (shipment-number-sequence.sql) se corre ANTES de desplegar #184 (ddl-auto=validate).
 -- DataGrip: corre el archivo completo. Por defecto termina en ROLLBACK.
 -- Para aplicar, cambie el ROLLBACK final por COMMIT.
 -- No toca product_shipment ni production_order.
