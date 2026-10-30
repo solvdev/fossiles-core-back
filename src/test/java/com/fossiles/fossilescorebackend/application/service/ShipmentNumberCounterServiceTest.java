@@ -1,5 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ShipmentNumberCounterEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ShipmentNumberCounterRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -54,5 +56,26 @@ class ShipmentNumberCounterServiceTest {
         })).isInstanceOf(IllegalStateException.class);
         assertThat(repository.findById(ShipmentNumberCounterService.LF_ENVP).orElseThrow().getLastValue())
                 .isEqualTo(before);
+    }
+
+    @Test
+    void missingCounterRowGivesClearError() {
+        ShipmentNumberCounterEntity row = repository.findById(ShipmentNumberCounterService.LF_ENVP).orElseThrow();
+        long lastValue = row.getLastValue() == null ? 0L : row.getLastValue();
+        repository.deleteById(ShipmentNumberCounterService.LF_ENVP);
+        try {
+            assertThatThrownBy(() -> counters.nextValue(ShipmentNumberCounterService.LF_ENVP))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("No existe el correlativo")
+                    .hasMessageContaining(ShipmentNumberCounterService.LF_ENVP)
+                    .hasMessageContaining("shipment-number-sequence.sql");
+        } finally {
+            if (!repository.existsById(ShipmentNumberCounterService.LF_ENVP)) {
+                repository.save(ShipmentNumberCounterEntity.builder()
+                        .type(ShipmentNumberCounterService.LF_ENVP)
+                        .lastValue(lastValue)
+                        .build());
+            }
+        }
     }
 }
