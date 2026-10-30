@@ -115,12 +115,10 @@ public class ReconciliationCaseService {
 
     /** Comisión fija de Forza y Guatex. */
     public static final java.math.BigDecimal FIXED_COMMISSION_RATE = new java.math.BigDecimal("0.035");
-    /** Porcentajes que se pueden elegir para las demás ventas. */
-    public static final List<java.math.BigDecimal> COMMISSION_CHOICES = List.of(new java.math.BigDecimal("0.03"), new java.math.BigDecimal("0.035"), new java.math.BigDecimal("0.04"));
 
     /**
      * Guarda el envío real y el porcentaje de comisión de una venta. Es solo un registro: no cambia lo esperado, lo recibido ni la diferencia.
-     * Forza y Guatex llevan 3.5% fijo (no se elige); en las demás se elige 3, 3.5 o 4%. Una venta en un lote cerrado ya no se toca.
+     * El porcentaje se escribe y queda en esa venta. Forza y Guatex, si nadie lo escribió, siguen en 3.5%. Una venta en un lote cerrado ya no se toca.
      */
     @Transactional
     public ReconCaseEntity updateShippingCommission(Long id, java.math.BigDecimal realShipping, java.math.BigDecimal rate) throws ResourceNotFoundException, BusinessException {
@@ -133,13 +131,10 @@ public class ReconciliationCaseService {
         }
         java.math.BigDecimal stored = null;
         if (rate != null) {
-            if (isCarrierWithGuide(c.getCarrier())) {
-                if (rate.compareTo(FIXED_COMMISSION_RATE) != 0) throw new BusinessException("Forza y Guatex llevan 3.5% fijo: no se cambia.");
-            } else if (COMMISSION_CHOICES.stream().noneMatch(r -> r.compareTo(rate) == 0)) {
-                throw new BusinessException("Elija 3%, 3.5% o 4% de comisión.");
-            } else {
-                stored = rate.setScale(4, java.math.RoundingMode.HALF_UP);
+            if (rate.signum() <= 0 || rate.compareTo(java.math.BigDecimal.ONE) > 0 || rate.stripTrailingZeros().scale() > 4) {
+                throw new BusinessException("Escriba un porcentaje de comisión mayor a 0 y hasta 100%, con a lo más 2 decimales.");
             }
+            stored = rate.setScale(4, java.math.RoundingMode.HALF_UP);
         }
         c.setRealShipping(realShipping == null ? null : money(realShipping));
         c.setCarrierCommissionRate(stored);
