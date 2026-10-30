@@ -1244,7 +1244,8 @@ public class ProductDistributionService {
     }
 
     /**
-     * Obtiene un envío por ID
+     * GET /shipments/{id} para reimpresión: products[] (size, hardwareCondition, unitPrice,
+     * brandName derivado), packingItems, notes, shippingCost y shipmentNumber.
      */
     public ProductShipmentResponse getShipmentById(Long id) throws ResourceNotFoundException {
         ProductShipmentEntity entity = shipmentRepository.findById(id)
@@ -1512,8 +1513,8 @@ public class ProductDistributionService {
     }
 
     /**
-     * Actualiza los productos de un envío (borrador, confirmado o en tránsito).
-     * Si el envío ya salió de PT, revierte la salida anterior y aplica la nueva composición.
+     * PUT /shipments/{id}/products: reemplazo total. Persiste size, hardwareCondition y unitPrice
+     * de cada línea (reimpresión). Si el envío ya salió de PT, revierte y reaplica inventario.
      */
     @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse updateShipmentProducts(Long shipmentId, List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
@@ -4708,6 +4709,8 @@ public class ProductDistributionService {
         }
         Map<Long, MaterialEntity> materialsById = loadById(materialIds, materialRepository::findAllById,
                 MaterialEntity::getId);
+        Map<String, String> brandByProductColor = loadBrandNamesByProductColor(
+                collectIds(shipments, ProductShipmentEntity::getProductionOrderId));
 
         List<ProductShipmentResponse> result = new ArrayList<>(shipments.size());
         for (ProductShipmentEntity entity : shipments) {
@@ -4751,7 +4754,8 @@ public class ProductDistributionService {
                     .receivedBy(entity.getReceivedBy())
                     .receivedNotes(entity.getReceivedNotes())
                     .products(details.stream()
-                            .map(d -> toShipmentDetailResponse(d, productsById, colorNames, categoryNames))
+                            .map(d -> toShipmentDetailResponse(
+                                    d, productsById, colorNames, categoryNames, brandByProductColor))
                             .collect(Collectors.toList()))
                     .createdAt(entity.getCreatedAt())
                     .createdBy(entity.getCreatedBy())
@@ -4827,11 +4831,16 @@ public class ProductDistributionService {
             ProductShipmentDetailEntity entity,
             Map<Long, ProductEntity> productsById,
             Map<Long, String> colorNames,
-            Map<Long, String> categoryNames) {
+            Map<Long, String> categoryNames,
+            Map<String, String> brandByProductColor) {
         ProductEntity product = entity.getProductId() == null ? null : productsById.get(entity.getProductId());
         String colorName = entity.getColorId() == null ? null : colorNames.get(entity.getColorId());
         Long categoryId = product != null ? product.getCategoryId() : null;
         String categoryName = categoryId == null ? null : categoryNames.get(categoryId);
+        String brandName = brandByProductColor.get(receiptProductColorKey(entity.getProductId(), entity.getColorId()));
+        if (brandName == null || brandName.isBlank()) {
+            brandName = ProductBrandNames.normalize(entity.getHardwareCondition());
+        }
 
         return ProductShipmentDetailResponse.builder()
                 .id(entity.getId())
@@ -4846,12 +4855,29 @@ public class ProductDistributionService {
                 .colorName(colorName)
                 .size(entity.getSizeLabel())
                 .hardwareCondition(entity.getHardwareCondition())
+                .brandName(brandName)
                 .quantity(entity.getQuantity())
                 .unitPrice(entity.getUnitPrice())
                 .quantityReceived(entity.getQuantityReceived())
                 .quantityDifference(entity.getQuantityDifference())
                 .receivedLineNotes(entity.getReceivedLineNotes())
                 .build();
+    }
+
+    private Map<String, String> loadBrandNamesByProductColor(Set<Long> productionOrderIds) {
+        Map<String, String> brands = new HashMap<>();
+        if (productionOrderIds == null || productionOrderIds.isEmpty()) {
+            return brands;
+        }
+        for (ProductionOrderItemEntity item : productionOrderItemRepository.findByProductionOrderIdIn(productionOrderIds)) {
+            if (item.getBrandName() == null || item.getBrandName().isBlank()) {
+                continue;
+            }
+            brands.putIfAbsent(
+                    receiptProductColorKey(item.getProductId(), item.getColorId()),
+                    item.getBrandName().trim());
+        }
+        return brands;
     }
 
     private String resolveProductCategoryName(Long categoryId) {
