@@ -9,7 +9,10 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentR
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentShippingCostRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.WarehouseItemReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockPreviewResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.WarehouseLfReceiptResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.WarehouseWorkspaceResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentRequestResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductDistributionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryLocationResponse;
@@ -24,6 +27,7 @@ import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequ
 import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestService;
 import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
 import com.fossiles.fossilescorebackend.application.service.ProductInventoryService;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderWarehouseUnitService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -40,6 +44,7 @@ public class ProductDistributionController {
     private final ProductDistributionService distributionService;
     private final ProductInventoryService inventoryService;
     private final InternalShipmentRequestService internalShipmentRequestService;
+    private final ProductionOrderWarehouseUnitService warehouseUnitService;
 
     // ========== DISTRIBUTION ==========
 
@@ -114,6 +119,30 @@ public class ProductDistributionController {
             @RequestParam(required = false) Integer limit) {
         return ResponseEntity.ok(distributionService.getLfDispatchShipments(
                 status, q, productionOrderId, limit));
+    }
+
+    // ========== RECEPCIÓN LUIS FELIPE (reserva) ==========
+
+    /** OPV de Luis Felipe con la recepción abierta y su avance (piezas recibidas de las pedidas). */
+    @GetMapping("/lf-receipts")
+    public ResponseEntity<List<WarehouseLfReceiptResponse>> listLfReceipts(
+            @RequestParam(required = false) String q) {
+        return ResponseEntity.ok(warehouseUnitService.listLuisFelipeReceipts(q));
+    }
+
+    @GetMapping("/lf-receipts/{productionOrderId}")
+    public ResponseEntity<WarehouseWorkspaceResponse> getLfReceipt(@PathVariable Long productionOrderId)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(warehouseUnitService.getLuisFelipeWorkspace(productionOrderId));
+    }
+
+    /** Recibe en la reserva las piezas indicadas por línea; se puede repetir hasta completar la orden. */
+    @PutMapping("/lf-receipts/{productionOrderId}/receive")
+    public ResponseEntity<Map<String, Object>> receiveLfItems(
+            @PathVariable Long productionOrderId,
+            @RequestBody WarehouseItemReceiptRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(warehouseUnitService.receiveItemQuantities(productionOrderId, request));
     }
 
     @GetMapping("/shipments/{id}")

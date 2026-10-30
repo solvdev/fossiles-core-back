@@ -86,6 +86,16 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
             """)
     List<ProductionOrderEntity> findOpenLuisFelipeOrders();
 
+    /** Órdenes de Luis Felipe con la recepción en bodega (reserva) todavía abierta. */
+    @Query("""
+            SELECT po FROM ProductionOrderEntity po
+            WHERE UPPER(COALESCE(po.sellerName, '')) LIKE '%LUIS FELIPE%'
+              AND UPPER(COALESCE(po.status, '')) <> 'CANCELLED'
+              AND po.warehouseReceiptClosedAt IS NULL
+            ORDER BY po.deliveryDate DESC NULLS LAST, po.id DESC
+            """)
+    List<ProductionOrderEntity> findLuisFelipeOrdersWithOpenWarehouseReceipt();
+
     /**
      * OP del dashboard: COALESCE(start_date, created_at::date) en rango.
      * Incluye filas sin fecha (mismo criterio que isDateInRange del controller).
