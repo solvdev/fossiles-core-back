@@ -752,7 +752,7 @@ class ReconciliationFlowTest {
     }
 
     @Test
-    void comision_enForzaYGuatexEsFijaEn3punto5_yElEnvioRealSeRegistraSinCambiarElCuadre() throws Exception {
+    void comision_enForzaYGuatexArrancaEn3punto5_yElPorcentajeEscritoLaReemplaza() throws Exception {
         caseService.generate(FROM, TO);
         Long c1 = caseOf(s1).getId();
 
@@ -765,33 +765,38 @@ class ReconciliationFlowTest {
         assertThat(row.chargedShipping()).isEqualByComparingTo("30.00");
         assertThat(row.realShipping()).isEqualByComparingTo("25.00");
         assertThat(row.expected()).isEqualByComparingTo("480.00");               // lo esperado no se mueve
-        assertThat(caseOf(s1).getCarrierCommissionRate()).isNull();               // el fijo no se guarda
-        assertThatThrownBy(() -> caseService.updateShippingCommission(c1, null, new BigDecimal("0.04")))
-                .isInstanceOf(BusinessException.class).hasMessageContaining("3.5% fijo");
+        assertThat(caseOf(s1).getCarrierCommissionRate()).isNull();               // el 3.5% de arranque no se guarda
+
+        caseService.updateShippingCommission(c1, new BigDecimal("25.00"), new BigDecimal("0.04"));
+        CaseRow changed = queryService.rows(List.of(caseOf(s1))).get(0);
+        assertThat(changed.carrierCommissionFixed()).isFalse();
+        assertThat(changed.carrierCommissionRate()).isEqualByComparingTo("0.04");
+        assertThat(changed.carrierCommission()).isEqualByComparingTo("19.20");    // 4% escrito de 480.00
         assertThat(queryService.detail(c1).events()).anyMatch(e -> e.type().equals("ENVIO_COMISION"));
     }
 
     @Test
-    void comision_enLasDemasSeEligeEntre3_3punto5y4_yNoAdmiteOtroPorcentaje() throws Exception {
+    void comision_elPorcentajeSeEscribe_yRechazaValoresFueraDeRango() throws Exception {
         Long moto = sale("6", "Moto", "CONTRA_ENTREGA", "MOTORISTA", "200.00", "30.00", "ENVL-01606", null, null, "ENVIADO",
                 LocalDate.of(2026, 10, 8), "Eduardo Ramirez");
         caseService.generate(FROM, TO);
         Long id = caseOf(moto).getId();
-        assertThat(queryService.rows(List.of(caseOf(moto))).get(0).carrierCommission()).isNull();   // sin elegir no hay comisión
+        assertThat(queryService.rows(List.of(caseOf(moto))).get(0).carrierCommission()).isNull();   // sin escribir no hay comisión
 
-        caseService.updateShippingCommission(id, new BigDecimal("20.00"), new BigDecimal("0.04"));
+        caseService.updateShippingCommission(id, new BigDecimal("20.00"), new BigDecimal("0.025"));
 
         CaseRow row = queryService.rows(List.of(caseOf(moto))).get(0);
         assertThat(row.carrierCommissionFixed()).isFalse();
-        assertThat(row.carrierCommissionRate()).isEqualByComparingTo("0.04");
-        assertThat(row.carrierCommission()).isEqualByComparingTo("9.20");        // 4% de 230.00
-        assertThatThrownBy(() -> caseService.updateShippingCommission(id, null, new BigDecimal("0.05")))
-                .isInstanceOf(BusinessException.class).hasMessageContaining("3%, 3.5% o 4%");
+        assertThat(row.carrierCommissionRate()).isEqualByComparingTo("0.025");
+        assertThat(row.carrierCommission()).isEqualByComparingTo("5.75");        // 2.5% de 230.00
+        assertThatThrownBy(() -> caseService.updateShippingCommission(id, null, new BigDecimal("1.5")))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("hasta 100%");
         assertThatThrownBy(() -> caseService.updateShippingCommission(id, new BigDecimal("-1"), null))
                 .isInstanceOf(BusinessException.class);
         // vaciar los dos campos borra lo escrito
         caseService.updateShippingCommission(id, null, null);
         assertThat(queryService.rows(List.of(caseOf(moto))).get(0).realShipping()).isNull();
+        assertThat(queryService.rows(List.of(caseOf(moto))).get(0).carrierCommission()).isNull();
     }
 
     @Test

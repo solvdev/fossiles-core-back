@@ -128,9 +128,12 @@ public class ReconciliationQueryService {
     }
 
     private CaseRow row(ReconCaseEntity c, String reference, BigDecimal commission, String batchCode, boolean hasReceipts, OnlineSaleEntity sale, String returnNumber) {
-        // Comisión del transportista: sobre el total con el envío cobrado. Forza y Guatex llevan 3.5% fijo; el resto, el que se eligió (3, 3.5 o 4%).
-        boolean fixed = isCarrierWithGuide(c.getCarrier());
-        BigDecimal rate = fixed ? ReconciliationCaseService.FIXED_COMMISSION_RATE : c.getCarrierCommissionRate();
+        // Comisión del transportista: sobre el total con el envío cobrado. Si se escribió un porcentaje, ese queda.
+        // Forza y Guatex sin porcentaje escrito siguen en 3.5%.
+        boolean guide = isCarrierWithGuide(c.getCarrier());
+        BigDecimal storedRate = c.getCarrierCommissionRate();
+        boolean fixed = guide && storedRate == null;
+        BigDecimal rate = storedRate != null ? storedRate : (fixed ? ReconciliationCaseService.FIXED_COMMISSION_RATE : null);
         BigDecimal carrierCommission = rate == null ? null : money(c.getExpectedAmount()).multiply(rate).setScale(2, RoundingMode.HALF_UP);
         return new CaseRow(c.getId(), c.getOnlineSaleId(), c.getSaleDate(), c.getSaleNumber(), c.getShipmentNumber(), c.getGuideNumber(), c.getCarrier(),
                 c.getPaymentMethod(), reference, money(c.getExpectedAmount()), money(c.getReceivedAmount()), money(c.getDifference()),
