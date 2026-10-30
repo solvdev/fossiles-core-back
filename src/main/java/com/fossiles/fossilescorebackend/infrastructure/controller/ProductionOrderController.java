@@ -19,7 +19,6 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.application.service.CustomerShipmentDispatchService;
 import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestService;
 import com.fossiles.fossilescorebackend.application.service.OnlineSaleService;
-import com.fossiles.fossilescorebackend.application.service.OpiVendorShipmentNumberService;
 import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderPartialReleaseService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderCodeService;
