@@ -17,6 +17,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Plantilla Excel de precios de venta: se descarga con el precio actual y se sube con el precio nuevo.
@@ -32,10 +34,22 @@ public class ProductPriceTemplateController {
     private final ProductPriceTemplateService service;
 
     @GetMapping
-    public ResponseEntity<byte[]> download(@RequestParam(required = false) Long categoryId)
-            throws BusinessException {
-        byte[] bytes = service.buildTemplate(categoryId);
-        String fileName = "plantilla-precios-productos-"
+    public ResponseEntity<byte[]> download(
+            @RequestParam(required = false) Long categoryId,
+            @RequestParam(required = false) List<Long> categoryIds,
+            @RequestParam(defaultValue = "kiosco") String tipo) throws BusinessException {
+        List<Long> ids = new ArrayList<>();
+        if (categoryIds != null) {
+            categoryIds.stream().filter(id -> id != null).forEach(ids::add);
+        }
+        if (categoryId != null && !ids.contains(categoryId)) {
+            ids.add(categoryId);
+        }
+        byte[] bytes = service.buildTemplate(ids, tipo);
+        String prefix = "entrecueros".equalsIgnoreCase(tipo)
+                ? "plantilla-precios-entrecueros-"
+                : "plantilla-precios-kioscos-";
+        String fileName = prefix
                 + GuatemalaDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")) + ".xlsx";
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fileName + "\"")
