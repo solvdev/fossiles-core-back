@@ -1,6 +1,8 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.WarehouseItemReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.WarehouseLfReceiptResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.WarehouseUnitResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.WarehouseWorkspaceResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -112,6 +114,110 @@ public class ProductionOrderWarehouseUnitService {
             }
         }
         return moved;
+    }
+
+    private static final int LF_RECEIPT_LIST_LIMIT = 60;
+
+    /** La orden está completa cuando todas sus piezas ya se recibieron (las rechazadas no cuentan). */
+    private static boolean isReceiptComplete(int totalUnits, int receivedUnits) {
+        return totalUnits > 0 && receivedUnits >= totalUnits;
+    }
+
+    private static boolean isLuisFelipeOpv(ProductionOrderEntity po) {
+        return po != null && ProductionPlanningConstants.isLuisFelipeVendorOrder(
+                po.getSellerName(), po.getOrderType(), po.getCode());
+    }
+
+    /** Estos endpoints no piden login (dispositivo de bodega), así que solo sirven para las OPV de Luis Felipe. */
+    private ProductionOrderEntity requireLuisFelipeOpv(Long productionOrderId)
+            throws ResourceNotFoundException, BusinessException {
+        ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
+        if (!isLuisFelipeOpv(po)) {
+            throw new BusinessException("Solo las OPV de Luis Felipe se reciben pieza por pieza en la reserva.");
+        }
+        return po;
+    }
+
+    /** OPV de Luis Felipe con la recepción abierta y cuántas piezas lleva recibidas cada una. */
+    @Transactional(readOnly = true)
+    public List<WarehouseLfReceiptResponse> listLuisFelipeReceipts(String query) {
+        String needle = query == null ? "" : query.trim().toUpperCase(Locale.ROOT);
+        List<ProductionOrderEntity> orders = productionOrderRepository.findLuisFelipeOrdersWithOpenWarehouseReceipt()
+                .stream()
+                .filter(ProductionOrderWarehouseUnitService::isLuisFelipeOpv)
+                .filter(po -> needle.isEmpty()
+                        || (po.getCode() != null && po.getCode().toUpperCase(Locale.ROOT).contains(needle)))
+                .limit(LF_RECEIPT_LIST_LIMIT)
+                .collect(Collectors.toList());
+        Map<Long, List<ProductionOrderItemEntity>> itemsByOrder = productionOrderItemRepository
+                .findByProductionOrderIdIn(orders.stream().map(ProductionOrderEntity::getId).collect(Collectors.toList()))
+                .stream()
+                .collect(Collectors.groupingBy(ProductionOrderItemEntity::getProductionOrderId));
+        return orders.stream().map(po -> {
+            List<ProductionOrderItemEntity> items = itemsByOrder.getOrDefault(po.getId(), List.of());
+            int total = items.stream().mapToInt(i -> i.getQuantity() != null ? Math.max(i.getQuantity(), 0) : 0).sum();
+            int received = items.stream()
+                    .mapToInt(i -> i.getWarehouseReceivedQty() != null ? Math.max(i.getWarehouseReceivedQty(), 0) : 0)
+                    .sum();
+            return WarehouseLfReceiptResponse.builder()
+                    .productionOrderId(po.getId())
+                    .productionOrderCode(po.getCode())
+                    .status(po.getStatus())
+                    .deliveryDate(po.getDeliveryDate())
+                    .totalUnits(total)
+                    .receivedUnits(received)
+                    .complete(isReceiptComplete(total, received))
+                    .build();
+        }).collect(Collectors.toList());
+    }
+
+    @Transactional
+    public WarehouseWorkspaceResponse getLuisFelipeWorkspace(Long productionOrderId)
+            throws ResourceNotFoundException, BusinessException {
+        requireLuisFelipeOpv(productionOrderId);
+        return getWorkspace(productionOrderId);
+    }
+
+    /**
+     * Recibe en la reserva las piezas pendientes que indique cada línea (las primeras de la línea), sin
+     * escoger pieza por pieza. La orden se puede recibir en varias tandas hasta completarla.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> receiveItemQuantities(Long productionOrderId, WarehouseItemReceiptRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        requireLuisFelipeOpv(productionOrderId);
+        List<WarehouseItemReceiptRequest.Line> lines = request == null || request.getLines() == null
+                ? List.of()
+                : request.getLines().stream()
+                        .filter(l -> l != null && l.getProductionOrderItemId() != null && l.getQuantity() > 0)
+                        .collect(Collectors.toList());
+        if (lines.isEmpty()) {
+            throw new BusinessException("Indique cuántas piezas recibe.");
+        }
+        ProductionOrderEntity po = productionOrderRepository.findByIdForUpdate(productionOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
+        ensureUnitsForOrder(po);
+        List<WarehouseUnitReceiptRequest.UnitUpdate> updates = new ArrayList<>();
+        for (WarehouseItemReceiptRequest.Line line : lines) {
+            String sizeKey = normalizeUnitSizeKey(line.getSizeKey());
+            List<ProductionOrderWarehouseUnitEntity> pending = unitRepository
+                    .findByProductionOrderItemIdOrderBySizeKeyAscUnitSeqAsc(line.getProductionOrderItemId()).stream()
+                    .filter(u -> Objects.equals(u.getProductionOrderId(), productionOrderId))
+                    .filter(u -> STATUS_PENDING.equals(normalizeReceiptStatus(u.getReceiptStatus())))
+                    .filter(u -> normalizeUnitSizeKey(u.getSizeKey()).equals(sizeKey))
+                    .collect(Collectors.toList());
+            if (pending.size() < line.getQuantity()) {
+                throw new BusinessException("En esa línea solo quedan " + pending.size()
+                        + " pieza(s) por recibir y se pidieron " + line.getQuantity() + ".");
+            }
+            pending.subList(0, line.getQuantity()).forEach(u -> updates.add(
+                    WarehouseUnitReceiptRequest.UnitUpdate.builder()
+                            .unitId(u.getId())
+                            .receiptStatus(STATUS_RECEIVED)
+                            .build()));
+        }
+        return updateUnitsReceipt(productionOrderId, WarehouseUnitReceiptRequest.builder().units(updates).build());
     }
 
     @Transactional
@@ -828,6 +934,7 @@ public class ProductionOrderWarehouseUnitService {
                 .receivedUnits(received)
                 .rejectedUnits(rejected)
                 .shippedUnits(shipped)
+                .complete(isReceiptComplete(units.size(), received))
                 .receiptClosed(po.getWarehouseReceiptClosedAt() != null)
                 .warehouseReceiptClosedAt(po.getWarehouseReceiptClosedAt())
                 .build();

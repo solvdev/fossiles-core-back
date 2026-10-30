@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.WarehouseItemReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.WarehouseWorkspaceResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -468,6 +469,90 @@ class ProductionOrderWarehouseUnitServiceTest {
         List<ProductionOrderWarehouseUnitEntity> units = unitRepository.findByProductionOrderIdAndProductionOrderItemIdIn(
                 po.getId(), List.of(item.getId()));
         assertThat(units).allMatch(u -> u.getShippedAt() != null);
+    }
+
+    @Test
+    void luisFelipeOpvIsReceivedInBatchesIntoReserveAndMarkedCompleteAtTheEnd() throws Exception {
+        ProductionOrderEntity po = createLuisFelipeOpv("OPV-WH-001");
+        ProductionOrderItemEntity item = createItem(po, 5, null);
+
+        assertThat(warehouseUnitService.listLuisFelipeReceipts("WH-001")).singleElement().satisfies(r -> {
+            assertThat(r.getTotalUnits()).isEqualTo(5);
+            assertThat(r.getReceivedUnits()).isZero();
+            assertThat(r.isComplete()).isFalse();
+        });
+
+        warehouseUnitService.receiveItemQuantities(po.getId(), receiptOf(item, 2));
+
+        WarehouseWorkspaceResponse partial = warehouseUnitService.getLuisFelipeWorkspace(po.getId());
+        assertThat(partial.getSummary().getReceivedUnits()).isEqualTo(2);
+        assertThat(partial.getSummary().isComplete()).isFalse();
+        assertThat(reserveStock()).isEqualByComparingTo("2");
+        assertThat(stockAtPt()).isEqualByComparingTo("0");
+
+        warehouseUnitService.receiveItemQuantities(po.getId(), receiptOf(item, 3));
+
+        WarehouseWorkspaceResponse complete = warehouseUnitService.getLuisFelipeWorkspace(po.getId());
+        assertThat(complete.getSummary().isComplete()).isTrue();
+        assertThat(reserveStock()).isEqualByComparingTo("5");
+        assertThat(productionOrderRepository.findById(po.getId()).orElseThrow().getWarehouseReceiptClosedAt()).isNull();
+    }
+
+    @Test
+    void luisFelipeReceiptRejectsMoreThanPendingAndNonPositiveQuantities() throws Exception {
+        ProductionOrderEntity po = createLuisFelipeOpv("OPV-WH-002");
+        ProductionOrderItemEntity item = createItem(po, 3, null);
+        warehouseUnitService.receiveItemQuantities(po.getId(), receiptOf(item, 2));
+
+        assertThatThrownBy(() -> warehouseUnitService.receiveItemQuantities(po.getId(), receiptOf(item, 2)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("solo quedan 1");
+        assertThatThrownBy(() -> warehouseUnitService.receiveItemQuantities(po.getId(), receiptOf(item, 0)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("cuántas piezas");
+    }
+
+    @Test
+    void luisFelipeReceiptEndpointsRejectOtherOrders() throws Exception {
+        ProductionOrderEntity po = createOrder("OP-WH-LF-X");
+        ProductionOrderItemEntity item = createItem(po, 2, null);
+
+        assertThatThrownBy(() -> warehouseUnitService.receiveItemQuantities(po.getId(), receiptOf(item, 1)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("Luis Felipe");
+        assertThatThrownBy(() -> warehouseUnitService.getLuisFelipeWorkspace(po.getId()))
+                .isInstanceOf(BusinessException.class);
+        assertThat(warehouseUnitService.listLuisFelipeReceipts(null))
+                .noneMatch(r -> po.getId().equals(r.getProductionOrderId()));
+    }
+
+    private BigDecimal reserveStock() {
+        return inventoryLocationRepository
+                .findByProductIdAndLocationIdAndColorId(product.getId(),
+                        locationRepository.findByCode(ProductInventoryService.RESERVE_LOCATION_CODE).orElseThrow().getId(),
+                        color.getId())
+                .map(ProductInventoryLocation::getQuantity)
+                .orElse(BigDecimal.ZERO);
+    }
+
+    private ProductionOrderEntity createLuisFelipeOpv(String code) {
+        return productionOrderRepository.save(ProductionOrderEntity.builder()
+                .code(code)
+                .orderType("VENTA")
+                .sellerName("LUIS FELIPE")
+                .status("IN_PROGRESS")
+                .startDate(LocalDate.now())
+                .build());
+    }
+
+    private static WarehouseItemReceiptRequest receiptOf(ProductionOrderItemEntity item, int quantity) {
+        WarehouseItemReceiptRequest.Line line = new WarehouseItemReceiptRequest.Line();
+        line.setProductionOrderItemId(item.getId());
+        line.setSizeKey("");
+        line.setQuantity(quantity);
+        WarehouseItemReceiptRequest request = new WarehouseItemReceiptRequest();
+        request.setLines(List.of(line));
+        return request;
     }
 
     private BigDecimal stockAtPt() {
