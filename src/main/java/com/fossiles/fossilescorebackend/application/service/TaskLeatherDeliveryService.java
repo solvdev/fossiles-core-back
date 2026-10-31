@@ -172,8 +172,12 @@ public class TaskLeatherDeliveryService {
             return;
         }
         BigDecimal pending = BigDecimal.ZERO;
+        Map<Long, TaskEntity> tasks = new LinkedHashMap<>();
         for (TaskItemEntity item : orderItems(orderId)) {
             if (Boolean.TRUE.equals(item.getLeatherDelivered())) continue;
+            // Las canceladas no esperan cuero; con la bandera de la tarea el producto ya puede troquelarse.
+            TaskEntity task = tasks.computeIfAbsent(item.getTaskId(), id -> taskRepository.findById(id).orElse(null));
+            if (task == null || "CANCELLED".equals(task.getStatus()) || Boolean.TRUE.equals(task.getLeatherDelivered())) continue;
             var need = needOf(item);
             if (need != null && !need.blocked() && materialId.equals(need.materialId())) {
                 pending = pending.add(need.qtyFt2());
@@ -199,7 +203,7 @@ public class TaskLeatherDeliveryService {
             if (Boolean.TRUE.equals(item.getLeatherDelivered())) continue;
             TaskEntity task = touched.computeIfAbsent(item.getTaskId(),
                     id -> taskRepository.findById(id).orElse(null));
-            if (task == null || "CANCELLED".equals(task.getStatus())) continue;
+            if (task == null || "CANCELLED".equals(task.getStatus()) || Boolean.TRUE.equals(task.getLeatherDelivered())) continue;
             var need = needOf(item);
             boolean otherLeather = need != null && !need.blocked() && !need.noneRequired()
                     && !Objects.equals(need.materialId(), materialId);
