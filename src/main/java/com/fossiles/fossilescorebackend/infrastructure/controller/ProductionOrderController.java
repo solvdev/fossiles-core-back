@@ -22,6 +22,7 @@ import com.fossiles.fossilescorebackend.application.service.OnlineSaleService;
 import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderPartialReleaseService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderCodeService;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderItemSyncService;
 import com.fossiles.fossilescorebackend.application.service.SmartMaterialRequestService;
 import com.fossiles.fossilescorebackend.application.service.ProductionAutoPlannerService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderWarehouseUnitService;
@@ -65,6 +66,7 @@ public class ProductionOrderController {
     private final ProductionOrderRepository productionOrderRepository;
     private final ProductionOrderListService productionOrderListService;
     private final ProductionOrderItemRepository productionOrderItemRepository;
+    private final ProductionOrderItemSyncService productionOrderItemSyncService;
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
     private final CustomerRepository customerRepository;
@@ -416,6 +418,7 @@ public class ProductionOrderController {
     }
 
     @PutMapping("/{id}")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductionOrderResponse> update(@PathVariable Long id, 
             @Valid @RequestBody ProductionOrderRequest request)
             throws ResourceNotFoundException, BusinessException {
@@ -441,35 +444,11 @@ public class ProductionOrderController {
         applyCustomerFields(entity, request, effectiveOrderType);
         ProductionOrderEntity updated = productionOrderRepository.save(entity);
 
-        // Actualizar items: eliminar existentes y crear nuevos
         if (request.getItems() != null) {
-            productionOrderItemRepository.deleteByProductionOrderId(id);
-
-            if (!request.getItems().isEmpty()) {
-                // Validar items antes de procesarlos
-                for (ProductionOrderItemRequest itemRequest : request.getItems()) {
-                    validateProductionOrderItemRequest(itemRequest, effectiveOrderType);
-                }
-
-                final Long updatedProductionOrderId = updated.getId();
-                List<ProductionOrderItemEntity> items = new ArrayList<>();
-                for (ProductionOrderItemRequest itemRequest : request.getItems()) {
-                    items.add(ProductionOrderItemEntity.builder()
-                            .productionOrderId(updatedProductionOrderId)
-                            .productId(itemRequest.getProductId())
-                            .colorId(itemRequest.getColorId())
-                            .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, itemRequest.getBrandName()))
-                            .quantity(itemRequest.getQuantity())
-                            .warehouseReceivedQty(0)
-                            .sizesData(itemRequest.getSizes() != null ?
-                                    convertSizesToJson(itemRequest.getSizes()) : null)
-                            .observations(itemRequest.getObservations())
-                            .unitPrice(itemRequest.getUnitPrice())
-                            .unitPricesJson(convertUnitPricesToJson(itemRequest.getUnitPrices()))
-                            .build());
-                }
-                productionOrderItemRepository.saveAll(items);
+            for (ProductionOrderItemRequest itemRequest : request.getItems()) {
+                validateProductionOrderItemRequest(itemRequest, effectiveOrderType);
             }
+            productionOrderItemSyncService.sync(updated.getId(), effectiveOrderType, request.getItems());
         }
 
         return ResponseEntity.ok(toResponse(updated));
@@ -562,8 +541,8 @@ public class ProductionOrderController {
 
     /**
      * Actualiza solo empaques SUM- y costo de envío de la orden (meta en observaciones), sin tocar ítems.
-     * Lo usa Preparar envíos en el documento OPV armado desde la orden (sin fila en product_shipment):
-     * el PUT general recrea los ítems y, por cascada, borraría las unidades ya recibidas en bodega.
+     * Lo usa Preparar envíos en el documento OPV armado desde la orden (sin fila en product_shipment).
+     * El PUT general sincroniza las líneas y rechaza quitar una que tenga tareas o unidades de bodega.
      */
     @PutMapping("/{id}/packing")
     @Transactional(rollbackFor = Exception.class)

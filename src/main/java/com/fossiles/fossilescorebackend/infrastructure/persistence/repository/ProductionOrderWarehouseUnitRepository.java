@@ -2,8 +2,11 @@ package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderWarehouseUnitEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 
 @Repository
@@ -26,4 +29,12 @@ public interface ProductionOrderWarehouseUnitRepository extends JpaRepository<Pr
             Long productionOrderId,
             String shipmentRefType,
             Long shipmentRefId);
+
+    /** Líneas de OP que ya tienen al menos una unidad de bodega. */
+    @Query("""
+            SELECT DISTINCT u.productionOrderItemId
+            FROM ProductionOrderWarehouseUnitEntity u
+            WHERE u.productionOrderItemId IN :itemIds
+            """)
+    List<Long> findReferencedItemIds(@Param("itemIds") Collection<Long> itemIds);
 }

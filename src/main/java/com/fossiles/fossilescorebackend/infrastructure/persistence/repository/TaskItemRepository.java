@@ -125,6 +125,21 @@ public interface TaskItemRepository extends JpaRepository<TaskItemEntity, Long> 
             """)
     List<Long> findBaseLineOrderIdsByTaskId(@Param("taskId") Long taskId);
 
+    /**
+     * Líneas de OP citadas por un {@code task_item} cuya tarea no está cancelada.
+     * Si la tarea ya no existe, la cita sigue contando: borrar la línea la dejaría huérfana.
+     */
+    @Query("""
+            SELECT DISTINCT ti.productionOrderItemId
+            FROM TaskItemEntity ti
+            WHERE ti.productionOrderItemId IN :itemIds
+              AND NOT EXISTS (
+                SELECT 1 FROM TaskEntity t
+                WHERE t.id = ti.taskId AND t.status = 'CANCELLED'
+              )
+            """)
+    List<Long> findNonCancelledItemIds(@Param("itemIds") Collection<Long> itemIds);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM TaskItemEntity t WHERE t.taskId = :taskId")
