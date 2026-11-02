@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.model.TaxInvoiceDocument;
+import com.fossiles.fossilescorebackend.application.util.EntrecuerosPriceLists;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
@@ -48,12 +49,14 @@ public class KioskSaleInvoiceMapper {
             if (unitPrice.compareTo(BigDecimal.ZERO) <= 0 && lineTotal.compareTo(BigDecimal.ZERO) > 0) {
                 unitPrice = lineTotal.divide(qty, 2, RoundingMode.HALF_UP);
             }
+            String productCode = resolveProductCode(line, productsById);
             lines.add(TaxInvoiceDocument.Line.builder()
-                    .productCode(resolveProductCode(line, productsById))
+                    .productCode(productCode)
                     .description(buildLineDescription(line))
                     .quantity(qty)
                     .unitPrice(unitPrice)
                     .lineTotal(lineTotal)
+                    .bundlePriced(EntrecuerosPriceLists.isChargedB1BundleLine(productCode, qty, lineTotal))
                     .build());
         }
 

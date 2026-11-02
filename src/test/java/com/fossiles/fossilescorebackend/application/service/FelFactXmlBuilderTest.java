@@ -2,11 +2,16 @@ package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.model.TaxInvoiceDocument;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
+import com.fossiles.fossilescorebackend.infrastructure.util.FelIvaCalculator;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -523,5 +528,305 @@ class FelFactXmlBuilderTest {
         assertThat(xml).contains("<cfc:FechaVencimiento>2026-01-15</cfc:FechaVencimiento>");
         assertThat(xml).contains("<cfc:MontoAbono>100.00</cfc:MontoAbono>");
         assertThat(xml).contains("<dte:GranTotal>100.00</dte:GranTotal>");
+    }
+
+    @Test
+    void bundleLineStaysBalancedWhenUnitPriceDoesNotDivide() {
+        FelEmissionProperties props = new FelEmissionProperties();
+        props.setNitEmisor("123456789");
+        props.setNombreEmisor("FOSSILES SA");
+        props.setNombreComercial("FOSSILES");
+        props.setDireccion("Zona 10 Guatemala");
+        props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento("2");
+
+        TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
+                .emitterEstablishmentCode("2")
+                .customerTaxId("CF")
+                .customerName("CONSUMIDOR FINAL")
+                .subtotal(new BigDecimal("230.00"))
+                .totalAmount(new BigDecimal("230.00"))
+                .lines(List.of(
+                        TaxInvoiceDocument.Line.builder()
+                                .productCode("B-1")
+                                .description("Billetera B-1")
+                                .quantity(new BigDecimal("3"))
+                                .unitPrice(new BigDecimal("43.33"))
+                                .lineTotal(new BigDecimal("130.00"))
+                                .bundlePriced(true)
+                                .build(),
+                        TaxInvoiceDocument.Line.builder()
+                                .description("Cincho")
+                                .quantity(BigDecimal.ONE)
+                                .unitPrice(new BigDecimal("100.00"))
+                                .lineTotal(new BigDecimal("100.00"))
+                                .build()
+                ))
+                .build();
+
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
+
+        assertThat(xml).contains("<dte:PrecioUnitario>43.34</dte:PrecioUnitario>");
+        assertThat(xml).contains("<dte:Precio>130.02</dte:Precio>");
+        assertThat(xml).contains("<dte:Descuento>0.02</dte:Descuento>");
+        assertThat(xml).contains("<dte:Total>130.00</dte:Total>");
+        assertThat(xml).contains("<dte:PrecioUnitario>100.00</dte:PrecioUnitario>");
+        assertThat(xml).contains("<dte:Precio>100.00</dte:Precio>");
+        assertThat(xml).contains("<dte:Descuento>0.00</dte:Descuento>");
+        assertThat(xml).contains("<dte:GranTotal>230.00</dte:GranTotal>");
+
+        FelFactXmlBuilder.FelLineMoney six = FelFactXmlBuilder.resolveFelLineMoney(
+                new BigDecimal("6"), new BigDecimal("260.00"), true);
+        assertThat(six.unitPrice()).isEqualByComparingTo("43.34");
+        assertThat(six.gross()).isEqualByComparingTo("260.04");
+        assertThat(six.discount()).isEqualByComparingTo("0.04");
+        assertThat(six.unitPrice().multiply(new BigDecimal("6")).setScale(2, RoundingMode.HALF_UP)
+                .subtract(six.discount())).isEqualByComparingTo("260.00");
+    }
+
+    @Test
+    void regularLinesMatchMainXml() {
+        FelEmissionProperties props = emitter("2");
+        TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
+                .emitterEstablishmentCode("2")
+                .documentType("FACT")
+                .customerTaxId("CF")
+                .customerName("CONSUMIDOR FINAL")
+                .subtotal(new BigDecimal("180.00"))
+                .totalAmount(new BigDecimal("180.00"))
+                .lines(List.of(
+                        line("Cincho descuento", "3", "100.00", false),
+                        line("Cincho par", "2", "80.00", false)
+                ))
+                .build();
+
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
+
+        assertThat(xml).contains(mainItemXml(1, "3.00", "Cincho descuento", "100.00"));
+        assertThat(xml).contains(mainItemXml(2, "2.00", "Cincho par", "80.00"));
+        assertThat(xml).doesNotContain("33.34");
+        assertThat(xml).doesNotContain("100.02");
+        assertThat(xml).doesNotContain("<dte:Descuento>0.02</dte:Descuento>");
+    }
+
+    @Test
+    void b1BundleThreeAndFourUnits() {
+        FelFactXmlBuilder.FelLineMoney three = FelFactXmlBuilder.resolveFelLineMoney(
+                new BigDecimal("3"), new BigDecimal("130.00"), true);
+        assertThat(three.unitPrice()).isEqualByComparingTo("43.34");
+        assertThat(three.gross()).isEqualByComparingTo("130.02");
+        assertThat(three.discount()).isEqualByComparingTo("0.02");
+        assertThat(three.total()).isEqualByComparingTo("130.00");
+
+        FelFactXmlBuilder.FelLineMoney four = FelFactXmlBuilder.resolveFelLineMoney(
+                new BigDecimal("4"), new BigDecimal("170.00"), true);
+        assertThat(four.unitPrice()).isEqualByComparingTo("42.50");
+        assertThat(four.gross()).isEqualByComparingTo("170.00");
+        assertThat(four.discount()).isEqualByComparingTo("0.00");
+        assertThat(four.total()).isEqualByComparingTo("170.00");
+
+        FelEmissionProperties props = emitter("2");
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(
+                invoice("2", "FACT", List.of(
+                        bundleLine("3", "43.33", "130.00"),
+                        bundleLine("4", "42.50", "170.00")
+                ), "300.00"),
+                props.resolveCredentials(false));
+
+        assertThat(xml).contains("<dte:PrecioUnitario>43.34</dte:PrecioUnitario>");
+        assertThat(xml).contains("<dte:Precio>130.02</dte:Precio>");
+        assertThat(xml).contains("<dte:Descuento>0.02</dte:Descuento>");
+        assertThat(xml).contains("<dte:Total>130.00</dte:Total>");
+        assertThat(xml).contains("<dte:PrecioUnitario>42.50</dte:PrecioUnitario>");
+        assertThat(xml).contains("<dte:Precio>170.00</dte:Precio>");
+        assertThat(xml).contains("<dte:Descuento>0.00</dte:Descuento>");
+        assertThat(xml).contains("<dte:Total>170.00</dte:Total>");
+    }
+
+    @Test
+    void bundleAdjustmentSkipsZeroFractionalNegativeAndCreditNotes() {
+        FelFactXmlBuilder.FelLineMoney zeroQty = FelFactXmlBuilder.resolveFelLineMoney(
+                BigDecimal.ZERO, new BigDecimal("130.00"), true);
+        assertThat(zeroQty.unitPrice()).isEqualByComparingTo("130.00");
+        assertThat(zeroQty.gross()).isEqualByComparingTo("130.00");
+        assertThat(zeroQty.discount()).isEqualByComparingTo("0.00");
+        assertThat(zeroQty.total()).isEqualByComparingTo("130.00");
+
+        FelFactXmlBuilder.FelLineMoney fraction = FelFactXmlBuilder.resolveFelLineMoney(
+                new BigDecimal("3.5"), new BigDecimal("130.00"), true);
+        assertThat(fraction.unitPrice()).isEqualByComparingTo("37.14");
+        assertThat(fraction.gross()).isEqualByComparingTo("130.00");
+        assertThat(fraction.discount()).isEqualByComparingTo("0.00");
+        assertThat(fraction.total()).isEqualByComparingTo("130.00");
+
+        FelFactXmlBuilder.FelLineMoney negative = FelFactXmlBuilder.resolveFelLineMoney(
+                new BigDecimal("3"), new BigDecimal("-130.00"), true);
+        assertThat(negative.unitPrice()).isEqualByComparingTo("-43.33");
+        assertThat(negative.gross()).isEqualByComparingTo("-130.00");
+        assertThat(negative.discount()).isEqualByComparingTo("0.00");
+        assertThat(negative.total()).isEqualByComparingTo("-130.00");
+
+        FelEmissionProperties props = emitter("2");
+        FelFactXmlBuilder builder = new FelFactXmlBuilder(props);
+        for (String noteType : List.of("NCRE", "NDEB")) {
+            String xml = builder.buildUnsignedXml(
+                    invoice("2", noteType, List.of(bundleLine("3", "43.33", "130.00")), "130.00"),
+                    props.resolveCredentials(false));
+            assertThat(xml).contains(mainItemXml(1, "3.00", "B-1 | Billetera B-1", "130.00"));
+            assertThat(xml).doesNotContain("43.34");
+            assertThat(xml).doesNotContain("130.02");
+        }
+
+        String negativeXml = builder.buildUnsignedXml(
+                invoice("2", "FACT", List.of(
+                        TaxInvoiceDocument.Line.builder()
+                                .productCode("B-1")
+                                .description("Billetera B-1")
+                                .quantity(new BigDecimal("3"))
+                                .unitPrice(new BigDecimal("-43.33"))
+                                .lineTotal(new BigDecimal("-130.00"))
+                                .bundlePriced(true)
+                                .build()
+                ), "-130.00"),
+                props.resolveCredentials(false));
+        assertThat(negativeXml).contains("<dte:PrecioUnitario>-43.33</dte:PrecioUnitario>");
+        assertThat(negativeXml).contains("<dte:Precio>-130.00</dte:Precio>");
+        assertThat(negativeXml).contains("<dte:Descuento>0.00</dte:Descuento>");
+        assertThat(negativeXml).doesNotContain("-129.99");
+        assertThat(negativeXml).doesNotContain("<dte:Descuento>0.01</dte:Descuento>");
+    }
+
+    @Test
+    void invoiceLineTotalsMatchGranTotalAndIva() {
+        FelEmissionProperties props = emitter("2");
+        TaxInvoiceDocument document = invoice("2", "FACT", List.of(
+                bundleLine("3", "43.33", "130.00"),
+                line("Cincho descuento", "3", "100.00", false),
+                line("Cincho", "1", "50.00", false)
+        ), "280.00");
+
+        String xml = new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
+
+        List<BigDecimal> lineTotals = xmlAmounts(xml, "<dte:Total>");
+        assertThat(lineTotals).containsExactly(
+                new BigDecimal("130.00"), new BigDecimal("100.00"), new BigDecimal("50.00"));
+        BigDecimal summed = lineTotals.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertThat(summed).isEqualByComparingTo("280.00");
+        assertThat(xmlAmounts(xml, "<dte:GranTotal>")).containsExactly(summed);
+
+        List<BigDecimal> gravable = xmlAmounts(xml, "<dte:MontoGravable>");
+        List<BigDecimal> tax = xmlAmounts(xml, "<dte:MontoImpuesto>");
+        assertThat(gravable).hasSize(lineTotals.size());
+        BigDecimal taxSum = BigDecimal.ZERO;
+        for (int i = 0; i < lineTotals.size(); i++) {
+            assertThat(gravable.get(i).add(tax.get(i))).isEqualByComparingTo(lineTotals.get(i));
+            FelIvaCalculator.IvaBreakdown iva = FelIvaCalculator.fromTaxIncludedTotal(lineTotals.get(i));
+            assertThat(gravable.get(i)).isEqualByComparingTo(iva.gravable());
+            assertThat(tax.get(i)).isEqualByComparingTo(iva.tax());
+            taxSum = taxSum.add(tax.get(i));
+        }
+        assertThat(xmlAmounts(xml, "TotalMontoImpuesto=\"").get(0)).isEqualByComparingTo(taxSum);
+        assertThat(xml).contains("<dte:PrecioUnitario>43.34</dte:PrecioUnitario>");
+        assertThat(xml).contains(mainItemXml(2, "3.00", "Cincho descuento", "100.00"));
+    }
+
+    private static FelEmissionProperties emitter(String establishment) {
+        FelEmissionProperties props = new FelEmissionProperties();
+        props.setNitEmisor("123456789");
+        props.setNombreEmisor("FOSSILES SA");
+        props.setNombreComercial("FOSSILES");
+        props.setDireccion("Zona 10 Guatemala");
+        props.setAfiliacionIva("GEN");
+        props.setCodigoEstablecimiento(establishment);
+        return props;
+    }
+
+    private static TaxInvoiceDocument invoice(
+            String establishment,
+            String documentType,
+            List<TaxInvoiceDocument.Line> lines,
+            String total
+    ) {
+        return TaxInvoiceDocument.builder()
+                .issuedAt(LocalDateTime.of(2026, 1, 15, 10, 30))
+                .emitterEstablishmentCode(establishment)
+                .documentType(documentType)
+                .customerTaxId("CF")
+                .customerName("CONSUMIDOR FINAL")
+                .subtotal(new BigDecimal(total))
+                .totalAmount(new BigDecimal(total))
+                .lines(lines)
+                .build();
+    }
+
+    private static TaxInvoiceDocument.Line line(
+            String description, String quantity, String total, boolean bundlePriced) {
+        return TaxInvoiceDocument.Line.builder()
+                .description(description)
+                .quantity(new BigDecimal(quantity))
+                .unitPrice(new BigDecimal(total))
+                .lineTotal(new BigDecimal(total))
+                .bundlePriced(bundlePriced)
+                .build();
+    }
+
+    private static TaxInvoiceDocument.Line bundleLine(String quantity, String unitPrice, String total) {
+        return TaxInvoiceDocument.Line.builder()
+                .productCode("B-1")
+                .description("Billetera B-1")
+                .quantity(new BigDecimal(quantity))
+                .unitPrice(new BigDecimal(unitPrice))
+                .lineTotal(new BigDecimal(total))
+                .bundlePriced(true)
+                .build();
+    }
+
+    /** Ítem tal como lo escribía main: unitario HALF_UP, precio = total, descuento 0.00. */
+    private static String mainItemXml(int lineNo, String quantity, String description, String lineTotal) {
+        BigDecimal total = new BigDecimal(lineTotal);
+        BigDecimal qty = new BigDecimal(quantity);
+        BigDecimal unit = qty.compareTo(BigDecimal.ZERO) > 0
+                ? total.divide(qty, 2, RoundingMode.HALF_UP)
+                : total;
+        FelIvaCalculator.IvaBreakdown iva = FelIvaCalculator.fromTaxIncludedTotal(total);
+        return """
+                <dte:Item BienOServicio="B" NumeroLinea="%d">
+                  <dte:Cantidad>%s</dte:Cantidad>
+                  <dte:UnidadMedida>UNI</dte:UnidadMedida>
+                  <dte:Descripcion>%s</dte:Descripcion>
+                  <dte:PrecioUnitario>%s</dte:PrecioUnitario>
+                  <dte:Precio>%s</dte:Precio>
+                  <dte:Descuento>0.00</dte:Descuento>
+                  <dte:Impuestos>
+                    <dte:Impuesto>
+                      <dte:NombreCorto>IVA</dte:NombreCorto>
+                      <dte:CodigoUnidadGravable>1</dte:CodigoUnidadGravable>
+                      <dte:MontoGravable>%s</dte:MontoGravable>
+                      <dte:MontoImpuesto>%s</dte:MontoImpuesto>
+                    </dte:Impuesto>
+                  </dte:Impuestos>
+                  <dte:Total>%s</dte:Total>
+                </dte:Item>
+                """.formatted(
+                lineNo,
+                quantity,
+                description,
+                unit.setScale(2, RoundingMode.HALF_UP).toPlainString(),
+                total.setScale(2, RoundingMode.HALF_UP).toPlainString(),
+                iva.gravable().setScale(2, RoundingMode.HALF_UP).toPlainString(),
+                iva.tax().setScale(2, RoundingMode.HALF_UP).toPlainString(),
+                total.setScale(2, RoundingMode.HALF_UP).toPlainString());
+    }
+
+    private static List<BigDecimal> xmlAmounts(String xml, String openTag) {
+        Pattern pattern = Pattern.compile(Pattern.quote(openTag) + "(-?[0-9]+\\.[0-9]{2})");
+        Matcher matcher = pattern.matcher(xml);
+        List<BigDecimal> amounts = new ArrayList<>();
+        while (matcher.find()) {
+            amounts.add(new BigDecimal(matcher.group(1)));
+        }
+        return amounts;
     }
 }

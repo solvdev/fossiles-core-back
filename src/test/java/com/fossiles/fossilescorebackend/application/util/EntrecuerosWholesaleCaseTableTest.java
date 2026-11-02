@@ -30,14 +30,14 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Sale and estimate both recompute a line with
  * {@link EntrecuerosPriceLists#addVolumeQuantity},
  * {@link EntrecuerosPriceLists#resolveChargedUnitPrice} and
- * {@link EntrecuerosPriceLists#lineTotal}; the client unit price is ignored.
+ * {@link EntrecuerosPriceLists#chargedLineTotal}; the client unit price is ignored.
  */
 class EntrecuerosWholesaleCaseTableTest {
 
     static final String CASES_RESOURCE = "/pricing/entrecueros-wholesale-cases.json";
     static final String SHA256_RESOURCE = "/pricing/entrecueros-wholesale-cases.json.sha256";
     static final String EXPECTED_SHA256 =
-            "6e4a105cd91b6b395f4596dcdfee9853b3ada66e71bd7161dd7ca43a37397396";
+            "13e3b76c74667cc00b4d88cd81366740b1e4c2911ad7c9c67af26ab90eb79326";
 
     private static final ObjectMapper MAPPER = JsonMapper.builder()
             .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
@@ -89,7 +89,8 @@ class EntrecuerosWholesaleCaseTableTest {
             Line line = lines.get(i);
             BigDecimal unitPrice = EntrecuerosPriceLists.resolveChargedUnitPrice(
                     line.product(), line.hardware(), line.quantity(), qtyByVolumeKey);
-            BigDecimal lineTotal = EntrecuerosPriceLists.lineTotal(unitPrice, line.quantity());
+            BigDecimal lineTotal = EntrecuerosPriceLists.chargedLineTotal(
+                    line.product(), line.hardware(), line.quantity(), qtyByVolumeKey);
             JsonNode expectedLine = expectedLines.get(i);
             assertThat(unitPrice)
                     .as(id + " line " + (i + 1) + " unitPrice")

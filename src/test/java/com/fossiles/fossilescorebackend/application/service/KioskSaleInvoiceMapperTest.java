@@ -97,4 +97,40 @@ class KioskSaleInvoiceMapperTest {
         assertThat(document.getLines()).hasSize(1);
         assertThat(document.getLines().get(0).getProductCode()).isEqualTo("FOSS-18");
     }
+
+    @Test
+    void marksOnlyChargedB1BundleLines() {
+        KioskSaleEntity sale = KioskSaleEntity.builder()
+                .id(11L)
+                .saleNumber("POS-20260721-0002")
+                .subtotal(new BigDecimal("450.00"))
+                .totalAmount(new BigDecimal("450.00"))
+                .items(List.of(
+                        item("B-1", "3", "130.00"),
+                        item("B-1", "4", "170.00"),
+                        item("B-1", "3", "120.00"),
+                        item("B-20", "3", "90.00"),
+                        item("BOL-01", "3", "100.00")
+                ))
+                .build();
+
+        var lines = mapper.fromSale(sale).getLines();
+
+        assertThat(lines).hasSize(5);
+        assertThat(lines.get(0).isBundlePriced()).isTrue();
+        assertThat(lines.get(1).isBundlePriced()).isTrue();
+        assertThat(lines.get(2).isBundlePriced()).isFalse();
+        assertThat(lines.get(3).isBundlePriced()).isFalse();
+        assertThat(lines.get(4).isBundlePriced()).isFalse();
+    }
+
+    private static KioskSaleItemEntity item(String code, String quantity, String lineTotal) {
+        return KioskSaleItemEntity.builder()
+                .productCode(code)
+                .productName(code)
+                .quantity(new BigDecimal(quantity))
+                .unitPrice(new BigDecimal(lineTotal))
+                .lineTotal(new BigDecimal(lineTotal))
+                .build();
+    }
 }

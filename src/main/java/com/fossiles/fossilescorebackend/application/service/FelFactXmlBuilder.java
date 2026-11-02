@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelCredentials;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelIvaCalculator;
+import com.fossiles.fossilescorebackend.infrastructure.util.FelSatReceptorRules;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelXmlEscaper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -57,6 +58,13 @@ public class FelFactXmlBuilder {
         List<BigDecimal> felLineTotals = resolveFelLineTotals(
                 documentLines, subtotal, totalAmount, discountAmount);
 
+        String establishmentCode = firstNonBlank(
+                document.getEmitterEstablishmentCode(), properties.getCodigoEstablecimiento());
+        String requestedDocumentType = document.getDocumentType();
+        boolean bundleAdjustmentAllowed = !FelSatReceptorRules.isNotaCreditoDebito(requestedDocumentType);
+        String documentType = resolveEmissionDocumentType(requestedDocumentType, establishmentCode);
+        document.setDocumentType(documentType);
+
         StringBuilder itemsXml = new StringBuilder();
         BigDecimal totalIva = BigDecimal.ZERO;
         BigDecimal granTotalFromLines = BigDecimal.ZERO;
@@ -73,9 +81,8 @@ public class FelFactXmlBuilder {
             totalIva = totalIva.add(iva.tax());
             granTotalFromLines = granTotalFromLines.add(lineTotal);
             BigDecimal qty = nz(line.getQuantity()).setScale(2, RoundingMode.HALF_UP);
-            BigDecimal unitPrice = qty.compareTo(BigDecimal.ZERO) > 0
-                    ? lineTotal.divide(qty, 2, RoundingMode.HALF_UP)
-                    : lineTotal;
+            FelLineMoney money = resolveFelLineMoney(
+                    qty, lineTotal, bundleAdjustmentAllowed && line.isBundlePriced());
             String desc = resolveFelItemDescripcionForDte(line);
             itemsXml.append("""
                     <dte:Item BienOServicio="B" NumeroLinea="%d">
@@ -84,7 +91,7 @@ public class FelFactXmlBuilder {
                       <dte:Descripcion>%s</dte:Descripcion>
                       <dte:PrecioUnitario>%s</dte:PrecioUnitario>
                       <dte:Precio>%s</dte:Precio>
-                      <dte:Descuento>0.00</dte:Descuento>
+                      <dte:Descuento>%s</dte:Descuento>
                       <dte:Impuestos>
                         <dte:Impuesto>
                           <dte:NombreCorto>IVA</dte:NombreCorto>
@@ -99,22 +106,18 @@ public class FelFactXmlBuilder {
                     lineNo,
                     fmt(qty),
                     FelXmlEscaper.escape(desc),
-                    fmt(unitPrice),
-                    fmt(lineTotal),
+                    fmt(money.unitPrice()),
+                    fmt(money.gross()),
+                    fmt(money.discount()),
                     fmt(iva.gravable()),
                     fmt(iva.tax()),
-                    fmt(lineTotal)
+                    fmt(money.total())
             ));
         }
 
         String frasesXml = buildFrasesXml(credentials.frases());
         String adendaXml = buildAdendaXml(document.getInternalNumber());
         BigDecimal granTotal = granTotalFromLines.setScale(2, RoundingMode.HALF_UP);
-
-        String establishmentCode = firstNonBlank(
-                document.getEmitterEstablishmentCode(), properties.getCodigoEstablecimiento());
-        String documentType = resolveEmissionDocumentType(document.getDocumentType(), establishmentCode);
-        document.setDocumentType(documentType);
         String commercialName = firstNonBlank(document.getEmitterCommercialName(), credentials.nombreComercial());
         String addressLine = firstNonBlank(document.getEmitterAddressLine(), credentials.direccion());
         String municipio = firstNonBlank(document.getEmitterMunicipio(), credentials.municipio());
@@ -418,6 +421,56 @@ public class FelFactXmlBuilder {
      */
     static boolean isPackagingLine(TaxInvoiceDocument.Line line) {
         return line != null && ProductCinchoType.isPackagingProductCode(line.getProductCode());
+    }
+
+    /**
+     * Precio unitario, precio bruto y descuento de una línea FEL.
+     * El XML de main usa unitario HALF_UP, precio = total y descuento 0.00.
+     * Solo un B-1 cobrado por paquete, con cantidad entera positiva y total positivo,
+     * sube el unitario al céntimo que cubre el total y deja la diferencia como descuento.
+     * Notas (NCRE/NDEB), totales negativos, cantidad 0 y cantidad fraccionaria no se ajustan:
+     * CEILING hacia cero en un total negativo dejaría un descuento positivo.
+     */
+    record FelLineMoney(BigDecimal unitPrice, BigDecimal gross, BigDecimal discount, BigDecimal total) {
+    }
+
+    static FelLineMoney resolveFelLineMoney(BigDecimal quantity, BigDecimal lineTotal, boolean bundlePriced) {
+        BigDecimal qty = nz(quantity).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal total = nz(lineTotal).setScale(2, RoundingMode.HALF_UP);
+        if (!adjustBundleLine(qty, total, bundlePriced)) {
+            return legacyFelLineMoney(qty, total);
+        }
+        BigDecimal unit = total.divide(qty, 2, RoundingMode.CEILING);
+        if (unit.compareTo(BigDecimal.ZERO) == 0 && total.compareTo(BigDecimal.ZERO) > 0) {
+            unit = new BigDecimal("0.01");
+        }
+        BigDecimal gross = unit.multiply(qty).setScale(2, RoundingMode.HALF_UP);
+        for (int guard = 0; gross.compareTo(total) < 0 && guard < 8; guard++) {
+            unit = unit.add(new BigDecimal("0.01"));
+            gross = unit.multiply(qty).setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal discount = gross.subtract(total).setScale(2, RoundingMode.HALF_UP);
+        return new FelLineMoney(unit, gross, discount, total);
+    }
+
+    private static boolean adjustBundleLine(BigDecimal qty, BigDecimal total, boolean bundlePriced) {
+        return bundlePriced
+                && qty.compareTo(BigDecimal.ZERO) > 0
+                && total.compareTo(BigDecimal.ZERO) > 0
+                && isWholeQuantity(qty);
+    }
+
+    /** Fórmula de main: unitario HALF_UP, precio = total, descuento 0.00. */
+    private static FelLineMoney legacyFelLineMoney(BigDecimal qty, BigDecimal total) {
+        BigDecimal zero = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal unit = qty.compareTo(BigDecimal.ZERO) > 0
+                ? total.divide(qty, 2, RoundingMode.HALF_UP)
+                : total;
+        return new FelLineMoney(unit, total, zero, total);
+    }
+
+    private static boolean isWholeQuantity(BigDecimal qty) {
+        return qty.stripTrailingZeros().scale() <= 0;
     }
 
     /**

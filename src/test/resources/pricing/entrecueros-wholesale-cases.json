@@ -1,38 +1,38 @@
 {
-  "version": "1.0.0-draft.3",
+  "version": "1.1.0",
   "rule_source": "Eduardo's FINAL Entrecueros POS wholesale rule, relayed by Grok in 'Fossiles ERP Desarrollo' on 2026-10-08, plus Eduardo's later answers the same evening: untyped products receive courtesy and can trigger it (final fallback chain), returns/edits repricing dropped, B-1 exact match, agreed classification order, and Entrecueros never sells packaging (rejected with 400).",
   "price_lists": {
     "casual": {
       "tiers": {
-        "1": 100,
-        "3": 90,
-        "6": 80,
-        "12": 75
+        "1": 125,
+        "3": 110,
+        "6": 95,
+        "12": 85
       },
-      "top": 75,
+      "top": 85,
       "note": "product's own configured tiers replace the list when any is set"
     },
     "billetera": {
       "tiers": {
-        "1": 100,
-        "3": 65,
-        "6": 55
+        "1": 125,
+        "3": 75,
+        "6": 65
       },
-      "top": 55
+      "top": 65
     },
     "nino": {
       "tiers": {
-        "1": 65,
-        "3": 45
+        "1": 75,
+        "3": 55
       },
-      "top": 45
+      "top": 55
     },
     "dama": {
       "tiers": {
-        "1": 65,
-        "3": 60
+        "1": 75,
+        "3": 70
       },
-      "top": 60
+      "top": 70
     },
     "sintetica": {
       "tiers": {
@@ -40,17 +40,17 @@
         "3": 30
       },
       "top": 30,
-      "note": "B-1 is always 40"
+      "note": "B-1/B1: Q130 per complete group of 3, leftovers Q40; courtesy Q40/unit. B-5/B5 and B-2/B2: Q40 from 4 units, current 40/30 below 4; courtesy Q40. Other synthetics unchanged."
     },
     "tarjetero": {
       "tiers": {
-        "1": 10,
-        "3": 6
+        "1": 15,
+        "3": 10
       },
-      "top": 6
+      "top": 10
     },
     "reversible": {
-      "fixed": 100
+      "fixed": 125
     },
     "untyped": {
       "tiers": "product configured 1/3/6/12, catalog price as fallback",
@@ -75,7 +75,7 @@
   "assumptions": [
     {
       "id": "assumes-b1-counts",
-      "text": "B-1 counts toward sintética quantity for the 3+ tier and the 6-unit trigger; its own price stays Q40.",
+      "text": "B-1 counts toward sintética quantity for the 3+ tier and the 6-unit trigger. Its own price is Q130 per complete group of 3 and Q40 per leftover unit; courtesy stays Q40/unit.",
       "status": "confirmed by Baku and Pixel (2026-10-08)"
     },
     {
@@ -517,7 +517,7 @@
   "cases": [
     {
       "id": "EC-001",
-      "description": "12 casual + 1 billetera -> casual 75, billetera 55",
+      "description": "12 casual + 1 billetera -> casual 85, billetera 65",
       "tags": [
         "acceptance-example",
         "courtesy"
@@ -541,23 +541,23 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 75,
-            "lineTotal": 900,
+            "unitPrice": 85,
+            "lineTotal": 1020,
             "reason": "own-tier"
           },
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 55,
+            "unitPrice": 65,
+            "lineTotal": 65,
             "reason": "courtesy-top"
           }
         ],
-        "total": 955
+        "total": 1085
       }
     },
     {
       "id": "EC-002",
-      "description": "6 billeteras + 6 casual -> billetera 55, casual 80",
+      "description": "6 billeteras + 6 casual -> billetera 65, casual 95",
       "tags": [
         "acceptance-example",
         "courtesy",
@@ -586,23 +586,23 @@
         "lines": [
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 330,
+            "unitPrice": 65,
+            "lineTotal": 390,
             "reason": "own-tier"
           },
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           }
         ],
-        "total": 810
+        "total": 960
       }
     },
     {
       "id": "EC-003",
-      "description": "3+3 (casual+billetera) -> both at 3+ price (90, 65), no wholesale",
+      "description": "3+3 (casual+billetera) -> both at 3+ price (110, 75), no wholesale",
       "tags": [
         "acceptance-example",
         "no-courtesy",
@@ -627,23 +627,23 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 90,
-            "lineTotal": 270,
+            "unitPrice": 110,
+            "lineTotal": 330,
             "reason": "own-tier"
           },
           {
             "type": "billetera",
-            "unitPrice": 65,
-            "lineTotal": 195,
+            "unitPrice": 75,
+            "lineTotal": 225,
             "reason": "own-tier"
           }
         ],
-        "total": 465
+        "total": 555
       }
     },
     {
       "id": "EC-004",
-      "description": "20 billeteras + 1 casual -> billetera 55, casual 75",
+      "description": "20 billeteras + 1 casual -> billetera 65, casual 85",
       "tags": [
         "acceptance-example",
         "courtesy"
@@ -667,23 +667,23 @@
         "lines": [
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 1100,
+            "unitPrice": 65,
+            "lineTotal": 1300,
             "reason": "own-tier"
           },
           {
             "type": "casual",
-            "unitPrice": 75,
-            "lineTotal": 75,
+            "unitPrice": 85,
+            "lineTotal": 85,
             "reason": "courtesy-top"
           }
         ],
-        "total": 1175
+        "total": 1385
       }
     },
     {
       "id": "EC-005",
-      "description": "6 casual + 1 billetera -> casual 80, billetera 55",
+      "description": "6 casual + 1 billetera -> casual 95, billetera 65",
       "tags": [
         "acceptance-example",
         "courtesy"
@@ -707,24 +707,24 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 55,
+            "unitPrice": 65,
+            "lineTotal": 65,
             "reason": "courtesy-top"
           }
         ],
-        "total": 535
+        "total": 635
       },
       "note": "Main today prices the casual line at 75 (quantityForPrice forces 12 for every line when unlocked)."
     },
     {
       "id": "EC-010",
-      "description": "Casual only, qty 3 -> 90",
+      "description": "Casual only, qty 3 -> 110",
       "tags": [
         "threshold",
         "own-tier"
@@ -743,17 +743,17 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 90,
-            "lineTotal": 270,
+            "unitPrice": 110,
+            "lineTotal": 330,
             "reason": "own-tier"
           }
         ],
-        "total": 270
+        "total": 330
       }
     },
     {
       "id": "EC-011",
-      "description": "Casual only, qty 5 -> 90",
+      "description": "Casual only, qty 5 -> 110",
       "tags": [
         "threshold",
         "own-tier"
@@ -772,17 +772,17 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 90,
-            "lineTotal": 450,
+            "unitPrice": 110,
+            "lineTotal": 550,
             "reason": "own-tier"
           }
         ],
-        "total": 450
+        "total": 550
       }
     },
     {
       "id": "EC-012",
-      "description": "Casual only, qty 6 -> 80",
+      "description": "Casual only, qty 6 -> 95",
       "tags": [
         "threshold",
         "own-tier",
@@ -802,17 +802,17 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           }
         ],
-        "total": 480
+        "total": 570
       }
     },
     {
       "id": "EC-013",
-      "description": "Casual only, qty 11 -> 80",
+      "description": "Casual only, qty 11 -> 95",
       "tags": [
         "threshold",
         "own-tier",
@@ -832,17 +832,17 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 880,
+            "unitPrice": 95,
+            "lineTotal": 1045,
             "reason": "own-tier"
           }
         ],
-        "total": 880
+        "total": 1045
       }
     },
     {
       "id": "EC-014",
-      "description": "Casual only, qty 12 -> 75",
+      "description": "Casual only, qty 12 -> 85",
       "tags": [
         "threshold",
         "own-tier",
@@ -862,17 +862,17 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 75,
-            "lineTotal": 900,
+            "unitPrice": 85,
+            "lineTotal": 1020,
             "reason": "own-tier"
           }
         ],
-        "total": 900
+        "total": 1020
       }
     },
     {
       "id": "EC-015",
-      "description": "Billetera only, qty 2 -> 100",
+      "description": "Billetera only, qty 2 -> 125",
       "tags": [
         "threshold",
         "own-tier"
@@ -891,17 +891,17 @@
         "lines": [
           {
             "type": "billetera",
-            "unitPrice": 100,
-            "lineTotal": 200,
+            "unitPrice": 125,
+            "lineTotal": 250,
             "reason": "own-tier"
           }
         ],
-        "total": 200
+        "total": 250
       }
     },
     {
       "id": "EC-016",
-      "description": "Billetera only, qty 3 -> 65",
+      "description": "Billetera only, qty 3 -> 75",
       "tags": [
         "threshold",
         "own-tier"
@@ -920,17 +920,17 @@
         "lines": [
           {
             "type": "billetera",
-            "unitPrice": 65,
-            "lineTotal": 195,
+            "unitPrice": 75,
+            "lineTotal": 225,
             "reason": "own-tier"
           }
         ],
-        "total": 195
+        "total": 225
       }
     },
     {
       "id": "EC-017",
-      "description": "Billetera only, qty 5 -> 65",
+      "description": "Billetera only, qty 5 -> 75",
       "tags": [
         "threshold",
         "own-tier"
@@ -949,17 +949,17 @@
         "lines": [
           {
             "type": "billetera",
-            "unitPrice": 65,
-            "lineTotal": 325,
+            "unitPrice": 75,
+            "lineTotal": 375,
             "reason": "own-tier"
           }
         ],
-        "total": 325
+        "total": 375
       }
     },
     {
       "id": "EC-018",
-      "description": "Billetera only, qty 6 -> 55",
+      "description": "Billetera only, qty 6 -> 65",
       "tags": [
         "threshold",
         "own-tier",
@@ -979,17 +979,17 @@
         "lines": [
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 330,
+            "unitPrice": 65,
+            "lineTotal": 390,
             "reason": "own-tier"
           }
         ],
-        "total": 330
+        "total": 390
       }
     },
     {
       "id": "EC-019",
-      "description": "Niño 2 + dama 3 -> niño 65 (1 tier), dama 60 (3+)",
+      "description": "Niño 2 + dama 3 -> niño 75 (1 tier), dama 70 (3+)",
       "tags": [
         "threshold",
         "own-tier",
@@ -1014,23 +1014,23 @@
         "lines": [
           {
             "type": "nino",
-            "unitPrice": 65,
-            "lineTotal": 130,
+            "unitPrice": 75,
+            "lineTotal": 150,
             "reason": "own-tier"
           },
           {
             "type": "dama",
-            "unitPrice": 60,
-            "lineTotal": 180,
+            "unitPrice": 70,
+            "lineTotal": 210,
             "reason": "own-tier"
           }
         ],
-        "total": 310
+        "total": 360
       }
     },
     {
       "id": "EC-020",
-      "description": "Niño 3 + dama 2 -> niño 45 (3+), dama 65 (1 tier)",
+      "description": "Niño 3 + dama 2 -> niño 55 (3+), dama 75 (1 tier)",
       "tags": [
         "threshold",
         "own-tier",
@@ -1055,23 +1055,23 @@
         "lines": [
           {
             "type": "nino",
-            "unitPrice": 45,
-            "lineTotal": 135,
+            "unitPrice": 55,
+            "lineTotal": 165,
             "reason": "own-tier"
           },
           {
             "type": "dama",
-            "unitPrice": 65,
-            "lineTotal": 130,
+            "unitPrice": 75,
+            "lineTotal": 150,
             "reason": "own-tier"
           }
         ],
-        "total": 265
+        "total": 315
       }
     },
     {
       "id": "EC-021",
-      "description": "Sintética 2 + tarjetero 3 -> sintética 40, tarjetero 6",
+      "description": "Sintética 2 + tarjetero 3 -> sintética 40, tarjetero 10",
       "tags": [
         "threshold",
         "own-tier",
@@ -1102,12 +1102,12 @@
           },
           {
             "type": "tarjetero",
-            "unitPrice": 6,
-            "lineTotal": 18,
+            "unitPrice": 10,
+            "lineTotal": 30,
             "reason": "own-tier"
           }
         ],
-        "total": 98
+        "total": 110
       }
     },
     {
@@ -1143,17 +1143,17 @@
           },
           {
             "type": "tarjetero",
-            "unitPrice": 10,
-            "lineTotal": 20,
+            "unitPrice": 15,
+            "lineTotal": 30,
             "reason": "own-tier"
           }
         ],
-        "total": 110
+        "total": 120
       }
     },
     {
       "id": "EC-023",
-      "description": "Tarjetero-only sale, qty 1 -> 10",
+      "description": "Tarjetero-only sale, qty 1 -> 15",
       "tags": [
         "tarjetero-only",
         "own-tier"
@@ -1172,17 +1172,17 @@
         "lines": [
           {
             "type": "tarjetero",
-            "unitPrice": 10,
-            "lineTotal": 10,
+            "unitPrice": 15,
+            "lineTotal": 15,
             "reason": "own-tier"
           }
         ],
-        "total": 10
+        "total": 15
       }
     },
     {
       "id": "EC-024",
-      "description": "Tarjetero-only sale, qty 6 -> triggers itself, stays at own tier 6",
+      "description": "Tarjetero-only sale, qty 6 -> triggers itself, stays at own tier 10",
       "tags": [
         "tarjetero-only",
         "self-trigger"
@@ -1201,12 +1201,12 @@
         "lines": [
           {
             "type": "tarjetero",
-            "unitPrice": 6,
-            "lineTotal": 36,
+            "unitPrice": 10,
+            "lineTotal": 60,
             "reason": "own-tier"
           }
         ],
-        "total": 36
+        "total": 60
       }
     },
     {
@@ -1235,18 +1235,18 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 90,
-            "lineTotal": 450,
+            "unitPrice": 110,
+            "lineTotal": 550,
             "reason": "own-tier"
           },
           {
             "type": "billetera",
-            "unitPrice": 100,
-            "lineTotal": 100,
+            "unitPrice": 125,
+            "lineTotal": 125,
             "reason": "own-tier"
           }
         ],
-        "total": 550
+        "total": 675
       }
     },
     {
@@ -1276,24 +1276,24 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 400,
+            "unitPrice": 95,
+            "lineTotal": 475,
             "reason": "own-tier"
           },
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 80,
+            "unitPrice": 95,
+            "lineTotal": 95,
             "reason": "own-tier"
           }
         ],
-        "total": 480
+        "total": 570
       },
       "note": "Quantity is summed per type, as main does with volumeKey; 5+1 of one type is 6 and triggers."
     },
     {
       "id": "EC-027",
-      "description": "Tie at 6: 6 niño + 6 dama + 2 tarjetero -> niño 45, dama 60 own tier; tarjetero courtesy 6",
+      "description": "Tie at 6: 6 niño + 6 dama + 2 tarjetero -> niño 55, dama 70 own tier; tarjetero courtesy 10",
       "tags": [
         "tie",
         "two-reach-threshold",
@@ -1326,24 +1326,24 @@
         "lines": [
           {
             "type": "nino",
-            "unitPrice": 45,
-            "lineTotal": 270,
+            "unitPrice": 55,
+            "lineTotal": 330,
             "reason": "own-tier"
           },
           {
             "type": "dama",
-            "unitPrice": 60,
-            "lineTotal": 360,
+            "unitPrice": 70,
+            "lineTotal": 420,
             "reason": "own-tier"
           },
           {
             "type": "tarjetero",
-            "unitPrice": 6,
-            "lineTotal": 12,
+            "unitPrice": 10,
+            "lineTotal": 20,
             "reason": "courtesy-top"
           }
         ],
-        "total": 642
+        "total": 770
       }
     },
     {
@@ -1372,23 +1372,23 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 90,
-            "lineTotal": 360,
+            "unitPrice": 110,
+            "lineTotal": 440,
             "reason": "own-tier"
           },
           {
             "type": "billetera",
-            "unitPrice": 65,
-            "lineTotal": 260,
+            "unitPrice": 75,
+            "lineTotal": 300,
             "reason": "own-tier"
           }
         ],
-        "total": 620
+        "total": 740
       }
     },
     {
       "id": "EC-029",
-      "description": "7 casual + 6 billetera + 1 niño -> casual 80, billetera 55 own; niño courtesy 45",
+      "description": "7 casual + 6 billetera + 1 niño -> casual 95, billetera 65 own; niño courtesy 55",
       "tags": [
         "two-reach-threshold",
         "courtesy"
@@ -1417,29 +1417,29 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 560,
+            "unitPrice": 95,
+            "lineTotal": 665,
             "reason": "own-tier"
           },
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 330,
+            "unitPrice": 65,
+            "lineTotal": 390,
             "reason": "own-tier"
           },
           {
             "type": "nino",
-            "unitPrice": 45,
-            "lineTotal": 45,
+            "unitPrice": 55,
+            "lineTotal": 55,
             "reason": "courtesy-top"
           }
         ],
-        "total": 935
+        "total": 1110
       }
     },
     {
       "id": "EC-030",
-      "description": "12 casual + 8 sintética + 2 dama -> casual 75, sintética 30 own; dama courtesy 60",
+      "description": "12 casual + 8 sintética + 2 dama -> casual 85, sintética 30 own; dama courtesy 70",
       "tags": [
         "two-reach-threshold",
         "courtesy"
@@ -1468,8 +1468,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 75,
-            "lineTotal": 900,
+            "unitPrice": 85,
+            "lineTotal": 1020,
             "reason": "own-tier"
           },
           {
@@ -1480,17 +1480,17 @@
           },
           {
             "type": "dama",
-            "unitPrice": 60,
-            "lineTotal": 120,
+            "unitPrice": 70,
+            "lineTotal": 140,
             "reason": "courtesy-top"
           }
         ],
-        "total": 1260
+        "total": 1400
       }
     },
     {
       "id": "EC-031",
-      "description": "6 casual + 4 niño -> niño already at top (45), reason courtesy-top",
+      "description": "6 casual + 4 niño -> niño already at top (55), reason courtesy-top",
       "tags": [
         "courtesy",
         "already-top"
@@ -1514,23 +1514,23 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
             "type": "nino",
-            "unitPrice": 45,
-            "lineTotal": 180,
+            "unitPrice": 55,
+            "lineTotal": 220,
             "reason": "courtesy-top"
           }
         ],
-        "total": 660
+        "total": 790
       }
     },
     {
       "id": "EC-032",
-      "description": "6 billetera + 3 tarjetero -> tarjetero already at top (6)",
+      "description": "6 billetera + 3 tarjetero -> tarjetero already at top (10)",
       "tags": [
         "courtesy",
         "already-top"
@@ -1554,23 +1554,23 @@
         "lines": [
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 330,
+            "unitPrice": 65,
+            "lineTotal": 390,
             "reason": "own-tier"
           },
           {
             "type": "tarjetero",
-            "unitPrice": 6,
-            "lineTotal": 18,
+            "unitPrice": 10,
+            "lineTotal": 30,
             "reason": "courtesy-top"
           }
         ],
-        "total": 348
+        "total": 420
       }
     },
     {
       "id": "EC-033",
-      "description": "6 niño + 3 casual -> casual courtesy jumps to 12+ price 75",
+      "description": "6 niño + 3 casual -> casual courtesy jumps to 12+ price 85",
       "tags": [
         "courtesy"
       ],
@@ -1593,23 +1593,23 @@
         "lines": [
           {
             "type": "nino",
-            "unitPrice": 45,
-            "lineTotal": 270,
+            "unitPrice": 55,
+            "lineTotal": 330,
             "reason": "own-tier"
           },
           {
             "type": "casual",
-            "unitPrice": 75,
-            "lineTotal": 225,
+            "unitPrice": 85,
+            "lineTotal": 255,
             "reason": "courtesy-top"
           }
         ],
-        "total": 495
+        "total": 585
       }
     },
     {
       "id": "EC-034",
-      "description": "2 reversible alone -> 100 fixed",
+      "description": "2 reversible alone -> 125 fixed",
       "tags": [
         "reversible",
         "fixed"
@@ -1628,17 +1628,17 @@
         "lines": [
           {
             "type": "reversible",
-            "unitPrice": 100,
-            "lineTotal": 200,
+            "unitPrice": 125,
+            "lineTotal": 250,
             "reason": "fixed"
           }
         ],
-        "total": 200
+        "total": 250
       }
     },
     {
       "id": "EC-035",
-      "description": "6 casual + 2 reversible -> reversible stays 100 under courtesy",
+      "description": "6 casual + 2 reversible -> reversible stays 125 under courtesy",
       "tags": [
         "reversible",
         "fixed",
@@ -1663,23 +1663,23 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
             "type": "reversible",
-            "unitPrice": 100,
-            "lineTotal": 200,
+            "unitPrice": 125,
+            "lineTotal": 250,
             "reason": "fixed"
           }
         ],
-        "total": 680
+        "total": 820
       }
     },
     {
       "id": "EC-036",
-      "description": "6 reversible + 1 billetera -> reversible triggers (as on main), billetera courtesy 55",
+      "description": "6 reversible + 1 billetera -> reversible triggers (as on main), billetera courtesy 65",
       "tags": [
         "reversible",
         "reversible-trigger",
@@ -1704,18 +1704,18 @@
         "lines": [
           {
             "type": "reversible",
-            "unitPrice": 100,
-            "lineTotal": 600,
+            "unitPrice": 125,
+            "lineTotal": 750,
             "reason": "fixed"
           },
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 55,
+            "unitPrice": 65,
+            "lineTotal": 65,
             "reason": "courtesy-top"
           }
         ],
-        "total": 655
+        "total": 815
       },
       "note": "Main counts REVERSIBLE in unlocksWholesale; the rule says the trigger stays 'as on main'. Flagged for Eduardo: reversible has no wholesale tier of its own."
     },
@@ -1750,7 +1750,7 @@
     },
     {
       "id": "EC-038",
-      "description": "3 B-1 alone -> stays 40 even at 3+",
+      "description": "3 B-1 alone -> Q130 total (Q43.33 c/u) from one group of 3",
       "tags": [
         "b1",
         "fixed",
@@ -1770,12 +1770,12 @@
         "lines": [
           {
             "type": "sintetica",
-            "unitPrice": 40,
-            "lineTotal": 120,
+            "unitPrice": 43.33,
+            "lineTotal": 130,
             "reason": "fixed"
           }
         ],
-        "total": 120
+        "total": 130
       }
     },
     {
@@ -1846,8 +1846,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
@@ -1857,12 +1857,12 @@
             "reason": "fixed"
           }
         ],
-        "total": 560
+        "total": 650
       }
     },
     {
       "id": "EC-041",
-      "description": "4 B-1 + 2 generic sintética + 1 billetera -> sintética group 6 triggers; billetera courtesy 55",
+      "description": "4 B-1 + 2 generic sintética + 1 billetera -> sintética group 6 triggers; B-1 Q170 (42.50 c/u); billetera courtesy 65",
       "tags": [
         "b1",
         "fixed",
@@ -1893,8 +1893,8 @@
         "lines": [
           {
             "type": "sintetica",
-            "unitPrice": 40,
-            "lineTotal": 160,
+            "unitPrice": 42.5,
+            "lineTotal": 170,
             "reason": "fixed"
           },
           {
@@ -1905,12 +1905,12 @@
           },
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 55,
+            "unitPrice": 65,
+            "lineTotal": 65,
             "reason": "courtesy-top"
           }
         ],
-        "total": 275
+        "total": 295
       }
     },
     {
@@ -1938,8 +1938,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
@@ -1949,7 +1949,7 @@
             "reason": "courtesy-top"
           }
         ],
-        "total": 510
+        "total": 600
       }
     },
     {
@@ -1965,7 +1965,7 @@
           "type": "packaging",
           "sku_hint": "SUM-BOLSA",
           "quantity": 6,
-          "catalogPrice": 5.0
+          "catalogPrice": 5
         }
       ],
       "expected": {
@@ -1992,7 +1992,7 @@
           "type": "packaging",
           "sku_hint": "SUM-BOLSA",
           "quantity": 6,
-          "catalogPrice": 5.0
+          "catalogPrice": 5
         },
         {
           "type": "billetera",
@@ -2034,7 +2034,7 @@
           "type": "packaging",
           "sku_hint": "SUM-BOLSA",
           "quantity": 2,
-          "catalogPrice": 5.0
+          "catalogPrice": 5
         }
       ],
       "expected": {
@@ -2062,10 +2062,10 @@
           "sku_hint": "CASUAL-CFG",
           "quantity": 6,
           "configuredTiers": {
-            "1": 110.0,
-            "3": 95.0,
-            "6": 85.0,
-            "12": 70.0
+            "1": 110,
+            "3": 95,
+            "6": 85,
+            "12": 70
           }
         }
       ],
@@ -2102,10 +2102,10 @@
           "sku_hint": "CASUAL-CFG",
           "quantity": 1,
           "configuredTiers": {
-            "1": 110.0,
-            "3": 95.0,
-            "6": 85.0,
-            "12": 70.0
+            "1": 110,
+            "3": 95,
+            "6": 85,
+            "12": 70
           }
         }
       ],
@@ -2115,8 +2115,8 @@
         "lines": [
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 330,
+            "unitPrice": 65,
+            "lineTotal": 390,
             "reason": "own-tier"
           },
           {
@@ -2126,7 +2126,7 @@
             "reason": "courtesy-top"
           }
         ],
-        "total": 400
+        "total": 460
       }
     },
     {
@@ -2149,8 +2149,8 @@
           "sku_hint": "CASUAL-P16",
           "quantity": 2,
           "configuredTiers": {
-            "1": 110.0,
-            "6": 85.0
+            "1": 110,
+            "6": 85
           }
         }
       ],
@@ -2160,8 +2160,8 @@
         "lines": [
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 330,
+            "unitPrice": 65,
+            "lineTotal": 390,
             "reason": "own-tier"
           },
           {
@@ -2171,7 +2171,7 @@
             "reason": "courtesy-top"
           }
         ],
-        "total": 500
+        "total": 560
       }
     },
     {
@@ -2188,8 +2188,8 @@
           "sku_hint": "CASUAL-P16",
           "quantity": 4,
           "configuredTiers": {
-            "1": 110.0,
-            "6": 85.0
+            "1": 110,
+            "6": 85
           }
         }
       ],
@@ -2227,10 +2227,10 @@
           "sku_hint": "CASUAL-CFG",
           "quantity": 2,
           "configuredTiers": {
-            "1": 110.0,
-            "3": 95.0,
-            "6": 85.0,
-            "12": 70.0
+            "1": 110,
+            "3": 95,
+            "6": 85,
+            "12": 70
           }
         }
       ],
@@ -2240,8 +2240,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 320,
+            "unitPrice": 95,
+            "lineTotal": 380,
             "reason": "own-tier"
           },
           {
@@ -2251,7 +2251,7 @@
             "reason": "own-tier"
           }
         ],
-        "total": 490
+        "total": 550
       }
     },
     {
@@ -2293,12 +2293,12 @@
           },
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 55,
+            "unitPrice": 65,
+            "lineTotal": 65,
             "reason": "courtesy-top"
           }
         ],
-        "total": 1029.87
+        "total": 1039.87
       }
     },
     {
@@ -2315,7 +2315,7 @@
           "sku_hint": "CASUAL-ODD2",
           "quantity": 3,
           "configuredTiers": {
-            "1": 40.0,
+            "1": 40,
             "3": 33.33
           }
         }
@@ -2348,7 +2348,7 @@
           "sku_hint": "CASUAL-3DEC",
           "quantity": 3,
           "configuredTiers": {
-            "1": 40.0,
+            "1": 40,
             "3": 33.335
           }
         }
@@ -2358,7 +2358,7 @@
     },
     {
       "id": "EC-054",
-      "description": "Server recompute: client sends 100 for both lines; server prices 12 casual + 1 billetera as 75 / 55",
+      "description": "Server recompute: client sends 100 for both lines; server prices 12 casual + 1 billetera as 85 / 65",
       "tags": [
         "server-recompute",
         "courtesy"
@@ -2369,13 +2369,13 @@
           "type": "casual",
           "sku_hint": "generic",
           "quantity": 12,
-          "clientUnitPrice": 100.0
+          "clientUnitPrice": 100
         },
         {
           "type": "billetera",
           "sku_hint": "generic",
           "quantity": 1,
-          "clientUnitPrice": 100.0
+          "clientUnitPrice": 100
         }
       ],
       "expected": {
@@ -2384,23 +2384,23 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 75,
-            "lineTotal": 900,
+            "unitPrice": 85,
+            "lineTotal": 1020,
             "reason": "own-tier"
           },
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 55,
+            "unitPrice": 65,
+            "lineTotal": 65,
             "reason": "courtesy-top"
           }
         ],
-        "total": 955
+        "total": 1085
       }
     },
     {
       "id": "EC-055",
-      "description": "Server recompute: client sends 50 for 3 casual; server prices 90",
+      "description": "Server recompute: client sends 50 for 3 casual; server prices 110",
       "tags": [
         "server-recompute"
       ],
@@ -2410,7 +2410,7 @@
           "type": "casual",
           "sku_hint": "generic",
           "quantity": 3,
-          "clientUnitPrice": 50.0
+          "clientUnitPrice": 50
         }
       ],
       "expected": {
@@ -2419,12 +2419,12 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 90,
-            "lineTotal": 270,
+            "unitPrice": 110,
+            "lineTotal": 330,
             "reason": "own-tier"
           }
         ],
-        "total": 270
+        "total": 330
       }
     },
     {
@@ -2441,10 +2441,10 @@
           "sku_hint": "SKU-A",
           "quantity": 4,
           "configuredTiers": {
-            "1": 50.0,
-            "3": 45.0,
-            "6": 40.0,
-            "12": 35.0
+            "1": 50,
+            "3": 45,
+            "6": 40,
+            "12": 35
           }
         }
       ],
@@ -2475,7 +2475,7 @@
           "type": "untyped",
           "sku_hint": "SKU-N",
           "quantity": 2,
-          "catalogPrice": 120.0
+          "catalogPrice": 120
         }
       ],
       "expected": {
@@ -2511,10 +2511,10 @@
           "sku_hint": "SKU-A",
           "quantity": 1,
           "configuredTiers": {
-            "1": 50.0,
-            "3": 45.0,
-            "6": 40.0,
-            "12": 35.0
+            "1": 50,
+            "3": 45,
+            "6": 40,
+            "12": 35
           }
         }
       ],
@@ -2524,8 +2524,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
@@ -2535,7 +2535,7 @@
             "reason": "courtesy-top"
           }
         ],
-        "total": 515
+        "total": 605
       }
     },
     {
@@ -2557,8 +2557,8 @@
           "sku_hint": "SKU-B",
           "quantity": 1,
           "configuredTiers": {
-            "1": 50.0,
-            "6": 40.0
+            "1": 50,
+            "6": 40
           }
         }
       ],
@@ -2568,8 +2568,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
@@ -2579,7 +2579,7 @@
             "reason": "courtesy-top"
           }
         ],
-        "total": 520
+        "total": 610
       }
     },
     {
@@ -2601,8 +2601,8 @@
           "sku_hint": "SKU-C",
           "quantity": 1,
           "configuredTiers": {
-            "1": 50.0,
-            "3": 45.0
+            "1": 50,
+            "3": 45
           }
         }
       ],
@@ -2612,8 +2612,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
@@ -2623,7 +2623,7 @@
             "reason": "courtesy-top"
           }
         ],
-        "total": 525
+        "total": 615
       }
     },
     {
@@ -2645,7 +2645,7 @@
           "sku_hint": "SKU-D",
           "quantity": 2,
           "configuredTiers": {
-            "1": 50.0
+            "1": 50
           }
         }
       ],
@@ -2655,8 +2655,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
@@ -2666,7 +2666,7 @@
             "reason": "courtesy-top"
           }
         ],
-        "total": 580
+        "total": 670
       }
     },
     {
@@ -2687,7 +2687,7 @@
           "type": "untyped",
           "sku_hint": "SKU-N",
           "quantity": 1,
-          "catalogPrice": 120.0
+          "catalogPrice": 120
         }
       ],
       "expected": {
@@ -2696,8 +2696,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
@@ -2707,12 +2707,12 @@
             "reason": "courtesy-top"
           }
         ],
-        "total": 600
+        "total": 690
       }
     },
     {
       "id": "EC-063",
-      "description": "6 untyped (same product) + 1 billetera -> untyped triggers (main behavior), own tier 40; billetera courtesy 55",
+      "description": "6 untyped (same product) + 1 billetera -> untyped triggers (main behavior), own tier 40; billetera courtesy 65",
       "tags": [
         "no-type-trigger",
         "courtesy"
@@ -2724,10 +2724,10 @@
           "sku_hint": "SKU-A",
           "quantity": 6,
           "configuredTiers": {
-            "1": 50.0,
-            "3": 45.0,
-            "6": 40.0,
-            "12": 35.0
+            "1": 50,
+            "3": 45,
+            "6": 40,
+            "12": 35
           }
         },
         {
@@ -2748,12 +2748,12 @@
           },
           {
             "type": "billetera",
-            "unitPrice": 55,
-            "lineTotal": 55,
+            "unitPrice": 65,
+            "lineTotal": 65,
             "reason": "courtesy-top"
           }
         ],
-        "total": 295
+        "total": 305
       },
       "note": "Final (Eduardo): 6+ units of one untyped product trigger courtesy."
     },
@@ -2771,17 +2771,17 @@
           "sku_hint": "SKU-A",
           "quantity": 3,
           "configuredTiers": {
-            "1": 50.0,
-            "3": 45.0,
-            "6": 40.0,
-            "12": 35.0
+            "1": 50,
+            "3": 45,
+            "6": 40,
+            "12": 35
           }
         },
         {
           "type": "untyped",
           "sku_hint": "SKU-N",
           "quantity": 3,
-          "catalogPrice": 120.0
+          "catalogPrice": 120
         }
       ],
       "expected": {
@@ -2807,7 +2807,7 @@
     },
     {
       "id": "EC-065",
-      "description": "6 dama + 1 reversible + 1 B-1 + 1 tarjetero -> dama 60; reversible 100, B-1 40 fixed; tarjetero courtesy 6",
+      "description": "6 dama + 1 reversible + 1 B-1 + 1 tarjetero -> dama 70; reversible 125, B-1 40 courtesy; tarjetero courtesy 10",
       "tags": [
         "mixed",
         "courtesy",
@@ -2844,14 +2844,14 @@
         "lines": [
           {
             "type": "dama",
-            "unitPrice": 60,
-            "lineTotal": 360,
+            "unitPrice": 70,
+            "lineTotal": 420,
             "reason": "own-tier"
           },
           {
             "type": "reversible",
-            "unitPrice": 100,
-            "lineTotal": 100,
+            "unitPrice": 125,
+            "lineTotal": 125,
             "reason": "fixed"
           },
           {
@@ -2862,12 +2862,12 @@
           },
           {
             "type": "tarjetero",
-            "unitPrice": 6,
-            "lineTotal": 6,
+            "unitPrice": 10,
+            "lineTotal": 10,
             "reason": "courtesy-top"
           }
         ],
-        "total": 506
+        "total": 595
       }
     },
     {
@@ -2902,7 +2902,7 @@
     },
     {
       "id": "EC-067",
-      "description": "Code ' b-1 ' (spaces, lowercase) x3 -> trimmed/uppercased equals B-1, stays 40",
+      "description": "Code ' b-1 ' (spaces, lowercase) x3 -> trimmed/uppercased equals B-1, Q130 total",
       "tags": [
         "b1",
         "b1-exact",
@@ -2923,12 +2923,12 @@
         "lines": [
           {
             "type": "sintetica",
-            "unitPrice": 40,
-            "lineTotal": 120,
+            "unitPrice": 43.33,
+            "lineTotal": 130,
             "reason": "fixed"
           }
         ],
-        "total": 120
+        "total": 130
       }
     },
     {
@@ -3065,8 +3065,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
@@ -3082,7 +3082,7 @@
             "reason": "courtesy-top"
           }
         ],
-        "total": 540
+        "total": 630
       }
     },
     {
@@ -3113,8 +3113,8 @@
         "lines": [
           {
             "type": "casual",
-            "unitPrice": 80,
-            "lineTotal": 480,
+            "unitPrice": 95,
+            "lineTotal": 570,
             "reason": "own-tier"
           },
           {
@@ -3124,7 +3124,7 @@
             "reason": "fixed"
           }
         ],
-        "total": 560
+        "total": 650
       }
     },
     {
@@ -3193,9 +3193,9 @@
           "sku_hint": "BILL-CFG",
           "quantity": 3,
           "configuredTiers": {
-            "1": 110.0,
-            "3": 70.0,
-            "6": 60.0
+            "1": 110,
+            "3": 70,
+            "6": 60
           }
         }
       ],
@@ -3221,8 +3221,8 @@
           "sku_hint": "NINO-CFG",
           "quantity": 1,
           "configuredTiers": {
-            "1": 70.0,
-            "3": 50.0
+            "1": 70,
+            "3": 50
           }
         }
       ],
