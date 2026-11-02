@@ -612,6 +612,37 @@ class FelFactXmlBuilderTest {
     }
 
     @Test
+    void editedUnitPriceBalancesDiscountWithoutChangingCatalogLines() {
+        TaxInvoiceDocument.Line edited = TaxInvoiceDocument.Line.builder()
+                .description("Editada")
+                .quantity(new BigDecimal("3"))
+                .unitPrice(new BigDecimal("33.33"))
+                .lineTotal(new BigDecimal("99.99"))
+                .editedUnitPrice(true)
+                .build();
+        FelFactXmlBuilder.FelLineMoney editedMoney = FelFactXmlBuilder.resolveFelLineMoney(
+                edited, new BigDecimal("3.00"), new BigDecimal("89.99"), false);
+        assertThat(editedMoney.unitPrice()).isEqualByComparingTo("33.33");
+        assertThat(editedMoney.gross()).isEqualByComparingTo("99.99");
+        assertThat(editedMoney.discount()).isEqualByComparingTo("10.00");
+        assertThat(editedMoney.total()).isEqualByComparingTo("89.99");
+        assertThat(editedMoney.unitPrice().multiply(new BigDecimal("3")).setScale(2, RoundingMode.HALF_UP)
+                .subtract(editedMoney.discount())).isEqualByComparingTo("89.99");
+
+        TaxInvoiceDocument.Line catalog = TaxInvoiceDocument.Line.builder()
+                .description("Lista")
+                .quantity(new BigDecimal("3"))
+                .unitPrice(new BigDecimal("100.00"))
+                .lineTotal(new BigDecimal("100.00"))
+                .build();
+        FelFactXmlBuilder.FelLineMoney catalogMoney = FelFactXmlBuilder.resolveFelLineMoney(
+                catalog, new BigDecimal("3.00"), new BigDecimal("100.00"), false);
+        assertThat(catalogMoney.unitPrice()).isEqualByComparingTo("33.33");
+        assertThat(catalogMoney.gross()).isEqualByComparingTo("100.00");
+        assertThat(catalogMoney.discount()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
     void b1BundleThreeAndFourUnits() {
         FelFactXmlBuilder.FelLineMoney three = FelFactXmlBuilder.resolveFelLineMoney(
                 new BigDecimal("3"), new BigDecimal("130.00"), true);

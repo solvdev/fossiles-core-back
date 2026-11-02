@@ -124,6 +124,52 @@ class KioskSaleInvoiceMapperTest {
         assertThat(lines.get(4).isBundlePriced()).isFalse();
     }
 
+    @Test
+    void editedStraightPriceIsNotABundleAndCatalogPriceIsNotMarkedEdited() {
+        ProductEntity product = ProductEntity.builder()
+                .id(7L)
+                .code("B-1")
+                .salePrice(new BigDecimal("200.00"))
+                .build();
+        when(productRepository.findAllById(org.mockito.ArgumentMatchers.any())).thenReturn(List.of(product));
+
+        KioskSaleEntity discounted = KioskSaleEntity.builder()
+                .discountAmount(new BigDecimal("10.00"))
+                .subtotal(new BigDecimal("370.00"))
+                .totalAmount(new BigDecimal("360.00"))
+                .items(List.of(
+                        priced(7L, "4", "42.50", "170.00"),
+                        priced(7L, "1", "200.00", "200.00"),
+                        priced(7L, "3", "43.33", "130.00")))
+                .build();
+
+        var lines = mapper.fromSale(discounted).getLines();
+        assertThat(lines.get(0).isBundlePriced()).isFalse();
+        assertThat(lines.get(0).isEditedUnitPrice()).isTrue();
+        assertThat(lines.get(1).isEditedUnitPrice()).isFalse();
+        assertThat(lines.get(1).isBundlePriced()).isFalse();
+        assertThat(lines.get(2).isBundlePriced()).isTrue();
+        assertThat(lines.get(2).isEditedUnitPrice()).isFalse();
+
+        KioskSaleEntity noDiscount = KioskSaleEntity.builder()
+                .discountAmount(BigDecimal.ZERO)
+                .items(List.of(priced(7L, "4", "42.50", "170.00")))
+                .build();
+        assertThat(mapper.fromSale(noDiscount).getLines().get(0).isEditedUnitPrice()).isFalse();
+        assertThat(mapper.fromSale(noDiscount).getLines().get(0).isBundlePriced()).isFalse();
+    }
+
+    private static KioskSaleItemEntity priced(Long productId, String quantity, String unitPrice, String lineTotal) {
+        return KioskSaleItemEntity.builder()
+                .productId(productId)
+                .productCode("B-1")
+                .productName("B-1")
+                .quantity(new BigDecimal(quantity))
+                .unitPrice(new BigDecimal(unitPrice))
+                .lineTotal(new BigDecimal(lineTotal))
+                .build();
+    }
+
     private static KioskSaleItemEntity item(String code, String quantity, String lineTotal) {
         return KioskSaleItemEntity.builder()
                 .productCode(code)

@@ -87,8 +87,8 @@ public class FelFactXmlBuilder {
             totalIva = totalIva.add(iva.tax());
             granTotalFromLines = granTotalFromLines.add(lineTotal);
             BigDecimal qty = nz(line.getQuantity()).setScale(2, RoundingMode.HALF_UP);
-            FelLineMoney money = resolveFelLineMoney(
-                    qty, lineTotal, bundleAdjustmentAllowed && line.isBundlePriced());
+            boolean bundlePriced = bundleAdjustmentAllowed && line.isBundlePriced();
+            FelLineMoney money = resolveFelLineMoney(line, qty, lineTotal, bundlePriced);
             String desc = resolveFelItemDescripcionForDte(line);
             itemsXml.append("""
                     <dte:Item BienOServicio="B" NumeroLinea="%d">
@@ -522,6 +522,28 @@ public class FelFactXmlBuilder {
     record FelLineMoney(BigDecimal unitPrice, BigDecimal gross, BigDecimal discount, BigDecimal total) {
     }
 
+    /**
+     * Línea con precio editado y descuento: el unitario guardado y el descuento de la
+     * línea cumplen unitario × cantidad − descuento = total. El paquete B-1 y las
+     * líneas de lista siguen la fórmula anterior.
+     */
+    static FelLineMoney resolveFelLineMoney(
+            TaxInvoiceDocument.Line line,
+            BigDecimal quantity,
+            BigDecimal netTotal,
+            boolean bundlePriced
+    ) {
+        BigDecimal qty = nz(quantity).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal total = nz(netTotal).setScale(2, RoundingMode.HALF_UP);
+        if (line != null && line.isEditedUnitPrice() && !bundlePriced) {
+            FelLineMoney edited = editedUnitPriceMoney(line.getUnitPrice(), qty, total);
+            if (edited != null) {
+                return edited;
+            }
+        }
+        return resolveFelLineMoney(qty, total, bundlePriced);
+    }
+
     static FelLineMoney resolveFelLineMoney(BigDecimal quantity, BigDecimal lineTotal, boolean bundlePriced) {
         BigDecimal qty = nz(quantity).setScale(2, RoundingMode.HALF_UP);
         BigDecimal total = nz(lineTotal).setScale(2, RoundingMode.HALF_UP);
@@ -546,6 +568,23 @@ public class FelFactXmlBuilder {
                 && qty.compareTo(BigDecimal.ZERO) > 0
                 && total.compareTo(BigDecimal.ZERO) > 0
                 && isWholeQuantity(qty);
+    }
+
+    /**
+     * Unitario editado × cantidad − descuento = neto. Null si el neto supera el bruto
+     * (no hay descuento que cuadrar) para no cambiar la fórmula de lista.
+     */
+    private static FelLineMoney editedUnitPriceMoney(BigDecimal unitPrice, BigDecimal qty, BigDecimal total) {
+        if (qty.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+        BigDecimal unit = nz(unitPrice).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal gross = unit.multiply(qty).setScale(2, RoundingMode.HALF_UP);
+        if (gross.compareTo(total) < 0) {
+            return null;
+        }
+        BigDecimal discount = gross.subtract(total).setScale(2, RoundingMode.HALF_UP);
+        return new FelLineMoney(unit, gross, discount, total);
     }
 
     /** Fórmula de main: unitario HALF_UP, precio = total, descuento 0.00. */
