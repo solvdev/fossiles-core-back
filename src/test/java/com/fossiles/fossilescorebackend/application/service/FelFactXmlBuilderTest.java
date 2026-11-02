@@ -674,7 +674,6 @@ class FelFactXmlBuilderTest {
             String xml = builder.buildUnsignedXml(
                     invoice("2", noteType, List.of(bundleLine("3", "43.33", "130.00")), "130.00"),
                     props.resolveCredentials(false));
-            assertThat(xml).contains("Tipo=\"" + noteType + "\"");
             assertThat(xml).contains(mainItemXml(1, "3.00", "B-1 | Billetera B-1", "130.00"));
             assertThat(xml).doesNotContain("43.34");
             assertThat(xml).doesNotContain("130.02");

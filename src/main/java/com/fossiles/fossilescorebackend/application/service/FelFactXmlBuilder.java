@@ -198,20 +198,16 @@ public class FelFactXmlBuilder {
     /**
      * Establecimiento FEL "1" (CUEROGLAM central) emite Factura Cambiaria (FCAM).
      * El resto de establecimientos emiten Factura (FACT).
-     * NCRE y NDEB se conservan: si la emisión de notas está habilitada, no se reescriben a FACT.
      */
     static boolean isFcamEstablishment(String establishmentCode) {
         return "1".equals(safe(establishmentCode));
     }
 
     static String resolveEmissionDocumentType(String requestedType, String establishmentCode) {
-        String requested = safe(requestedType).toUpperCase(Locale.ROOT);
-        if (FelSatReceptorRules.isNotaCreditoDebito(requested)) {
-            return requested;
-        }
         if (isFcamEstablishment(establishmentCode)) {
             return "FCAM";
         }
+        String requested = safe(requestedType).toUpperCase(Locale.ROOT);
         if ("FCAM".equals(requested) || "FACT".equals(requested)) {
             return requested;
         }
