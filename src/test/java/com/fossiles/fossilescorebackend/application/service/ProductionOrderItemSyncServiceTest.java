@@ -28,6 +28,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -206,6 +207,143 @@ class ProductionOrderItemSyncServiceTest {
     }
 
     @Test
+    void rejectsProductChangeWhenTaskReferencesLineAndWritesNothing() {
+        ProductionOrderItemEntity line = referencedLine();
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        givenReferences(List.of(line.getId()), List.of(), List.of());
+        givenLineLabels();
+
+        assertThatThrownBy(() -> service.sync(ORDER_ID, "NORMAL", List.of(request(10L, 9L, 3L, null, 4))))
+                .isInstanceOf(ProductionOrderItemConflictException.class)
+                .hasMessage("No se puede cambiar la línea B-7 / NEGRO porque tiene tareas.");
+        assertThat(line.getProductId()).isEqualTo(1L);
+        assertThat(line.getColorId()).isEqualTo(3L);
+        assertThat(line.getQuantity()).isEqualTo(4);
+        verifyNothingWritten();
+    }
+
+    @Test
+    void rejectsColorChangeWhenTaskItemReferencesLineAndWritesNothing() {
+        ProductionOrderItemEntity line = referencedLine();
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        givenReferences(List.of(), List.of(line.getId()), List.of());
+        givenLineLabels();
+
+        assertThatThrownBy(() -> service.sync(ORDER_ID, "NORMAL", List.of(request(10L, 1L, 8L, null, 4))))
+                .isInstanceOf(ProductionOrderItemConflictException.class)
+                .hasMessage("No se puede cambiar la línea B-7 / NEGRO porque tiene tareas.");
+        assertThat(line.getColorId()).isEqualTo(3L);
+        assertThat(line.getQuantity()).isEqualTo(4);
+        verifyNothingWritten();
+    }
+
+    @Test
+    void rejectsMarcasBrandChangeWhenWarehouseUnitReferencesLineAndWritesNothing() {
+        ProductionOrderItemEntity line = referencedLine();
+        line.setBrandName("LEVIS");
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        givenReferences(List.of(), List.of(), List.of(line.getId()));
+        givenLineLabels();
+
+        assertThatThrownBy(() -> service.sync(ORDER_ID, "MARCAS", List.of(request(10L, 1L, 3L, "NAUTICA", 4))))
+                .isInstanceOf(ProductionOrderItemConflictException.class)
+                .hasMessage("No se puede cambiar la línea B-7 / NEGRO porque tiene unidades de bodega.");
+        assertThat(line.getBrandName()).isEqualTo("LEVIS");
+        assertThat(line.getQuantity()).isEqualTo(4);
+        verifyNothingWritten();
+    }
+
+    @Test
+    void allowsProductAndColorChangeWhenLineIsUnreferenced() throws Exception {
+        ProductionOrderItemEntity line = referencedLine();
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        givenNoReferences();
+        when(taskItemRepository.assignedQuantityMap(any())).thenReturn(Map.of());
+
+        service.sync(ORDER_ID, "NORMAL", List.of(request(10L, 9L, 8L, "OTRA", 4)));
+
+        ProductionOrderItemEntity saved = single(savedItems());
+        assertThat(saved.getId()).isEqualTo(10L);
+        assertThat(saved.getProductId()).isEqualTo(9L);
+        assertThat(saved.getColorId()).isEqualTo(8L);
+        assertThat(saved.getBrandName()).isNull();
+        assertThat(saved.getQuantity()).isEqualTo(4);
+        assertThat(saved.getWarehouseReceivedQty()).isEqualTo(2);
+        verify(itemRepository, never()).deleteAll(any());
+    }
+
+    @Test
+    void allowsMarcasBrandCaseChangeWhenLineIsReferenced() throws Exception {
+        ProductionOrderItemEntity line = referencedLine();
+        line.setBrandName("LEVIS");
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        lenient().when(taskRepository.findNonCancelledItemIds(any())).thenReturn(List.of(line.getId()));
+        lenient().when(taskItemRepository.findNonCancelledItemIds(any())).thenReturn(List.of());
+        lenient().when(warehouseUnitRepository.findReferencedItemIds(any())).thenReturn(List.of());
+        lenient().when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(1L).code("B-7").build()));
+        lenient().when(colorRepository.findAllById(any())).thenReturn(List.of(
+                ColorEntity.builder().id(3L).name("NEGRO").build()));
+        when(taskItemRepository.assignedQuantityMap(any())).thenReturn(Map.of());
+
+        service.sync(ORDER_ID, "MARCAS", List.of(request(10L, 1L, 3L, "levis", 4)));
+
+        ProductionOrderItemEntity saved = single(savedItems());
+        assertThat(saved.getId()).isEqualTo(10L);
+        assertThat(saved.getBrandName()).isEqualTo("LEVIS");
+        assertThat(saved.getWarehouseReceivedQty()).isEqualTo(2);
+    }
+
+    @Test
+    void rejectsQuantityBelowAssignedOnFallbackMatchAndWritesNothing() {
+        ProductionOrderItemEntity line = referencedLine();
+        line.setQuantity(10);
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        when(taskItemRepository.assignedQuantityMap(any())).thenReturn(Map.of(10L, 8));
+        givenLineLabels();
+
+        assertThatThrownBy(() -> service.sync(ORDER_ID, "NORMAL", List.of(request(null, 1L, 3L, null, 7))))
+                .isInstanceOf(ProductionOrderItemConflictException.class)
+                .hasMessage("No se puede bajar la cantidad de la línea B-7 / NEGRO por debajo de 8.");
+        assertThat(line.getQuantity()).isEqualTo(10);
+        assertThat(line.getWarehouseReceivedQty()).isEqualTo(2);
+        verifyNothingWritten();
+    }
+
+    @Test
+    void rejectsQuantityBelowWarehouseReceivedAndWritesNothing() {
+        ProductionOrderItemEntity line = referencedLine();
+        line.setQuantity(10);
+        line.setWarehouseReceivedQty(7);
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        when(taskItemRepository.assignedQuantityMap(any())).thenReturn(Map.of(10L, 2));
+        givenLineLabels();
+
+        assertThatThrownBy(() -> service.sync(ORDER_ID, "NORMAL", List.of(request(10L, 1L, 3L, null, 6))))
+                .isInstanceOf(ProductionOrderItemConflictException.class)
+                .hasMessage("No se puede bajar la cantidad de la línea B-7 / NEGRO por debajo de 7.");
+        assertThat(line.getQuantity()).isEqualTo(10);
+        assertThat(line.getWarehouseReceivedQty()).isEqualTo(7);
+        verifyNothingWritten();
+    }
+
+    @Test
+    void allowsQuantityEqualToTheHigherFloor() throws Exception {
+        ProductionOrderItemEntity line = referencedLine();
+        line.setQuantity(10);
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        when(taskItemRepository.assignedQuantityMap(any())).thenReturn(Map.of(10L, 5));
+
+        service.sync(ORDER_ID, "NORMAL", List.of(request(10L, 1L, 3L, null, 5)));
+
+        ProductionOrderItemEntity saved = single(savedItems());
+        assertThat(saved.getId()).isEqualTo(10L);
+        assertThat(saved.getQuantity()).isEqualTo(5);
+        assertThat(saved.getWarehouseReceivedQty()).isEqualTo(2);
+        verify(itemRepository, never()).deleteAll(any());
+    }
+
+    @Test
     void treatsAmbiguousProductColorBrandMatchAsNew() throws Exception {
         ProductionOrderItemEntity first = line(10L, 1L, 2L, "LEVIS", 4);
         ProductionOrderItemEntity second = line(11L, 1L, 2L, "LEVIS", 5);
@@ -249,6 +387,27 @@ class ProductionOrderItemSyncServiceTest {
         when(taskRepository.findNonCancelledItemIds(any())).thenReturn(List.of());
         when(taskItemRepository.findNonCancelledItemIds(any())).thenReturn(List.of());
         when(warehouseUnitRepository.findReferencedItemIds(any())).thenReturn(List.of());
+    }
+
+    private void givenReferences(List<Long> tasks, List<Long> taskItems, List<Long> units) {
+        when(taskRepository.findNonCancelledItemIds(any())).thenReturn(tasks);
+        when(taskItemRepository.findNonCancelledItemIds(any())).thenReturn(taskItems);
+        when(warehouseUnitRepository.findReferencedItemIds(any())).thenReturn(units);
+        when(taskItemRepository.assignedQuantityMap(any())).thenReturn(Map.of());
+    }
+
+    /** Línea B-7 / NEGRO con 4 piezas y 2 ya recibidas. */
+    private static ProductionOrderItemEntity referencedLine() {
+        ProductionOrderItemEntity line = line(10L, 1L, 3L, null, 2);
+        line.setQuantity(4);
+        return line;
+    }
+
+    private void givenLineLabels() {
+        when(productRepository.findAllById(any())).thenReturn(List.of(
+                ProductEntity.builder().id(1L).code("B-7").name("Billetera").build()));
+        when(colorRepository.findAllById(any())).thenReturn(List.of(
+                ColorEntity.builder().id(3L).name("NEGRO").build()));
     }
 
     private void verifyNothingWritten() {

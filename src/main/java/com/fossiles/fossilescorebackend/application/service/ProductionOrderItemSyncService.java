@@ -34,7 +34,9 @@ import java.util.stream.Collectors;
  * Una línea con id se actualiza en su sitio. Una línea sin id reutiliza la única
  * línea suelta con el mismo producto, color y marca que se va a guardar; si hay
  * más de una, entra como línea nueva. Lo que el request ya no trae se borra solo
- * si nadie lo cita.
+ * si nadie lo cita. Una línea emparejada (por id o por ese respaldo) tampoco puede
+ * cambiar producto, color o marca de MARCAS si está citada, ni bajar la cantidad
+ * por debajo de lo ya asignado a tareas o recibido en bodega.
  */
 @Service
 @RequiredArgsConstructor
@@ -118,6 +120,7 @@ public class ProductionOrderItemSyncService {
         if (!toDelete.isEmpty()) {
             assertCanDelete(toDelete);
         }
+        assertMatchedLinesCanChange(orderType, matched);
 
         List<ProductionOrderItemEntity> toSave = new ArrayList<>();
         for (ProductionOrderItemRequest request : requests) {
@@ -159,20 +162,14 @@ public class ProductionOrderItemSyncService {
     }
 
     private void assertCanDelete(List<ProductionOrderItemEntity> toDelete) {
-        List<Long> ids = toDelete.stream()
-                .map(ProductionOrderItemEntity::getId)
-                .filter(Objects::nonNull)
-                .toList();
+        List<Long> ids = idsOf(toDelete);
         if (ids.isEmpty()) {
             return;
         }
-        Set<Long> withTasks = idsOf(taskRepository.findNonCancelledItemIds(ids));
-        withTasks.addAll(idsOf(taskItemRepository.findNonCancelledItemIds(ids)));
-        Set<Long> withUnits = idsOf(warehouseUnitRepository.findReferencedItemIds(ids));
-
+        LineRefs refs = referencesOf(ids);
         List<ProductionOrderItemEntity> blocked = new ArrayList<>();
         for (ProductionOrderItemEntity line : toDelete) {
-            if (withTasks.contains(line.getId()) || withUnits.contains(line.getId())) {
+            if (refs.blocks(line.getId())) {
                 blocked.add(line);
             }
         }
@@ -182,31 +179,139 @@ public class ProductionOrderItemSyncService {
         Map<Long, ProductEntity> products = loadProducts(blocked);
         Map<Long, ColorEntity> colors = loadColors(blocked);
         String message = blocked.stream()
-                .map(line -> deletionMessage(
-                        line,
-                        products,
-                        colors,
-                        withTasks.contains(line.getId()),
-                        withUnits.contains(line.getId())))
+                .map(line -> "No se puede quitar la línea " + lineLabel(line, products, colors)
+                        + " " + because(refs.tasks.contains(line.getId()), refs.units.contains(line.getId())) + ".")
                 .collect(Collectors.joining(" "));
         throw new ProductionOrderItemConflictException(message);
     }
 
-    private static String deletionMessage(
-            ProductionOrderItemEntity line,
-            Map<Long, ProductEntity> products,
-            Map<Long, ColorEntity> colors,
-            boolean hasTasks,
-            boolean hasUnits) {
-        String why;
-        if (hasTasks && hasUnits) {
-            why = "tareas y unidades de bodega";
-        } else if (hasTasks) {
-            why = "tareas";
-        } else {
-            why = "unidades de bodega";
+    /**
+     * Revisa las líneas ya emparejadas, venga el match del id o del respaldo
+     * producto + color + marca. No escribe: si algo no se puede, lanza antes.
+     */
+    private void assertMatchedLinesCanChange(
+            String orderType,
+            Map<ProductionOrderItemRequest, ProductionOrderItemEntity> matched) {
+        List<Map.Entry<ProductionOrderItemRequest, ProductionOrderItemEntity>> identityChanges = new ArrayList<>();
+        List<Long> matchedIds = new ArrayList<>();
+        for (Map.Entry<ProductionOrderItemRequest, ProductionOrderItemEntity> entry : matched.entrySet()) {
+            ProductionOrderItemEntity line = entry.getValue();
+            if (line.getId() != null) {
+                matchedIds.add(line.getId());
+            }
+            if (identityChanges(orderType, line, entry.getKey())) {
+                identityChanges.add(entry);
+            }
         }
-        return "No se puede quitar la línea " + lineLabel(line, products, colors) + " porque tiene " + why + ".";
+
+        List<String> messages = new ArrayList<>();
+        if (!identityChanges.isEmpty()) {
+            LineRefs refs = referencesOf(identityChanges.stream().map(entry -> entry.getValue().getId()).toList());
+            List<ProductionOrderItemEntity> blocked = new ArrayList<>();
+            for (Map.Entry<ProductionOrderItemRequest, ProductionOrderItemEntity> entry : identityChanges) {
+                if (refs.blocks(entry.getValue().getId())) {
+                    blocked.add(entry.getValue());
+                }
+            }
+            if (!blocked.isEmpty()) {
+                Map<Long, ProductEntity> products = loadProducts(blocked);
+                Map<Long, ColorEntity> colors = loadColors(blocked);
+                for (ProductionOrderItemEntity line : blocked) {
+                    messages.add("No se puede cambiar la línea " + lineLabel(line, products, colors)
+                            + " " + because(refs.tasks.contains(line.getId()), refs.units.contains(line.getId())) + ".");
+                }
+            }
+        }
+
+        if (!matchedIds.isEmpty()) {
+            Map<Long, Integer> assigned = taskItemRepository.assignedQuantityMap(matchedIds);
+            if (assigned == null) {
+                assigned = Map.of();
+            }
+            List<ProductionOrderItemEntity> tooLow = new ArrayList<>();
+            Map<Long, Integer> minimumByLine = new HashMap<>();
+            for (Map.Entry<ProductionOrderItemRequest, ProductionOrderItemEntity> entry : matched.entrySet()) {
+                Integer requested = entry.getKey().getQuantity();
+                if (requested == null || entry.getValue().getId() == null) {
+                    continue;
+                }
+                int minimum = quantityFloor(entry.getValue(), assigned.get(entry.getValue().getId()));
+                if (requested < minimum) {
+                    tooLow.add(entry.getValue());
+                    minimumByLine.put(entry.getValue().getId(), minimum);
+                }
+            }
+            if (!tooLow.isEmpty()) {
+                Map<Long, ProductEntity> products = loadProducts(tooLow);
+                Map<Long, ColorEntity> colors = loadColors(tooLow);
+                for (ProductionOrderItemEntity line : tooLow) {
+                    messages.add("No se puede bajar la cantidad de la línea " + lineLabel(line, products, colors)
+                            + " por debajo de " + minimumByLine.get(line.getId()) + ".");
+                }
+            }
+        }
+
+        if (!messages.isEmpty()) {
+            throw new ProductionOrderItemConflictException(String.join(" ", messages));
+        }
+    }
+
+    /** Máximo entre lo asignado a tareas no canceladas y lo ya recibido en bodega. */
+    private static int quantityFloor(ProductionOrderItemEntity line, Integer assigned) {
+        int assignedQty = assigned == null ? 0 : assigned;
+        int received = line.getWarehouseReceivedQty() == null ? 0 : line.getWarehouseReceivedQty();
+        return Math.max(assignedQty, received);
+    }
+
+    private static boolean identityChanges(
+            String orderType, ProductionOrderItemEntity line, ProductionOrderItemRequest request) {
+        if (!Objects.equals(line.getProductId(), request.getProductId())
+                || !Objects.equals(line.getColorId(), request.getColorId())) {
+            return true;
+        }
+        return "MARCAS".equals(orderType)
+                && !Objects.equals(storedBrand(orderType, line.getBrandName()), storedBrand(orderType, request.getBrandName()));
+    }
+
+    private LineRefs referencesOf(Collection<Long> ids) {
+        List<Long> present = new ArrayList<>();
+        for (Long id : ids) {
+            if (id != null && !present.contains(id)) {
+                present.add(id);
+            }
+        }
+        if (present.isEmpty()) {
+            return new LineRefs(Set.of(), Set.of());
+        }
+        Set<Long> tasks = idsOf(taskRepository.findNonCancelledItemIds(present));
+        tasks.addAll(idsOf(taskItemRepository.findNonCancelledItemIds(present)));
+        return new LineRefs(tasks, idsOf(warehouseUnitRepository.findReferencedItemIds(present)));
+    }
+
+    private static List<Long> idsOf(List<ProductionOrderItemEntity> lines) {
+        List<Long> ids = new ArrayList<>();
+        for (ProductionOrderItemEntity line : lines) {
+            if (line.getId() != null) {
+                ids.add(line.getId());
+            }
+        }
+        return ids;
+    }
+
+    private static String because(boolean hasTasks, boolean hasUnits) {
+        if (hasTasks && hasUnits) {
+            return "porque tiene tareas y unidades de bodega";
+        }
+        if (hasTasks) {
+            return "porque tiene tareas";
+        }
+        return "porque tiene unidades de bodega";
+    }
+
+    private record LineRefs(Set<Long> tasks, Set<Long> units) {
+        boolean blocks(Long id) {
+            return id != null && (tasks.contains(id) || units.contains(id));
+        }
     }
 
     private static String lineLabel(
