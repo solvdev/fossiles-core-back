@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ManualTaxInvoiceRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.TaxInvoiceNoteRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.UpdateTaxInvoiceFelMetadataRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.FelCertificationResult;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceAttemptResponse;
@@ -37,6 +38,8 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneId;
+import com.fossiles.fossilescorebackend.infrastructure.util.FelCreditDebitNoteRules;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelEmissionDateResolver;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelSatReceptorRules;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
@@ -57,6 +60,7 @@ public class TaxInvoiceService {
             "ANULADA", "CANCELADO", "DEVOLUCION"
     );
     private static final Set<String> VALID_DOCUMENT_TYPES = Set.of("FACT", "FCAM");
+    private static final ZoneId GUATEMALA = ZoneId.of("America/Guatemala");
 
     private final TaxInvoiceRepository taxInvoiceRepository;
     private final KioskSaleRepository kioskSaleRepository;
@@ -361,6 +365,12 @@ public class TaxInvoiceService {
         }
         if (invoice.getFelUuid() == null || invoice.getFelUuid().isBlank()) {
             throw new BusinessException("La factura no tiene UUID FEL para anular.");
+        }
+        if (FelSatReceptorRules.isFacturaType(invoice.getDocumentType())
+                && FelCreditDebitNoteRules.hasActiveNotes(
+                taxInvoiceRepository.findByOriginInvoiceIdOrderByIdAsc(invoice.getId()))) {
+            throw new BusinessException(
+                    "La factura tiene notas de crédito/débito vigentes. Anúlelas antes de anular la factura.");
         }
 
         String trimmedReason = reason.trim();
@@ -694,6 +704,9 @@ public class TaxInvoiceService {
 
     private TaxInvoiceDocument rebuildDocumentForRetry(TaxInvoiceEntity invoice)
             throws BusinessException, ResourceNotFoundException {
+        if (invoice.getOriginInvoiceId() != null) {
+            return rebuildNoteDocumentForRetry(invoice);
+        }
         if ("ONLINE_SALE".equals(invoice.getSourceType()) && invoice.getSourceId() != null) {
             OnlineSaleEntity sale = onlineSaleRepository.findById(invoice.getSourceId())
                     .orElseThrow(() -> new ResourceNotFoundException("OnlineSale", invoice.getSourceId()));
@@ -759,7 +772,194 @@ public class TaxInvoiceService {
                 .orElseThrow(() -> new ResourceNotFoundException("TaxInvoice", id));
         TaxInvoiceResponse response = toResponse(invoice);
         response.setAttempts(taxInvoiceAttemptService.listByInvoiceId(id));
+        if (invoice.getOriginInvoiceId() != null) {
+            taxInvoiceRepository.findById(invoice.getOriginInvoiceId()).ifPresent(origin -> {
+                response.setOriginInternalNumber(origin.getInternalNumber());
+                response.setOriginFelSerie(origin.getFelSerie());
+                response.setOriginFelNumero(origin.getFelNumero());
+                response.setOriginFelUuid(origin.getFelUuid());
+            });
+        } else if (FelSatReceptorRules.isFacturaType(invoice.getDocumentType())) {
+            List<TaxInvoiceEntity> notes = taxInvoiceRepository.findByOriginInvoiceIdOrderByIdAsc(id);
+            response.setCreditDebitNotes(notes.stream().map(this::toNoteSummary).collect(Collectors.toList()));
+            response.setNoteBalance(FelCreditDebitNoteRules.remainingBalance(invoice.getTotalAmount(), notes, null));
+        }
         return response;
+    }
+
+    /** Notas NCRE/NDEB ligadas a la factura {@code invoiceId}. */
+    @Transactional(readOnly = true)
+    public List<TaxInvoiceResponse.NoteSummary> listCreditDebitNotes(Long invoiceId)
+            throws ResourceNotFoundException {
+        if (!taxInvoiceRepository.existsById(invoiceId)) {
+            throw new ResourceNotFoundException("TaxInvoice", invoiceId);
+        }
+        return taxInvoiceRepository.findByOriginInvoiceIdOrderByIdAsc(invoiceId).stream()
+                .map(this::toNoteSummary)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Emite una Nota de Crédito (NCRE) o Débito (NDEB) FEL que referencia una factura certificada
+     * (complemento ReferenciasNota). Mismo receptor y mismo ambiente INFILE (sandbox/producción)
+     * que la factura origen. Una NCRE no puede pasar el saldo de la factura (total + NDEB − NCRE previas).
+     */
+    @Transactional
+    public TaxInvoiceResponse issueCreditDebitNote(Long originInvoiceId, TaxInvoiceNoteRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        taxInvoiceAccessGuard.assertCanEditFelMetadata();
+        String documentType = resolveDocumentType(request.getDocumentType());
+        if (!FelSatReceptorRules.isNotaCreditoDebito(documentType)) {
+            throw new BusinessException("El tipo de nota debe ser NCRE o NDEB.");
+        }
+        TaxInvoiceEntity origin = taxInvoiceRepository.findWithLockById(originInvoiceId)
+                .orElseThrow(() -> new ResourceNotFoundException("TaxInvoice", originInvoiceId));
+        FelCreditDebitNoteRules.assertOriginAllowsNotes(origin);
+        assertNoteEnvironmentAllowed(origin);
+
+        String reason = request.getReason().trim();
+        TaxInvoiceDocument document = buildNoteDocument(
+                origin, documentType, reason, buildManualLines(request.getLines()));
+        assertNoteBalance(origin, document, null);
+
+        TaxInvoiceEntity note = persistDraft("FEL_NOTE", null, document, securityUtil.getCurrentUserId(), null);
+        String internalNumber = buildNoteInternalNumber(documentType, origin, note.getId());
+        note.setInternalNumber(internalNumber);
+        note.setFelTransactionId(internalNumber);
+        note.setOriginInvoiceId(origin.getId());
+        note.setAdjustmentReason(reason);
+        note.setNotes(trimToNull(request.getNotes()));
+        taxInvoiceRepository.save(note);
+        document.setInternalNumber(internalNumber);
+        document.setTransactionId(internalNumber);
+        certify(note, document, false);
+        return toResponse(note);
+    }
+
+    private TaxInvoiceDocument rebuildNoteDocumentForRetry(TaxInvoiceEntity note)
+            throws BusinessException, ResourceNotFoundException {
+        TaxInvoiceEntity origin = taxInvoiceRepository.findWithLockById(note.getOriginInvoiceId())
+                .orElseThrow(() -> new ResourceNotFoundException("TaxInvoice", note.getOriginInvoiceId()));
+        FelCreditDebitNoteRules.assertOriginAllowsNotes(origin);
+        assertNoteEnvironmentAllowed(origin);
+        TaxInvoiceDocument document = buildNoteDocument(
+                origin, note.getDocumentType(), note.getAdjustmentReason(), toDocument(note).getLines());
+        assertNoteBalance(origin, document, note.getId());
+        // SAT valida FechaHoraEmision contra la fecha de envío: el reintento emite con fecha de hoy.
+        note.setIssuedAt(document.getIssuedAt());
+        return document;
+    }
+
+    private TaxInvoiceDocument buildNoteDocument(
+            TaxInvoiceEntity origin,
+            String documentType,
+            String reason,
+            List<TaxInvoiceDocument.Line> lines
+    ) throws BusinessException {
+        if (reason == null || reason.isBlank()) {
+            throw new BusinessException("El motivo del ajuste es obligatorio.");
+        }
+        BigDecimal total = lines.stream()
+                .map(line -> nz(line.getLineTotal()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .setScale(2, RoundingMode.HALF_UP);
+        TaxInvoiceDocument document = TaxInvoiceDocument.builder()
+                .issuedAt(GuatemalaDateTime.now())
+                .documentType(FelSatReceptorRules.normalizeDocumentType(documentType))
+                .customerTaxId(normalizeTaxId(origin.getCustomerTaxId()))
+                .customerName(origin.getCustomerName())
+                .address(origin.getAddress())
+                .phone(origin.getPhone())
+                .email(origin.getEmail())
+                .subtotal(total)
+                .discountAmount(BigDecimal.ZERO)
+                .totalAmount(total)
+                .lines(new ArrayList<>(lines))
+                .noteReference(TaxInvoiceDocument.NoteReference.builder()
+                        .originAuthorizationNumber(origin.getFelUuid())
+                        .originSerie(origin.getFelSerie())
+                        .originNumero(origin.getFelNumero())
+                        .originEmissionDate(FelEmissionDateResolver.resolveOriginalEmission(origin)
+                                .withZoneSameInstant(GUATEMALA)
+                                .toLocalDate())
+                        .adjustmentReason(reason.trim())
+                        .build())
+                .build();
+        applyNoteEmitter(document, origin);
+        FelCreditDebitNoteRules.assertSameReceptor(origin.getCustomerTaxId(), document.getCustomerTaxId());
+        validateDocument(document);
+        return document;
+    }
+
+    /**
+     * Emisor de la nota = establecimiento que certificó la factura origen (según su XML certificado);
+     * si no hay XML, el kiosko de la venta o CUEROGLAM central para ventas en línea.
+     */
+    private void applyNoteEmitter(TaxInvoiceDocument document, TaxInvoiceEntity origin) {
+        Long kioskLocationId = resolveLocationIdForInvoice(origin);
+        if (kioskLocationId != null) {
+            enrichEmitterFromKioskLocation(document, kioskLocationId);
+        } else if ("ONLINE_SALE".equals(origin.getSourceType())) {
+            enrichEmitterForCueroGlamCentral(document);
+        }
+        String certifiedCode = FelCreditDebitNoteRules.extractEstablishmentCode(origin.getFelCertifiedXml());
+        if (certifiedCode != null && !certifiedCode.equals(trimToNull(document.getEmitterEstablishmentCode()))) {
+            locationRepository.findFirstByFelEstablishmentCode(certifiedCode)
+                    .ifPresent(location -> applyLocationEmitter(document, location));
+            document.setEmitterEstablishmentCode(certifiedCode);
+        }
+        // Las notas llevan su propio número (NCRE-/NDEB-), no consumen el correlativo de facturas.
+        document.setLocationInternalSeriesCode(null);
+    }
+
+    /** Con sandbox-only activo, una nota sobre una factura de producción no se envía a INFILE. */
+    private void assertNoteEnvironmentAllowed(TaxInvoiceEntity origin) throws BusinessException {
+        if (properties.isEnabled()
+                && properties.isCreditDebitNotesSandboxOnly()
+                && !resolveSandboxMode(origin)) {
+            throw new BusinessException(
+                    "Las notas de crédito/débito FEL están habilitadas solo en modo pruebas INFILE "
+                            + "(fel.emission.credit-debit-notes-sandbox-only=true). "
+                            + "Esta factura se certificó en producción.");
+        }
+    }
+
+    private void assertNoteBalance(TaxInvoiceEntity origin, TaxInvoiceDocument document, Long excludeNoteId)
+            throws BusinessException {
+        List<TaxInvoiceEntity> notes = taxInvoiceRepository.findByOriginInvoiceIdOrderByIdAsc(origin.getId());
+        BigDecimal balance = FelCreditDebitNoteRules.remainingBalance(origin.getTotalAmount(), notes, excludeNoteId);
+        FelCreditDebitNoteRules.assertNoteAmountAllowed(
+                document.getDocumentType(), document.getTotalAmount(), origin.getTotalAmount(), balance);
+    }
+
+    /** Ej. "NCRE-A1-241-15": tipo, número interno de la factura origen e id de la nota. */
+    private static String buildNoteInternalNumber(String documentType, TaxInvoiceEntity origin, Long noteId) {
+        String originLabel = trimToNull(origin.getInternalNumber());
+        if (originLabel == null) {
+            originLabel = String.valueOf(origin.getId());
+        }
+        String value = documentType + "-" + originLabel + "-" + noteId;
+        if (value.length() > 40) {
+            value = documentType + "-" + origin.getId() + "-" + noteId;
+        }
+        return value;
+    }
+
+    private TaxInvoiceResponse.NoteSummary toNoteSummary(TaxInvoiceEntity note) {
+        return TaxInvoiceResponse.NoteSummary.builder()
+                .id(note.getId())
+                .documentType(note.getDocumentType())
+                .status(note.getStatus())
+                .internalNumber(note.getInternalNumber())
+                .issuedAt(note.getIssuedAt())
+                .totalAmount(note.getTotalAmount())
+                .adjustmentReason(note.getAdjustmentReason())
+                .felUuid(note.getFelUuid())
+                .felSerie(note.getFelSerie())
+                .felNumero(note.getFelNumero())
+                .felError(note.getFelError())
+                .voidedAt(note.getVoidedAt())
+                .build();
     }
 
     @Transactional(readOnly = true)
@@ -943,16 +1143,12 @@ public class TaxInvoiceService {
         }
     }
 
-    private TaxInvoiceDocument buildManualDocument(ManualTaxInvoiceRequest request) throws BusinessException {
+    private static List<TaxInvoiceDocument.Line> buildManualLines(List<ManualTaxInvoiceRequest.LineRequest> requested) {
         List<TaxInvoiceDocument.Line> lines = new ArrayList<>();
-        BigDecimal subtotal = BigDecimal.ZERO;
-        int lineNo = 0;
-        for (ManualTaxInvoiceRequest.LineRequest line : request.getLines()) {
-            lineNo++;
+        for (ManualTaxInvoiceRequest.LineRequest line : requested) {
             BigDecimal qty = line.getQuantity().setScale(3, RoundingMode.HALF_UP);
             BigDecimal unitPrice = line.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
             BigDecimal lineTotal = unitPrice.multiply(qty).setScale(2, RoundingMode.HALF_UP);
-            subtotal = subtotal.add(lineTotal);
             lines.add(TaxInvoiceDocument.Line.builder()
                     .description(line.getDescription().trim())
                     .quantity(qty)
@@ -960,6 +1156,14 @@ public class TaxInvoiceService {
                     .lineTotal(lineTotal)
                     .build());
         }
+        return lines;
+    }
+
+    private TaxInvoiceDocument buildManualDocument(ManualTaxInvoiceRequest request) throws BusinessException {
+        List<TaxInvoiceDocument.Line> lines = buildManualLines(request.getLines());
+        BigDecimal subtotal = lines.stream()
+                .map(TaxInvoiceDocument.Line::getLineTotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         String taxId = normalizeTaxId(request.getCustomerTaxId());
         String customerName = resolveCustomerName(taxId, request.getCustomerName());
@@ -1577,6 +1781,13 @@ public class TaxInvoiceService {
         if (properties.isTestMode()) {
             return true;
         }
+        // NCRE/NDEB: mismo ambiente que la factura origen (su UUID solo existe en ese ambiente INFILE).
+        if (invoice.getOriginInvoiceId() != null) {
+            return taxInvoiceRepository.findById(invoice.getOriginInvoiceId())
+                    .filter(origin -> origin.getOriginInvoiceId() == null)
+                    .map(this::resolveSandboxMode)
+                    .orElse(false);
+        }
         if ("KIOSK_SALE".equals(invoice.getSourceType()) && invoice.getSourceId() != null) {
             return kioskSaleRepository.findById(invoice.getSourceId())
                     .map(sale -> Boolean.TRUE.equals(sale.getTestSale()))
@@ -1675,6 +1886,9 @@ public class TaxInvoiceService {
                 .createdAt(invoice.getCreatedAt())
                 .createdBy(invoice.getCreatedBy())
                 .lines(lines)
+                .originInvoiceId(invoice.getOriginInvoiceId())
+                .adjustmentReason(invoice.getAdjustmentReason())
+                .creditDebitNotesEnabled(properties.isCreditDebitNotesEnabled())
                 .build();
     }
 
@@ -1742,7 +1956,8 @@ public class TaxInvoiceService {
     private static String buildCertifiedXmlFilename(TaxInvoiceEntity invoice) {
         String serie = invoice.getFelSerie() != null ? invoice.getFelSerie().replaceAll("[^A-Za-z0-9_-]", "") : "S";
         String numero = invoice.getFelNumero() != null ? invoice.getFelNumero().replaceAll("[^A-Za-z0-9_-]", "") : String.valueOf(invoice.getId());
-        return "FACT-" + serie + "-" + numero + ".xml";
+        String type = FelSatReceptorRules.normalizeDocumentType(invoice.getDocumentType());
+        return (type.isBlank() ? "FACT" : type) + "-" + serie + "-" + numero + ".xml";
     }
 
     private static boolean isBlank(String value) {

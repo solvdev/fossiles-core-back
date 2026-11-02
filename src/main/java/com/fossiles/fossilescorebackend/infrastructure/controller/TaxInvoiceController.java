@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ManualTaxInvoiceRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.TaxInvoiceNoteRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.TaxInvoiceVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.UpdateTaxInvoiceFelMetadataRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceAttemptResponse;
@@ -164,6 +165,21 @@ public class TaxInvoiceController {
             @Valid @RequestBody TaxInvoiceVoidRequest request)
             throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(taxInvoiceService.voidInvoice(id, request.getReason()));
+    }
+
+    /** Emite una Nota de Crédito (NCRE) o Débito (NDEB) FEL que referencia la factura {id}. */
+    @PostMapping("/{id}/notes")
+    public ResponseEntity<TaxInvoiceResponse> issueNote(
+            @PathVariable Long id,
+            @Valid @RequestBody TaxInvoiceNoteRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(taxInvoiceService.issueCreditDebitNote(id, request));
+    }
+
+    @GetMapping("/{id}/notes")
+    public ResponseEntity<List<TaxInvoiceResponse.NoteSummary>> listNotes(@PathVariable Long id)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(taxInvoiceService.listCreditDebitNotes(id));
     }
 
     @PatchMapping("/{id}/fel-metadata")

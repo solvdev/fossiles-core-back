@@ -53,6 +53,39 @@ public class TaxInvoiceResponse {
     private List<LineResponse> lines;
     private List<TaxInvoiceAttemptResponse> attempts;
 
+    /** NCRE/NDEB: factura origen y motivo de ajuste. */
+    private Long originInvoiceId;
+    private String adjustmentReason;
+    /** Datos de la factura origen (solo en GET /{id} de una nota). */
+    private String originInternalNumber;
+    private String originFelSerie;
+    private String originFelNumero;
+    private String originFelUuid;
+    /** Facturas: notas ligadas y saldo vigente (total + NDEB − NCRE certificadas); solo en GET /{id}. */
+    private List<NoteSummary> creditDebitNotes;
+    private BigDecimal noteBalance;
+    /** fel.emission.credit-debit-notes-enabled. */
+    private Boolean creditDebitNotesEnabled;
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class NoteSummary {
+        private Long id;
+        private String documentType;
+        private String status;
+        private String internalNumber;
+        private LocalDateTime issuedAt;
+        private BigDecimal totalAmount;
+        private String adjustmentReason;
+        private String felUuid;
+        private String felSerie;
+        private String felNumero;
+        private String felError;
+        private LocalDateTime voidedAt;
+    }
+
     @Data
     @Builder
     @NoArgsConstructor

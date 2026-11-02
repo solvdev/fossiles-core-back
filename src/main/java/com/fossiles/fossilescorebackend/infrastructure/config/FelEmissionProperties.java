@@ -23,11 +23,15 @@ public class FelEmissionProperties {
     private boolean required = true;
 
     /**
-     * Emisión FEL de NCRE/NDEB. Apagado por defecto: aún no hay flujo de producto;
-     * las guardias SAT (receptor ≠ CF) quedan listas para cuando se habilite.
+     * Emisión FEL de NCRE/NDEB (Contabilidad → detalle de factura → Emitir nota). Apagado por defecto.
      * Nota: CxC CREDIT_NOTE contable ≠ NCRE FEL.
      */
     private boolean creditDebitNotesEnabled = false;
+    /**
+     * Si true (por defecto), NCRE/NDEB solo se emiten contra el sandbox INFILE: facturas origen de
+     * kioskos en modo piloto o con {@link #testMode}. Apagar solo cuando se valide en pruebas.
+     */
+    private boolean creditDebitNotesSandboxOnly = true;
 
     private String signUrl = "https://signer-emisores.feel.com.gt/sign_solicitud_firmas/firma_xml";
     private String certifyUrl = "https://certificador.feel.com.gt/fel/certificacion/v2/dte/";

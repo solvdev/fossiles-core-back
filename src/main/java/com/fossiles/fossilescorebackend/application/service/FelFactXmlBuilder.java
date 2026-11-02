@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -28,6 +29,11 @@ public class FelFactXmlBuilder {
     private static final ZoneId GUATEMALA = ZoneId.of("America/Guatemala");
     private static final DateTimeFormatter FEL_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
+    private static final String REFERENCIAS_NOTA_NS =
+            "http://www.sat.gob.gt/face2/ComplementoReferenciaNota/0.1.0";
+    static final int MOTIVO_AJUSTE_MAX_LENGTH = 255;
+    /** Frase tipo 9: "Documento emitido posterior a los dos meses de la factura". */
+    static final int LATE_NOTE_ESCENARIO = 22;
 
     private final FelEmissionProperties properties;
 
@@ -115,7 +121,8 @@ public class FelFactXmlBuilder {
             ));
         }
 
-        String frasesXml = buildFrasesXml(credentials.frases());
+        String frasesXml = buildFrasesXml(resolveFrases(
+                credentials.frases(), documentType, document.getNoteReference(), emission));
         String adendaXml = buildAdendaXml(document.getInternalNumber());
         BigDecimal granTotal = granTotalFromLines.setScale(2, RoundingMode.HALF_UP);
         String commercialName = firstNonBlank(document.getEmitterCommercialName(), credentials.nombreComercial());
@@ -124,7 +131,10 @@ public class FelFactXmlBuilder {
         String departamento = firstNonBlank(document.getEmitterDepartamento(), credentials.departamento());
         String receptorAddress = normalizeReceptorAddress(document.getAddress());
         // FCAM: abono único quemado (1 / total factura / fecha GT de facturación)
-        String complementosXml = buildFcamAbonosComplemento(documentType, granTotal, emission);
+        // NCRE/NDEB: referencia obligatoria a la factura origen
+        String complementosXml = FelSatReceptorRules.isNotaCreditoDebito(documentType)
+                ? buildReferenciasNotaComplemento(document.getNoteReference())
+                : buildFcamAbonosComplemento(documentType, granTotal, emission);
 
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -203,7 +213,11 @@ public class FelFactXmlBuilder {
         return "1".equals(safe(establishmentCode));
     }
 
+    /** NCRE/NDEB conservan su tipo en cualquier establecimiento; solo las facturas pasan a FCAM en el 1. */
     static String resolveEmissionDocumentType(String requestedType, String establishmentCode) {
+        if (FelSatReceptorRules.isNotaCreditoDebito(requestedType)) {
+            return FelSatReceptorRules.normalizeDocumentType(requestedType);
+        }
         if (isFcamEstablishment(establishmentCode)) {
             return "FCAM";
         }
@@ -248,6 +262,41 @@ public class FelFactXmlBuilder {
                   </dte:Complemento>
                 </dte:Complementos>
                 """.formatted(fechaVencimiento, fmt(montoAbono));
+    }
+
+    /**
+     * Complemento ReferenciasNota (SAT 3.7) requerido en NCRE/NDEB: una nota referencia un único DTE.
+     * FechaEmisionDocumentoOrigen debe coincidir en día/mes/año con la registrada en SAT.
+     */
+    static String buildReferenciasNotaComplemento(TaxInvoiceDocument.NoteReference reference) {
+        if (reference == null
+                || safe(reference.getOriginAuthorizationNumber()).isBlank()
+                || reference.getOriginEmissionDate() == null) {
+            throw new IllegalArgumentException(
+                    "Las notas de crédito/débito requieren UUID y fecha de emisión de la factura origen.");
+        }
+        String motivo = safe(reference.getAdjustmentReason());
+        if (motivo.length() > MOTIVO_AJUSTE_MAX_LENGTH) {
+            motivo = motivo.substring(0, MOTIVO_AJUSTE_MAX_LENGTH).trim();
+        }
+        if (motivo.isBlank()) {
+            throw new IllegalArgumentException("Las notas de crédito/débito requieren motivo de ajuste.");
+        }
+        return """
+                <dte:Complementos>
+                  <dte:Complemento IDComplemento="1" NombreComplemento="ReferenciasNota" URIComplemento="%s">
+                    <cno:ReferenciasNota xmlns:cno="%s" FechaEmisionDocumentoOrigen="%s" MotivoAjuste="%s" NumeroAutorizacionDocumentoOrigen="%s" NumeroDocumentoOrigen="%s" SerieDocumentoOrigen="%s" Version="0.0"/>
+                  </dte:Complemento>
+                </dte:Complementos>
+                """.formatted(
+                REFERENCIAS_NOTA_NS,
+                REFERENCIAS_NOTA_NS,
+                reference.getOriginEmissionDate(),
+                FelXmlEscaper.escape(motivo),
+                FelXmlEscaper.escape(safe(reference.getOriginAuthorizationNumber()).toUpperCase(Locale.ROOT)),
+                FelXmlEscaper.escape(safe(reference.getOriginNumero())),
+                FelXmlEscaper.escape(safe(reference.getOriginSerie()))
+        );
     }
 
     /**
@@ -345,6 +394,45 @@ public class FelFactXmlBuilder {
             rest = rest.substring(1).trim();
         }
         return rest;
+    }
+
+    /**
+     * Frases del emisor + frase tipo 9 escenario 22 (Reglas y Validaciones SAT v2.2, 2.6.13) en NCRE/NDEB
+     * emitidas después de los dos meses siguientes a la factura origen (Ley del IVA art. 17:
+     * "no se reconoce como crédito fiscal"). En cualquier otro caso SAT rechaza la frase 9-22.
+     */
+    static List<FelEmissionProperties.Frase> resolveFrases(
+            List<FelEmissionProperties.Frase> emitterFrases,
+            String documentType,
+            TaxInvoiceDocument.NoteReference noteReference,
+            ZonedDateTime emission
+    ) {
+        List<FelEmissionProperties.Frase> frases = new ArrayList<>();
+        if (emitterFrases != null) {
+            for (FelEmissionProperties.Frase frase : emitterFrases) {
+                if (!(frase.getTipo() == 9 && frase.getEscenario() == LATE_NOTE_ESCENARIO)) {
+                    frases.add(frase);
+                }
+            }
+        }
+        if (FelSatReceptorRules.isNotaCreditoDebito(documentType)
+                && noteReference != null
+                && isLateNote(noteReference.getOriginEmissionDate(), emission)) {
+            FelEmissionProperties.Frase late = new FelEmissionProperties.Frase();
+            late.setTipo(9);
+            late.setEscenario(LATE_NOTE_ESCENARIO);
+            frases.add(late);
+        }
+        return frases;
+    }
+
+    /** La nota se emite después de los dos meses siguientes a la fecha de emisión de la factura origen. */
+    static boolean isLateNote(LocalDate originEmissionDate, ZonedDateTime noteEmission) {
+        if (originEmissionDate == null || noteEmission == null) {
+            return false;
+        }
+        LocalDate noteDate = noteEmission.withZoneSameInstant(GUATEMALA).toLocalDate();
+        return noteDate.isAfter(originEmissionDate.plusMonths(2));
     }
 
     private String buildFrasesXml(List<FelEmissionProperties.Frase> frases) {
