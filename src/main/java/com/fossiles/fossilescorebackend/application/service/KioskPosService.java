@@ -452,16 +452,16 @@ public class KioskPosService {
             BigDecimal unitPrice = entrecueros
                     ? resolveEntrecuerosLineUnitPrice(product, hardware, quantity, qtyByPriceKey)
                     : resolvePosUnitPrice(product, sizeLabel);
-            // Línea con precio editado (Miraflores): monto final, sin descuento sobre esa línea.
+            // Línea con precio editado (Miraflores o administración): monto final, sin descuento sobre esa línea.
             boolean finalUnitPrice = false;
             if (!entrecueros && itemRequest.getUnitPrice() != null
                     && itemRequest.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
-                if (!exchangeSale && !allowsPosUnitPriceEdit(kiosk)) {
+                if (!exchangeSale && !allowsPosUnitPriceEdit(kiosk, admin)) {
                     throw new BusinessException(
-                            "Solo el kiosko Miraflores (A15) puede editar precios de venta.");
+                            "Solo el kiosko Miraflores (A15) o administración pueden editar precios de venta.");
                 }
                 unitPrice = itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
-                if (!exchangeSale && allowsPosUnitPriceEdit(kiosk)) {
+                if (!exchangeSale && allowsPosUnitPriceEdit(kiosk, admin)) {
                     finalUnitPrice = true;
                 }
             }
@@ -3140,9 +3140,13 @@ public class KioskPosService {
     /** Códigos/nombres de Miraflores autorizados a editar unitPrice en venta POS. */
     private static final String POS_UNIT_PRICE_EDIT_KIOSK_CODE = "A15";
 
-    private static boolean allowsPosUnitPriceEdit(LocationEntity kiosk) {
+    /** Administración (acceso a todos los kioscos) edita precios en cualquier kiosco; si no, solo Miraflores. */
+    private static boolean allowsPosUnitPriceEdit(LocationEntity kiosk, boolean admin) {
         if (kiosk == null) {
             return false;
+        }
+        if (admin) {
+            return true;
         }
         if (POS_UNIT_PRICE_EDIT_KIOSK_CODE.equalsIgnoreCase(safeTrimStatic(kiosk.getCode()))) {
             return true;
