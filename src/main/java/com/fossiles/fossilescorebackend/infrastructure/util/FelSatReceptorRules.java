@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.infrastructure.util;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaxInvoiceEntity;
 
+import java.math.BigDecimal;
 import java.util.Locale;
 import java.util.Set;
 
@@ -70,6 +71,22 @@ public final class FelSatReceptorRules {
                             + "no pueden emitirse con receptor Consumidor Final (CF). "
                             + "Identifique al receptor con NIT, CUI o ID Extranjero."
             );
+        }
+    }
+
+    /** Reglas y Validaciones SAT v2.2, 2.2.4 regla 11: FACT/FCAM a CF con Gran Total ≥ Q2,500.00 se rechaza. */
+    public static final BigDecimal CONSUMIDOR_FINAL_LIMIT = new BigDecimal("2500.00");
+
+    public static void assertConsumidorFinalLimit(String documentType, String taxId, BigDecimal granTotal)
+            throws BusinessException {
+        if (!isFacturaType(documentType) || !isConsumidorFinal(taxId) || granTotal == null) {
+            return;
+        }
+        if (granTotal.compareTo(CONSUMIDOR_FINAL_LIMIT) >= 0) {
+            throw new BusinessException(
+                    "SAT (validación 2.2.4): una factura a Consumidor Final (CF) debe ser menor a Q2,500.00 "
+                            + "(total Q" + granTotal.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
+                            + "). Facture con NIT o CUI del cliente.");
         }
     }
 

@@ -671,9 +671,15 @@ class FelFactXmlBuilderTest {
         FelEmissionProperties props = emitter("2");
         FelFactXmlBuilder builder = new FelFactXmlBuilder(props);
         for (String noteType : List.of("NCRE", "NDEB")) {
-            String xml = builder.buildUnsignedXml(
-                    invoice("2", noteType, List.of(bundleLine("3", "43.33", "130.00")), "130.00"),
-                    props.resolveCredentials(false));
+            TaxInvoiceDocument note = invoice("2", noteType, List.of(bundleLine("3", "43.33", "130.00")), "130.00");
+            note.setNoteReference(TaxInvoiceDocument.NoteReference.builder()
+                    .originAuthorizationNumber("3623DFD6-22FF-4DE9-B164-95C478DEFF71")
+                    .originSerie("3623DFD6")
+                    .originNumero("587091433")
+                    .originEmissionDate(java.time.LocalDate.of(2026, 1, 10))
+                    .adjustmentReason("Devolución")
+                    .build());
+            String xml = builder.buildUnsignedXml(note, props.resolveCredentials(false));
             assertThat(xml).contains(mainItemXml(1, "3.00", "B-1 | Billetera B-1", "130.00"));
             assertThat(xml).doesNotContain("43.34");
             assertThat(xml).doesNotContain("130.02");
