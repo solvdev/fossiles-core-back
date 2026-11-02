@@ -54,5 +54,10 @@ public class TaxInvoiceDocument {
         private BigDecimal quantity;
         private BigDecimal unitPrice;
         private BigDecimal lineTotal;
+        /**
+         * Línea B-1 cobrada por paquete ({@code chargedLineTotal}).
+         * Solo esas líneas ajustan el unitario del XML FEL.
+         */
+        private boolean bundlePriced;
     }
 }

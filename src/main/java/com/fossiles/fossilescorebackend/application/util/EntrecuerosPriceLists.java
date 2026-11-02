@@ -304,8 +304,27 @@ public final class EntrecuerosPriceLists {
     }
 
     static boolean isExactB1Code(ProductEntity product) {
-        String code = normalizedCode(product);
-        return "B-1".equals(code) || "B1".equals(code);
+        return isExactB1Code(normalizedCode(product));
+    }
+
+    static boolean isExactB1Code(String code) {
+        if (code == null) {
+            return false;
+        }
+        String normalized = code.trim().toUpperCase(Locale.ROOT);
+        return "B-1".equals(normalized) || "B1".equals(normalized);
+    }
+
+    /**
+     * La línea guardada es un B-1 cobrado por paquete: el total es Q130 por cada
+     * grupo de 3 y Q40 por el sobrante, no cortesía ni un descuento distinto.
+     */
+    public static boolean isChargedB1BundleLine(
+            String productCode, BigDecimal quantity, BigDecimal lineTotal) {
+        if (!isExactB1Code(productCode) || lineTotal == null || lineTotal.signum() <= 0) {
+            return false;
+        }
+        return lineTotal.setScale(2, RoundingMode.HALF_UP).compareTo(b1BundleTotal(quantity)) == 0;
     }
 
     static boolean isExactB2OrB5Code(ProductEntity product) {
