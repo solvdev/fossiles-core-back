@@ -41,26 +41,33 @@ public class TaxInvoiceController {
     public ResponseEntity<List<TaxInvoiceResponse>> list(
             @RequestParam(required = false) String sourceType,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) String documentType,
             @RequestParam(required = false) String customerTaxId,
             @RequestParam(required = false) String internalNumber,
+            @RequestParam(required = false) String search,
             @RequestParam(required = false) String certificationFilter,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
+            @RequestParam(defaultValue = "false") boolean includeTests
     ) {
         return ResponseEntity.ok(taxInvoiceService.list(
-                sourceType, status, customerTaxId, internalNumber, certificationFilter, fromDate, toDate));
+                sourceType, status, documentType, customerTaxId, internalNumber, search,
+                certificationFilter, fromDate, toDate, includeTests));
     }
 
     @GetMapping("/summary")
     public ResponseEntity<TaxInvoiceSummaryResponse> summary(
             @RequestParam(required = false) String sourceType,
+            @RequestParam(required = false) String documentType,
             @RequestParam(required = false) String customerTaxId,
             @RequestParam(required = false) String internalNumber,
+            @RequestParam(required = false) String search,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
+            @RequestParam(defaultValue = "false") boolean includeTests
     ) {
         return ResponseEntity.ok(taxInvoiceService.getSummary(
-                sourceType, customerTaxId, internalNumber, fromDate, toDate));
+                sourceType, documentType, customerTaxId, internalNumber, search, fromDate, toDate, includeTests));
     }
 
     @PostMapping("/manual")

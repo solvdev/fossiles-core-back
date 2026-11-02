@@ -5,7 +5,6 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.TypedQuery;
 
-import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -20,26 +19,18 @@ public class TaxInvoiceRepositoryImpl implements TaxInvoiceRepositoryCustom {
     private EntityManager entityManager;
 
     @Override
-    public List<TaxInvoiceEntity> search(
-            String sourceType,
-            String status,
-            String customerTaxIdPattern,
-            String internalNumberPattern,
-            String certificationFilter,
-            LocalDateTime from,
-            LocalDateTime to
-    ) {
+    public List<TaxInvoiceEntity> search(TaxInvoiceSearchFilter filter) {
         StringBuilder jpql = new StringBuilder("SELECT t FROM TaxInvoiceEntity t WHERE 1 = 1");
         Map<String, Object> params = new HashMap<>();
-        appendCommonFilters(jpql, params, sourceType, customerTaxIdPattern, internalNumberPattern, from, to);
+        appendCommonFilters(jpql, params, filter);
 
-        if (status != null) {
+        if (filter.status() != null) {
             jpql.append(" AND UPPER(TRIM(t.status)) = :status");
-            params.put("status", status.trim().toUpperCase(Locale.ROOT));
+            params.put("status", filter.status().trim().toUpperCase(Locale.ROOT));
         }
-        if (certificationFilter != null) {
-            String filter = certificationFilter.trim().toUpperCase(Locale.ROOT);
-            switch (filter) {
+        if (filter.certificationFilter() != null) {
+            String certification = filter.certificationFilter().trim().toUpperCase(Locale.ROOT);
+            switch (certification) {
                 case "SIGNED" -> jpql.append(" AND UPPER(TRIM(t.status)) = 'CERTIFIED'");
                 case "UNSIGNED" -> {
                     jpql.append(" AND UPPER(TRIM(t.status)) IN :unsignedStatuses");
@@ -59,17 +50,11 @@ public class TaxInvoiceRepositoryImpl implements TaxInvoiceRepositoryCustom {
     }
 
     @Override
-    public List<Object[]> countGroupByStatus(
-            String sourceType,
-            String customerTaxIdPattern,
-            String internalNumberPattern,
-            LocalDateTime from,
-            LocalDateTime to
-    ) {
+    public List<Object[]> countGroupByStatus(TaxInvoiceSearchFilter filter) {
         StringBuilder jpql = new StringBuilder(
                 "SELECT UPPER(TRIM(t.status)), COUNT(t) FROM TaxInvoiceEntity t WHERE 1 = 1");
         Map<String, Object> params = new HashMap<>();
-        appendCommonFilters(jpql, params, sourceType, customerTaxIdPattern, internalNumberPattern, from, to);
+        appendCommonFilters(jpql, params, filter);
         jpql.append(" GROUP BY UPPER(TRIM(t.status))");
 
         TypedQuery<Object[]> query = entityManager.createQuery(jpql.toString(), Object[].class);
@@ -80,32 +65,49 @@ public class TaxInvoiceRepositoryImpl implements TaxInvoiceRepositoryCustom {
     private static void appendCommonFilters(
             StringBuilder jpql,
             Map<String, Object> params,
-            String sourceType,
-            String customerTaxIdPattern,
-            String internalNumberPattern,
-            LocalDateTime from,
-            LocalDateTime to
+            TaxInvoiceSearchFilter filter
     ) {
-        if (sourceType != null) {
+        if (filter.sourceType() != null) {
             jpql.append(" AND t.sourceType = :sourceType");
-            params.put("sourceType", sourceType);
+            params.put("sourceType", filter.sourceType());
         }
-        if (customerTaxIdPattern != null) {
+        if (filter.documentType() != null) {
+            jpql.append(" AND UPPER(t.documentType) = :documentType");
+            params.put("documentType", filter.documentType().trim().toUpperCase(Locale.ROOT));
+        }
+        if (filter.customerTaxIdPattern() != null) {
             jpql.append(" AND UPPER(t.customerTaxId) LIKE :customerTaxIdPattern");
-            params.put("customerTaxIdPattern", customerTaxIdPattern);
+            params.put("customerTaxIdPattern", filter.customerTaxIdPattern());
         }
-        if (internalNumberPattern != null) {
+        if (filter.internalNumberPattern() != null) {
             jpql.append(" AND UPPER(t.internalNumber) LIKE :internalNumberPattern");
-            params.put("internalNumberPattern", internalNumberPattern);
+            params.put("internalNumberPattern", filter.internalNumberPattern());
+        }
+        if (filter.textPattern() != null) {
+            jpql.append(" AND (UPPER(t.internalNumber) LIKE :text"
+                    + " OR UPPER(t.customerTaxId) LIKE :text"
+                    + " OR UPPER(t.customerName) LIKE :text"
+                    + " OR UPPER(t.felSerie) LIKE :text"
+                    + " OR UPPER(t.felNumero) LIKE :text"
+                    + " OR UPPER(t.felUuid) LIKE :text)");
+            params.put("text", filter.textPattern());
+        }
+        if (!filter.includeTests()) {
+            jpql.append(" AND (t.felSerie IS NULL OR t.felSerie <> :sandboxSerie)")
+                    .append(" AND NOT EXISTS (SELECT k.id FROM KioskSaleEntity k")
+                    .append(" WHERE t.sourceType = 'KIOSK_SALE' AND k.id = t.sourceId AND k.testSale = true)")
+                    .append(" AND NOT EXISTS (SELECT o.id FROM TaxInvoiceEntity o")
+                    .append(" WHERE o.id = t.originInvoiceId AND o.felSerie = :sandboxSerie)");
+            params.put("sandboxSerie", TaxInvoiceSearchFilter.SANDBOX_SERIE);
         }
         // Usar fecha efectiva: drafts/omitidas pueden tener issuedAt null.
-        if (from != null) {
+        if (filter.from() != null) {
             jpql.append(" AND COALESCE(t.issuedAt, t.createdAt) >= :from");
-            params.put("from", from);
+            params.put("from", filter.from());
         }
-        if (to != null) {
+        if (filter.to() != null) {
             jpql.append(" AND COALESCE(t.issuedAt, t.createdAt) <= :to");
-            params.put("to", to);
+            params.put("to", filter.to());
         }
     }
 }

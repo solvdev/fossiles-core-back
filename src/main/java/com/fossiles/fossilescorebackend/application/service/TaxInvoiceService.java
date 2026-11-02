@@ -26,6 +26,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Lo
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaxInvoiceRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaxInvoiceSearchFilter;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelIvaCalculator;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -508,6 +509,8 @@ public class TaxInvoiceService {
         assertInternalSeriesConfigured(request.getLocationId(), document);
         enrichReceptorFromLookup(document);
         validateDocument(document);
+        FelSatReceptorRules.assertConsumidorFinalLimit(
+                document.getDocumentType(), document.getCustomerTaxId(), sumLineTotals(document));
         Long userId = securityUtil.getCurrentUserId();
         TaxInvoiceEntity invoice = persistDraft("MANUAL", null, document, userId, request.getLocationId());
         invoice.setNotes(trimToNull(request.getNotes()));
@@ -772,6 +775,7 @@ public class TaxInvoiceService {
                 .orElseThrow(() -> new ResourceNotFoundException("TaxInvoice", id));
         TaxInvoiceResponse response = toResponse(invoice);
         response.setAttempts(taxInvoiceAttemptService.listByInvoiceId(id));
+        response.setTestDocument(isTestDocument(invoice, findTestKioskSaleIds(List.of(invoice))));
         if (invoice.getOriginInvoiceId() != null) {
             taxInvoiceRepository.findById(invoice.getOriginInvoiceId()).ifPresent(origin -> {
                 response.setOriginInternalNumber(origin.getInternalNumber());
@@ -1028,24 +1032,95 @@ public class TaxInvoiceService {
             LocalDate fromDate,
             LocalDate toDate
     ) {
-        LocalDateTime from = fromDate != null ? fromDate.atStartOfDay() : null;
-        LocalDateTime to = toDate != null ? toDate.atTime(LocalTime.MAX) : null;
-        String normalizedSourceType = trimToNull(sourceType);
-        String normalizedStatus = trimToNull(status);
-        String normalizedCertificationFilter = normalizeCertificationFilter(certificationFilter);
-        String customerTaxIdPattern = buildCustomerTaxIdPattern(customerTaxId);
-        String internalNumberPattern = buildInternalNumberPattern(internalNumber);
-        return taxInvoiceRepository.search(
-                        normalizedSourceType,
-                        normalizedStatus,
-                        customerTaxIdPattern,
-                        internalNumberPattern,
-                        normalizedCertificationFilter,
-                        from,
-                        to
-                ).stream()
-                .map(this::toResponse)
+        return list(sourceType, status, null, customerTaxId, internalNumber, null,
+                certificationFilter, fromDate, toDate, false);
+    }
+
+    /**
+     * Listado de Facturas FEL. Sin líneas (el detalle las trae) para no cargar una colección por fila.
+     *
+     * @param search       búsqueda general: número interno, NIT, cliente, serie, número o UUID FEL
+     * @param includeTests incluir documentos de prueba (sandbox INFILE / ventas POS de prueba)
+     */
+    @Transactional(readOnly = true)
+    public List<TaxInvoiceResponse> list(
+            String sourceType,
+            String status,
+            String documentType,
+            String customerTaxId,
+            String internalNumber,
+            String search,
+            String certificationFilter,
+            LocalDate fromDate,
+            LocalDate toDate,
+            boolean includeTests
+    ) {
+        TaxInvoiceSearchFilter filter = buildSearchFilter(
+                sourceType, status, documentType, customerTaxId, internalNumber, search,
+                certificationFilter, fromDate, toDate, includeTests);
+        List<TaxInvoiceEntity> invoices = taxInvoiceRepository.search(filter);
+        Set<Long> testKioskSaleIds = findTestKioskSaleIds(invoices);
+        return invoices.stream()
+                .map(invoice -> {
+                    TaxInvoiceResponse response = toResponse(invoice, false);
+                    response.setTestDocument(isTestDocument(invoice, testKioskSaleIds));
+                    return response;
+                })
                 .collect(Collectors.toList());
+    }
+
+    private TaxInvoiceSearchFilter buildSearchFilter(
+            String sourceType,
+            String status,
+            String documentType,
+            String customerTaxId,
+            String internalNumber,
+            String search,
+            String certificationFilter,
+            LocalDate fromDate,
+            LocalDate toDate,
+            boolean includeTests
+    ) {
+        return new TaxInvoiceSearchFilter(
+                trimToNull(sourceType),
+                trimToNull(status),
+                trimToNull(documentType),
+                buildCustomerTaxIdPattern(customerTaxId),
+                buildInternalNumberPattern(internalNumber),
+                buildInternalNumberPattern(search),
+                normalizeCertificationFilter(certificationFilter),
+                fromDate != null ? fromDate.atStartOfDay() : null,
+                toDate != null ? toDate.atTime(LocalTime.MAX) : null,
+                includeTests
+        );
+    }
+
+    /** Ventas POS de prueba (kiosko en modo piloto al vender) entre las facturas dadas, en una consulta. */
+    private Set<Long> findTestKioskSaleIds(List<TaxInvoiceEntity> invoices) {
+        List<Long> saleIds = invoices.stream()
+                .filter(invoice -> "KIOSK_SALE".equals(invoice.getSourceType()) && invoice.getSourceId() != null)
+                .map(TaxInvoiceEntity::getSourceId)
+                .distinct()
+                .collect(Collectors.toList());
+        if (saleIds.isEmpty()) {
+            return Set.of();
+        }
+        Set<Long> result = new java.util.HashSet<>();
+        for (int start = 0; start < saleIds.size(); start += 1000) {
+            result.addAll(kioskSaleRepository.findTestSaleIdsIn(
+                    saleIds.subList(start, Math.min(start + 1000, saleIds.size()))));
+        }
+        return result;
+    }
+
+    /** Documento de prueba: certificado en sandbox INFILE o de una venta POS de prueba. */
+    private static boolean isTestDocument(TaxInvoiceEntity invoice, Set<Long> testKioskSaleIds) {
+        if (TaxInvoiceSearchFilter.SANDBOX_SERIE.equals(safe(invoice.getFelSerie()))) {
+            return true;
+        }
+        return "KIOSK_SALE".equals(invoice.getSourceType())
+                && invoice.getSourceId() != null
+                && testKioskSaleIds.contains(invoice.getSourceId());
     }
 
     @Transactional(readOnly = true)
@@ -1061,20 +1136,28 @@ public class TaxInvoiceService {
             LocalDate fromDate,
             LocalDate toDate
     ) {
-        LocalDateTime from = fromDate != null ? fromDate.atStartOfDay() : null;
-        LocalDateTime to = toDate != null ? toDate.atTime(LocalTime.MAX) : null;
+        return getSummary(sourceType, null, customerTaxId, internalNumber, null, fromDate, toDate, false);
+    }
+
+    @Transactional(readOnly = true)
+    public TaxInvoiceSummaryResponse getSummary(
+            String sourceType,
+            String documentType,
+            String customerTaxId,
+            String internalNumber,
+            String search,
+            LocalDate fromDate,
+            LocalDate toDate,
+            boolean includeTests
+    ) {
         long certified = 0;
         long failed = 0;
         long draft = 0;
         long skipped = 0;
         long voided = 0;
-        for (Object[] row : taxInvoiceRepository.countGroupByStatus(
-                trimToNull(sourceType),
-                buildCustomerTaxIdPattern(customerTaxId),
-                buildInternalNumberPattern(internalNumber),
-                from,
-                to
-        )) {
+        for (Object[] row : taxInvoiceRepository.countGroupByStatus(buildSearchFilter(
+                sourceType, null, documentType, customerTaxId, internalNumber, search,
+                null, fromDate, toDate, includeTests))) {
             String invoiceStatus = row[0] == null ? "" : row[0].toString().trim().toUpperCase(Locale.ROOT);
             long count = row[1] == null ? 0L : ((Number) row[1]).longValue();
             switch (invoiceStatus) {
@@ -1523,11 +1606,12 @@ public class TaxInvoiceService {
                 document.setInternalNumber(invoice.getInternalNumber());
             }
             applyDocumentTypeByEstablishment(document);
-            assertDocumentTypeAllowedForEmission(
-                    document.getDocumentType(),
-                    normalizeTaxId(document.getCustomerTaxId() != null
-                            ? document.getCustomerTaxId()
-                            : invoice.getCustomerTaxId()));
+            String receptorTaxId = normalizeTaxId(document.getCustomerTaxId() != null
+                    ? document.getCustomerTaxId()
+                    : invoice.getCustomerTaxId());
+            assertDocumentTypeAllowedForEmission(document.getDocumentType(), receptorTaxId);
+            FelSatReceptorRules.assertConsumidorFinalLimit(
+                    document.getDocumentType(), receptorTaxId, sumLineTotals(document));
             String unsignedXml = factXmlBuilder.buildUnsignedXml(document, credentials);
             String signedXml = signerService.signXml(unsignedXml, transactionId, credentials);
             FelCertificationResult result = certificationService.certifySignedXml(signedXml, transactionId, credentials);
@@ -1825,6 +1909,17 @@ public class TaxInvoiceService {
                 .build();
     }
 
+    /** Gran total del DTE como lo arma FelFactXmlBuilder: con descuento global, el total cobrado; si no, la suma de líneas. */
+    private static BigDecimal sumLineTotals(TaxInvoiceDocument document) {
+        if (document.getLines() == null || document.getLines().isEmpty()
+                || nz(document.getDiscountAmount()).compareTo(BigDecimal.ZERO) > 0) {
+            return nz(document.getTotalAmount());
+        }
+        return document.getLines().stream()
+                .map(line -> nz(line.getLineTotal()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
     private BigDecimal sumTax(TaxInvoiceDocument document) {
         BigDecimal total = BigDecimal.ZERO;
         for (TaxInvoiceDocument.Line line : document.getLines()) {
@@ -1835,7 +1930,11 @@ public class TaxInvoiceService {
     }
 
     public TaxInvoiceResponse toResponse(TaxInvoiceEntity invoice) {
-        List<TaxInvoiceResponse.LineResponse> lines = invoice.getLines() == null
+        return toResponse(invoice, true);
+    }
+
+    private TaxInvoiceResponse toResponse(TaxInvoiceEntity invoice, boolean includeLines) {
+        List<TaxInvoiceResponse.LineResponse> lines = !includeLines || invoice.getLines() == null
                 ? List.of()
                 : invoice.getLines().stream()
                 .map(line -> TaxInvoiceResponse.LineResponse.builder()

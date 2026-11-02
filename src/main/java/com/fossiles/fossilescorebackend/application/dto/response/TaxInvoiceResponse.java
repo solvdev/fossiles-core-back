@@ -66,6 +66,8 @@ public class TaxInvoiceResponse {
     private BigDecimal noteBalance;
     /** fel.emission.credit-debit-notes-enabled. */
     private Boolean creditDebitNotesEnabled;
+    /** Documento de prueba: certificado en sandbox INFILE (serie **PRUEBAS**) o de una venta POS de prueba. */
+    private Boolean testDocument;
 
     @Data
     @Builder
