@@ -40,9 +40,9 @@ public final class KioskReplenishmentCalculator {
     }
 
     public enum Category {
-        A(21, 1, 8),
-        B(14, 1, 5),
-        C(7, 1, 2);
+        A(21, 1, 8, 1.0),
+        B(14, 1, 5, 0.8),
+        C(7, 1, 2, 0.6);
 
         /** Días de venta que debe cubrir el máximo. */
         public final int coverageDays;
@@ -50,11 +50,14 @@ public final class KioskReplenishmentCalculator {
         public final int minUnits;
         /** Tope de unidades por línea. */
         public final int maxUnits;
+        /** Fracción de la venta semanal del kiosco que se le manda por envío. */
+        public final double budgetFactor;
 
-        Category(int coverageDays, int minUnits, int maxUnits) {
+        Category(int coverageDays, int minUnits, int maxUnits, double budgetFactor) {
             this.coverageDays = coverageDays;
             this.minUnits = minUnits;
             this.maxUnits = maxUnits;
+            this.budgetFactor = budgetFactor;
         }
 
         public static Category parse(String raw) {
@@ -157,6 +160,37 @@ public final class KioskReplenishmentCalculator {
         return out;
     }
 
+    /**
+     * Unidades por envío de un kiosco: su venta de {@link #REVIEW_DAYS} días por el factor de la categoría
+     * (A 100%, B 80%, C 60%). Con datos de prod (nov-2026) los kioscos reciben envíos chicos y frecuentes
+     * (5–9 unidades) que suman ~80% de lo que venden; sin tope, la primera sugerencia pedía todos los huecos de
+     * golpe (hasta 137 unidades a un solo kiosco).
+     */
+    public static int weeklyBudget(Category category, BigDecimal unitsSold, int windowDays) {
+        if (windowDays <= 0 || unitsSold == null || unitsSold.signum() <= 0) {
+            return 0;
+        }
+        BigDecimal weekly = unitsSold.multiply(BigDecimal.valueOf(REVIEW_DAYS))
+                .multiply(BigDecimal.valueOf(category.budgetFactor))
+                .divide(BigDecimal.valueOf(windowDays), 4, RoundingMode.HALF_UP);
+        return ceil(weekly);
+    }
+
+    /**
+     * Recorta lo que pide cada línea de un mismo kiosco para no pasar de {@code budget}: primero artículos base y
+     * luego las que más venden. Lo que no entra queda para el siguiente envío.
+     */
+    public static int[] applyBudget(List<AllocationRequest> kioskRequests, int budget) {
+        int[] capped = new int[kioskRequests.size()];
+        int left = Math.max(0, budget);
+        for (int i : priorityOrder(kioskRequests)) {
+            int give = Math.min(Math.max(0, kioskRequests.get(i).need()), left);
+            capped[i] = give;
+            left -= give;
+        }
+        return capped;
+    }
+
     /** Lo que pide una línea de un kiosco contra el stock de bodega de {@code stockKey}. */
     public record AllocationRequest(String stockKey, Category category, boolean base, BigDecimal dailyRate, int need) {
     }
@@ -168,6 +202,17 @@ public final class KioskReplenishmentCalculator {
     public static int[] allocate(List<AllocationRequest> requests, Map<String, Integer> availableByKey) {
         int[] allocated = new int[requests.size()];
         Map<String, Integer> remaining = new HashMap<>(availableByKey);
+        for (int i : priorityOrder(requests)) {
+            AllocationRequest r = requests.get(i);
+            int left = Math.max(0, remaining.getOrDefault(r.stockKey(), 0));
+            int give = Math.min(Math.max(0, r.need()), left);
+            allocated[i] = give;
+            remaining.put(r.stockKey(), left - give);
+        }
+        return allocated;
+    }
+
+    private static List<Integer> priorityOrder(List<AllocationRequest> requests) {
         List<Integer> order = new ArrayList<>();
         for (int i = 0; i < requests.size(); i++) {
             order.add(i);
@@ -176,14 +221,7 @@ public final class KioskReplenishmentCalculator {
                 .comparing((Integer i) -> requests.get(i).category().ordinal())
                 .thenComparing(i -> requests.get(i).base() ? 0 : 1)
                 .thenComparing(i -> nz(requests.get(i).dailyRate()), Comparator.reverseOrder()));
-        for (int i : order) {
-            AllocationRequest r = requests.get(i);
-            int left = Math.max(0, remaining.getOrDefault(r.stockKey(), 0));
-            int give = Math.min(Math.max(0, r.need()), left);
-            allocated[i] = give;
-            remaining.put(r.stockKey(), left - give);
-        }
-        return allocated;
+        return order;
     }
 
     private static int ceil(BigDecimal v) {

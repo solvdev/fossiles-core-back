@@ -139,6 +139,7 @@ public class KioskReplenishmentService {
 
         List<PlannedLine> planned = new ArrayList<>();
         Map<Long, Category> categoryByKiosk = new HashMap<>();
+        Map<Long, Integer> budgetByKiosk = new HashMap<>();
         for (KioskRow k : kiosks) {
             if (!requested.contains(k.locationId())) {
                 continue;
@@ -152,6 +153,7 @@ public class KioskReplenishmentService {
                         new LineInput(0, 0, l.sold, false, false)).dailyRate());
             }
             BigDecimal threshold = KioskReplenishmentCalculator.topSellerThreshold(rates);
+            List<PlannedLine> kioskPlanned = new ArrayList<>();
             for (int i = 0; i < kioskLines.size(); i++) {
                 LineAgg l = kioskLines.get(i);
                 BigDecimal rate = rates.get(i);
@@ -159,16 +161,19 @@ public class KioskReplenishmentService {
                 boolean base = baseProducts.contains(l.productId);
                 LinePlan plan = KioskReplenishmentCalculator.plan(category, window,
                         new LineInput(l.stock, l.inTransit, l.sold, top, base));
-                planned.add(new PlannedLine(l, category, plan, top, base));
+                kioskPlanned.add(new PlannedLine(l, category, plan, top, base, plan.need()));
+            }
+            int budget = KioskReplenishmentCalculator.weeklyBudget(
+                    category, unitsByKiosk.getOrDefault(k.locationId(), BigDecimal.ZERO), window);
+            budgetByKiosk.put(k.locationId(), budget);
+            int[] capped = KioskReplenishmentCalculator.applyBudget(toRequests(kioskPlanned), budget);
+            for (int i = 0; i < kioskPlanned.size(); i++) {
+                planned.add(kioskPlanned.get(i).withCapped(capped[i]));
             }
         }
 
         Map<String, Integer> available = loadAvailability(planned);
-        List<AllocationRequest> requests = planned.stream()
-                .map(p -> new AllocationRequest(p.line().stockKey(), p.category(), p.base(),
-                        p.plan().dailyRate(), p.plan().need()))
-                .toList();
-        int[] allocated = KioskReplenishmentCalculator.allocate(requests, available);
+        int[] allocated = KioskReplenishmentCalculator.allocate(toRequests(planned), available);
 
         Map<Long, ColorEntity> colors = colorRepository.findAllById(
                         planned.stream().map(p -> p.line().colorId).filter(Objects::nonNull).collect(Collectors.toSet()))
@@ -200,7 +205,8 @@ public class KioskReplenishmentService {
                             .max(p.plan().max())
                             .need(p.plan().need())
                             .suggested(allocated[i])
-                            .shortage(p.plan().need() - allocated[i])
+                            .shortage(p.capped() - allocated[i])
+                            .deferred(p.plan().need() - p.capped())
                             .topSeller(p.top())
                             .base(p.base())
                             .reason(p.plan().reason())
@@ -215,11 +221,13 @@ public class KioskReplenishmentService {
                 continue;
             }
             List<KioskReplenishmentSuggestionResponse.Line> kl = responseLines.getOrDefault(k.locationId(), new ArrayList<>());
-            kl.sort(Comparator.comparingInt(KioskReplenishmentSuggestionResponse.Line::getSuggested).reversed()
+            kl.sort(Comparator.comparingInt(KioskReplenishmentSuggestionResponse.Line::getDeferred)
+                    .thenComparing(Comparator.comparingInt(KioskReplenishmentSuggestionResponse.Line::getSuggested).reversed())
                     .thenComparing(x -> Objects.toString(x.getProductCode(), ""))
                     .thenComparing(x -> Objects.toString(x.getSize(), "")));
             int suggested = kl.stream().mapToInt(KioskReplenishmentSuggestionResponse.Line::getSuggested).sum();
             int shortage = kl.stream().mapToInt(KioskReplenishmentSuggestionResponse.Line::getShortage).sum();
+            int deferred = kl.stream().mapToInt(KioskReplenishmentSuggestionResponse.Line::getDeferred).sum();
             totalShortage += shortage;
             out.add(KioskReplenishmentSuggestionResponse.Kiosk.builder()
                     .locationId(k.locationId())
@@ -230,6 +238,8 @@ public class KioskReplenishmentService {
                     .unitsSold(unitsByKiosk.getOrDefault(k.locationId(), BigDecimal.ZERO))
                     .totalSuggested(suggested)
                     .totalShortage(shortage)
+                    .weeklyBudget(budgetByKiosk.getOrDefault(k.locationId(), 0))
+                    .totalDeferred(deferred)
                     .lines(kl)
                     .build());
         }
@@ -244,7 +254,18 @@ public class KioskReplenishmentService {
                 .build();
     }
 
-    private record PlannedLine(LineAgg line, Category category, LinePlan plan, boolean top, boolean base) {
+    /** {@code capped}: lo que se le pide a bodega para esta línea, ya con el tope semanal del kiosco. */
+    private record PlannedLine(LineAgg line, Category category, LinePlan plan, boolean top, boolean base, int capped) {
+        PlannedLine withCapped(int value) {
+            return new PlannedLine(line, category, plan, top, base, value);
+        }
+    }
+
+    private static List<AllocationRequest> toRequests(List<PlannedLine> lines) {
+        return lines.stream()
+                .map(p -> new AllocationRequest(p.line().stockKey(), p.category(), p.base(),
+                        p.plan().dailyRate(), p.capped()))
+                .toList();
     }
 
     private List<KioskRow> loadKiosks() {
@@ -350,7 +371,7 @@ public class KioskReplenishmentService {
     private Map<String, Integer> loadAvailability(List<PlannedLine> planned) throws BusinessException {
         Map<String, Integer> available = new HashMap<>();
         for (PlannedLine p : planned) {
-            if (p.plan().need() <= 0 || available.containsKey(p.line().stockKey())) {
+            if (p.capped() <= 0 || available.containsKey(p.line().stockKey())) {
                 continue;
             }
             LineAgg l = p.line();

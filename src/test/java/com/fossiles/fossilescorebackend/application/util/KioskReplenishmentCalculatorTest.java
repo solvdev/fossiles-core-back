@@ -125,6 +125,26 @@ class KioskReplenishmentCalculatorTest {
     }
 
     @Test
+    void weeklyBudgetIsOneWeekOfSalesScaledByCategory() {
+        // Miraflores II (nov-2026): 403 unidades en 60 días = 47/semana.
+        assertThat(KioskReplenishmentCalculator.weeklyBudget(Category.A, BigDecimal.valueOf(403), 60)).isEqualTo(48);
+        assertThat(KioskReplenishmentCalculator.weeklyBudget(Category.B, BigDecimal.valueOf(120), 60)).isEqualTo(12);
+        assertThat(KioskReplenishmentCalculator.weeklyBudget(Category.C, BigDecimal.valueOf(120), 60)).isEqualTo(9);
+        assertThat(KioskReplenishmentCalculator.weeklyBudget(Category.A, BigDecimal.ZERO, 60)).isZero();
+    }
+
+    @Test
+    void budgetKeepsBaseAndBestSellersAndDefersTheRest() {
+        List<AllocationRequest> kiosk = List.of(
+                new AllocationRequest("a", Category.A, false, new BigDecimal("0.05"), 2),
+                new AllocationRequest("b", Category.A, false, new BigDecimal("0.50"), 2),
+                new AllocationRequest("c", Category.A, true, new BigDecimal("0.01"), 1));
+
+        assertThat(KioskReplenishmentCalculator.applyBudget(kiosk, 4)).containsExactly(1, 2, 1);
+        assertThat(KioskReplenishmentCalculator.applyBudget(kiosk, 0)).containsExactly(0, 0, 0);
+    }
+
+    @Test
     void baseLinesGoFirstWithinTheSameCategory() {
         List<AllocationRequest> requests = List.of(
                 new AllocationRequest("k", Category.B, false, new BigDecimal("3"), 1),

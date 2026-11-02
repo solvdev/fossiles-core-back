@@ -38,6 +38,10 @@ public class KioskReplenishmentSuggestionResponse {
         private BigDecimal unitsSold;
         private int totalSuggested;
         private int totalShortage;
+        /** Tope de unidades por envío (venta semanal × factor de la categoría). */
+        private int weeklyBudget;
+        /** Unidades que pide la regla pero no entran en el tope: quedan para el siguiente envío. */
+        private int totalDeferred;
         private List<Line> lines;
     }
 
@@ -61,9 +65,12 @@ public class KioskReplenishmentSuggestionResponse {
         private int max;
         /** Lo que pide la regla de la categoría. */
         private int need;
-        /** Lo que se puede mandar con el stock de bodega (≤ need). */
+        /** Lo que se puede mandar con el stock de bodega (≤ need − deferred). */
         private int suggested;
+        /** Entra en el tope pero no alcanza en Bodega PT + Devoluciones. */
         private int shortage;
+        /** No entra en el tope semanal del kiosco: queda para el siguiente envío. */
+        private int deferred;
         private boolean topSeller;
         private boolean base;
         private String reason;
