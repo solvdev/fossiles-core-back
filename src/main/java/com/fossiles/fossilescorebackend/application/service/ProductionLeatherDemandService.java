@@ -272,22 +272,12 @@ public class ProductionLeatherDemandService {
      * bodega o se terminó) o cuero marcado como entregado en la tarea o en la línea.
      */
     private Map<Long, Integer> deliveredUnitsByItem(List<ProductionOrderItemEntity> items) {
-        Map<Long, Integer> out = new HashMap<>();
         if (items.isEmpty()) {
-            return out;
+            return new HashMap<>();
         }
         Set<Long> itemIds = items.stream().map(ProductionOrderItemEntity::getId).collect(Collectors.toSet());
-        for (Object[] row : taskItemRepository.findLeatherProgressRowsByItemIds(itemIds)) {
-            Long itemId = (Long) row[0];
-            Integer qty = (Integer) row[1];
-            String status = (String) row[2];
-            boolean leatherOut = Boolean.TRUE.equals(row[3]) || Boolean.TRUE.equals(row[4])
-                    || (status != null && !"PENDING".equals(status));
-            if (itemId != null && qty != null && qty > 0 && leatherOut) {
-                out.merge(itemId, qty, Integer::sum);
-            }
-        }
-        return out;
+        return ProductionLeatherDeliveredUnits.fromProgressRows(
+                taskItemRepository.findLeatherProgressRowsByItemIds(itemIds));
     }
 
     private static <T> Set<Long> ids(List<T> rows, java.util.function.Function<T, Long> getter) {

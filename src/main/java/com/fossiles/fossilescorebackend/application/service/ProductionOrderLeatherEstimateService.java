@@ -14,6 +14,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ma
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -32,15 +33,19 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Cuero requerido por una OP: ft² según receta {@code product_variant_leather}
- * del color de cada línea (cantidad × pies por unidad).
+ * Cuero restante por una OP: receta {@code product_variant_leather} del color
+ * de cada línea × piezas que aún no tienen el cuero en mesa (misma regla que
+ * {@link ProductionLeatherDemandService}).
  */
 @Service
 @RequiredArgsConstructor
 public class ProductionOrderLeatherEstimateService {
 
+    private static final BigDecimal ZERO_FT2 = BigDecimal.ZERO.setScale(3, RoundingMode.HALF_UP);
+
     private final ProductionOrderRepository productionOrderRepository;
     private final ProductionOrderItemRepository productionOrderItemRepository;
+    private final TaskItemRepository taskItemRepository;
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
     private final MaterialRepository materialRepository;
@@ -71,13 +76,21 @@ public class ProductionOrderLeatherEstimateService {
                 ? Map.of()
                 : colorRepository.findAllById(colorIds).stream()
                         .collect(Collectors.toMap(ColorEntity::getId, c -> c, (a, b) -> a));
+        Map<Long, Integer> usedByItem = items.isEmpty()
+                ? Map.of()
+                : ProductionLeatherDeliveredUnits.fromProgressRows(
+                        taskItemRepository.findLeatherProgressRowsByItemIds(
+                                items.stream().map(ProductionOrderItemEntity::getId).collect(Collectors.toSet())));
 
         Map<Long, MaterialEntity> materialsById = new HashMap<>();
         Map<Long, BigDecimal> availableByMaterial = new HashMap<>();
 
         List<ProductionOrderLeatherEstimateResponse.LineEstimate> lines = new ArrayList<>();
-        BigDecimal totalFt2 = BigDecimal.ZERO;
+        BigDecimal remainingFt2 = ZERO_FT2;
+        BigDecimal usedFt2Total = ZERO_FT2;
+        int remainingUnits = 0;
         int totalUnits = 0;
+        int usedUnits = 0;
         int missingRecipe = 0;
 
         Map<String, ProductionOrderLeatherEstimateResponse.ColorSummary> byColor = new LinkedHashMap<>();
@@ -87,7 +100,11 @@ public class ProductionOrderLeatherEstimateService {
             ProductEntity product = item.getProductId() != null ? productsById.get(item.getProductId()) : null;
             ColorEntity color = item.getColorId() != null ? colorsById.get(item.getColorId()) : null;
             int qty = ProductionOrderItemQuantityHelper.effectiveQuantityForBom(item);
+            int used = Math.min(usedByItem.getOrDefault(item.getId(), 0), qty);
+            int remaining = qty - used;
             totalUnits += qty;
+            usedUnits += used;
+            remainingUnits += remaining;
 
             LeatherRequirementService.LeatherNeed need =
                     leatherRequirementService.resolveNeed(product, item.getColorId(), qty);
@@ -97,15 +114,27 @@ public class ProductionOrderLeatherEstimateService {
                 missingRecipe++;
             }
 
-            BigDecimal lineFt2 = missing || need.noneRequired()
-                    ? BigDecimal.ZERO.setScale(3, RoundingMode.HALF_UP)
+            BigDecimal lineTotalFt2 = missing || need.noneRequired()
+                    ? ZERO_FT2
                     : need.qtyFt2().setScale(3, RoundingMode.HALF_UP);
             BigDecimal ft2PerUnit = qty > 0 && !missing && !need.noneRequired()
-                    ? lineFt2.divide(BigDecimal.valueOf(qty), 4, RoundingMode.HALF_UP)
+                    ? lineTotalFt2.divide(BigDecimal.valueOf(qty), 4, RoundingMode.HALF_UP)
                     : null;
+            BigDecimal lineUsedFt2;
+            BigDecimal lineRemainingFt2;
+            if (missing || need.noneRequired() || qty <= 0) {
+                lineUsedFt2 = ZERO_FT2;
+                lineRemainingFt2 = ZERO_FT2;
+            } else {
+                lineUsedFt2 = lineTotalFt2.multiply(BigDecimal.valueOf(used))
+                        .divide(BigDecimal.valueOf(qty), 3, RoundingMode.HALF_UP);
+                lineRemainingFt2 = lineTotalFt2.subtract(lineUsedFt2).max(BigDecimal.ZERO)
+                        .setScale(3, RoundingMode.HALF_UP);
+            }
 
             if (!missing && !need.noneRequired()) {
-                totalFt2 = totalFt2.add(lineFt2);
+                remainingFt2 = remainingFt2.add(lineRemainingFt2);
+                usedFt2Total = usedFt2Total.add(lineUsedFt2);
             }
 
             MaterialEntity material = null;
@@ -131,9 +160,13 @@ public class ProductionOrderLeatherEstimateService {
                     .productName(product != null ? product.getName() : null)
                     .colorId(item.getColorId())
                     .colorName(colorName)
-                    .quantity(qty)
+                    .quantity(remaining)
+                    .totalQuantity(qty)
+                    .usedQuantity(used)
                     .ft2PerUnit(ft2PerUnit)
-                    .lineFt2(lineFt2)
+                    .lineFt2(lineRemainingFt2)
+                    .totalFt2(lineTotalFt2)
+                    .usedFt2(lineUsedFt2)
                     .leatherMaterialId(need.materialId())
                     .leatherMaterialSku(material != null ? material.getSku() : null)
                     .leatherMaterialName(material != null ? material.getName() : null)
@@ -148,13 +181,19 @@ public class ProductionOrderLeatherEstimateService {
                             .colorId(item.getColorId())
                             .colorName(colorName)
                             .quantity(0)
-                            .totalFt2(BigDecimal.ZERO.setScale(3, RoundingMode.HALF_UP))
+                            .totalQuantity(0)
+                            .usedQuantity(0)
+                            .totalFt2(ZERO_FT2)
+                            .usedFt2(ZERO_FT2)
                             .lineCount(0)
                             .build());
-            colorSum.setQuantity(colorSum.getQuantity() + qty);
+            colorSum.setQuantity(colorSum.getQuantity() + remaining);
+            colorSum.setTotalQuantity(colorSum.getTotalQuantity() + qty);
+            colorSum.setUsedQuantity(colorSum.getUsedQuantity() + used);
             colorSum.setLineCount(colorSum.getLineCount() + 1);
             if (!missing && !need.noneRequired()) {
-                colorSum.setTotalFt2(colorSum.getTotalFt2().add(lineFt2));
+                colorSum.setTotalFt2(colorSum.getTotalFt2().add(lineRemainingFt2));
+                colorSum.setUsedFt2(colorSum.getUsedFt2().add(lineUsedFt2));
             }
 
             if (need.materialId() != null && !missing && !need.noneRequired()) {
@@ -166,10 +205,12 @@ public class ProductionOrderLeatherEstimateService {
                                 .leatherMaterialId(id)
                                 .leatherMaterialSku(mat != null ? mat.getSku() : null)
                                 .leatherMaterialName(mat != null ? mat.getName() : ("#" + id))
-                                .totalFt2(BigDecimal.ZERO.setScale(3, RoundingMode.HALF_UP))
+                                .totalFt2(ZERO_FT2)
+                                .usedFt2(ZERO_FT2)
                                 .availableFt2(avail)
                                 .build());
-                matSum.setTotalFt2(matSum.getTotalFt2().add(lineFt2));
+                matSum.setTotalFt2(matSum.getTotalFt2().add(lineRemainingFt2));
+                matSum.setUsedFt2(matSum.getUsedFt2().add(lineUsedFt2));
             }
         }
 
@@ -189,8 +230,11 @@ public class ProductionOrderLeatherEstimateService {
                 .productionOrderCode(order.getCode())
                 .orderType(order.getOrderType())
                 .status(order.getStatus())
-                .totalFt2(totalFt2.setScale(3, RoundingMode.HALF_UP))
-                .totalUnits(totalUnits)
+                .totalFt2(remainingFt2.setScale(3, RoundingMode.HALF_UP))
+                .totalUnits(remainingUnits)
+                .totalQuantity(totalUnits)
+                .usedQuantity(usedUnits)
+                .usedFt2(usedFt2Total.setScale(3, RoundingMode.HALF_UP))
                 .linesMissingRecipe(missingRecipe)
                 .lines(lines)
                 .byColor(colorSummaries)
