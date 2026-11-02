@@ -77,5 +77,11 @@ public class TaxInvoiceDocument {
          * Solo esas líneas ajustan el unitario del XML FEL.
          */
         private boolean bundlePriced;
+
+        /**
+         * Precio unitario editado por debajo del catálogo y guardado como unitario × cantidad.
+         * El XML usa ese unitario y el descuento de la línea. Las líneas de lista no lo marcan.
+         */
+        private boolean editedUnitPrice;
     }
 }

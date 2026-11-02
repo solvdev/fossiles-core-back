@@ -387,6 +387,13 @@ public class KioskPosService {
                 if (itemRequest == null || itemRequest.getProductId() == null || itemRequest.getQuantity() == null) {
                     continue;
                 }
+                // Un precio editado autorizado no entra al volumen: si se sumara, las otras
+                // líneas cambiarían de tier. El cambio sigue contando como hoy.
+                if (!exchangeSale
+                        && isPosUnitPriceOverride(itemRequest)
+                        && allowsPosUnitPriceEdit(kiosk, admin)) {
+                    continue;
+                }
                 ProductEntity volumeProduct = productRepository.findById(itemRequest.getProductId()).orElse(null);
                 addEntrecuerosVolumeQty(
                         qtyByPriceKey,
@@ -448,26 +455,33 @@ public class KioskPosService {
                 throw new BusinessException("Debe seleccionar talla para " + product.getName() + ".");
             }
 
-            // Entrecueros: el servidor recalcula y guarda el precio. El unitPrice del cliente no se usa.
-            BigDecimal unitPrice = entrecueros
-                    ? resolveEntrecuerosLineUnitPrice(product, hardware, quantity, qtyByPriceKey)
-                    : resolvePosUnitPrice(product, sizeLabel);
-            // Línea con precio editado (Miraflores o administración): monto final, sin descuento sobre esa línea.
-            boolean finalUnitPrice = false;
-            if (!entrecueros && itemRequest.getUnitPrice() != null
-                    && itemRequest.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
-                if (!exchangeSale && !allowsPosUnitPriceEdit(kiosk, admin)) {
-                    throw new BusinessException(
-                            "Solo el kiosko Miraflores (A15) o administración pueden editar precios de venta.");
-                }
-                unitPrice = itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
-                if (!exchangeSale && allowsPosUnitPriceEdit(kiosk, admin)) {
-                    finalUnitPrice = true;
-                }
+            // Precio editado autorizado: se usa el unitario del cliente (también en Entrecueros).
+            // Quien no está autorizado y lo envía recibe el mismo error; no se ignora.
+            // La venta de cambio conserva el comportamiento anterior.
+            boolean priceOverride = !exchangeSale && isPosUnitPriceOverride(itemRequest);
+            if (priceOverride && !allowsPosUnitPriceEdit(kiosk, admin)) {
+                throw new BusinessException(
+                        "Solo el kiosko Miraflores (A15) o administración pueden editar precios de venta.");
             }
-            BigDecimal lineTotal = entrecueros
-                    ? EntrecuerosPriceLists.chargedLineTotal(product, hardware, quantity, qtyByPriceKey)
-                    : unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal unitPrice;
+            BigDecimal lineTotal;
+            boolean finalUnitPrice = false;
+            if (priceOverride) {
+                unitPrice = itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
+                lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+                // Entrecueros no descuenta: la línea editada queda final aunque priceFinal sea false.
+                // priceFinal null o true: sin descuento POS/promo. false: el editado es la base.
+                finalUnitPrice = entrecueros || !Boolean.FALSE.equals(itemRequest.getPriceFinal());
+            } else if (entrecueros) {
+                unitPrice = resolveEntrecuerosLineUnitPrice(product, hardware, quantity, qtyByPriceKey);
+                lineTotal = EntrecuerosPriceLists.chargedLineTotal(product, hardware, quantity, qtyByPriceKey);
+            } else {
+                unitPrice = resolvePosUnitPrice(product, sizeLabel);
+                if (exchangeSale && isPosUnitPriceOverride(itemRequest)) {
+                    unitPrice = itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
+                }
+                lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+            }
 
             // Complemento extra autorizado: se suma al precio por pieza; el extra no entra a descuentos.
             BigDecimal extraUnit = BigDecimal.ZERO;
@@ -3140,6 +3154,11 @@ public class KioskPosService {
     /** Códigos/nombres de Miraflores autorizados a editar unitPrice en venta POS. */
     private static final String POS_UNIT_PRICE_EDIT_KIOSK_CODE = "A15";
 
+    /** Unitario informado y positivo: el cliente pide un precio distinto al de lista. */
+    private static boolean isPosUnitPriceOverride(KioskPosSaleRequest.ItemRequest item) {
+        return item.getUnitPrice() != null && item.getUnitPrice().compareTo(BigDecimal.ZERO) > 0;
+    }
+
     /** Administración (acceso a todos los kioscos) edita precios en cualquier kiosco; si no, solo Miraflores. */
     private static boolean allowsPosUnitPriceEdit(LocationEntity kiosk, boolean admin) {
         if (kiosk == null) {
@@ -5259,7 +5278,7 @@ public class KioskPosService {
             BigDecimal quantity,
             BigDecimal unitPrice,
             BigDecimal lineTotal,
-            /** Precio editado (Miraflores): no recibe descuento POS/promo sobre esa línea. */
+            /** Precio editado final: no recibe descuento POS/promo. priceFinal false lo deja en false. */
             boolean finalUnitPrice,
             /** Dimensión de stock de la línea (marca, NINO/DAMA, NUEVO/VIEJO); null al restaurar ventas. */
             String hardware,
