@@ -73,9 +73,7 @@ public class FelFactXmlBuilder {
             totalIva = totalIva.add(iva.tax());
             granTotalFromLines = granTotalFromLines.add(lineTotal);
             BigDecimal qty = nz(line.getQuantity()).setScale(2, RoundingMode.HALF_UP);
-            BigDecimal unitPrice = qty.compareTo(BigDecimal.ZERO) > 0
-                    ? lineTotal.divide(qty, 2, RoundingMode.HALF_UP)
-                    : lineTotal;
+            FelLineMoney money = resolveFelLineMoney(qty, lineTotal);
             String desc = resolveFelItemDescripcionForDte(line);
             itemsXml.append("""
                     <dte:Item BienOServicio="B" NumeroLinea="%d">
@@ -84,7 +82,7 @@ public class FelFactXmlBuilder {
                       <dte:Descripcion>%s</dte:Descripcion>
                       <dte:PrecioUnitario>%s</dte:PrecioUnitario>
                       <dte:Precio>%s</dte:Precio>
-                      <dte:Descuento>0.00</dte:Descuento>
+                      <dte:Descuento>%s</dte:Descuento>
                       <dte:Impuestos>
                         <dte:Impuesto>
                           <dte:NombreCorto>IVA</dte:NombreCorto>
@@ -99,11 +97,12 @@ public class FelFactXmlBuilder {
                     lineNo,
                     fmt(qty),
                     FelXmlEscaper.escape(desc),
-                    fmt(unitPrice),
-                    fmt(lineTotal),
+                    fmt(money.unitPrice()),
+                    fmt(money.gross()),
+                    fmt(money.discount()),
                     fmt(iva.gravable()),
                     fmt(iva.tax()),
-                    fmt(lineTotal)
+                    fmt(money.total())
             ));
         }
 
@@ -418,6 +417,36 @@ public class FelFactXmlBuilder {
      */
     static boolean isPackagingLine(TaxInvoiceDocument.Line line) {
         return line != null && ProductCinchoType.isPackagingProductCode(line.getProductCode());
+    }
+
+    /**
+     * Precio unitario, precio bruto y descuento de una línea FEL.
+     * INFILE exige precio unitario × cantidad − descuento = total, todo a 2 decimales.
+     * Si el total no divide exacto (paquete B-1 de Q130 entre 3), el unitario sube al
+     * céntimo que cubre el total y la diferencia queda como descuento de la línea.
+     * Cuando divide exacto el descuento es 0.00 y el XML no cambia.
+     */
+    record FelLineMoney(BigDecimal unitPrice, BigDecimal gross, BigDecimal discount, BigDecimal total) {
+    }
+
+    static FelLineMoney resolveFelLineMoney(BigDecimal quantity, BigDecimal lineTotal) {
+        BigDecimal qty = nz(quantity).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal total = nz(lineTotal).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal zero = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        if (qty.compareTo(BigDecimal.ZERO) <= 0) {
+            return new FelLineMoney(total, total, zero, total);
+        }
+        BigDecimal unit = total.divide(qty, 2, RoundingMode.CEILING);
+        if (unit.compareTo(BigDecimal.ZERO) == 0 && total.compareTo(BigDecimal.ZERO) > 0) {
+            unit = new BigDecimal("0.01");
+        }
+        BigDecimal gross = unit.multiply(qty).setScale(2, RoundingMode.HALF_UP);
+        for (int guard = 0; gross.compareTo(total) < 0 && guard < 8; guard++) {
+            unit = unit.add(new BigDecimal("0.01"));
+            gross = unit.multiply(qty).setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal discount = gross.subtract(total).setScale(2, RoundingMode.HALF_UP);
+        return new FelLineMoney(unit, gross, discount, total);
     }
 
     /**

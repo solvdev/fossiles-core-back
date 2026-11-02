@@ -466,7 +466,7 @@ public class KioskPosService {
                 }
             }
             BigDecimal lineTotal = entrecueros
-                    ? EntrecuerosPriceLists.lineTotal(unitPrice, quantity)
+                    ? EntrecuerosPriceLists.chargedLineTotal(product, hardware, quantity, qtyByPriceKey)
                     : unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
 
             // Complemento extra autorizado: se suma al precio por pieza; el extra no entra a descuentos.
@@ -2711,7 +2711,7 @@ public class KioskPosService {
                     ? resolveEntrecuerosLineUnitPrice(product, hardware, quantity, qtyByPriceKey)
                     : resolvePosUnitPrice(product, sizeLabel);
             BigDecimal lineTotal = entrecueros
-                    ? EntrecuerosPriceLists.lineTotal(unitPrice, quantity)
+                    ? EntrecuerosPriceLists.chargedLineTotal(product, hardware, quantity, qtyByPriceKey)
                     : unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
             BigDecimal extraUnit = itemRequest.getExtraAmount() != null
                     && itemRequest.getExtraAmount().compareTo(BigDecimal.ZERO) > 0
