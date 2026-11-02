@@ -31,13 +31,15 @@ class KioskReplenishmentCalculatorTest {
     }
 
     @Test
-    void categoryAWithoutSalesKeepsTheFloor() {
-        LinePlan p = KioskReplenishmentCalculator.plan(Category.A, 60, line(0, 0, 0, false, false));
+    void categoryASingleSaleReplacesOneUnit() {
+        // 1 venta en 60 días: mínimo y máximo 1; si ya no tiene, se repone esa unidad.
+        LinePlan p = KioskReplenishmentCalculator.plan(Category.A, 60, line(0, 0, 1, false, false));
 
-        assertThat(p.min()).isEqualTo(2);
-        assertThat(p.max()).isEqualTo(2);
-        assertThat(p.need()).isEqualTo(2);
+        assertThat(p.min()).isEqualTo(1);
+        assertThat(p.max()).isEqualTo(1);
+        assertThat(p.need()).isEqualTo(1);
         assertThat(p.reason()).isEqualTo("Debajo del mínimo");
+        assertThat(KioskReplenishmentCalculator.plan(Category.A, 60, line(1, 0, 1, false, false)).need()).isZero();
     }
 
     @Test

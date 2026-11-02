@@ -70,7 +70,6 @@ public class KioskReplenishmentService {
         final String hardware;
         int stock;
         int inTransit;
-        int received;
         BigDecimal sold = BigDecimal.ZERO;
 
         LineAgg(Long locationId, Long productId, Long colorId, String size, String hardware) {
@@ -103,7 +102,7 @@ public class KioskReplenishmentService {
         Map<String, LineAgg> lines = new LinkedHashMap<>();
         loadStock(allIds, lines);
         loadSales(allIds, since, lines);
-        loadShipments(allIds, today.minusDays(PENDING_SHIPMENT_MAX_AGE_DAYS), since, lines);
+        loadInTransit(allIds, today.minusDays(PENDING_SHIPMENT_MAX_AGE_DAYS), lines);
 
         Map<Long, ProductEntity> products = productRepository.findAllById(
                         lines.values().stream().map(l -> l.productId).collect(Collectors.toSet()))
@@ -135,7 +134,7 @@ public class KioskReplenishmentService {
                 : new HashSet<>(locationIds);
         Map<Long, List<LineAgg>> linesByKiosk = lines.values().stream()
                 .filter(l -> requested.contains(l.locationId))
-                .filter(l -> l.sold.signum() > 0 || l.received > 0 || l.stock > 0 || l.inTransit > 0)
+                .filter(l -> l.sold.signum() > 0)
                 .collect(Collectors.groupingBy(l -> l.locationId, LinkedHashMap::new, Collectors.toList()));
 
         List<PlannedLine> planned = new ArrayList<>();
@@ -321,41 +320,29 @@ public class KioskReplenishmentService {
         });
     }
 
-    /**
-     * Envíos a los kioscos: lo que sigue sin recibirse cuenta como "en camino" (se descuenta de la necesidad) y lo
-     * recibido en la ventana marca las líneas que el kiosco maneja aunque todavía no las venda.
-     */
-    private void loadShipments(Set<Long> locationIds, LocalDate pendingSince, LocalDate since,
-                               Map<String, LineAgg> lines) {
+    /** Envíos al kiosco que siguen sin recibirse: cuentan como "en camino" y se descuentan de la necesidad. */
+    private void loadInTransit(Set<Long> locationIds, LocalDate pendingSince, Map<String, LineAgg> lines) {
         String sql = """
                 SELECT ps.location_id, d.product_id, d.color_id,
                        COALESCE(NULLIF(UPPER(TRIM(d.hardware_condition)), ''), 'NUEVO') AS hardware,
                        COALESCE(d.size_label, '') AS size_label,
-                       SUM(CASE WHEN ps.received_at IS NULL THEN d.quantity ELSE 0 END) AS pending,
-                       SUM(CASE WHEN ps.received_at >= :since THEN COALESCE(d.quantity_received, d.quantity) ELSE 0 END) AS received
+                       SUM(d.quantity) AS pending
                 FROM product_shipment ps
                 JOIN product_shipment_detail d ON d.shipment_id = ps.id
                 WHERE ps.location_id IN (:ids)
-                  AND UPPER(COALESCE(ps.status, '')) <> 'CANCELLED'
-                  AND (
-                        (ps.received_at IS NULL
-                         AND UPPER(COALESCE(ps.status, '')) NOT IN ('DELIVERED', 'COMPLETED', 'RECEIVED')
-                         AND ps.created_at >= :pendingSince)
-                     OR ps.received_at >= :since
-                  )
+                  AND ps.received_at IS NULL
+                  AND UPPER(COALESCE(ps.status, '')) NOT IN ('CANCELLED', 'DELIVERED', 'COMPLETED', 'RECEIVED')
+                  AND ps.created_at >= :pendingSince
                 GROUP BY ps.location_id, d.product_id, d.color_id,
                          COALESCE(NULLIF(UPPER(TRIM(d.hardware_condition)), ''), 'NUEVO'), COALESCE(d.size_label, '')
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource("ids", locationIds)
-                .addValue("since", Timestamp.valueOf(since.atStartOfDay()))
                 .addValue("pendingSince", Timestamp.valueOf(pendingSince.atStartOfDay()));
         jdbc.query(sql, params, rs -> {
             BigDecimal pending = rs.getBigDecimal("pending");
-            BigDecimal received = rs.getBigDecimal("received");
             LineAgg l = line(lines, rs.getLong("location_id"), rs.getLong("product_id"),
                     nullableLong(rs.getObject("color_id")), rs.getString("size_label"), rs.getString("hardware"));
             l.inTransit += pending == null ? 0 : Math.max(0, pending.intValue());
-            l.received += received == null ? 0 : Math.max(0, received.intValue());
         });
     }
 
@@ -393,9 +380,14 @@ public class KioskReplenishmentService {
         return !status.equals("INACTIVE") && !status.equals("INACTIVO");
     }
 
+    /**
+     * NUEVO y VIEJO son la misma línea para reponer: el kiosco vende de ambos, pero bodega siempre envía NUEVO
+     * (en prod ~18% de la venta de kiosco sale de stock VIEJO y ningún envío lleva VIEJO). Otras dimensiones
+     * (marca, NIÑO/DAMA) se respetan.
+     */
     private static String normalizeHardware(String raw) {
         String v = raw == null ? "" : raw.trim().toUpperCase();
-        return v.isEmpty() ? NO_HARDWARE : v;
+        return v.isEmpty() || v.equals("VIEJO") ? NO_HARDWARE : v;
     }
 
     private static Long nullableLong(Object value) {

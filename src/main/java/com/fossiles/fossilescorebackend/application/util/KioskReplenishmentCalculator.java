@@ -21,7 +21,9 @@ import java.util.Map;
  *   <li><b>C</b>: solo se envía lo necesario para llegar al mínimo.</li>
  * </ul>
  * El mínimo cubre {@link #REVIEW_DAYS} días de venta y el máximo los días de cobertura de la categoría, siempre
- * dentro del piso/tope de unidades de la categoría.
+ * dentro del piso/tope de unidades de la categoría. Solo se calculan líneas con venta: con datos de prod (nov-2026)
+ * un kiosco maneja 200–350 líneas y vende ~1 unidad por línea en 60 días, así que reponer líneas sin venta pedía
+ * más del doble de lo que el kiosco vende.
  */
 public final class KioskReplenishmentCalculator {
 
@@ -38,7 +40,7 @@ public final class KioskReplenishmentCalculator {
     }
 
     public enum Category {
-        A(21, 2, 8),
+        A(21, 1, 8),
         B(14, 1, 5),
         C(7, 1, 2);
 
