@@ -338,7 +338,8 @@ public class KioskPosService {
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
         boolean entrecueros = KioskPosMode.isEntrecueros(kiosk);
         KioskCashSessionEntity openSession = requireOpenCashSession(kiosk.getId());
-        LocalDate saleDate = request.getSaleDate() != null ? request.getSaleDate() : GuatemalaDateTime.today();
+        // La fecha de una venta nueva es la del servidor: un POS abierto desde ayer mandaba la fecha de ayer.
+        LocalDate saleDate = GuatemalaDateTime.today();
         String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod(), entrecueros);
         if (!entrecueros) {
             validateCardFields(
