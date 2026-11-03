@@ -20,6 +20,18 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     boolean existsByCode(String code);
     List<TaskEntity> findByProductionOrderId(Long productionOrderId);
     List<TaskEntity> findByProductionOrderIdIn(Collection<Long> productionOrderIds);
+
+    /**
+     * Líneas de OP citadas por una tarea que no está cancelada
+     * ({@code task.production_order_item_id}). Una tarea sin estado también cuenta.
+     */
+    @Query("""
+            SELECT DISTINCT t.productionOrderItemId
+            FROM TaskEntity t
+            WHERE t.productionOrderItemId IN :itemIds
+              AND (t.status IS NULL OR t.status <> 'CANCELLED')
+            """)
+    List<Long> findNonCancelledItemIds(@Param("itemIds") Collection<Long> itemIds);
     List<TaskEntity> findByDesk(Integer desk);
     @Query("SELECT t FROM TaskEntity t WHERE t.scheduledDate = :scheduledDate ORDER BY COALESCE(t.priority, 9999), t.deliveryDate, t.desk, t.id")
     List<TaskEntity> findByScheduledDate(@Param("scheduledDate") LocalDate scheduledDate);

@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.config;
 
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.application.exception.ProductionOrderItemConflictException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -58,6 +59,16 @@ public class GlobalExceptionHandler {
         errors.put("message", ex.getMessage());
         
         return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(ProductionOrderItemConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleProductionOrderItemConflict(
+            ProductionOrderItemConflictException ex) {
+        Map<String, Object> errors = new HashMap<>();
+        errors.put("timestamp", LocalDateTime.now());
+        errors.put("status", HttpStatus.CONFLICT.value());
+        errors.put("message", ex.getMessage());
+        return new ResponseEntity<>(errors, HttpStatus.CONFLICT);
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)
