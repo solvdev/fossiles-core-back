@@ -49,8 +49,9 @@ public class ProductDistributionController {
     // ========== DISTRIBUTION ==========
 
     @GetMapping
-    public ResponseEntity<List<ProductDistributionResponse>> getAllDistributions() {
-        List<ProductDistributionResponse> distributions = distributionService.getAllDistributions();
+    public ResponseEntity<List<ProductDistributionResponse>> getAllDistributions(
+            @RequestParam(required = false) String origin) {
+        List<ProductDistributionResponse> distributions = distributionService.getAllDistributions(origin);
         return ResponseEntity.ok(distributions);
     }
 

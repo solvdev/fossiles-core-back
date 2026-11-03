@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.PendingShipmentR
 import com.fossiles.fossilescorebackend.application.dto.request.ProductDistributionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentDestinationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentObservationsRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskReplenishmentDistributionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentShippingCostRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
@@ -87,6 +88,13 @@ public class ProductDistributionService {
     /** Envío interno ENVI sin orden de producción (colaborador, salida PT/Devoluciones). */
     public static final String INTERNAL_ENVI_TAG = "INTERNAL_ENVI:1";
     public static final String REQUEST_TYPE_TAG = "REQUEST_TYPE:";
+    /**
+     * Envío de reposición que espera producción: se creó en borrador con el faltante de bodega de un kiosco y se
+     * confirma cuando la OPK sugerida ya dejó el producto en Bodega PT.
+     */
+    public static final String PENDING_PRODUCTION_TAG = "PENDING_PRODUCTION:1";
+    /** Descripción de la distribución que envuelve un envío directo a kiosco (sin OP). */
+    public static final String DIRECT_KIOSK_DISTRIBUTION_DESCRIPTION = "Envío directo a kiosko";
     private static final String DISCOUNT_PERCENT_TAG = "DISCOUNT_PERCENT:";
     private static final String DISCOUNT_AMOUNT_TAG = "DISCOUNT_AMOUNT:";
     private static final String APPLY_HALF_PRICE_TAG = "APPLY_HALF_PRICE:";
@@ -130,7 +138,15 @@ public class ProductDistributionService {
      * Obtiene todas las distribuciones
      */
     public List<ProductDistributionResponse> getAllDistributions() {
+        return getAllDistributions(null);
+    }
+
+    /** {@code origin} opcional (MANUAL / REPOSICION); null o vacío devuelve todas, como antes. */
+    public List<ProductDistributionResponse> getAllDistributions(String origin) {
+        boolean filter = origin != null && !origin.isBlank();
+        String wanted = filter ? DistributionOrigin.normalize(origin) : null;
         return distributionRepository.findAll().stream()
+                .filter(d -> !filter || wanted.equals(DistributionOrigin.normalize(d.getOrigin())))
                 .map(this::toDistributionResponse)
                 .collect(Collectors.toList());
     }
@@ -157,6 +173,7 @@ public class ProductDistributionService {
                 .distributionDate(request.getDistributionDate())
                 .status(request.getStatus() != null ? request.getStatus() : "DRAFT")
                 .description(request.getDescription())
+                .origin(DistributionOrigin.MANUAL)
                 .createdBy(currentUserId)
                 .updatedBy(currentUserId)
                 .build();
@@ -229,7 +246,9 @@ public class ProductDistributionService {
         ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductionOrder", productionOrderId));
         Map<Long, ProductShipmentResponse> byId = new java.util.LinkedHashMap<>();
-        if (po.getDistributionId() != null) {
+        // Solo la OP generada desde una distribución (OPD) trae todos los envíos de la distribución. Una OPK ligada
+        // a una distribución (de reposición o la suya) ve solo sus propios envíos, igual que antes.
+        if (po.getDistributionId() != null && "DISTRIBUTION".equalsIgnoreCase(safeTrim(po.getOrderType()))) {
             for (ProductShipmentResponse s : getShipmentsByDistribution(po.getDistributionId())) {
                 byId.put(s.getId(), s);
             }
@@ -277,6 +296,10 @@ public class ProductDistributionService {
             location = locationRepository.findById(reqLocationId)
                     .orElseThrow(() -> new ResourceNotFoundException("Location", reqLocationId));
         }
+        // OPK a kiosco: el envío vive en la distribución ligada a la OPK (la de reposición que la sugirió, o la
+        // suya propia, que se crea con el primer envío). OPCK, LF, OPI y cinchos siguen sin distribución.
+        boolean opkKioskShipment = location != null && isKioskReplenishmentOrder(order);
+        Long opkDistributionId = opkKioskShipment ? order.getDistributionId() : null;
 
         List<ProductShipmentRequest.ProductShipmentDetailRequest> normalizedProducts =
                 normalizeShipmentProducts(request.getProducts());
@@ -295,7 +318,8 @@ public class ProductDistributionService {
             if (!productionOrderId.equals(targetShipment.getProductionOrderId())) {
                 throw new BusinessException("El envío no pertenece a esta orden de producción.");
             }
-            if (targetShipment.getDistributionId() != null) {
+            if (targetShipment.getDistributionId() != null
+                    && !java.util.Objects.equals(targetShipment.getDistributionId(), opkDistributionId)) {
                 throw new BusinessException("Este envío pertenece a una distribución; use el flujo de distribución.");
             }
             if (!java.util.Objects.equals(reqLocationId, targetShipment.getLocationId())) {
@@ -329,6 +353,31 @@ public class ProductDistributionService {
             shipmentRepository.delete(draft);
         }
 
+        if (opkKioskShipment) {
+            // La distribución se crea hasta aquí, ya pasadas las validaciones.
+            order = ensureOpkDistribution(order);
+            opkDistributionId = order.getDistributionId();
+            // Si la reposición dejó un envío pendiente de producción para este kiosco, la OPK lo cumple: se reusa
+            // (conserva su número) en vez de crear otro envío al mismo kiosco en la misma distribución.
+            Optional<ProductShipmentEntity> pending = findPendingProductionShipment(opkDistributionId, reqLocationId);
+            if (pending.isPresent()) {
+                ProductShipmentEntity reuse = pending.get();
+                reuse.setProductionOrderId(productionOrderId);
+                reuse.setPartialReleaseId(partialReleaseId);
+                reuse.setNotes(persistedNotes);
+                reuse.setPackingItems(serializePackingItems(request.getPackingItems()));
+                reuse.setShippingCost(normalizeShippingCost(request.getShippingCost()));
+                reuse.setUpdatedBy(securityUtil.getCurrentUserId());
+                ProductShipmentEntity savedReuse = shipmentRepository.save(reuse);
+                if (!normalizedProducts.isEmpty()) {
+                    updateShipmentProducts(savedReuse.getId(), normalizedProducts);
+                } else {
+                    shipmentDetailRepository.deleteByShipmentId(savedReuse.getId());
+                }
+                return toShipmentResponse(shipmentRepository.findById(savedReuse.getId()).orElse(savedReuse));
+            }
+        }
+
         String shipmentNumber;
         if (location != null) {
             shipmentNumber = generateShipmentNumber(location);
@@ -343,7 +392,7 @@ public class ProductDistributionService {
             shipmentNumber = generateShipmentNumberForOpiDocument(order);
         }
         ProductShipmentEntity shipment = ProductShipmentEntity.builder()
-                .distributionId(null)
+                .distributionId(opkDistributionId)
                 .productionOrderId(productionOrderId)
                 .partialReleaseId(partialReleaseId)
                 .shipmentNumber(shipmentNumber)
@@ -501,6 +550,7 @@ public class ProductDistributionService {
         assertShipmentDetailsHaveCinchoSize(shipmentId);
         // Congela precios en la línea del envío al confirmar (CxC usa este precio, no el catálogo futuro).
         freezeMissingShipmentDetailUnitPrices(shipment, details);
+        shipment.setNotes(stripPendingProductionTag(shipment.getNotes()));
         shipment.setStatus("CONFIRMED");
         ProductShipmentEntity saved = shipmentRepository.save(shipment);
         if (saved.getProductionOrderId() != null) {
@@ -657,10 +707,12 @@ public class ProductDistributionService {
         boolean confirmOnly = request.getConfirmOnly() == null || Boolean.TRUE.equals(request.getConfirmOnly());
 
         String persistedNotes = mergeDocumentDateIntoNotes(request.getNotes(), request.getDocumentDate());
-        String shipmentNumber = generateShipmentNumber(location);
         Long currentUserId = securityUtil.getCurrentUserId();
+        // Ningún envío de reposición a kiosco queda sin distribución: se mete en la indicada o en una MANUAL nueva.
+        Long distributionId = resolveDirectKioskDistribution(request.getDistributionId(), location, currentUserId);
+        String shipmentNumber = generateShipmentNumber(location);
         ProductShipmentEntity shipment = ProductShipmentEntity.builder()
-                .distributionId(null)
+                .distributionId(distributionId)
                 .productionOrderId(null)
                 .partialReleaseId(null)
                 .shipmentNumber(shipmentNumber)
@@ -680,6 +732,120 @@ public class ProductDistributionService {
             return confirmed;
         }
         return sendShipment(saved.getId());
+    }
+
+    /**
+     * Crea en una sola transacción la distribución de reposición con sus envíos: por kiosco, un envío CONFIRMED con lo
+     * que se manda ahora (el inventario sale de bodega al Enviar, como cualquier envío confirmado) y, si hubo
+     * faltante, un envío DRAFT pendiente de producción con ese faltante. Si algo falla no se crea nada.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ProductDistributionResponse createReplenishmentDistribution(KioskReplenishmentDistributionRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        if (request == null || request.getKiosks() == null || request.getKiosks().isEmpty()) {
+            throw new BusinessException("Debe incluir al menos un kiosco con unidades para enviar.");
+        }
+        record KioskPlan(LocationEntity location, String notes,
+                         List<ProductShipmentRequest.ProductShipmentDetailRequest> send,
+                         List<ProductShipmentRequest.ProductShipmentDetailRequest> shortage) {
+        }
+        Set<Long> seen = new HashSet<>();
+        List<KioskPlan> plans = new ArrayList<>();
+        for (KioskReplenishmentDistributionRequest.Kiosk kiosk : request.getKiosks()) {
+            if (kiosk == null || kiosk.getLocationId() == null) {
+                throw new BusinessException("Cada kiosco de la reposición necesita su ubicación.");
+            }
+            if (!seen.add(kiosk.getLocationId())) {
+                throw new BusinessException("Un kiosco viene repetido en la reposición.");
+            }
+            LocationEntity location = locationRepository.findById(kiosk.getLocationId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Location", kiosk.getLocationId()));
+            assertKioskLocation(location);
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> send = new ArrayList<>();
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> shortage = new ArrayList<>();
+            for (KioskReplenishmentDistributionRequest.Line line : kiosk.getLines() == null
+                    ? List.<KioskReplenishmentDistributionRequest.Line>of() : kiosk.getLines()) {
+                if (line == null || line.getProductId() == null) {
+                    continue;
+                }
+                if (positive(line.getQuantity())) {
+                    send.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
+                            .productId(line.getProductId())
+                            .colorId(line.getColorId())
+                            .size(line.getSize())
+                            .hardwareCondition(line.getHardwareCondition())
+                            .quantity(line.getQuantity())
+                            .suggestedQuantity(line.getSuggestedQuantity())
+                            .build());
+                }
+                if (positive(line.getShortage())) {
+                    shortage.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
+                            .productId(line.getProductId())
+                            .colorId(line.getColorId())
+                            .size(line.getSize())
+                            .hardwareCondition(line.getHardwareCondition())
+                            .quantity(line.getShortage())
+                            .suggestedQuantity(line.getShortage())
+                            .build());
+                }
+            }
+            if (!send.isEmpty() || !shortage.isEmpty()) {
+                plans.add(new KioskPlan(location, kiosk.getNotes(), send, shortage));
+            }
+        }
+        if (plans.isEmpty()) {
+            throw new BusinessException("Ningún kiosco tiene unidades para enviar ni faltante para producir.");
+        }
+
+        Integer window = request.getWindowDays();
+        String description = request.getDescription() == null || request.getDescription().isBlank()
+                ? "Reposición automática" + (window != null ? " — venta de " + window + " días" : "")
+                : request.getDescription().trim();
+        Long userId = securityUtil.getCurrentUserId();
+        ProductDistributionEntity distribution = distributionRepository.save(ProductDistributionEntity.builder()
+                .distributionNumber(generateDistributionNumber())
+                .distributionDate(request.getDistributionDate() != null ? request.getDistributionDate() : LocalDate.now())
+                .status("IN_PROGRESS")
+                .origin(DistributionOrigin.REPOSICION)
+                .replenishmentWindowDays(window)
+                .description(description)
+                .createdBy(userId)
+                .updatedBy(userId)
+                .build());
+
+        for (KioskPlan plan : plans) {
+            String notes = plan.notes() == null || plan.notes().isBlank() ? description : plan.notes().trim();
+            if (!plan.send().isEmpty()) {
+                ProductShipmentEntity shipment = shipmentRepository.save(ProductShipmentEntity.builder()
+                        .distributionId(distribution.getId())
+                        .shipmentNumber(generateShipmentNumber(plan.location()))
+                        .locationId(plan.location().getId())
+                        .status("DRAFT")
+                        .notes(notes)
+                        .createdBy(userId)
+                        .updatedBy(userId)
+                        .build());
+                updateShipmentProducts(shipment.getId(), plan.send());
+                confirmShipmentDraft(shipment.getId());
+            }
+            if (!plan.shortage().isEmpty()) {
+                ProductShipmentEntity pending = shipmentRepository.save(ProductShipmentEntity.builder()
+                        .distributionId(distribution.getId())
+                        .shipmentNumber(generateShipmentNumber(plan.location()))
+                        .locationId(plan.location().getId())
+                        .status("DRAFT")
+                        .notes(notes + "\n" + PENDING_PRODUCTION_TAG)
+                        .createdBy(userId)
+                        .updatedBy(userId)
+                        .build());
+                updateShipmentProducts(pending.getId(), plan.shortage());
+            }
+        }
+        return toDistributionResponse(distributionRepository.findById(distribution.getId()).orElse(distribution));
+    }
+
+    private static boolean positive(BigDecimal value) {
+        return value != null && value.compareTo(BigDecimal.ZERO) > 0;
     }
 
     public List<ProductShipmentResponse> listStandaloneKioskShipments() {
@@ -1321,9 +1487,12 @@ public class ProductDistributionService {
             return toShipmentResponse(saved);
         }
 
-        // Flujo principal: para kiosko sin shipmentId específico, reemplaza envíos DRAFT del kiosko
+        // Flujo principal: para kiosko sin shipmentId específico, reemplaza envíos DRAFT del kiosko.
+        // Los pendientes de producción (faltante de una reposición) y los de OPK no se tocan aquí.
         List<ProductShipmentEntity> draftShipments = allShipmentsForLocation.stream()
                 .filter(s -> "DRAFT".equalsIgnoreCase(s.getStatus()))
+                .filter(s -> !isPendingProductionShipment(s))
+                .filter(s -> s.getProductionOrderId() == null)
                 .collect(Collectors.toList());
         for (ProductShipmentEntity draft : draftShipments) {
             shipmentDetailRepository.deleteByShipmentId(draft.getId());
@@ -1545,9 +1714,20 @@ public class ProductDistributionService {
                     .collect(Collectors.toList()));
         }
 
+        // La cantidad sugerida por la reposición se conserva al editar líneas (sirve para medir los ajustes).
+        Map<String, BigDecimal> previousSuggested = new HashMap<>();
+        for (ProductShipmentDetailEntity old : shipmentDetailRepository.findByShipmentId(shipmentId)) {
+            if (old.getSuggestedQuantity() != null) {
+                previousSuggested.put(suggestedKey(old.getProductId(), old.getColorId(), old.getSizeLabel()),
+                        old.getSuggestedQuantity());
+            }
+        }
         shipmentDetailRepository.deleteByShipmentId(shipmentId);
         try {
             for (ProductShipmentRequest.ProductShipmentDetailRequest line : normalized) {
+                BigDecimal suggested = line.getSuggestedQuantity() != null
+                        ? line.getSuggestedQuantity()
+                        : previousSuggested.get(suggestedKey(line.getProductId(), line.getColorId(), line.getSize()));
                 ProductShipmentDetailEntity detail = ProductShipmentDetailEntity.builder()
                         .shipmentId(shipmentId)
                         .productId(line.getProductId())
@@ -1560,6 +1740,7 @@ public class ProductDistributionService {
                                 line.getSize()))
                         .quantity(line.getQuantity())
                         .unitPrice(line.getUnitPrice())
+                        .suggestedQuantity(suggested)
                         .build();
                 shipmentDetailRepository.save(detail);
             }
@@ -1930,8 +2111,14 @@ public class ProductDistributionService {
             throw new BusinessException("La distribución ya está completada");
         }
         
+        if (DistributionOrigin.REPOSICION.equals(DistributionOrigin.normalize(distribution.getOrigin()))) {
+            throw new BusinessException("La distribución de reposición ya nace con sus envíos confirmados. "
+                    + "El faltante se produce con la OPK sugerida desde Órdenes de producción.");
+        }
+
         // Verificar si ya existe una OP vinculada.
-        Optional<ProductionOrderEntity> existingOrder = productionOrderRepository.findByDistributionId(distributionId);
+        Optional<ProductionOrderEntity> existingOrder =
+                productionOrderRepository.findFirstByDistributionIdOrderByIdAsc(distributionId);
         if (existingOrder.isPresent() && generateProductionOrder) {
             throw new BusinessException("Esta distribución ya tiene una orden de producción generada: " + existingOrder.get().getCode());
         }
@@ -2016,8 +2203,12 @@ public class ProductDistributionService {
             }
         }
         
-        // Actualizar estado de los envíos
+        // Actualizar estado de los envíos: solo los borradores; un envío ya enviado, recibido o cancelado no
+        // regresa a confirmado.
         for (ProductShipmentEntity shipment : shipments) {
+            if (!"DRAFT".equalsIgnoreCase(safeTrim(shipment.getStatus()))) {
+                continue;
+            }
             shipment.setStatus("CONFIRMED");
             shipmentRepository.save(shipment);
         }
@@ -4547,13 +4738,39 @@ public class ProductDistributionService {
      * Genera número de distribución automáticamente basado en el ID secuencial
      */
     private String generateDistributionNumber() {
-        // Obtener el siguiente ID disponible (contar distribuciones existentes + 1)
-        long nextId = distributionRepository.count() + 1;
+        // Formato: DIST-YYYYMMDD-001. El correlativo final es global: el mayor en uso + 1 (antes era count()+1, que
+        // chocaba con el índice único cuando se había borrado alguna distribución).
         String prefix = "DIST";
         String dateStr = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-        
-        // Formato: DIST-YYYYMMDD-001 (basado en ID secuencial)
-        return String.format("%s-%s-%03d", prefix, dateStr, nextId);
+        long next = nextDistributionSequence(distributionRepository.findAllDistributionNumbers());
+        String candidate = String.format("%s-%s-%03d", prefix, dateStr, next);
+        while (distributionRepository.existsByDistributionNumber(candidate)) {
+            next++;
+            candidate = String.format("%s-%s-%03d", prefix, dateStr, next);
+        }
+        return candidate;
+    }
+
+    /** Mayor correlativo final de los números DIST-YYYYMMDD-NNN existentes, más uno. */
+    static long nextDistributionSequence(Collection<String> existingNumbers) {
+        long max = 0;
+        if (existingNumbers != null) {
+            for (String number : existingNumbers) {
+                if (number == null) {
+                    continue;
+                }
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("^DIST-\\d{8}-(\\d+)$")
+                        .matcher(number.trim().toUpperCase(Locale.ROOT));
+                if (m.matches()) {
+                    try {
+                        max = Math.max(max, Long.parseLong(m.group(1)));
+                    } catch (NumberFormatException ignored) {
+                        // número fuera de rango: no cuenta
+                    }
+                }
+            }
+        }
+        return max + 1;
     }
 
     /**
@@ -4598,8 +4815,9 @@ public class ProductDistributionService {
     private ProductDistributionResponse toDistributionResponse(ProductDistributionEntity entity) {
         List<ProductShipmentEntity> shipments = shipmentRepository.findByDistributionId(entity.getId());
         
-        // Buscar si hay una orden de producción vinculada
-        Optional<ProductionOrderEntity> linkedOrder = productionOrderRepository.findByDistributionId(entity.getId());
+        // Órdenes de producción vinculadas (OPD generada desde la distribución, u OPK sugerida por una reposición).
+        List<ProductionOrderEntity> linkedOrders = productionOrderRepository.findByDistributionIdOrderByIdAsc(entity.getId());
+        Optional<ProductionOrderEntity> linkedOrder = linkedOrders.stream().findFirst();
         
         return ProductDistributionResponse.builder()
                 .id(entity.getId())
@@ -4607,10 +4825,20 @@ public class ProductDistributionService {
                 .distributionDate(entity.getDistributionDate())
                 .status(entity.getStatus())
                 .description(entity.getDescription())
+                .origin(DistributionOrigin.normalize(entity.getOrigin()))
+                .replenishmentWindowDays(entity.getReplenishmentWindowDays())
                 .shipmentCount(shipments.size())
                 .shipments(toShipmentResponses(shipments))
                 .productionOrderId(linkedOrder.map(ProductionOrderEntity::getId).orElse(null))
                 .productionOrderCode(linkedOrder.map(ProductionOrderEntity::getCode).orElse(null))
+                .linkedProductionOrders(linkedOrders.stream()
+                        .map(po -> ProductDistributionResponse.LinkedProductionOrder.builder()
+                                .id(po.getId())
+                                .code(po.getCode())
+                                .orderType(po.getOrderType())
+                                .status(po.getStatus())
+                                .build())
+                        .collect(Collectors.toList()))
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
                 .createdByName(resolveUserDisplayName(
@@ -4738,6 +4966,8 @@ public class ProductDistributionService {
             result.add(ProductShipmentResponse.builder()
                     .id(entity.getId())
                     .distributionId(entity.getDistributionId())
+                    .distributionOrigin(distribution != null ? DistributionOrigin.normalize(distribution.getOrigin()) : null)
+                    .pendingProduction(isPendingProductionShipment(entity))
                     .productionOrderId(entity.getProductionOrderId())
                     .partialReleaseId(entity.getPartialReleaseId())
                     .productionOrderCode(linkedPo != null ? linkedPo.getCode() : null)
@@ -4859,6 +5089,7 @@ public class ProductDistributionService {
                 .hardwareCondition(entity.getHardwareCondition())
                 .brandName(brandName)
                 .quantity(entity.getQuantity())
+                .suggestedQuantity(entity.getSuggestedQuantity())
                 .unitPrice(entity.getUnitPrice())
                 .quantityReceived(entity.getQuantityReceived())
                 .quantityDifference(entity.getQuantityDifference())
@@ -4978,6 +5209,7 @@ public class ProductDistributionService {
         Map<String, String> keyToSize = new HashMap<>();
         Map<String, String> keyToHardware = new HashMap<>();
         Map<String, BigDecimal> keyToUnitPrice = new HashMap<>();
+        Map<String, BigDecimal> keyToSuggested = new HashMap<>();
 
         if (products != null) {
             for (ProductShipmentRequest.ProductShipmentDetailRequest productRequest : products) {
@@ -5005,6 +5237,9 @@ public class ProductDistributionService {
                 if (productRequest.getUnitPrice() != null && !keyToUnitPrice.containsKey(key)) {
                     keyToUnitPrice.put(key, productRequest.getUnitPrice());
                 }
+                if (productRequest.getSuggestedQuantity() != null) {
+                    keyToSuggested.merge(key, productRequest.getSuggestedQuantity(), BigDecimal::add);
+                }
             }
         }
 
@@ -5016,6 +5251,7 @@ public class ProductDistributionService {
                         .hardwareCondition(keyToHardware.getOrDefault(entry.getKey(), ""))
                         .quantity(entry.getValue())
                         .unitPrice(keyToUnitPrice.get(entry.getKey()))
+                        .suggestedQuantity(keyToSuggested.get(entry.getKey()))
                         .build())
                 .collect(Collectors.toList());
     }
@@ -5166,6 +5402,101 @@ public class ProductDistributionService {
         String nfd = java.text.Normalizer.normalize(value.trim(), java.text.Normalizer.Form.NFD);
         String withoutMarks = nfd.replaceAll("\\p{M}+", "");
         return withoutMarks.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
+    }
+
+    /**
+     * OPK: orden NORMAL de kioscos (código OPK-…), fuera de Luis Felipe y Entre Cueros. Solo estas ponen sus envíos
+     * a kiosco dentro de una distribución; OPCK y las demás siguen con envío directo.
+     */
+    boolean isKioskReplenishmentOrder(ProductionOrderEntity order) {
+        if (order == null) {
+            return false;
+        }
+        String orderType = order.getOrderType() == null ? "" : order.getOrderType().trim().toUpperCase(Locale.ROOT);
+        String code = order.getCode() == null ? "" : order.getCode().trim().toUpperCase(Locale.ROOT);
+        return "NORMAL".equals(orderType)
+                && code.startsWith("OPK")
+                && !isLuisFelipeVendorOrder(order)
+                && !isEntreCuerosCustomerOpv(order);
+    }
+
+    /** Liga la OPK a una distribución: la que ya tenga (p. ej. la reposición que la sugirió) o una MANUAL nueva. */
+    private ProductionOrderEntity ensureOpkDistribution(ProductionOrderEntity order) {
+        if (order.getDistributionId() != null && distributionRepository.existsById(order.getDistributionId())) {
+            return order;
+        }
+        Long userId = securityUtil.getCurrentUserId();
+        ProductDistributionEntity created = distributionRepository.save(ProductDistributionEntity.builder()
+                .distributionNumber(generateDistributionNumber())
+                .distributionDate(LocalDate.now())
+                .status("IN_PROGRESS")
+                .origin(DistributionOrigin.MANUAL)
+                .description("Envíos de " + (order.getCode() == null ? "OPK #" + order.getId() : order.getCode()))
+                .createdBy(userId)
+                .updatedBy(userId)
+                .build());
+        order.setDistributionId(created.getId());
+        order.setUpdatedBy(userId);
+        return productionOrderRepository.save(order);
+    }
+
+    /**
+     * Distribución para un envío directo a kiosco sin OP: la indicada (debe existir y no estar cerrada) o una
+     * MANUAL nueva de un solo envío.
+     */
+    private Long resolveDirectKioskDistribution(Long requestedDistributionId, LocationEntity location, Long userId)
+            throws ResourceNotFoundException, BusinessException {
+        if (requestedDistributionId != null) {
+            ProductDistributionEntity dist = distributionRepository.findById(requestedDistributionId)
+                    .orElseThrow(() -> new ResourceNotFoundException("ProductDistribution", requestedDistributionId));
+            if ("COMPLETED".equalsIgnoreCase(safeTrim(dist.getStatus()))) {
+                throw new BusinessException("La distribución " + dist.getDistributionNumber() + " ya está completada.");
+            }
+            return dist.getId();
+        }
+        String kioskName = location.getName() == null || location.getName().isBlank()
+                ? String.valueOf(location.getCode())
+                : location.getName().trim();
+        ProductDistributionEntity created = distributionRepository.save(ProductDistributionEntity.builder()
+                .distributionNumber(generateDistributionNumber())
+                .distributionDate(LocalDate.now())
+                .status("IN_PROGRESS")
+                .origin(DistributionOrigin.MANUAL)
+                .description(DIRECT_KIOSK_DISTRIBUTION_DESCRIPTION + " · " + kioskName)
+                .createdBy(userId)
+                .updatedBy(userId)
+                .build());
+        return created.getId();
+    }
+
+    static boolean isPendingProductionShipment(ProductShipmentEntity shipment) {
+        return shipment != null
+                && "DRAFT".equalsIgnoreCase(shipment.getStatus() == null ? "" : shipment.getStatus().trim())
+                && shipment.getNotes() != null
+                && shipment.getNotes().contains(PENDING_PRODUCTION_TAG);
+    }
+
+    private Optional<ProductShipmentEntity> findPendingProductionShipment(Long distributionId, Long locationId) {
+        return shipmentRepository.findByDistributionIdAndLocationIdOrderByIdAsc(distributionId, locationId).stream()
+                .filter(s -> s.getProductionOrderId() == null)
+                .filter(ProductDistributionService::isPendingProductionShipment)
+                .findFirst();
+    }
+
+    static String stripPendingProductionTag(String notes) {
+        if (notes == null || !notes.contains(PENDING_PRODUCTION_TAG)) {
+            return notes;
+        }
+        String cleaned = java.util.Arrays.stream(notes.split("\\R"))
+                .filter(line -> !line.trim().equals(PENDING_PRODUCTION_TAG))
+                .collect(Collectors.joining("\n"))
+                .trim();
+        return cleaned.isEmpty() ? null : cleaned;
+    }
+
+    private static String suggestedKey(Long productId, Long colorId, String size) {
+        return productId + "|" + (colorId == null ? "" : colorId) + "|"
+                + (size == null ? "" : size.trim().toUpperCase(Locale.ROOT));
     }
 
     private boolean isEntreCuerosCustomerOpv(ProductionOrderEntity order) {

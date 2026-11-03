@@ -93,13 +93,20 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
     List<ProductShipmentEntity> findStandaloneInternalEnviShipments();
 
     /**
-     * Envíos directos a kiosko sin OP ni distribución (replenishment ad-hoc).
+     * Envíos a kiosko sin OP: los directos (hoy envueltos en una distribución MANUAL con descripción
+     * "Envío directo a kiosko…"), los de reposición y los viejos que aún no tengan distribución. Mantiene lo que
+     * devolvía GET /shipments/standalone-kiosk antes de que todo envío a kiosco viviera en una distribución.
      */
     @Query("""
         SELECT s FROM ProductShipmentEntity s
+        LEFT JOIN s.distribution d
         WHERE s.productionOrderId IS NULL
-          AND s.distributionId IS NULL
           AND s.locationId IS NOT NULL
+          AND (
+            s.distributionId IS NULL
+            OR d.origin = 'REPOSICION'
+            OR COALESCE(d.description, '') LIKE 'Envío directo a kiosko%'
+          )
         ORDER BY s.id DESC
         """)
     List<ProductShipmentEntity> findStandaloneKioskShipments();
