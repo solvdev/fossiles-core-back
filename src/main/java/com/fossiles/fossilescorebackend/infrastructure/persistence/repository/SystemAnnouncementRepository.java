@@ -24,4 +24,9 @@ public interface SystemAnnouncementRepository extends JpaRepository<SystemAnnoun
     @Modifying
     @Query("UPDATE SystemAnnouncementEntity a SET a.isActive = false, a.dismissedAt = :dismissedAt, a.dismissedByUser.id = :userId WHERE a.isActive = true")
     int deactivateAllActive(@Param("dismissedAt") LocalDateTime dismissedAt, @Param("userId") Long userId);
+
+    /** Al arrancar: los avisos de reinicio previos ya se cumplieron (el servidor se reinició). */
+    @Modifying
+    @Query("UPDATE SystemAnnouncementEntity a SET a.isActive = false, a.dismissedAt = :dismissedAt WHERE a.isActive = true AND a.targetAction = 'RESTART'")
+    int deactivateActiveRestarts(@Param("dismissedAt") LocalDateTime dismissedAt);
 }

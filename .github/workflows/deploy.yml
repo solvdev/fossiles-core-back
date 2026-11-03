@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, develop]
   workflow_dispatch:
+    inputs:
+      aviso_minutos:
+        description: "Minutos de aviso de reinicio a los usuarios (0 = sin cuenta regresiva)"
+        required: false
+        default: ""
 
 concurrency:
   group: deploy-backend-${{ github.ref_name }}
@@ -46,25 +51,17 @@ jobs:
           echo "HOST=$HOST" >> "$GITHUB_ENV"
           echo "ENV_LABEL=$LABEL" >> "$GITHUB_ENV"
           echo "DB_URL=$DB_URL" >> "$GITHUB_ENV"
+
+          # Minutos de aviso a los usuarios antes de detener el servicio. Se pueden cambiar con las
+          # variables AVISO_MINUTOS_PROD / AVISO_MINUTOS_TEST o al correrlo a mano (workflow_dispatch).
+          AVISO_MIN="${{ github.event.inputs.aviso_minutos }}"
+          if [ -z "$AVISO_MIN" ]; then
+            if [ "$LABEL" = "test" ]; then AVISO_MIN="${{ vars.AVISO_MINUTOS_TEST || '1' }}"; else AVISO_MIN="${{ vars.AVISO_MINUTOS_PROD || '3' }}"; fi
+          fi
+          AVISO_MIN=$(printf '%s' "$AVISO_MIN" | tr -cd '0-9'); [ -z "$AVISO_MIN" ] && AVISO_MIN=0
+          echo "AVISO_MIN=$AVISO_MIN" >> "$GITHUB_ENV"
+          echo "BACK_LOCAL_URL=${{ vars.BACK_LOCAL_URL || 'http://localhost:8080' }}" >> "$GITHUB_ENV"
           echo "Rama ${{ github.ref_name }} → $LABEL ($HOST) db=${DB_NAME}" | tee -a /tmp/deploy.log
-
-      - name: Setup JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: gradle
-
-      # Importante: pipefail. Sin eso, `cmd | tee` reporta éxito aunque cmd falle
-      # (Gradle compile error → Discord "Deploy exitoso" con JAR viejo en el server).
-      - name: Build JAR (bootJar, sin tests)
-        id: build
-        run: |
-          set -euo pipefail
-          chmod +x ./gradlew
-          ./gradlew clean bootJar -x test 2>&1 | tee -a /tmp/deploy.log
-          test -f build/libs/fossiles-core-backend.jar
-          echo "JAR OK: $(ls -lh build/libs/fossiles-core-backend.jar)"
 
       - name: Setup SSH key
         id: ssh_setup
@@ -115,10 +112,92 @@ jobs:
           fi
           echo "SSH key lista (${ENV_LABEL} ${HOST})" | tee -a /tmp/deploy.log
 
-      - name: Detener servicio antes de transferir
-        id: stop_service
+      # Aviso con cuenta regresiva en las pantallas (o reutiliza el que ya lanzó un admin).
+      # El build corre mientras tanto y «Esperar fin del aviso» detiene el servicio al llegar a 0.
+      # Si el back todavía no tiene el gancho o falta DEPLOY_HOOK_TOKEN, el deploy sigue sin aviso.
+      - name: Avisar reinicio a los usuarios
+        id: announce
+        continue-on-error: true
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_HOOK_TOKEN: ${{ secrets.DEPLOY_HOOK_TOKEN }}
+        run: |
+          set -uo pipefail
+          OUT=$(bash .github/scripts/deploy-hook.sh ANNOUNCE "$AVISO_MIN")
+          CODE=$(printf '%s\n' "$OUT" | head -1)
+          BODY=$(printf '%s\n' "$OUT" | tail -n +2)
+          case "$CODE" in
+            200)
+              REM=$(printf '%s' "$BODY" | jq -r '(((.expiresAtEpochMs // 0) - (.serverNowEpochMs // 0)) / 1000) | floor')
+              echo "AVISO_ACTIVO=true" >> "$GITHUB_ENV"
+              echo "Aviso activo: $(printf '%s' "$BODY" | jq -r '.title') — faltan ${REM}s" | tee -a /tmp/deploy.log ;;
+            204) echo "Sin aviso (AVISO_MIN=${AVISO_MIN})" | tee -a /tmp/deploy.log ;;
+            000) echo "Sin aviso: falta el secret DEPLOY_HOOK_TOKEN o el back no contesta" | tee -a /tmp/deploy.log ;;
+            *)   echo "Sin aviso: el gancho respondió ${CODE} (back sin gancho todavía o token distinto)" | tee -a /tmp/deploy.log ;;
+          esac
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      # Importante: pipefail. Sin eso, `cmd | tee` reporta éxito aunque cmd falle
+      # (Gradle compile error → Discord "Deploy exitoso" con JAR viejo en el server).
+      - name: Build JAR (bootJar, sin tests)
+        id: build
         run: |
           set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew clean bootJar -x test 2>&1 | tee -a /tmp/deploy.log
+          test -f build/libs/fossiles-core-backend.jar
+          echo "JAR OK: $(ls -lh build/libs/fossiles-core-backend.jar)"
+
+      # Espera a que la cuenta regresiva llegue a 0 (el tiempo lo da el servidor, no el reloj del runner).
+      # Si un admin cancela el aviso desde la pantalla, el deploy se detiene sin tocar el servidor.
+      - name: Esperar fin del aviso
+        id: wait_notice
+        if: env.AVISO_ACTIVO == 'true'
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_HOOK_TOKEN: ${{ secrets.DEPLOY_HOOK_TOKEN }}
+        run: |
+          set -uo pipefail
+          LIMITE=$(( $(date +%s) + 130 * 60 ))
+          FIN=0
+          while [ "$(date +%s)" -lt "$LIMITE" ]; do
+            OUT=$(bash .github/scripts/deploy-hook.sh STATUS)
+            CODE=$(printf '%s\n' "$OUT" | head -1)
+            BODY=$(printf '%s\n' "$OUT" | tail -n +2)
+            if [ "$CODE" = "200" ]; then
+              REM=$(printf '%s' "$BODY" | jq -r '(((.expiresAtEpochMs // 0) - (.serverNowEpochMs // 0)) / 1000) | floor')
+              FIN=$(( $(date +%s) + REM ))
+              if [ "$REM" -le 0 ]; then break; fi
+              echo "Faltan ${REM}s para reiniciar"
+              sleep $(( REM < 15 ? REM : 15 ))
+            elif [ "$CODE" = "204" ]; then
+              # 204 justo al vencer = terminó normal; antes de tiempo = lo cancelaron
+              if [ "$FIN" -gt 0 ] && [ "$(date +%s)" -ge $(( FIN - 3 )) ]; then break; fi
+              echo "::error::Un administrador canceló el aviso de reinicio. El deploy se detuvo sin tocar el servidor; vuelva a correrlo cuando convenga." | tee -a /tmp/deploy.log
+              exit 1
+            else
+              echo "El gancho respondió ${CODE}; reintento en 15s"
+              sleep 15
+            fi
+          done
+          echo "Cuenta regresiva terminada, se reinicia" | tee -a /tmp/deploy.log
+
+      - name: Detener servicio antes de transferir
+        id: stop_service
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_HOOK_TOKEN: ${{ secrets.DEPLOY_HOOK_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Las pantallas pasan a «Reiniciando…» y se quedan así hasta que el back nuevo conteste
+          echo "Gancho RESTARTING: $(bash .github/scripts/deploy-hook.sh RESTARTING | head -1)" | tee -a /tmp/deploy.log
+          sleep 2
           ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ env.HOST }} \
             "sudo systemctl stop fossiles-core-backend.service" 2>&1 | tee -a /tmp/deploy.log
 
@@ -134,8 +213,19 @@ jobs:
 
       - name: Fijar base de datos del ambiente
         id: datasource
+        env:
+          DEPLOY_HOOK_TOKEN: ${{ secrets.DEPLOY_HOOK_TOKEN }}
         run: |
           set -euo pipefail
+          # Token del gancho de avisos (lo lee el back como variable de entorno DEPLOY_HOOK_TOKEN)
+          if [ -n "${DEPLOY_HOOK_TOKEN:-}" ]; then
+            printf '%s\n' '[Service]' "Environment=DEPLOY_HOOK_TOKEN=${DEPLOY_HOOK_TOKEN}" | \
+              ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ env.HOST }} \
+                "sudo mkdir -p /etc/systemd/system/fossiles-core-backend.service.d && \
+                 sudo tee /etc/systemd/system/fossiles-core-backend.service.d/deploy-hook.conf >/dev/null && \
+                 sudo chmod 600 /etc/systemd/system/fossiles-core-backend.service.d/deploy-hook.conf"
+            echo "Token del gancho de avisos instalado" | tee -a /tmp/deploy.log
+          fi
           ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ env.HOST }} \
             "sudo mkdir -p /etc/systemd/system/fossiles-core-backend.service.d && \
              printf '%s\n' '[Service]' 'Environment=SPRING_DATASOURCE_URL=${{ env.DB_URL }}' | \
@@ -155,7 +245,19 @@ jobs:
         run: |
           set -euo pipefail
           {
-            sleep 15
+            # «active» en systemd solo dice que el proceso Java existe; /ping contesta cuando Spring
+            # ya terminó de arrancar (es lo mismo que espera el banner para decir «Sistema actualizado»).
+            LISTO=false
+            for i in $(seq 1 36); do
+              sleep 5
+              CODE=$(ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ env.HOST }} \
+                "curl -s -m 5 -o /dev/null -w '%{http_code}' '${BACK_LOCAL_URL}/api/system-announcements/ping'" || true)
+              if [ "$CODE" = "200" ]; then
+                LISTO=true
+                echo "Back respondiendo tras $(( i * 5 ))s"
+                break
+              fi
+            done
             STATUS=$(ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ env.HOST }} \
               "systemctl is-active fossiles-core-backend.service || true")
             echo "Estado: $STATUS"
@@ -164,6 +266,9 @@ jobs:
               ssh -i ~/.ssh/deploy_key ${{ secrets.SSH_USER }}@${{ env.HOST }} \
                 "sudo journalctl -u fossiles-core-backend.service -n 500 --no-pager"
               exit 1
+            fi
+            if [ "$LISTO" != true ]; then
+              echo "::warning::El servicio está activo pero /ping no contestó en 3 min (revise la variable BACK_LOCAL_URL)"
             fi
           } 2>&1 | tee -a /tmp/deploy.log
 
@@ -177,6 +282,7 @@ jobs:
           # job.status + outcomes de cada paso (por si algún step se marca raro)
           BUILD_OUT="${{ steps.build.outcome }}"
           SSH_OUT="${{ steps.ssh_setup.outcome }}"
+          WAIT_OUT="${{ steps.wait_notice.outcome }}"
           STOP_OUT="${{ steps.stop_service.outcome }}"
           TRANSFER_OUT="${{ steps.transfer.outcome }}"
           DS_OUT="${{ steps.datasource.outcome }}"
@@ -188,6 +294,7 @@ jobs:
           for par in \
             "Build JAR:$BUILD_OUT" \
             "Setup SSH:$SSH_OUT" \
+            "Esperar aviso (cancelado por admin):$WAIT_OUT" \
             "Detener servicio:$STOP_OUT" \
             "Transferir JAR:$TRANSFER_OUT" \
             "Fijar datasource:$DS_OUT" \
