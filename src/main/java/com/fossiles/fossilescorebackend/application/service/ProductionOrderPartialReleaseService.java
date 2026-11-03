@@ -213,7 +213,8 @@ public class ProductionOrderPartialReleaseService {
         String targetStatus = normalizeStatus(request.getStatus());
         if ("CONFIRMED".equals(targetStatus)) {
             validateReleaseHasLines(releaseId);
-            validateLinesAgainstOrder(release, loadLines(releaseId), null);
+            // Excluir este parcial: tras anular su envío vuelve a CONFIRMED y contaría contra sí mismo.
+            validateLinesAgainstOrder(release, loadLines(releaseId), releaseId);
             release.setStatus("CONFIRMED");
         }
 
