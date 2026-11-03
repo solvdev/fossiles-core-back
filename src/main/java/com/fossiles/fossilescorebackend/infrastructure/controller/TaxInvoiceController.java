@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.ManualTaxInvoiceRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.TaxInvoiceNoteRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.TaxInvoiceVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.UpdateTaxInvoiceFelMetadataRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceAttemptResponse;
@@ -40,26 +41,33 @@ public class TaxInvoiceController {
     public ResponseEntity<List<TaxInvoiceResponse>> list(
             @RequestParam(required = false) String sourceType,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) String documentType,
             @RequestParam(required = false) String customerTaxId,
             @RequestParam(required = false) String internalNumber,
+            @RequestParam(required = false) String search,
             @RequestParam(required = false) String certificationFilter,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
+            @RequestParam(defaultValue = "false") boolean includeTests
     ) {
         return ResponseEntity.ok(taxInvoiceService.list(
-                sourceType, status, customerTaxId, internalNumber, certificationFilter, fromDate, toDate));
+                sourceType, status, documentType, customerTaxId, internalNumber, search,
+                certificationFilter, fromDate, toDate, includeTests));
     }
 
     @GetMapping("/summary")
     public ResponseEntity<TaxInvoiceSummaryResponse> summary(
             @RequestParam(required = false) String sourceType,
+            @RequestParam(required = false) String documentType,
             @RequestParam(required = false) String customerTaxId,
             @RequestParam(required = false) String internalNumber,
+            @RequestParam(required = false) String search,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
+            @RequestParam(defaultValue = "false") boolean includeTests
     ) {
         return ResponseEntity.ok(taxInvoiceService.getSummary(
-                sourceType, customerTaxId, internalNumber, fromDate, toDate));
+                sourceType, documentType, customerTaxId, internalNumber, search, fromDate, toDate, includeTests));
     }
 
     @PostMapping("/manual")
@@ -164,6 +172,21 @@ public class TaxInvoiceController {
             @Valid @RequestBody TaxInvoiceVoidRequest request)
             throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(taxInvoiceService.voidInvoice(id, request.getReason()));
+    }
+
+    /** Emite una Nota de Crédito (NCRE) o Débito (NDEB) FEL que referencia la factura {id}. */
+    @PostMapping("/{id}/notes")
+    public ResponseEntity<TaxInvoiceResponse> issueNote(
+            @PathVariable Long id,
+            @Valid @RequestBody TaxInvoiceNoteRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(taxInvoiceService.issueCreditDebitNote(id, request));
+    }
+
+    @GetMapping("/{id}/notes")
+    public ResponseEntity<List<TaxInvoiceResponse.NoteSummary>> listNotes(@PathVariable Long id)
+            throws ResourceNotFoundException {
+        return ResponseEntity.ok(taxInvoiceService.listCreditDebitNotes(id));
     }
 
     @PatchMapping("/{id}/fel-metadata")

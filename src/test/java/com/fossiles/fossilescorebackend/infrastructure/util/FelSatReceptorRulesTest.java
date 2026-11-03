@@ -72,4 +72,16 @@ class FelSatReceptorRulesTest {
                 .issuedAt(issuedAt)
                 .build();
     }
+
+    @Test
+    void consumidorFinalFacturaMustBeBelow2500() {
+        assertThatCode(() -> FelSatReceptorRules.assertConsumidorFinalLimit(
+                "FACT", "CF", new java.math.BigDecimal("2499.99"))).doesNotThrowAnyException();
+        assertThatThrownBy(() -> FelSatReceptorRules.assertConsumidorFinalLimit(
+                "FCAM", "cf", new java.math.BigDecimal("2500.00")))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("2,500");
+        assertThatCode(() -> FelSatReceptorRules.assertConsumidorFinalLimit(
+                "FACT", "12345678", new java.math.BigDecimal("9000.00"))).doesNotThrowAnyException();
+    }
 }

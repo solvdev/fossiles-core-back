@@ -5,12 +5,14 @@ import com.fossiles.fossilescorebackend.application.util.ProductCinchoType;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelCredentials;
 import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelIvaCalculator;
+import com.fossiles.fossilescorebackend.infrastructure.util.FelSatReceptorRules;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelXmlEscaper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -27,6 +29,11 @@ public class FelFactXmlBuilder {
     private static final ZoneId GUATEMALA = ZoneId.of("America/Guatemala");
     private static final DateTimeFormatter FEL_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
+    private static final String REFERENCIAS_NOTA_NS =
+            "http://www.sat.gob.gt/face2/ComplementoReferenciaNota/0.1.0";
+    static final int MOTIVO_AJUSTE_MAX_LENGTH = 255;
+    /** Frase tipo 9: "Documento emitido posterior a los dos meses de la factura". */
+    static final int LATE_NOTE_ESCENARIO = 22;
 
     private final FelEmissionProperties properties;
 
@@ -57,6 +64,13 @@ public class FelFactXmlBuilder {
         List<BigDecimal> felLineTotals = resolveFelLineTotals(
                 documentLines, subtotal, totalAmount, discountAmount);
 
+        String establishmentCode = firstNonBlank(
+                document.getEmitterEstablishmentCode(), properties.getCodigoEstablecimiento());
+        String requestedDocumentType = document.getDocumentType();
+        boolean bundleAdjustmentAllowed = !FelSatReceptorRules.isNotaCreditoDebito(requestedDocumentType);
+        String documentType = resolveEmissionDocumentType(requestedDocumentType, establishmentCode);
+        document.setDocumentType(documentType);
+
         StringBuilder itemsXml = new StringBuilder();
         BigDecimal totalIva = BigDecimal.ZERO;
         BigDecimal granTotalFromLines = BigDecimal.ZERO;
@@ -73,9 +87,8 @@ public class FelFactXmlBuilder {
             totalIva = totalIva.add(iva.tax());
             granTotalFromLines = granTotalFromLines.add(lineTotal);
             BigDecimal qty = nz(line.getQuantity()).setScale(2, RoundingMode.HALF_UP);
-            BigDecimal unitPrice = qty.compareTo(BigDecimal.ZERO) > 0
-                    ? lineTotal.divide(qty, 2, RoundingMode.HALF_UP)
-                    : lineTotal;
+            boolean bundlePriced = bundleAdjustmentAllowed && line.isBundlePriced();
+            FelLineMoney money = resolveFelLineMoney(line, qty, lineTotal, bundlePriced);
             String desc = resolveFelItemDescripcionForDte(line);
             itemsXml.append("""
                     <dte:Item BienOServicio="B" NumeroLinea="%d">
@@ -84,7 +97,7 @@ public class FelFactXmlBuilder {
                       <dte:Descripcion>%s</dte:Descripcion>
                       <dte:PrecioUnitario>%s</dte:PrecioUnitario>
                       <dte:Precio>%s</dte:Precio>
-                      <dte:Descuento>0.00</dte:Descuento>
+                      <dte:Descuento>%s</dte:Descuento>
                       <dte:Impuestos>
                         <dte:Impuesto>
                           <dte:NombreCorto>IVA</dte:NombreCorto>
@@ -99,29 +112,29 @@ public class FelFactXmlBuilder {
                     lineNo,
                     fmt(qty),
                     FelXmlEscaper.escape(desc),
-                    fmt(unitPrice),
-                    fmt(lineTotal),
+                    fmt(money.unitPrice()),
+                    fmt(money.gross()),
+                    fmt(money.discount()),
                     fmt(iva.gravable()),
                     fmt(iva.tax()),
-                    fmt(lineTotal)
+                    fmt(money.total())
             ));
         }
 
-        String frasesXml = buildFrasesXml(credentials.frases());
+        String frasesXml = buildFrasesXml(resolveFrases(
+                credentials.frases(), documentType, document.getNoteReference(), emission));
         String adendaXml = buildAdendaXml(document.getInternalNumber());
         BigDecimal granTotal = granTotalFromLines.setScale(2, RoundingMode.HALF_UP);
-
-        String establishmentCode = firstNonBlank(
-                document.getEmitterEstablishmentCode(), properties.getCodigoEstablecimiento());
-        String documentType = resolveEmissionDocumentType(document.getDocumentType(), establishmentCode);
-        document.setDocumentType(documentType);
         String commercialName = firstNonBlank(document.getEmitterCommercialName(), credentials.nombreComercial());
         String addressLine = firstNonBlank(document.getEmitterAddressLine(), credentials.direccion());
         String municipio = firstNonBlank(document.getEmitterMunicipio(), credentials.municipio());
         String departamento = firstNonBlank(document.getEmitterDepartamento(), credentials.departamento());
         String receptorAddress = normalizeReceptorAddress(document.getAddress());
         // FCAM: abono único quemado (1 / total factura / fecha GT de facturación)
-        String complementosXml = buildFcamAbonosComplemento(documentType, granTotal, emission);
+        // NCRE/NDEB: referencia obligatoria a la factura origen
+        String complementosXml = FelSatReceptorRules.isNotaCreditoDebito(documentType)
+                ? buildReferenciasNotaComplemento(document.getNoteReference())
+                : buildFcamAbonosComplemento(documentType, granTotal, emission);
 
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -200,7 +213,11 @@ public class FelFactXmlBuilder {
         return "1".equals(safe(establishmentCode));
     }
 
+    /** NCRE/NDEB conservan su tipo en cualquier establecimiento; solo las facturas pasan a FCAM en el 1. */
     static String resolveEmissionDocumentType(String requestedType, String establishmentCode) {
+        if (FelSatReceptorRules.isNotaCreditoDebito(requestedType)) {
+            return FelSatReceptorRules.normalizeDocumentType(requestedType);
+        }
         if (isFcamEstablishment(establishmentCode)) {
             return "FCAM";
         }
@@ -245,6 +262,41 @@ public class FelFactXmlBuilder {
                   </dte:Complemento>
                 </dte:Complementos>
                 """.formatted(fechaVencimiento, fmt(montoAbono));
+    }
+
+    /**
+     * Complemento ReferenciasNota (SAT 3.7) requerido en NCRE/NDEB: una nota referencia un único DTE.
+     * FechaEmisionDocumentoOrigen debe coincidir en día/mes/año con la registrada en SAT.
+     */
+    static String buildReferenciasNotaComplemento(TaxInvoiceDocument.NoteReference reference) {
+        if (reference == null
+                || safe(reference.getOriginAuthorizationNumber()).isBlank()
+                || reference.getOriginEmissionDate() == null) {
+            throw new IllegalArgumentException(
+                    "Las notas de crédito/débito requieren UUID y fecha de emisión de la factura origen.");
+        }
+        String motivo = safe(reference.getAdjustmentReason());
+        if (motivo.length() > MOTIVO_AJUSTE_MAX_LENGTH) {
+            motivo = motivo.substring(0, MOTIVO_AJUSTE_MAX_LENGTH).trim();
+        }
+        if (motivo.isBlank()) {
+            throw new IllegalArgumentException("Las notas de crédito/débito requieren motivo de ajuste.");
+        }
+        return """
+                <dte:Complementos>
+                  <dte:Complemento IDComplemento="1" NombreComplemento="ReferenciasNota" URIComplemento="%s">
+                    <cno:ReferenciasNota xmlns:cno="%s" FechaEmisionDocumentoOrigen="%s" MotivoAjuste="%s" NumeroAutorizacionDocumentoOrigen="%s" NumeroDocumentoOrigen="%s" SerieDocumentoOrigen="%s" Version="0.0"/>
+                  </dte:Complemento>
+                </dte:Complementos>
+                """.formatted(
+                REFERENCIAS_NOTA_NS,
+                REFERENCIAS_NOTA_NS,
+                reference.getOriginEmissionDate(),
+                FelXmlEscaper.escape(motivo),
+                FelXmlEscaper.escape(safe(reference.getOriginAuthorizationNumber()).toUpperCase(Locale.ROOT)),
+                FelXmlEscaper.escape(safe(reference.getOriginNumero())),
+                FelXmlEscaper.escape(safe(reference.getOriginSerie()))
+        );
     }
 
     /**
@@ -344,6 +396,45 @@ public class FelFactXmlBuilder {
         return rest;
     }
 
+    /**
+     * Frases del emisor + frase tipo 9 escenario 22 (Reglas y Validaciones SAT v2.2, 2.6.13) en NCRE/NDEB
+     * emitidas después de los dos meses siguientes a la factura origen (Ley del IVA art. 17:
+     * "no se reconoce como crédito fiscal"). En cualquier otro caso SAT rechaza la frase 9-22.
+     */
+    static List<FelEmissionProperties.Frase> resolveFrases(
+            List<FelEmissionProperties.Frase> emitterFrases,
+            String documentType,
+            TaxInvoiceDocument.NoteReference noteReference,
+            ZonedDateTime emission
+    ) {
+        List<FelEmissionProperties.Frase> frases = new ArrayList<>();
+        if (emitterFrases != null) {
+            for (FelEmissionProperties.Frase frase : emitterFrases) {
+                if (!(frase.getTipo() == 9 && frase.getEscenario() == LATE_NOTE_ESCENARIO)) {
+                    frases.add(frase);
+                }
+            }
+        }
+        if (FelSatReceptorRules.isNotaCreditoDebito(documentType)
+                && noteReference != null
+                && isLateNote(noteReference.getOriginEmissionDate(), emission)) {
+            FelEmissionProperties.Frase late = new FelEmissionProperties.Frase();
+            late.setTipo(9);
+            late.setEscenario(LATE_NOTE_ESCENARIO);
+            frases.add(late);
+        }
+        return frases;
+    }
+
+    /** La nota se emite después de los dos meses siguientes a la fecha de emisión de la factura origen. */
+    static boolean isLateNote(LocalDate originEmissionDate, ZonedDateTime noteEmission) {
+        if (originEmissionDate == null || noteEmission == null) {
+            return false;
+        }
+        LocalDate noteDate = noteEmission.withZoneSameInstant(GUATEMALA).toLocalDate();
+        return noteDate.isAfter(originEmissionDate.plusMonths(2));
+    }
+
     private String buildFrasesXml(List<FelEmissionProperties.Frase> frases) {
         if (frases == null || frases.isEmpty()) {
             return "";
@@ -418,6 +509,95 @@ public class FelFactXmlBuilder {
      */
     static boolean isPackagingLine(TaxInvoiceDocument.Line line) {
         return line != null && ProductCinchoType.isPackagingProductCode(line.getProductCode());
+    }
+
+    /**
+     * Precio unitario, precio bruto y descuento de una línea FEL.
+     * El XML de main usa unitario HALF_UP, precio = total y descuento 0.00.
+     * Solo un B-1 cobrado por paquete, con cantidad entera positiva y total positivo,
+     * sube el unitario al céntimo que cubre el total y deja la diferencia como descuento.
+     * Notas (NCRE/NDEB), totales negativos, cantidad 0 y cantidad fraccionaria no se ajustan:
+     * CEILING hacia cero en un total negativo dejaría un descuento positivo.
+     */
+    record FelLineMoney(BigDecimal unitPrice, BigDecimal gross, BigDecimal discount, BigDecimal total) {
+    }
+
+    /**
+     * Línea con precio editado y descuento: el unitario guardado y el descuento de la
+     * línea cumplen unitario × cantidad − descuento = total. El paquete B-1 y las
+     * líneas de lista siguen la fórmula anterior.
+     */
+    static FelLineMoney resolveFelLineMoney(
+            TaxInvoiceDocument.Line line,
+            BigDecimal quantity,
+            BigDecimal netTotal,
+            boolean bundlePriced
+    ) {
+        BigDecimal qty = nz(quantity).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal total = nz(netTotal).setScale(2, RoundingMode.HALF_UP);
+        if (line != null && line.isEditedUnitPrice() && !bundlePriced) {
+            FelLineMoney edited = editedUnitPriceMoney(line.getUnitPrice(), qty, total);
+            if (edited != null) {
+                return edited;
+            }
+        }
+        return resolveFelLineMoney(qty, total, bundlePriced);
+    }
+
+    static FelLineMoney resolveFelLineMoney(BigDecimal quantity, BigDecimal lineTotal, boolean bundlePriced) {
+        BigDecimal qty = nz(quantity).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal total = nz(lineTotal).setScale(2, RoundingMode.HALF_UP);
+        if (!adjustBundleLine(qty, total, bundlePriced)) {
+            return legacyFelLineMoney(qty, total);
+        }
+        BigDecimal unit = total.divide(qty, 2, RoundingMode.CEILING);
+        if (unit.compareTo(BigDecimal.ZERO) == 0 && total.compareTo(BigDecimal.ZERO) > 0) {
+            unit = new BigDecimal("0.01");
+        }
+        BigDecimal gross = unit.multiply(qty).setScale(2, RoundingMode.HALF_UP);
+        for (int guard = 0; gross.compareTo(total) < 0 && guard < 8; guard++) {
+            unit = unit.add(new BigDecimal("0.01"));
+            gross = unit.multiply(qty).setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal discount = gross.subtract(total).setScale(2, RoundingMode.HALF_UP);
+        return new FelLineMoney(unit, gross, discount, total);
+    }
+
+    private static boolean adjustBundleLine(BigDecimal qty, BigDecimal total, boolean bundlePriced) {
+        return bundlePriced
+                && qty.compareTo(BigDecimal.ZERO) > 0
+                && total.compareTo(BigDecimal.ZERO) > 0
+                && isWholeQuantity(qty);
+    }
+
+    /**
+     * Unitario editado × cantidad − descuento = neto. Null si el neto supera el bruto
+     * (no hay descuento que cuadrar) para no cambiar la fórmula de lista.
+     */
+    private static FelLineMoney editedUnitPriceMoney(BigDecimal unitPrice, BigDecimal qty, BigDecimal total) {
+        if (qty.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+        BigDecimal unit = nz(unitPrice).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal gross = unit.multiply(qty).setScale(2, RoundingMode.HALF_UP);
+        if (gross.compareTo(total) < 0) {
+            return null;
+        }
+        BigDecimal discount = gross.subtract(total).setScale(2, RoundingMode.HALF_UP);
+        return new FelLineMoney(unit, gross, discount, total);
+    }
+
+    /** Fórmula de main: unitario HALF_UP, precio = total, descuento 0.00. */
+    private static FelLineMoney legacyFelLineMoney(BigDecimal qty, BigDecimal total) {
+        BigDecimal zero = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal unit = qty.compareTo(BigDecimal.ZERO) > 0
+                ? total.divide(qty, 2, RoundingMode.HALF_UP)
+                : total;
+        return new FelLineMoney(unit, total, zero, total);
+    }
+
+    private static boolean isWholeQuantity(BigDecimal qty) {
+        return qty.stripTrailingZeros().scale() <= 0;
     }
 
     /**

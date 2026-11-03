@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.model.TaxInvoiceDocument;
+import com.fossiles.fossilescorebackend.application.util.EntrecuerosPriceLists;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
@@ -48,12 +49,17 @@ public class KioskSaleInvoiceMapper {
             if (unitPrice.compareTo(BigDecimal.ZERO) <= 0 && lineTotal.compareTo(BigDecimal.ZERO) > 0) {
                 unitPrice = lineTotal.divide(qty, 2, RoundingMode.HALF_UP);
             }
+            String productCode = resolveProductCode(line, productsById);
+            ProductEntity product = line.getProductId() != null ? productsById.get(line.getProductId()) : null;
             lines.add(TaxInvoiceDocument.Line.builder()
-                    .productCode(resolveProductCode(line, productsById))
+                    .productCode(productCode)
                     .description(buildLineDescription(line))
                     .quantity(qty)
                     .unitPrice(unitPrice)
                     .lineTotal(lineTotal)
+                    .bundlePriced(bundlePricedLine(productCode, qty, unitPrice, lineTotal))
+                    .editedUnitPrice(editedBelowCatalog(
+                            product, line, unitPrice, qty, lineTotal, sale.getDiscountAmount()))
                     .build());
         }
 
@@ -118,6 +124,77 @@ public class KioskSaleInvoiceMapper {
         return productRepository.findById(line.getProductId())
                 .map(productEntity -> trimToNull(productEntity.getCode()))
                 .orElse(null);
+    }
+
+    /**
+     * El paquete B-1 no es unitario × cantidad (43.33 × 3 = 129.99, total 130).
+     * Una línea editada sí se guarda así, y no debe llevar el ajuste de paquete
+     * aunque el total coincida con el del paquete.
+     */
+    static boolean bundlePricedLine(
+            String productCode,
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            BigDecimal lineTotal
+    ) {
+        if (!EntrecuerosPriceLists.isChargedB1BundleLine(productCode, quantity, lineTotal)) {
+            return false;
+        }
+        return !straightUnitLine(unitPrice, quantity, lineTotal);
+    }
+
+    /**
+     * Precio editado por debajo de la lista POS y cobrado como unitario × cantidad,
+     * en una venta que sí tiene descuento. Sin descuento el XML de lista ya cuadra
+     * y no hace falta marcarlo. Una línea de catálogo (o un cincho con recargo) no entra.
+     */
+    static boolean editedBelowCatalog(
+            ProductEntity product,
+            KioskSaleItemEntity line,
+            BigDecimal unitPrice,
+            BigDecimal quantity,
+            BigDecimal lineTotal,
+            BigDecimal saleDiscount
+    ) {
+        if (saleDiscount == null || saleDiscount.signum() <= 0) {
+            return false;
+        }
+        if (!straightUnitLine(unitPrice, quantity, lineTotal)) {
+            return false;
+        }
+        BigDecimal base = unitPrice;
+        if (line != null && line.getExtraAmount() != null && line.getExtraAmount().signum() > 0) {
+            base = unitPrice.subtract(line.getExtraAmount());
+        }
+        BigDecimal catalog = catalogListUnitPrice(product);
+        return catalog != null && base.compareTo(catalog) < 0;
+    }
+
+    private static boolean straightUnitLine(BigDecimal unitPrice, BigDecimal quantity, BigDecimal lineTotal) {
+        if (unitPrice == null || quantity == null || lineTotal == null) {
+            return false;
+        }
+        BigDecimal straight = unitPrice.setScale(2, RoundingMode.HALF_UP)
+                .multiply(quantity)
+                .setScale(2, RoundingMode.HALF_UP);
+        return straight.compareTo(lineTotal.setScale(2, RoundingMode.HALF_UP)) == 0;
+    }
+
+    /** Misma prioridad que el precio de lista POS, sin recargo de talla. */
+    private static BigDecimal catalogListUnitPrice(ProductEntity product) {
+        if (product == null) {
+            return null;
+        }
+        if (product.getSalePrice() != null && product.getSalePrice().signum() > 0) {
+            return product.getSalePrice().setScale(2, RoundingMode.HALF_UP);
+        }
+        if (product.getDiscountedPrice() != null && product.getDiscountedPrice().signum() > 0) {
+            return product.getDiscountedPrice().setScale(2, RoundingMode.HALF_UP);
+        }
+        if (product.getSellerPrice() != null && product.getSellerPrice().signum() > 0) {
+            return product.getSellerPrice().setScale(2, RoundingMode.HALF_UP);
+        }
+        return null;
     }
 
     private static String trimToNull(String value) {

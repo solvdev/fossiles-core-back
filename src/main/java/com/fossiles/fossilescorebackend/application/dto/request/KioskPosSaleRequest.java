@@ -84,8 +84,20 @@ public class KioskPosSaleRequest {
         @Positive(message = "La cantidad debe ser mayor a cero.")
         private BigDecimal quantity;
 
-        /** Precio unitario override (venta de cambio / restore). Null = precio de catálogo POS. */
+        /**
+         * Precio unitario editado. Null o no positivo = precio de catálogo (o lista Entrecueros).
+         * Si es mayor a cero, solo Miraflores (A15), un kiosko cuyo nombre contiene MIRAFLORES,
+         * o administración pueden usarlo. También lo usa la venta de cambio.
+         */
         private BigDecimal unitPrice;
+
+        /**
+         * Cómo aplicar {@code unitPrice} cuando el usuario puede editar el precio.
+         * Null o true: la línea queda final, sin descuento POS ni promoción.
+         * False: el precio editado es la base y el descuento POS/promo se calcula encima.
+         * En Entrecueros la línea editada queda final de todos modos.
+         */
+        private Boolean priceFinal;
 
         /**
          * Solicitud de complemento extra AUTORIZADA que respalda esta línea. El servidor valida estado,
