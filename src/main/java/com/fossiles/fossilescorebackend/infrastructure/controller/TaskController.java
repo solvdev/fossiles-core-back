@@ -30,6 +30,7 @@ import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillServ
 import com.fossiles.fossilescorebackend.application.service.TaskDeskAssignerService;
 import com.fossiles.fossilescorebackend.application.service.ProductionCenterCache;
 import com.fossiles.fossilescorebackend.application.service.TaskOrganizerService;
+import com.fossiles.fossilescorebackend.application.service.TaskLeatherDeliveryService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
@@ -78,6 +79,7 @@ public class TaskController {
     private final BomItemRepository bomItemRepository;
     private final MaterialRepository materialRepository;
     private final LeatherMovementRepository leatherMovementRepository;
+    private final TaskLeatherDeliveryService taskLeatherDeliveryService;
     private final MaterialConsumptionService materialConsumptionService;
     private final ProductionTaskGenerationService productionTaskGenerationService;
     private final TaskCodeGenerator taskCodeGenerator;
@@ -1524,6 +1526,7 @@ public class TaskController {
     }
 
     @PutMapping("/{id:\\d+}/leather-delivery")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<TaskResponse> setLeatherDelivery(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity entity = taskRepository.findById(id)
@@ -1539,10 +1542,13 @@ public class TaskController {
 
         List<TaskItemEntity> taskItems = taskItemRepository.findByTaskId(entity.getId());
         if (!taskItems.isEmpty()) {
+            // Todos o ninguno: si a un producto le falta cuero en el kardex, no queda la tarea a medias.
             for (TaskItemEntity item : taskItems) {
-                item.setLeatherDelivered(delivered);
-                item.setLeatherDeliveredAt(delivered ? GuatemalaDateTime.now() : null);
-                taskItemRepository.save(item);
+                if (delivered) {
+                    taskLeatherDeliveryService.deliver(entity, item);
+                } else {
+                    taskLeatherDeliveryService.revert(entity, item);
+                }
             }
             entity.setLeatherDelivered(areTaskItemsLeatherDelivered(entity));
             entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? GuatemalaDateTime.now() : null);
@@ -1555,6 +1561,7 @@ public class TaskController {
     }
 
     @PutMapping("/{id:\\d+}/leather-delivery/item/{taskItemId}")
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<TaskResponse> setTaskItemLeatherDelivery(
             @PathVariable Long id,
             @PathVariable Long taskItemId,
@@ -1577,9 +1584,11 @@ public class TaskController {
             throw new BusinessException("No se puede desmarcar cuero entregado porque la tarea ya avanzó a una fase posterior.");
         }
 
-        item.setLeatherDelivered(delivered);
-        item.setLeatherDeliveredAt(delivered ? GuatemalaDateTime.now() : null);
-        taskItemRepository.save(item);
+        if (delivered) {
+            taskLeatherDeliveryService.deliver(entity, item);
+        } else {
+            taskLeatherDeliveryService.revert(entity, item);
+        }
 
         entity.setLeatherDelivered(areTaskItemsLeatherDelivered(entity));
         entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? GuatemalaDateTime.now() : null);
@@ -1676,8 +1685,8 @@ public class TaskController {
                     withoutLeather++;
                     continue;
                 }
-                item.setLeatherDelivered(true);
-                item.setLeatherDeliveredAt(GuatemalaDateTime.now());
+                // Mismo camino que el clic por producto: con el interruptor, el cuero sale del kardex.
+                taskLeatherDeliveryService.deliver(entity, item);
                 leather++;
             }
             item.setDieCutReady(true);
@@ -2201,10 +2210,15 @@ public class TaskController {
 
     @DeleteMapping("/{id:\\d+}")
     @Transactional
-    public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException {
+    public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException, BusinessException {
         TaskEntity entity = taskRepository.findById(id).orElse(null);
         if (entity == null) {
             throw new ResourceNotFoundException("Task", id);
+        }
+        List<Long> itemIds = taskItemRepository.findByTaskId(id).stream().map(TaskItemEntity::getId).toList();
+        if (taskLeatherDeliveryService.hasActiveDeliveries(itemIds)) {
+            throw new BusinessException("La tarea " + entity.getCode() + " tiene cuero entregado por producto en el kardex. "
+                    + "Desmarque el cuero de sus productos antes de eliminarla para que vuelva al inventario.");
         }
         Set<Long> orderIds = productionTaskLifecycleService.ordersOfTask(entity);
         taskItemRepository.deleteByTaskId(id);
