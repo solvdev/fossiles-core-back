@@ -8,6 +8,13 @@ import lombok.NoArgsConstructor;
 import java.math.BigDecimal;
 import java.util.List;
 
+/**
+ * Estimado de cuero de una OP. Los campos existentes de cantidad y ft²
+ * ({@code quantity}, {@code lineFt2}, {@code totalUnits}, {@code totalFt2})
+ * son el restante. Junto a ellos van el pedido completo
+ * ({@code totalQuantity} y, en cada línea, {@code totalFt2}) y lo ya usado
+ * ({@code usedQuantity}, {@code usedFt2}).
+ */
 @Data
 @Builder
 @NoArgsConstructor
@@ -17,8 +24,14 @@ public class ProductionOrderLeatherEstimateResponse {
     private String productionOrderCode;
     private String orderType;
     private String status;
+    /** ft² restantes. */
     private BigDecimal totalFt2;
+    /** Unidades restantes. */
     private Integer totalUnits;
+    /** Unidades del pedido completo. */
+    private Integer totalQuantity;
+    private Integer usedQuantity;
+    private BigDecimal usedFt2;
     private Integer linesMissingRecipe;
     private List<LineEstimate> lines;
     private List<ColorSummary> byColor;
@@ -35,9 +48,16 @@ public class ProductionOrderLeatherEstimateResponse {
         private String productName;
         private Long colorId;
         private String colorName;
+        /** Unidades restantes. */
         private Integer quantity;
+        private Integer totalQuantity;
+        private Integer usedQuantity;
         private BigDecimal ft2PerUnit;
+        /** ft² restantes de la línea. */
         private BigDecimal lineFt2;
+        /** ft² del pedido completo de la línea. */
+        private BigDecimal totalFt2;
+        private BigDecimal usedFt2;
         private Long leatherMaterialId;
         private String leatherMaterialSku;
         private String leatherMaterialName;
@@ -53,8 +73,13 @@ public class ProductionOrderLeatherEstimateResponse {
     public static class ColorSummary {
         private Long colorId;
         private String colorName;
+        /** Unidades restantes. */
         private Integer quantity;
+        private Integer totalQuantity;
+        private Integer usedQuantity;
+        /** ft² restantes. */
         private BigDecimal totalFt2;
+        private BigDecimal usedFt2;
         private Integer lineCount;
     }
 
@@ -66,7 +91,9 @@ public class ProductionOrderLeatherEstimateResponse {
         private Long leatherMaterialId;
         private String leatherMaterialSku;
         private String leatherMaterialName;
+        /** ft² restantes. Faltante = max(totalFt2 − availableFt2, 0). */
         private BigDecimal totalFt2;
+        private BigDecimal usedFt2;
         private BigDecimal availableFt2;
     }
 }

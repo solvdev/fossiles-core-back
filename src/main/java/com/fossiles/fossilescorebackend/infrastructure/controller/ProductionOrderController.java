@@ -228,7 +228,8 @@ public class ProductionOrderController {
     }
 
     /**
-     * Cuero requerido por OP: ft² por línea según color (product_variant_leather).
+     * Cuero restante por OP: ft² por línea según color (product_variant_leather),
+     * descontando lo ya usado con la misma regla que el dashboard de producción.
      */
     @GetMapping("/{id}/leather-estimate")
     @Transactional(readOnly = true)

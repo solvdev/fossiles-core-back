@@ -139,6 +139,15 @@ public interface TaskItemRepository extends JpaRepository<TaskItemEntity, Long> 
               )
             """)
     List<Long> findNonCancelledItemIds(@Param("itemIds") Collection<Long> itemIds);
+    /** Productos de tarea que trabajan líneas propias de la orden, estén en la tarea que estén (consolidadas incluidas). */
+    @Query("""
+            SELECT ti
+            FROM TaskItemEntity ti, ProductionOrderItemEntity poi
+            WHERE ti.productionOrderItemId = poi.id
+              AND poi.productionOrderId = :orderId
+              AND (ti.daySaleExtra IS NULL OR ti.daySaleExtra = false)
+            """)
+    List<TaskItemEntity> findBaseLineItemsByProductionOrderId(@Param("orderId") Long orderId);
 
     @Modifying
     @Transactional
