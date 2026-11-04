@@ -25,8 +25,8 @@ BEGIN;
 --        - si no, UNA distribución MANUAL por OPK ("Envíos de OPK-…") y se liga a la OPK.
 --   b) Envíos directos a kiosco sin OP hechos por la reposición actual (notas "Reposición automática…"):
 --        UNA distribución REPOSICION por día + usuario que los creó.
---   c) Los demás envíos directos a kiosco sin OP: UNA distribución MANUAL por envío
---        ("Envío directo a kiosko · <kiosco>"), igual que los crea el sistema desde ahora.
+--   c) Los demás envíos directos a kiosco sin OP: UNA distribución MANUAL por día + usuario que los creó,
+--        con todos los kioscos de ese día ("Envío directo a kiosko · DD/MM/YYYY (migración)").
 -- NO se tocan: OPCK, OPV/OPC de Luis Felipe, OPI, ENVI, cinchos, Entre Cueros, tienda en línea.
 -- La numeración de envíos NO cambia: solo se llena distribution_id.
 -- ---------------------------------------------------------------------------------------
@@ -112,27 +112,30 @@ JOIN product_shipment ps ON ps.id = eg.shipment_id
 WHERE eg.grupo_key LIKE 'REP:%'
 GROUP BY eg.grupo_key;
 
--- c) Los demás directos a kiosco sin OP: uno por envío.
+-- c) Los demás directos a kiosco sin OP: por día + usuario (una distribución, varios kioscos).
 INSERT INTO tmp_dist_envio_grupo (shipment_id, grupo_key)
-SELECT ps.id, 'DIR:' || ps.id
+SELECT ps.id,
+       'DIR:' || to_char(coalesce(ps.created_at, CURRENT_TIMESTAMP), 'YYYY-MM-DD') || ':' || coalesce(ps.created_by, 0)
 FROM product_shipment ps
 WHERE ps.distribution_id IS NULL
   AND ps.production_order_id IS NULL
   AND ps.location_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM tmp_dist_envio_grupo x WHERE x.shipment_id = ps.id);
 
+-- La descripción empieza con "Envío directo a kiosko": así el back los sigue listando en
+-- GET /api/product-distributions/shipments/standalone-kiosk, como antes.
 INSERT INTO tmp_dist_grupo (grupo_key, tipo, origin, production_order_id, description, first_at, created_by)
-SELECT 'DIR:' || ps.id,
+SELECT eg.grupo_key,
        'DIRECTO',
        'MANUAL',
        NULL,
-       'Envío directo a kiosko · ' || coalesce(nullif(btrim(l.name), ''), l.code, 'Kiosko #' || ps.location_id),
-       coalesce(ps.created_at, CURRENT_TIMESTAMP),
-       ps.created_by
+       'Envío directo a kiosko · ' || to_char(min(ps.created_at), 'DD/MM/YYYY') || ' (migración)',
+       coalesce(min(ps.created_at), CURRENT_TIMESTAMP),
+       (array_agg(ps.created_by ORDER BY ps.id))[1]
 FROM tmp_dist_envio_grupo eg
 JOIN product_shipment ps ON ps.id = eg.shipment_id
-LEFT JOIN locations l ON l.id = ps.location_id
-WHERE eg.grupo_key LIKE 'DIR:%';
+WHERE eg.grupo_key LIKE 'DIR:%'
+GROUP BY eg.grupo_key;
 
 -- Números DIST-YYYYMMDD-NNN: el correlativo final continúa desde el mayor en uso (igual que el back).
 -- Ojo: lpad trunca en Postgres, por eso solo se rellena cuando el número tiene menos de 3 dígitos.
