@@ -1448,7 +1448,13 @@ public class ProductDistributionService {
         if (request.getLocationId() == null) {
             throw new BusinessException("La distribución requiere ubicación destino (kiosko).");
         }
-        
+
+        // Una distribución completada se puede seguir modificando mientras tenga envíos sin despachar.
+        boolean distributionCompleted = "COMPLETED".equalsIgnoreCase(String.valueOf(distribution.getStatus()).trim());
+        if (distributionCompleted) {
+            assertCompletedDistributionEditable(distribution);
+        }
+
         // Validar que el kiosko existe
         LocationEntity location = locationRepository.findById(request.getLocationId())
                 .orElseThrow(() -> new ResourceNotFoundException("Location", request.getLocationId()));
@@ -1475,6 +1481,14 @@ public class ProductDistributionService {
 
         if (targetShipment != null) {
             assertShipmentProductsEditable(targetShipment);
+            if (distributionCompleted) {
+                String targetStatus = String.valueOf(targetShipment.getStatus()).trim().toUpperCase();
+                if (!"DRAFT".equals(targetStatus) && !"CONFIRMED".equals(targetStatus)) {
+                    throw new BusinessException(
+                            "En una distribución completada solo se editan envíos que aún no se han despachado. "
+                                    + "Estado del envío: " + targetStatus);
+                }
+            }
             if (!normalizedProducts.isEmpty()) {
                 updateShipmentProducts(targetShipment.getId(), normalizedProducts);
             } else {
@@ -1515,7 +1529,37 @@ public class ProductDistributionService {
         if (!normalizedProducts.isEmpty()) {
             updateShipmentProducts(saved.getId(), normalizedProducts);
         }
+        if (distributionCompleted) {
+            // La distribución ya se finalizó: el envío nuevo nace confirmado, como los demás.
+            return confirmShipmentDraft(saved.getId());
+        }
         return toShipmentResponse(saved);
+    }
+
+    /**
+     * Una distribución COMPLETED no implica que ya se despachó. Se puede modificar mientras tenga al menos
+     * un envío sin despachar (DRAFT/CONFIRMED) y no tenga orden de producción generada al finalizar
+     * (esa orden suma los productos de los envíos y quedaría desfasada).
+     */
+    private void assertCompletedDistributionEditable(ProductDistributionEntity distribution)
+            throws BusinessException {
+        if (DistributionOrigin.REPOSICION.equals(DistributionOrigin.normalize(distribution.getOrigin()))) {
+            throw new BusinessException("Las distribuciones de reposición no se modifican: su faltante ya se "
+                    + "calculó para la OPK sugerida.");
+        }
+        Optional<ProductionOrderEntity> order =
+                productionOrderRepository.findFirstByDistributionIdOrderByIdAsc(distribution.getId());
+        if (order.isPresent()) {
+            throw new BusinessException("La distribución ya generó la orden de producción " + order.get().getCode()
+                    + "; no se puede modificar sin desfasarla.");
+        }
+        boolean hasUnsent = shipmentRepository.findByDistributionId(distribution.getId()).stream()
+                .map(s -> String.valueOf(s.getStatus()).trim().toUpperCase())
+                .anyMatch(st -> "DRAFT".equals(st) || "CONFIRMED".equals(st));
+        if (!hasUnsent) {
+            throw new BusinessException(
+                    "La distribución completada ya no tiene envíos pendientes de despachar; no se puede modificar.");
+        }
     }
 
     /**
