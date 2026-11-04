@@ -40,7 +40,7 @@ import java.util.stream.Collectors;
  * Sugerencia de reposición de kioscos (RF-INV-05 / RF-POS-03) sin configuración manual: el mínimo y el máximo
  * de cada línea salen de la venta del kiosco en la ventana de análisis, lo que ya va en camino (envíos sin
  * recibir) se descuenta, y el disponible de Bodega PT + Devoluciones se reparte con prioridad A &gt; B &gt; C.
- * La sugerencia no mueve inventario: el usuario la confirma y se crean envíos directos a kiosko.
+ * La sugerencia no mueve inventario: el usuario la ajusta y con ella se crea una distribución de reposición.
  */
 @Service
 @RequiredArgsConstructor
@@ -172,6 +172,7 @@ public class KioskReplenishmentService {
             }
         }
 
+        Map<Long, List<String>> openReplenishment = loadOpenReplenishmentDistributions(requested);
         Map<String, Integer> available = loadAvailability(planned);
         int[] allocated = KioskReplenishmentCalculator.allocate(toRequests(planned), available);
 
@@ -240,6 +241,7 @@ public class KioskReplenishmentService {
                     .totalShortage(shortage)
                     .weeklyBudget(budgetByKiosk.getOrDefault(k.locationId(), 0))
                     .totalDeferred(deferred)
+                    .openReplenishmentDistributions(openReplenishment.getOrDefault(k.locationId(), List.of()))
                     .lines(kl)
                     .build());
         }
@@ -365,6 +367,28 @@ public class KioskReplenishmentService {
                     nullableLong(rs.getObject("color_id")), rs.getString("size_label"), rs.getString("hardware"));
             l.inTransit += pending == null ? 0 : Math.max(0, pending.intValue());
         });
+    }
+
+    /** Distribuciones de reposición con envíos al kiosco que siguen en borrador o confirmados (sin salir de bodega). */
+    private Map<Long, List<String>> loadOpenReplenishmentDistributions(Set<Long> locationIds) {
+        Map<Long, List<String>> out = new HashMap<>();
+        if (locationIds == null || locationIds.isEmpty()) {
+            return out;
+        }
+        String sql = """
+                SELECT DISTINCT ps.location_id, d.distribution_number
+                FROM product_shipment ps
+                JOIN product_distribution d ON d.id = ps.distribution_id
+                WHERE d.origin = 'REPOSICION'
+                  AND ps.location_id IN (:ids)
+                  AND UPPER(COALESCE(ps.status, '')) IN ('DRAFT', 'CONFIRMED')
+                ORDER BY d.distribution_number
+                """;
+        jdbc.query(sql, new MapSqlParameterSource("ids", locationIds), rs -> {
+            out.computeIfAbsent(rs.getLong("location_id"), k -> new ArrayList<>())
+                    .add(rs.getString("distribution_number"));
+        });
+        return out;
     }
 
     /** Disponible en Bodega PT + Devoluciones solo para las líneas que piden algo. */

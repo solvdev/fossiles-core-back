@@ -202,11 +202,12 @@ public class ProductInventoryOutflowReportService {
 
             String destName = resolveLocationName(shipment.getLocationId());
 
-            if (shipment.getDistributionId() != null) {
+            // Un envío de OP sigue reportándose como OP aunque viva en una distribución (envíos de OPK).
+            if (shipment.getDistributionId() != null && shipment.getProductionOrderId() == null) {
                 ProductDistributionEntity dist = distributionCache.computeIfAbsent(shipment.getDistributionId(),
                         id -> distributionRepository.findById(id).orElse(null));
                 ProductionOrderEntity linkedOp = productionOrderRepository
-                        .findByDistributionId(shipment.getDistributionId())
+                        .findFirstByDistributionIdOrderByIdAsc(shipment.getDistributionId())
                         .orElse(null);
                 if (linkedOp != null) {
                     orderCache.put(linkedOp.getId(), linkedOp);
@@ -225,10 +226,15 @@ public class ProductInventoryOutflowReportService {
             if (shipment.getProductionOrderId() != null) {
                 ProductionOrderEntity po = orderCache.computeIfAbsent(shipment.getProductionOrderId(),
                         id -> productionOrderRepository.findById(id).orElse(null));
+                ProductDistributionEntity opDist = shipment.getDistributionId() == null
+                        ? null
+                        : distributionCache.computeIfAbsent(shipment.getDistributionId(),
+                                id -> distributionRepository.findById(id).orElse(null));
                 return Enrichment.builder()
                         .sourceCategory("PRODUCTION_ORDER")
                         .sourceLabel("Orden de producción")
                         .destinationLocationName(destName)
+                        .distributionCode(opDist != null ? opDist.getDistributionNumber() : null)
                         .orderType(po != null ? po.getOrderType() : null)
                         .orderCode(po != null ? po.getCode() : null)
                         .build();

@@ -147,7 +147,13 @@ public interface ProductionOrderRepository extends JpaRepository<ProductionOrder
             ORDER BY po.deliveryDate DESC NULLS LAST, po.createdAt DESC
             """)
     List<ProductionOrderEntity> findOrdersWithCustomer();
-    Optional<ProductionOrderEntity> findByDistributionId(Long distributionId);
+    /**
+     * Primera OP ligada a la distribución. Una distribución de reposición puede tener varias (OPK sugerida por el
+     * faltante y otras), así que no usar un finder que devuelva Optional "único": revienta con más de una.
+     */
+    Optional<ProductionOrderEntity> findFirstByDistributionIdOrderByIdAsc(Long distributionId);
+
+    List<ProductionOrderEntity> findByDistributionIdOrderByIdAsc(Long distributionId);
 
     @Query("SELECT po FROM ProductionOrderEntity po WHERE po.status IN :statuses ORDER BY po.deliveryDate ASC, po.createdAt ASC")
     List<ProductionOrderEntity> findByStatusIn(@Param("statuses") List<String> statuses);

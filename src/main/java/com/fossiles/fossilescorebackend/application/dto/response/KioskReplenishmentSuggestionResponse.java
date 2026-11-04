@@ -42,6 +42,11 @@ public class KioskReplenishmentSuggestionResponse {
         private int weeklyBudget;
         /** Unidades que pide la regla pero no entran en el tope: quedan para el siguiente envío. */
         private int totalDeferred;
+        /**
+         * Distribuciones de reposición con envíos a este kiosco que aún no salen de bodega (borrador o confirmados).
+         * Lo que llevan ya se descuenta como "en camino"; sirve para avisar y no duplicar trabajo.
+         */
+        private List<String> openReplenishmentDistributions;
         private List<Line> lines;
     }
 

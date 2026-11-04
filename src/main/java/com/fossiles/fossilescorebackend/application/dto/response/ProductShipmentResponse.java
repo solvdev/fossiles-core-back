@@ -16,6 +16,10 @@ import java.util.List;
 public class ProductShipmentResponse {
     private Long id;
     private Long distributionId;
+    /** Origen de la distribución del envío (MANUAL / REPOSICION); null si el envío no tiene distribución. */
+    private String distributionOrigin;
+    /** True si es un envío de reposición que espera producción (faltante en bodega al crear la distribución). */
+    private Boolean pendingProduction;
     /** OP (OPI/OPCK) cuando el envío no usa distribución. */
     private Long productionOrderId;
     private Long partialReleaseId;

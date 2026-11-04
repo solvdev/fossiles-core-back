@@ -12,5 +12,8 @@ public interface ProductDistributionRepository extends JpaRepository<ProductDist
     Optional<ProductDistributionEntity> findByDistributionNumber(String distributionNumber);
     
     boolean existsByDistributionNumber(String distributionNumber);
+
+    @org.springframework.data.jpa.repository.Query("SELECT d.distributionNumber FROM ProductDistributionEntity d")
+    java.util.List<String> findAllDistributionNumbers();
 }
 
