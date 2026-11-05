@@ -211,7 +211,10 @@ public class OnlineSaleController {
         // Respuesta ligera para listado (evita exponer entidad completa)
         List<Map<String, Object>> rows = readCache.sales(
                 OnlineSalesReadCache.key("return-events", startDate, endDate),
-                () -> saleService.getReturnEvents(startDate, endDate).stream().map(e -> {
+                () -> {
+                    var events = saleService.getReturnEvents(startDate, endDate);
+                    var summaries = saleService.summarizeReturnEventLines(events);
+                    return events.stream().map(e -> {
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("id", e.getId());
                     row.put("onlineSaleId", e.getOnlineSaleId());
@@ -221,8 +224,12 @@ public class OnlineSaleController {
                     row.put("itemCondition", e.getItemCondition());
                     row.put("createdAt", e.getCreatedAt());
                     row.put("createdBy", e.getCreatedBy());
+                    Map<String, String> lineSummary = summaries.getOrDefault(e.getId(), Map.of());
+                    row.put("returnedItems", lineSummary.getOrDefault("returned", ""));
+                    row.put("sentItems", lineSummary.getOrDefault("sent", ""));
                     return row;
-                }).sorted(Comparator.comparing(r -> (Long) r.get("id"), Comparator.reverseOrder())).toList());
+                }).sorted(Comparator.comparing(r -> (Long) r.get("id"), Comparator.reverseOrder())).toList();
+                });
         return ResponseEntity.ok(rows);
     }
 

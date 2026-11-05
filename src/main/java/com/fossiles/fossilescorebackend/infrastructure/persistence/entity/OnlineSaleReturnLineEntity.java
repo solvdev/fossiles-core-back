@@ -50,6 +50,25 @@ public class OnlineSaleReturnLineEntity {
     @Column(name = "subtotal", precision = 12, scale = 2)
     private BigDecimal subtotal;
 
+    /** Artículo que se envió a cambio de esta línea (solo CAMBIOS; NULL en devoluciones y cambios viejos). */
+    @Column(name = "sent_product_id")
+    private Long sentProductId;
+
+    @Column(name = "sent_product_code", length = 30)
+    private String sentProductCode;
+
+    @Column(name = "sent_product_name", length = 150)
+    private String sentProductName;
+
+    @Column(name = "sent_color_id")
+    private Long sentColorId;
+
+    @Column(name = "sent_color_name", length = 100)
+    private String sentColorName;
+
+    @Column(name = "sent_size", length = 50)
+    private String sentSize;
+
     @PrePersist
     protected void onCreate() {
         if (subtotal == null && unitPrice != null && quantity != null) {

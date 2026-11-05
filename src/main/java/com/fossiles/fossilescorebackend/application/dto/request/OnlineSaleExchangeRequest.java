@@ -36,6 +36,11 @@ public class OnlineSaleExchangeRequest {
         private Long replacementProductId;
         private Long replacementColorId;
         private String replacementSize;
+        /**
+         * Solo con envío destino existente: lo que se envía ya va en ese envío (p. ej. la venta del
+         * producto nuevo). Lo devuelto regresa a Devoluciones y NO se agrega ninguna línea al envío.
+         */
+        private Boolean noShipmentLine;
     }
 }
 
