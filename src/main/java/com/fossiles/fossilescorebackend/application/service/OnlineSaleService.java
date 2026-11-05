@@ -945,17 +945,7 @@ public class OnlineSaleService {
         OnlineSaleEntity saved = saleRepository.save(exchange);
 
         for (ExchangeLine line : exchangeLines) {
-            OnlineSaleItemEntity source = line.source();
-            OnlineSaleItemEntity item = OnlineSaleItemEntity.builder()
-                    .onlineSaleId(saved.getId())
-                    .productId(source.getProductId())
-                    .colorId(source.getColorId())
-                    .size(source.getSize())
-                    .quantity(line.quantity())
-                    .unitPrice(BigDecimal.ZERO)
-                    .build();
-            enrichItemWithProductAndColor(item);
-            itemRepository.save(item);
+            itemRepository.save(buildExchangeShipmentItem(saved.getId(), line));
         }
 
         onlineSaleShipmentNumberService.assignIfMissing(saved);
@@ -989,17 +979,7 @@ public class OnlineSaleService {
         }
 
         for (ExchangeLine line : exchangeLines) {
-            OnlineSaleItemEntity source = line.source();
-            OnlineSaleItemEntity item = OnlineSaleItemEntity.builder()
-                    .onlineSaleId(target.getId())
-                    .productId(source.getProductId())
-                    .colorId(source.getColorId())
-                    .size(source.getSize())
-                    .quantity(line.quantity())
-                    .unitPrice(BigDecimal.ZERO)
-                    .build();
-            enrichItemWithProductAndColor(item);
-            itemRepository.save(item);
+            itemRepository.save(buildExchangeShipmentItem(target.getId(), line));
         }
 
         String rel = original.getShipmentNumber() != null
@@ -1042,7 +1022,10 @@ public class OnlineSaleService {
                 ? req.getItems()
                 : List.of();
 
+        // Lo devuelto se valida contra la venta original; el reemplazo puede ser otro artículo, así que
+        // cada combinación devuelto + reemplazo es su propia línea del envío Q0.
         Map<String, Integer> requestedQty = new LinkedHashMap<>();
+        Map<String, RequestedExchange> requestedLines = new LinkedHashMap<>();
         for (OnlineSaleExchangeRequest.ExchangeItemRequest item : requested) {
             if (item == null || item.getProductId() == null) {
                 continue;
@@ -1051,7 +1034,35 @@ public class OnlineSaleService {
             if (qty <= 0) {
                 continue;
             }
-            requestedQty.merge(exchangeLineKey(item.getProductId(), item.getColorId(), item.getSize()), qty, Integer::sum);
+            String returnedKey = exchangeLineKey(item.getProductId(), item.getColorId(), item.getSize());
+            requestedQty.merge(returnedKey, qty, Integer::sum);
+
+            Long replacementProductId = item.getReplacementProductId();
+            Long replacementColorId = null;
+            String replacementSize = null;
+            if (replacementProductId != null) {
+                if (!productRepository.existsById(replacementProductId)) {
+                    throw new BusinessException("El artículo de reemplazo del cambio no existe.");
+                }
+                replacementColorId = item.getReplacementColorId();
+                replacementSize = item.getReplacementSize() != null ? item.getReplacementSize().trim() : "";
+                if (exchangeLineKey(replacementProductId, replacementColorId, replacementSize).equals(returnedKey)) {
+                    // Eligió el mismo artículo en el selector: es un cambio normal.
+                    replacementProductId = null;
+                    replacementColorId = null;
+                    replacementSize = null;
+                }
+            }
+            String lineKey = returnedKey + "=>" + (replacementProductId == null
+                    ? "SAME"
+                    : exchangeLineKey(replacementProductId, replacementColorId, replacementSize));
+            RequestedExchange prev = requestedLines.get(lineKey);
+            requestedLines.put(lineKey, new RequestedExchange(
+                    returnedKey,
+                    (prev != null ? prev.quantity() : 0) + qty,
+                    replacementProductId,
+                    replacementColorId,
+                    replacementSize));
         }
         if (requestedQty.isEmpty()) {
             throw new BusinessException("Debe especificar al menos un item para el CAMBIO");
@@ -1069,7 +1080,6 @@ public class OnlineSaleService {
         }
 
         Map<String, Integer> alreadyReturned = returnedQuantityByLine(original.getId());
-        List<ExchangeLine> lines = new ArrayList<>();
         for (Map.Entry<String, Integer> entry : requestedQty.entrySet()) {
             OnlineSaleItemEntity source = soldByKey.get(entry.getKey());
             if (source == null) {
@@ -1081,10 +1091,22 @@ public class OnlineSaleService {
                 throw new BusinessException(
                         "La cantidad del cambio de " + label + " supera lo disponible. Disponible: " + Math.max(remaining, 0));
             }
-            lines.add(new ExchangeLine(source, entry.getValue()));
+        }
+
+        List<ExchangeLine> lines = new ArrayList<>();
+        for (RequestedExchange req1 : requestedLines.values()) {
+            lines.add(new ExchangeLine(
+                    soldByKey.get(req1.returnedKey()),
+                    req1.quantity(),
+                    req1.replacementProductId(),
+                    req1.replacementColorId(),
+                    req1.replacementSize()));
         }
         return lines;
     }
+
+    private record RequestedExchange(
+            String returnedKey, int quantity, Long replacementProductId, Long replacementColorId, String replacementSize) {}
 
     private List<OnlineSaleItemEntity> resolveOriginalSaleLines(OnlineSaleEntity sale) {
         List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId());
@@ -1244,7 +1266,41 @@ public class OnlineSaleService {
         return value.substring(0, max);
     }
 
-    private record ExchangeLine(OnlineSaleItemEntity source, int quantity) {}
+    /**
+     * {@code source} es lo que el cliente devuelve (regresa a Devoluciones). Si {@code replacementProductId}
+     * es null se reenvía el mismo artículo; si no, sale ese otro artículo (con su color y talla).
+     */
+    private record ExchangeLine(
+            OnlineSaleItemEntity source,
+            int quantity,
+            Long replacementProductId,
+            Long replacementColorId,
+            String replacementSize) {
+
+        ExchangeLine(OnlineSaleItemEntity source, int quantity) {
+            this(source, quantity, null, null, null);
+        }
+
+        boolean isReplacedByOtherArticle() {
+            return replacementProductId != null;
+        }
+    }
+
+    /** Línea del envío Q0 (precio 0): el mismo artículo devuelto o el de reemplazo elegido. */
+    private OnlineSaleItemEntity buildExchangeShipmentItem(Long onlineSaleId, ExchangeLine line) {
+        OnlineSaleItemEntity source = line.source();
+        boolean other = line.isReplacedByOtherArticle();
+        OnlineSaleItemEntity item = OnlineSaleItemEntity.builder()
+                .onlineSaleId(onlineSaleId)
+                .productId(other ? line.replacementProductId() : source.getProductId())
+                .colorId(other ? line.replacementColorId() : source.getColorId())
+                .size(other ? line.replacementSize() : source.getSize())
+                .quantity(line.quantity())
+                .unitPrice(BigDecimal.ZERO)
+                .build();
+        enrichItemWithProductAndColor(item);
+        return item;
+    }
 
     private void enrichItemWithProductAndColor(OnlineSaleItemEntity item) {
         if (item.getProductId() != null) {

@@ -28,6 +28,14 @@ public class OnlineSaleExchangeRequest {
         private Long colorId;
         private String size;
         private Integer quantity;
+        /**
+         * Opcional. Si viene, lo que se envía es OTRO artículo: productId/colorId/size son lo que el
+         * cliente devuelve (regresa a Devoluciones) y estos tres campos son lo que sale en el envío Q0.
+         * Sin replacementProductId se envía el mismo artículo.
+         */
+        private Long replacementProductId;
+        private Long replacementColorId;
+        private String replacementSize;
     }
 }
 

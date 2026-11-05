@@ -129,6 +129,62 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
     }
 
     @Test
+    void createExchange_withReplacementArticle_returnsOriginalButShipsTheOtherProduct() throws Exception {
+        OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
+        OnlineSaleEntity target = sale(2L, "PENDIENTE", "ENVL-00002");
+        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(saleRepository.findById(2L)).thenReturn(Optional.of(target));
+        when(itemRepository.save(any(OnlineSaleItemEntity.class))).thenAnswer(i -> i.getArgument(0));
+        when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
+        when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
+        when(returnsWarehouseLocator.find()).thenReturn(Optional.of(LocationEntity.builder().id(99L).build()));
+        when(onlineSaleReturnRepository.save(any())).thenAnswer(i -> i.getArgument(0));
+        when(productRepository.existsById(55L)).thenReturn(true);
+
+        OnlineSaleExchangeRequest req = OnlineSaleExchangeRequest.builder()
+                .targetOnlineSaleId(2L)
+                .items(List.of(OnlineSaleExchangeRequest.ExchangeItemRequest.builder()
+                        .productId(7L).size("M").quantity(2)
+                        .replacementProductId(55L).replacementColorId(4L).replacementSize("L").build()))
+                .build();
+
+        service.createExchange(1L, req);
+
+        // En el envío Q0 sale el otro artículo
+        ArgumentCaptor<OnlineSaleItemEntity> itemCaptor = ArgumentCaptor.forClass(OnlineSaleItemEntity.class);
+        verify(itemRepository).save(itemCaptor.capture());
+        assertThat(itemCaptor.getValue().getProductId()).isEqualTo(55L);
+        assertThat(itemCaptor.getValue().getColorId()).isEqualTo(4L);
+        assertThat(itemCaptor.getValue().getSize()).isEqualTo("L");
+        assertThat(itemCaptor.getValue().getQuantity()).isEqualTo(2);
+        assertThat(itemCaptor.getValue().getUnitPrice()).isEqualByComparingTo(BigDecimal.ZERO);
+
+        // Lo que regresa a Devoluciones es el artículo original
+        verify(productInventoryService).creditReturnsWithReturnMovement(
+                org.mockito.ArgumentMatchers.eq(7L), any(), any(), any(),
+                org.mockito.ArgumentMatchers.eq("M"), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void createExchange_withUnknownReplacementArticle_isRejected() {
+        OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
+        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
+        when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
+        when(productRepository.existsById(99L)).thenReturn(false);
+
+        OnlineSaleExchangeRequest req = OnlineSaleExchangeRequest.builder()
+                .items(List.of(OnlineSaleExchangeRequest.ExchangeItemRequest.builder()
+                        .productId(7L).size("M").quantity(1).replacementProductId(99L).build()))
+                .build();
+
+        assertThatThrownBy(() -> service.createExchange(1L, req))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("reemplazo");
+        verify(itemRepository, never()).save(any());
+    }
+
+    @Test
     void createExchange_withTargetVoided_isRejected() {
         when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
         when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
