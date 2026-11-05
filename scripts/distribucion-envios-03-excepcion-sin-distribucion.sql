@@ -28,7 +28,9 @@ BEGIN
       AND conrelid = 'product_shipment'::regclass;
 
     IF def IS NULL THEN
-        RAISE EXCEPTION 'No existe chk_product_shipment_kiosk_distribution: corra primero el script 02.';
+        -- Base donde todavía no se corrió el script 02: solo queda la columna. El 02 ya crea la regla con la excepción.
+        RAISE NOTICE 'No existe chk_product_shipment_kiosk_distribution (script 02 pendiente): solo se agregó la columna.';
+        RETURN;
     END IF;
 
     IF def LIKE '%without_distribution%' THEN
