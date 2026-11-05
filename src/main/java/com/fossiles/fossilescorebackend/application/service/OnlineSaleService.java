@@ -978,8 +978,13 @@ public class OnlineSaleService {
                     + " porque está en estado " + targetStatus);
         }
 
+        int addedLines = 0;
         for (ExchangeLine line : exchangeLines) {
+            if (line.noShipmentLine()) {
+                continue; // el producto que se envía ya va en este envío
+            }
             itemRepository.save(buildExchangeShipmentItem(target.getId(), line));
+            addedLines++;
         }
 
         String rel = original.getShipmentNumber() != null
@@ -988,7 +993,13 @@ public class OnlineSaleService {
         String extra = (req.getObservations() != null && !req.getObservations().isBlank())
                 ? " " + req.getObservations().trim()
                 : "";
-        String tag = EXCHANGE_TAG_PREFIX + rel + ")" + extra;
+        // Sin líneas agregadas el envío sigue siendo una venta normal: no se marca como cambio Q0
+        // (esa marca hace que el despacho consuma Devoluciones primero).
+        String tag = addedLines > 0
+                ? EXCHANGE_TAG_PREFIX + rel + ")" + extra
+                : "CAMBIO relacionado con " + (original.getShipmentNumber() != null
+                        ? original.getShipmentNumber() : ("venta " + original.getId()))
+                        + " (el producto ya iba en este envío)" + extra;
         String currentObs = target.getObservations();
         target.setObservations((currentObs == null || currentObs.isBlank()) ? tag : currentObs + " | " + tag);
 
@@ -1053,16 +1064,29 @@ public class OnlineSaleService {
                     replacementSize = null;
                 }
             }
-            String lineKey = returnedKey + "=>" + (replacementProductId == null
-                    ? "SAME"
-                    : exchangeLineKey(replacementProductId, replacementColorId, replacementSize));
+            boolean noShipmentLine = Boolean.TRUE.equals(item.getNoShipmentLine());
+            if (noShipmentLine) {
+                if (req.getTargetOnlineSaleId() == null) {
+                    throw new BusinessException(
+                            "«Ya va en el envío» solo se puede usar al agregar el cambio a un envío existente.");
+                }
+                replacementProductId = null;
+                replacementColorId = null;
+                replacementSize = null;
+            }
+            String lineKey = returnedKey + "=>" + (noShipmentLine
+                    ? "NOLINE"
+                    : replacementProductId == null
+                            ? "SAME"
+                            : exchangeLineKey(replacementProductId, replacementColorId, replacementSize));
             RequestedExchange prev = requestedLines.get(lineKey);
             requestedLines.put(lineKey, new RequestedExchange(
                     returnedKey,
                     (prev != null ? prev.quantity() : 0) + qty,
                     replacementProductId,
                     replacementColorId,
-                    replacementSize));
+                    replacementSize,
+                    noShipmentLine));
         }
         if (requestedQty.isEmpty()) {
             throw new BusinessException("Debe especificar al menos un item para el CAMBIO");
@@ -1100,13 +1124,19 @@ public class OnlineSaleService {
                     req1.quantity(),
                     req1.replacementProductId(),
                     req1.replacementColorId(),
-                    req1.replacementSize()));
+                    req1.replacementSize(),
+                    req1.noShipmentLine()));
         }
         return lines;
     }
 
     private record RequestedExchange(
-            String returnedKey, int quantity, Long replacementProductId, Long replacementColorId, String replacementSize) {}
+            String returnedKey,
+            int quantity,
+            Long replacementProductId,
+            Long replacementColorId,
+            String replacementSize,
+            boolean noShipmentLine) {}
 
     private List<OnlineSaleItemEntity> resolveOriginalSaleLines(OnlineSaleEntity sale) {
         List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId());
@@ -1269,16 +1299,18 @@ public class OnlineSaleService {
     /**
      * {@code source} es lo que el cliente devuelve (regresa a Devoluciones). Si {@code replacementProductId}
      * es null se reenvía el mismo artículo; si no, sale ese otro artículo (con su color y talla).
+     * Con {@code noShipmentLine} lo que se envía ya va en el envío destino: solo se registra la devolución.
      */
     private record ExchangeLine(
             OnlineSaleItemEntity source,
             int quantity,
             Long replacementProductId,
             Long replacementColorId,
-            String replacementSize) {
+            String replacementSize,
+            boolean noShipmentLine) {
 
         ExchangeLine(OnlineSaleItemEntity source, int quantity) {
-            this(source, quantity, null, null, null);
+            this(source, quantity, null, null, null, false);
         }
 
         boolean isReplacedByOtherArticle() {

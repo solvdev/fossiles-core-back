@@ -166,6 +166,61 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
     }
 
     @Test
+    void createExchange_whenTargetShipmentAlreadyHasTheProduct_onlyRegistersTheReturn() throws Exception {
+        OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
+        OnlineSaleEntity target = sale(2L, "ENVIADO", "ENVL-00002"); // ya lleva el producto nuevo
+        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(saleRepository.findById(2L)).thenReturn(Optional.of(target));
+        when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
+        when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
+        when(returnsWarehouseLocator.find()).thenReturn(Optional.of(LocationEntity.builder().id(99L).build()));
+        when(onlineSaleReturnRepository.save(any())).thenAnswer(i -> i.getArgument(0));
+
+        OnlineSaleExchangeRequest req = OnlineSaleExchangeRequest.builder()
+                .targetOnlineSaleId(2L)
+                .items(List.of(OnlineSaleExchangeRequest.ExchangeItemRequest.builder()
+                        .productId(7L).size("M").quantity(2).noShipmentLine(true).build()))
+                .build();
+
+        service.createExchange(1L, req);
+
+        // El envío destino no recibe ninguna línea y no se marca como cambio Q0
+        verify(itemRepository, never()).save(any(OnlineSaleItemEntity.class));
+        ArgumentCaptor<OnlineSaleEntity> saleCaptor = ArgumentCaptor.forClass(OnlineSaleEntity.class);
+        verify(saleRepository, atLeastOnce()).save(saleCaptor.capture());
+        OnlineSaleEntity savedTarget = saleCaptor.getAllValues().stream()
+                .filter(s -> s.getId().equals(2L)).findFirst().orElseThrow();
+        assertThat(savedTarget.getObservations()).doesNotContain("CAMBIO_Q0(");
+        assertThat(savedTarget.getObservations()).contains("ENVL-00001");
+        assertThat(savedTarget.getTotalAmount()).isEqualByComparingTo("415.00");
+
+        // Lo devuelto sí regresa a Devoluciones y queda ligado al envío destino
+        verify(productInventoryService).creditReturnsWithReturnMovement(
+                org.mockito.ArgumentMatchers.eq(7L), any(), any(), any(),
+                org.mockito.ArgumentMatchers.eq("M"), any(), any(), any(), any(), any());
+        ArgumentCaptor<OnlineSaleReturnEntity> returnCaptor = ArgumentCaptor.forClass(OnlineSaleReturnEntity.class);
+        verify(onlineSaleReturnRepository).save(returnCaptor.capture());
+        assertThat(returnCaptor.getValue().getExchangeShipmentNumber()).isEqualTo("ENVL-00002");
+    }
+
+    @Test
+    void createExchange_noShipmentLineWithoutTarget_isRejected() {
+        OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
+        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
+        when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
+
+        OnlineSaleExchangeRequest req = OnlineSaleExchangeRequest.builder()
+                .items(List.of(OnlineSaleExchangeRequest.ExchangeItemRequest.builder()
+                        .productId(7L).size("M").quantity(1).noShipmentLine(true).build()))
+                .build();
+
+        assertThatThrownBy(() -> service.createExchange(1L, req))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("envío existente");
+    }
+
+    @Test
     void createExchange_withUnknownReplacementArticle_isRejected() {
         OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
         when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
