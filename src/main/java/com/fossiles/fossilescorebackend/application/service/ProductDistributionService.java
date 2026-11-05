@@ -708,11 +708,17 @@ public class ProductDistributionService {
 
         String persistedNotes = mergeDocumentDateIntoNotes(request.getNotes(), request.getDocumentDate());
         Long currentUserId = securityUtil.getCurrentUserId();
-        // Ningún envío de reposición a kiosco queda sin distribución: se mete en la indicada o en una MANUAL nueva.
-        Long distributionId = resolveDirectKioskDistribution(request.getDistributionId(), location, currentUserId);
+        // Por regla todo envío a kiosco vive en una distribución (la indicada o una MANUAL nueva). Excepción
+        // explícita: withoutDistribution=true y sin distributionId crea el envío suelto.
+        boolean withoutDistribution = request.getDistributionId() == null
+                && Boolean.TRUE.equals(request.getWithoutDistribution());
+        Long distributionId = withoutDistribution
+                ? null
+                : resolveDirectKioskDistribution(request.getDistributionId(), location, currentUserId);
         String shipmentNumber = generateShipmentNumber(location);
         ProductShipmentEntity shipment = ProductShipmentEntity.builder()
                 .distributionId(distributionId)
+                .withoutDistribution(withoutDistribution)
                 .productionOrderId(null)
                 .partialReleaseId(null)
                 .shipmentNumber(shipmentNumber)
