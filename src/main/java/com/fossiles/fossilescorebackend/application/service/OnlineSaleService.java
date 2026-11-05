@@ -1070,15 +1070,15 @@ public class OnlineSaleService {
                     throw new BusinessException(
                             "«Ya va en el envío» solo se puede usar al agregar el cambio a un envío existente.");
                 }
-                replacementProductId = null;
-                replacementColorId = null;
-                replacementSize = null;
+                if (item.getReplacementProductId() == null) {
+                    throw new BusinessException(
+                            "Indique qué producto se envió (el que ya va en el envío existente).");
+                }
             }
-            String lineKey = returnedKey + "=>" + (noShipmentLine
-                    ? "NOLINE"
-                    : replacementProductId == null
-                            ? "SAME"
-                            : exchangeLineKey(replacementProductId, replacementColorId, replacementSize));
+            String sentKey = replacementProductId == null
+                    ? "SAME"
+                    : exchangeLineKey(replacementProductId, replacementColorId, replacementSize);
+            String lineKey = returnedKey + "=>" + (noShipmentLine ? "NOLINE:" : "") + sentKey;
             RequestedExchange prev = requestedLines.get(lineKey);
             requestedLines.put(lineKey, new RequestedExchange(
                     returnedKey,
@@ -1215,6 +1215,8 @@ public class OnlineSaleService {
 
         for (ExchangeLine line : lines) {
             OnlineSaleItemEntity source = line.source();
+            // Lo que salió a cambio (mismo artículo, otro, o el que ya iba en el envío destino)
+            OnlineSaleItemEntity sent = buildExchangeShipmentItem(null, line);
             onlineSaleReturnLineRepository.save(OnlineSaleReturnLineEntity.builder()
                     .returnId(header.getId())
                     .productId(source.getProductId())
@@ -1225,6 +1227,12 @@ public class OnlineSaleService {
                     .size(source.getSize())
                     .quantity(line.quantity())
                     .unitPrice(source.getUnitPrice())
+                    .sentProductId(sent.getProductId())
+                    .sentProductCode(sent.getProductCode())
+                    .sentProductName(sent.getProductName())
+                    .sentColorId(sent.getColorId())
+                    .sentColorName(sent.getColorName())
+                    .sentSize(sent.getSize())
                     .build());
             returnInventoryRepository.save(ReturnInventoryEntity.builder()
                     .onlineSaleId(original.getId())
@@ -1399,6 +1407,19 @@ public class OnlineSaleService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         LocalDate returnDate = header.getCreatedAt() != null ? header.getCreatedAt().toLocalDate() : GuatemalaDateTime.today();
+        List<OnlineSaleReturnPrintResponse.ReturnLine> sentItems = lines.stream()
+                .filter(l -> l.getSentProductId() != null)
+                .map(l -> OnlineSaleReturnPrintResponse.ReturnLine.builder()
+                        .productId(l.getSentProductId())
+                        .productCode(l.getSentProductCode())
+                        .productName(l.getSentProductName())
+                        .colorId(l.getSentColorId())
+                        .colorName(l.getSentColorName())
+                        .size(l.getSentSize())
+                        .quantity(l.getQuantity())
+                        .build())
+                .toList();
+
         return OnlineSaleReturnPrintResponse.builder()
                 .returnId(header.getId())
                 .onlineSaleId(sale.getId())
@@ -1414,7 +1435,46 @@ public class OnlineSaleService {
                 .returnDate(returnDate)
                 .totalAmount(total)
                 .items(items)
+                .sentItems(sentItems)
                 .build();
+    }
+
+    /**
+     * Resumen legible por documento para el listado de cambios/devoluciones:
+     * {@code returned} = lo que regresó, {@code sent} = lo que se envió a cambio (vacío si no se registró).
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, Map<String, String>> summarizeReturnEventLines(List<OnlineSaleReturnEntity> events) {
+        List<Long> ids = events.stream().map(OnlineSaleReturnEntity::getId).toList();
+        Map<Long, Map<String, String>> out = new HashMap<>();
+        if (ids.isEmpty()) {
+            return out;
+        }
+        Map<Long, List<OnlineSaleReturnLineEntity>> byReturn = onlineSaleReturnLineRepository
+                .findByReturnIdInOrderByIdAsc(ids).stream()
+                .collect(Collectors.groupingBy(OnlineSaleReturnLineEntity::getReturnId, LinkedHashMap::new, Collectors.toList()));
+        for (Long id : ids) {
+            List<OnlineSaleReturnLineEntity> lines = byReturn.getOrDefault(id, List.of());
+            Map<String, String> row = new LinkedHashMap<>();
+            row.put("returned", lines.stream()
+                    .map(l -> describeArticle(l.getProductCode(), l.getProductName(), l.getColorName(), l.getSize(), l.getQuantity()))
+                    .collect(Collectors.joining("\n")));
+            row.put("sent", lines.stream()
+                    .filter(l -> l.getSentProductId() != null)
+                    .map(l -> describeArticle(l.getSentProductCode(), l.getSentProductName(), l.getSentColorName(), l.getSentSize(), l.getQuantity()))
+                    .collect(Collectors.joining("\n")));
+            out.put(id, row);
+        }
+        return out;
+    }
+
+    private static String describeArticle(String code, String name, String color, String size, Integer qty) {
+        String variant = java.util.stream.Stream.of(color, size)
+                .filter(v -> v != null && !v.isBlank())
+                .collect(Collectors.joining(" / "));
+        return (code != null ? code + " " : "") + (name != null ? name : "")
+                + (variant.isBlank() ? "" : " · " + variant)
+                + " x" + (qty != null ? qty : 1);
     }
 
     // ─── Vincular a OP ──────────────────────────────────────────────

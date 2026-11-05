@@ -12,6 +12,8 @@ import java.util.List;
 public interface OnlineSaleReturnLineRepository extends JpaRepository<OnlineSaleReturnLineEntity, Long> {
     List<OnlineSaleReturnLineEntity> findByReturnIdOrderByIdAsc(Long returnId);
 
+    List<OnlineSaleReturnLineEntity> findByReturnIdInOrderByIdAsc(java.util.Collection<Long> returnIds);
+
     @Query("SELECT l FROM OnlineSaleReturnLineEntity l "
             + "WHERE l.returnId IN (SELECT r.id FROM OnlineSaleReturnEntity r WHERE r.onlineSaleId = :saleId)")
     List<OnlineSaleReturnLineEntity> findByOnlineSaleId(@Param("saleId") Long saleId);

@@ -175,11 +175,13 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
         when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
         when(returnsWarehouseLocator.find()).thenReturn(Optional.of(LocationEntity.builder().id(99L).build()));
         when(onlineSaleReturnRepository.save(any())).thenAnswer(i -> i.getArgument(0));
+        when(productRepository.existsById(55L)).thenReturn(true);
 
         OnlineSaleExchangeRequest req = OnlineSaleExchangeRequest.builder()
                 .targetOnlineSaleId(2L)
                 .items(List.of(OnlineSaleExchangeRequest.ExchangeItemRequest.builder()
-                        .productId(7L).size("M").quantity(2).noShipmentLine(true).build()))
+                        .productId(7L).size("M").quantity(2).noShipmentLine(true)
+                        .replacementProductId(55L).replacementColorId(4L).build()))
                 .build();
 
         service.createExchange(1L, req);
@@ -201,18 +203,46 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
         ArgumentCaptor<OnlineSaleReturnEntity> returnCaptor = ArgumentCaptor.forClass(OnlineSaleReturnEntity.class);
         verify(onlineSaleReturnRepository).save(returnCaptor.capture());
         assertThat(returnCaptor.getValue().getExchangeShipmentNumber()).isEqualTo("ENVL-00002");
+
+        // El cambio queda registrado con lo que regresó (7) y lo que se mandó (55), aunque no sea línea del envío
+        ArgumentCaptor<com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleReturnLineEntity> lineCaptor =
+                ArgumentCaptor.forClass(com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleReturnLineEntity.class);
+        verify(onlineSaleReturnLineRepository).save(lineCaptor.capture());
+        assertThat(lineCaptor.getValue().getProductId()).isEqualTo(7L);
+        assertThat(lineCaptor.getValue().getSentProductId()).isEqualTo(55L);
+        assertThat(lineCaptor.getValue().getSentColorId()).isEqualTo(4L);
     }
 
     @Test
-    void createExchange_noShipmentLineWithoutTarget_isRejected() {
+    void createExchange_noShipmentLineWithoutSentProduct_isRejected() {
         OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
         when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
         when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
         when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
 
         OnlineSaleExchangeRequest req = OnlineSaleExchangeRequest.builder()
+                .targetOnlineSaleId(2L)
                 .items(List.of(OnlineSaleExchangeRequest.ExchangeItemRequest.builder()
                         .productId(7L).size("M").quantity(1).noShipmentLine(true).build()))
+                .build();
+
+        assertThatThrownBy(() -> service.createExchange(1L, req))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("qué producto se envió");
+    }
+
+    @Test
+    void createExchange_noShipmentLineWithoutTarget_isRejected() {
+        OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
+        when(productRepository.existsById(55L)).thenReturn(true);
+        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
+        when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
+
+        OnlineSaleExchangeRequest req = OnlineSaleExchangeRequest.builder()
+                .items(List.of(OnlineSaleExchangeRequest.ExchangeItemRequest.builder()
+                        .productId(7L).size("M").quantity(1).noShipmentLine(true)
+                        .replacementProductId(55L).build()))
                 .build();
 
         assertThatThrownBy(() -> service.createExchange(1L, req))
