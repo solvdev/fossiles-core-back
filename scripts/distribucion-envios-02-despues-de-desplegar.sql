@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS bak_20261104_product_shipment_constraints AS
 --    El corte es el created_at más reciente al correr el script. NOT VALID + VALIDATE no bloquea la tabla
 --    mientras revisa las filas existentes.
 -- ---------------------------------------------------------------------------------------
+-- Excepción autorizada (ver script 03): envío directo a kiosko sin distribución.
+ALTER TABLE product_shipment
+    ADD COLUMN IF NOT EXISTS without_distribution BOOLEAN NOT NULL DEFAULT FALSE;
+
 DO $$
 DECLARE
     corte TIMESTAMP;
@@ -41,7 +45,7 @@ BEGIN
         EXECUTE format(
             'ALTER TABLE product_shipment ADD CONSTRAINT chk_product_shipment_kiosk_distribution '
             'CHECK (distribution_id IS NOT NULL OR production_order_id IS NOT NULL OR location_id IS NULL '
-            'OR created_at IS NULL OR created_at <= %L::timestamp) NOT VALID',
+            'OR without_distribution OR created_at IS NULL OR created_at <= %L::timestamp) NOT VALID',
             corte);
     END IF;
 END $$;
