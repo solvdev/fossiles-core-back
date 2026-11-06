@@ -16,11 +16,18 @@ public final class ReconciliationSpecs {
     private ReconciliationSpecs() {
     }
 
+    /**
+     * Los casos cuyo motivo de exclusión empieza así son ventas de prueba: siguen existiendo (para que no se vuelvan a crear
+     * al traer las ventas del período y para no tocar el libro), pero no se muestran ni cuentan en ninguna vista.
+     */
+    public static final String HIDDEN_REASON_PREFIX = "PRUEBA:";
+
     /** @param caseIdsByReceipt casos cuyos fondos tienen la referencia buscada (la búsqueda rápida también mira referencias). */
     public static Specification<ReconCaseEntity> of(CaseFilter f, Collection<Long> caseIdsByReceipt) {
         return (root, query, cb) -> {
             List<Predicate> p = new ArrayList<>();
-            if (f == null) return cb.conjunction();
+            p.add(cb.or(cb.isNull(root.get("excludedReason")), cb.notLike(root.get("excludedReason"), HIDDEN_REASON_PREFIX + "%")));
+            if (f == null) return cb.and(p.toArray(new Predicate[0]));
             if (f.from() != null) p.add(cb.greaterThanOrEqualTo(root.get("saleDate"), f.from()));
             if (f.to() != null) p.add(cb.lessThanOrEqualTo(root.get("saleDate"), f.to()));
             if (!ReconText.blank(f.method())) p.add(cb.equal(root.get("paymentMethod"), f.method().trim()));
