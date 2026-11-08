@@ -690,7 +690,7 @@ public class KioskExchangeService {
             throw new BusinessException("Indica la venta y la línea original, o registra el cambio libre.");
         }
 
-        boolean allowPriceOverride = allowsExchangePriceEdit(access.kiosk());
+        boolean allowPriceOverride = allowsExchangePriceEdit(access.kiosk(), access.user());
         KioskSaleEntity sale = null;
         List<ResolvedReturnedLine> returnedLines;
         if (hasOriginalSale) {
@@ -983,7 +983,11 @@ public class KioskExchangeService {
         }
     }
 
-    private static boolean allowsExchangePriceEdit(LocationEntity kiosk) {
+    private static boolean allowsExchangePriceEdit(LocationEntity kiosk, UserEntity user) {
+        // Administración puede ajustar precios en cualquier kiosco (p. ej. honrar un precio anterior al alza).
+        if (user != null && KioskAccessHelper.hasAllKiosksAccess(user)) {
+            return true;
+        }
         if (kiosk == null) {
             return false;
         }
@@ -1673,6 +1677,8 @@ public class KioskExchangeService {
 
             List<KioskExchangePreviewResponse.ProductLine> givenProductLines = new ArrayList<>();
             BigDecimal productGivenAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+            // Lo mismo que se entrega, pero a precio de catálogo de hoy (avisa si hay alza respecto a lo pagado).
+            BigDecimal catalogGivenAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
             boolean forceSameUnitPrice = isSameUnitPriceMode(pricingMode);
             boolean forceCatalogGiven = "CATALOG_GIVEN".equals(pricingMode);
 
@@ -1697,6 +1703,12 @@ public class KioskExchangeService {
                 }
                 BigDecimal lineTotal = givenUnitPrice.multiply(given.quantity()).setScale(2, RoundingMode.HALF_UP);
                 productGivenAmount = productGivenAmount.add(lineTotal);
+                BigDecimal catalogUnitPrice = resolveFullSaleUnitPrice(given.product(), given.size());
+                if (catalogUnitPrice.compareTo(BigDecimal.ZERO) <= 0) {
+                    catalogUnitPrice = givenUnitPrice;
+                }
+                catalogGivenAmount = catalogGivenAmount.add(
+                        catalogUnitPrice.multiply(given.quantity()).setScale(2, RoundingMode.HALF_UP));
                 givenProductLines.add(KioskExchangePreviewResponse.ProductLine.builder()
                         .productId(given.product().getId())
                         .productCode(given.product().getCode())
@@ -1734,6 +1746,9 @@ public class KioskExchangeService {
                     .returnedAmount(returnedAmount)
                     .givenAmount(givenAmount)
                     .differenceAmount(difference)
+                    .catalogGivenAmount(catalogGivenAmount)
+                    .catalogDifferenceAmount(catalogGivenAmount.subtract(returnedAmount)
+                            .setScale(2, RoundingMode.HALF_UP))
                     .packagingReturnedAmount(packagingReturned)
                     .packagingCreditAmount(packagingCredit)
                     .packagingGivenAmount(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
