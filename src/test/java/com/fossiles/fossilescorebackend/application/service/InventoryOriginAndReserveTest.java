@@ -172,6 +172,36 @@ class InventoryOriginAndReserveTest {
         assertThat(kardexRepository.findByReferenceTypeAndReferenceId("SHIPMENT", shipment.getId())).isEmpty();
     }
 
+    // ===== OPI: solo Devoluciones =====
+
+    @Test
+    void opi_laPiezaProducidaEntraADevoluciones_yNoAPt() throws Exception {
+        ProductionOrderEntity po = saveOrder("OPI-ORG-01", "INTERNA", null);
+        saveItem(po, 2);
+        receiveAll(po);
+
+        assertThat(stockAt(devoluciones)).isEqualByComparingTo("2");
+        assertThat(stockAt(bodegaPt)).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void opi_elStockSoloSeCuentaEnDevoluciones_noEnPt() throws Exception {
+        seed(devoluciones, 1);
+        seed(bodegaPt, 5);
+        var line = com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest.ProductShipmentDetailRequest
+                .builder().productId(product.getId()).colorId(color.getId()).quantity(BigDecimal.valueOf(3)).build();
+
+        var shortages = productDistributionService.computeDispatchStockShortages(List.of(line));
+
+        // Hay 6 en total, pero un envío interno solo puede salir de Devoluciones: falta producir 2.
+        assertThat(shortages).hasSize(1);
+        assertThat(shortages.get(0).getAvailableQuantity()).isEqualByComparingTo("1");
+        assertThat(shortages.get(0).getShortageQuantity()).isEqualByComparingTo("2");
+        assertThat(productInventoryService.getDispatchSourceWarehouses(
+                ProductInventoryService.DispatchSource.RETURNS_ONLY)).extracting(LocationEntity::getId)
+                .containsExactly(devoluciones.getId());
+    }
+
     // ===== Origen de la salida =====
 
     @Test
