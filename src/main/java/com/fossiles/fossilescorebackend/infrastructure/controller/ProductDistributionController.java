@@ -309,8 +309,10 @@ public class ProductDistributionController {
     public ResponseEntity<DispatchStockPreviewResponse> previewDispatchStock(
             @RequestParam Long productId,
             @RequestParam(required = false) Long colorId,
-            @RequestParam(required = false) String size) throws BusinessException {
-        return ResponseEntity.ok(distributionService.previewDispatchStock(productId, colorId, size));
+            @RequestParam(required = false) String size,
+            @RequestParam(required = false, defaultValue = "false") boolean internal) throws BusinessException {
+        // internal=true: envío interno (OPI), que solo puede salir de Devoluciones.
+        return ResponseEntity.ok(distributionService.previewDispatchStock(productId, colorId, size, internal));
     }
 
     @PostMapping("/validate-dispatch-stock")
