@@ -871,13 +871,22 @@ public class ProductDistributionService {
 
     public DispatchStockPreviewResponse previewDispatchStock(Long productId, Long colorId, String size)
             throws BusinessException {
+        return previewDispatchStock(productId, colorId, size, false);
+    }
+
+    /** {@code internal}: envío interno (OPI) cuenta solo Devoluciones; el resto, Devoluciones + Bodega PT. */
+    public DispatchStockPreviewResponse previewDispatchStock(Long productId, Long colorId, String size, boolean internal)
+            throws BusinessException {
         if (productId == null) {
             throw new BusinessException("Producto requerido.");
         }
         String sizeLabel = normalizeSize(size);
-        List<LocationEntity> warehouses = productInventoryService.getDispatchSourceWarehouses();
+        ProductInventoryService.DispatchSource source = internal
+                ? ProductInventoryService.DispatchSource.RETURNS_ONLY
+                : ProductInventoryService.DispatchSource.RETURNS_FIRST;
+        List<LocationEntity> warehouses = productInventoryService.getDispatchSourceWarehouses(source);
         BigDecimal total = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
-                productId, colorId, sizeLabel);
+                productId, colorId, sizeLabel, source);
         List<DispatchStockPreviewResponse.DispatchStockBreakdownRow> breakdown = new ArrayList<>();
         for (LocationEntity loc : warehouses) {
             if (loc == null) {
