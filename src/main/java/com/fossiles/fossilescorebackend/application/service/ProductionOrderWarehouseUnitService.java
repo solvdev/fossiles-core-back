@@ -172,7 +172,7 @@ public class ProductionOrderWarehouseUnitService {
         }).collect(Collectors.toList());
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public WarehouseWorkspaceResponse getLuisFelipeWorkspace(Long productionOrderId)
             throws ResourceNotFoundException, BusinessException {
         requireLuisFelipeOpv(productionOrderId);
@@ -220,7 +220,7 @@ public class ProductionOrderWarehouseUnitService {
         return updateUnitsReceipt(productionOrderId, WarehouseUnitReceiptRequest.builder().units(updates).build());
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public WarehouseWorkspaceResponse getWorkspace(Long productionOrderId) throws ResourceNotFoundException {
         ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));

@@ -206,7 +206,7 @@ public class ProductionOrderController {
     }
 
     @GetMapping("/{id}")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductionOrderResponse> getById(@PathVariable Long id) throws ResourceNotFoundException {
         ProductionOrderEntity entity = productionOrderRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
@@ -253,7 +253,7 @@ public class ProductionOrderController {
      * Envíos de producto: distribución vinculada (si aplica) + envíos directos OPI/OPCK/OPC.
      */
     @GetMapping("/{id}/shipments")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<List<ProductShipmentResponse>> getShipmentsForOrder(@PathVariable Long id)
             throws ResourceNotFoundException {
         productionOrderRepository.findById(id)
@@ -265,7 +265,7 @@ public class ProductionOrderController {
      * Crear o actualizar envío sin distribución (INTERNA / CLIENTE_KIOSKO / OPC cinchos).
      */
     @PostMapping("/{id}/shipments")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductShipmentResponse> createOrUpdateShipmentForOrder(
             @PathVariable Long id,
             @Valid @RequestBody ProductShipmentRequest request) throws ResourceNotFoundException, BusinessException {
@@ -277,7 +277,7 @@ public class ProductionOrderController {
      * Genera envío CONFIRMED desde ítems de la OP (solo CINCHOS / CINCHOS_FOSSILES / CINCHOS_MARCAS).
      */
     @PostMapping("/{id}/shipments/generate-from-order")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductShipmentResponse> generateShipmentFromOrder(
             @PathVariable Long id,
             @Valid @RequestBody com.fossiles.fossilescorebackend.application.dto.request.OpcShipmentGenerateRequest request)
@@ -289,7 +289,7 @@ public class ProductionOrderController {
      * Anula documento de envío OPV/OPI impreso sin registro product_shipment activo.
      */
     @PutMapping("/{id}/void-shipment-document")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductionOrderResponse> voidVendorShipmentDocument(@PathVariable Long id)
             throws ResourceNotFoundException, BusinessException {
         ProductionOrderEntity order = productDistributionService.voidVendorShipmentDocument(id);
@@ -571,7 +571,7 @@ public class ProductionOrderController {
     }
 
     @DeleteMapping("/{id}")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException {
         ProductionOrderEntity entity = productionOrderRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
@@ -705,7 +705,7 @@ public class ProductionOrderController {
      * Mark a customer shipment as dispatched (updates online sale status to ENVIADO).
      */
     @PutMapping("/{id}/dispatch-customer/{onlineSaleId}")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> dispatchCustomerShipment(
             @PathVariable Long id,
             @PathVariable Long onlineSaleId,
@@ -716,7 +716,7 @@ public class ProductionOrderController {
     }
 
     @PutMapping("/{id}/cancel-customer-dispatch/{onlineSaleId}")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<?> cancelCustomerDispatch(
             @PathVariable Long id,
             @PathVariable Long onlineSaleId,
@@ -759,7 +759,7 @@ public class ProductionOrderController {
     }
 
     @PutMapping("/{id}/warehouse-units/receipt")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> updateWarehouseUnitsReceipt(
             @PathVariable Long id,
             @RequestBody WarehouseUnitReceiptRequest request)
@@ -768,7 +768,7 @@ public class ProductionOrderController {
     }
 
     @PostMapping("/{id}/warehouse-receipt/close")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> closeWarehouseReceipt(@PathVariable Long id)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(productionOrderWarehouseUnitService.closeWarehouseReceipt(id));
@@ -777,7 +777,7 @@ public class ProductionOrderController {
     // ==================== MATERIAL CONSUMPTION ====================
 
     @PostMapping("/{id}/consume-materials")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> consumeMaterials(@PathVariable Long id)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(materialConsumptionService.consumeMaterialsForOrder(id));

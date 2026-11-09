@@ -42,7 +42,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
-@Transactional
+@Transactional(rollbackFor = Exception.class)
 public class OnlineSaleService {
 
     private final OnlineSaleRepository saleRepository;
@@ -659,7 +659,7 @@ public class OnlineSaleService {
      * Si hubo egreso de inventario (prepare/despacho), el stock regresa a bodega de devoluciones.
      * ENVIADO/ENTREGADO: use {@link #cancelDispatch} o {@link #markAsReturn}.
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public OnlineSaleResponse markAsVoid(Long id, String reason) throws ResourceNotFoundException, BusinessException {
         OnlineSaleEntity sale = saleRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Venta no encontrada con id: " + id));
@@ -695,7 +695,7 @@ public class OnlineSaleService {
      * Anula un despacho ENVIADO (OPL o directo): stock a bodega de devoluciones,
      * limpia marcas de piezas enviadas y deja la venta lista para volver a despachar.
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public OnlineSaleResponse cancelDispatch(Long id, String reason)
             throws ResourceNotFoundException, BusinessException {
         OnlineSaleEntity sale = saleRepository.findById(id)

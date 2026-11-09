@@ -52,6 +52,9 @@ public class ProductInventoryService {
     private final OnlineSaleReturnsWarehouseLocator returnsWarehouseLocator;
     private final KioskInventoryGuard kioskInventoryGuard;
 
+    @jakarta.persistence.PersistenceContext
+    private jakarta.persistence.EntityManager entityManager;
+
     // ========== PRODUCT INVENTORY LOCATION ==========
 
     /**
@@ -970,8 +973,22 @@ public class ProductInventoryService {
      * bodega se serializan en lugar de pisarse y perder una de las dos.
      */
     private Optional<ProductInventoryLocation> findRowForUpdate(Long productId, Long locationId, Long colorId) {
-        return productInventoryLocationRepository
+        Optional<ProductInventoryLocation> row = productInventoryLocationRepository
                 .findWithLockByProductIdAndLocationIdAndColorId(productId, locationId, colorId);
+        row.ifPresent(this::refreshUnderLock);
+        return row;
+    }
+
+    /**
+     * Si la fila ya se había leído en esta transacción (p. ej. getAvailableQuantity antes de descontar),
+     * Hibernate devuelve esa copia sin releerla aunque el SELECT ... FOR UPDATE haya esperado a otra
+     * transacción: se descontaba sobre la cantidad vieja y se perdía una de las dos salidas. Se vuelve
+     * a leer ya con el candado para que la validación y el descuento usen la cantidad real.
+     */
+    private void refreshUnderLock(ProductInventoryLocation row) {
+        if (entityManager != null && entityManager.contains(row)) {
+            entityManager.refresh(row, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+        }
     }
 
     private BigDecimal readQuantity(Long productId, Long locationId, Long colorId) {
