@@ -77,14 +77,34 @@ public class OnlineSaleService {
 
     // ─── CRUD ───────────────────────────────────────────────────────
 
+    /**
+     * Siguiente número de venta del mes de {@code saleDate} (como la columna «No.» del Excel de ventas: 1, 2, 3…
+     * y vuelve a 1 cada mes). Toma el mayor entre «ventas del mes + 1» y «número más alto del mes + 1»: así no repite
+     * aunque se haya borrado una venta, y el primer mes del cambio no choca con los números por día que ya existían.
+     */
+    String nextMonthlySaleNumber(LocalDate saleDate) {
+        LocalDate date = saleDate != null ? saleDate : com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime.today();
+        LocalDate start = date.withDayOfMonth(1);
+        LocalDate end = date.withDayOfMonth(date.lengthOfMonth());
+        List<String> numbers = saleRepository.findSaleNumbersBetween(start, end);
+        long max = 0;
+        for (String n : numbers) {
+            if (n == null) continue;
+            String t = n.trim();
+            if (!t.isEmpty() && t.length() < 10 && t.chars().allMatch(Character::isDigit)) {
+                max = Math.max(max, Long.parseLong(t));
+            }
+        }
+        return String.valueOf(Math.max(numbers.size(), max) + 1);
+    }
+
     public OnlineSaleResponse create(OnlineSaleRequest req) {
         OnlineSaleEntity entity = mapToEntity(new OnlineSaleEntity(), req);
         // Estado inicial siempre automático al crear desde formulario/API
         entity.setStatus("PENDIENTE");
 
-        // Generar número correlativo del día
-        long count = saleRepository.countBySaleDate(entity.getSaleDate()) + 1;
-        entity.setSaleNumber(String.valueOf(count));
+        // Número correlativo del mes (1, 2, 3… se reinicia cada mes)
+        entity.setSaleNumber(nextMonthlySaleNumber(entity.getSaleDate()));
         entity.setCreatedBy(securityUtil.getCurrentUserId());
 
         // Si vienen items, calcular totalAmount a partir de ellos
@@ -399,8 +419,7 @@ public class OnlineSaleService {
                 if (req.getSaleNumber() != null && !req.getSaleNumber().isBlank()) {
                     entity.setSaleNumber(req.getSaleNumber());
                 } else {
-                    long count = saleRepository.countBySaleDate(entity.getSaleDate()) + 1;
-                    entity.setSaleNumber(String.valueOf(count));
+                    entity.setSaleNumber(nextMonthlySaleNumber(entity.getSaleDate()));
                 }
 
                 // Establecer montos pre-calculados del CSV
@@ -938,9 +957,8 @@ public class OnlineSaleService {
 
         exchange.setCreatedBy(securityUtil.getCurrentUserId());
 
-        // Generar número correlativo del día (igual que create)
-        long count = saleRepository.countBySaleDate(exchange.getSaleDate()) + 1;
-        exchange.setSaleNumber(String.valueOf(count));
+        // Número correlativo del mes (igual que create)
+        exchange.setSaleNumber(nextMonthlySaleNumber(exchange.getSaleDate()));
 
         OnlineSaleEntity saved = saleRepository.save(exchange);
 
