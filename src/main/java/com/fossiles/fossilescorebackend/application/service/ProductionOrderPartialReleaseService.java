@@ -42,6 +42,7 @@ public class ProductionOrderPartialReleaseService {
     private final SecurityUtil securityUtil;
     private final ObjectMapper objectMapper;
     private final UserRepository userRepository;
+    private final LfPackingBoxLineRepository packingBoxLineRepository;
 
     public ProductionOrderPartialReleaseService(
             ProductionOrderPartialReleaseRepository releaseRepository,
@@ -56,7 +57,8 @@ public class ProductionOrderPartialReleaseService {
             @Lazy ProductDistributionService productDistributionService,
             SecurityUtil securityUtil,
             ObjectMapper objectMapper,
-            UserRepository userRepository) {
+            UserRepository userRepository,
+            LfPackingBoxLineRepository packingBoxLineRepository) {
         this.releaseRepository = releaseRepository;
         this.releaseLineRepository = releaseLineRepository;
         this.productionOrderRepository = productionOrderRepository;
@@ -70,6 +72,7 @@ public class ProductionOrderPartialReleaseService {
         this.securityUtil = securityUtil;
         this.objectMapper = objectMapper;
         this.userRepository = userRepository;
+        this.packingBoxLineRepository = packingBoxLineRepository;
     }
 
     public PartialReleaseListResponse listForOrder(Long productionOrderId) throws ResourceNotFoundException, BusinessException {
@@ -88,6 +91,7 @@ public class ProductionOrderPartialReleaseService {
                 .productionOrderCode(order.getCode())
                 .releases(releaseResponses)
                 .orderItemAvailability(buildAvailabilityRows(orderItems, releases, null))
+                .openBoxPieces((int) packingBoxLineRepository.totalPendingPieces(productionOrderId))
                 .build();
     }
 
@@ -362,16 +366,30 @@ public class ProductionOrderPartialReleaseService {
             Long excludeReleaseId) {
         Long orderId = orderItems.isEmpty() ? null : orderItems.get(0).getProductionOrderId();
         ShippedAllocation shipped = loadShippedAllocation(orderId);
+        BoxAllocation boxes = loadBoxAllocation(orderId);
         return orderItems.stream()
-                .map(item -> toAvailabilityRow(item, releases, excludeReleaseId, shipped))
+                .map(item -> toAvailabilityRow(item, releases, excludeReleaseId, shipped, boxes))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Disponibilidad por línea de la orden (pedido, liberado/enviado, en cajas y pendiente). Lo usa Bodega PT para
+     * armar cajas con la misma cuenta que el panel de liberación parcial del ERP.
+     */
+    @Transactional(readOnly = true)
+    public List<PartialReleaseLineResponse> availabilityRowsForOrder(Long productionOrderId) {
+        List<ProductionOrderItemEntity> orderItems = productionOrderItemRepository.findByProductionOrderId(productionOrderId);
+        List<ProductionOrderPartialReleaseEntity> releases =
+                releaseRepository.findByProductionOrderIdOrderBySequenceNumAsc(productionOrderId);
+        return orderItems.isEmpty() ? List.of() : buildAvailabilityRows(orderItems, releases, null);
     }
 
     private PartialReleaseLineResponse toAvailabilityRow(
             ProductionOrderItemEntity item,
             List<ProductionOrderPartialReleaseEntity> releases,
             Long excludeReleaseId) {
-        return toAvailabilityRow(item, releases, excludeReleaseId, loadShippedAllocation(item.getProductionOrderId()));
+        return toAvailabilityRow(item, releases, excludeReleaseId,
+                loadShippedAllocation(item.getProductionOrderId()), loadBoxAllocation(item.getProductionOrderId()));
     }
 
     /**
@@ -383,7 +401,8 @@ public class ProductionOrderPartialReleaseService {
             ProductionOrderItemEntity item,
             List<ProductionOrderPartialReleaseEntity> releases,
             Long excludeReleaseId,
-            ShippedAllocation shipped) {
+            ShippedAllocation shipped,
+            BoxAllocation boxes) {
         Map<String, Integer> orderedSizes = parseSizesMap(item.getSizesData());
         int orderedTotal = orderedSizes.isEmpty()
                 ? Math.max(0, item.getQuantity() != null ? item.getQuantity() : 0)
@@ -421,9 +440,15 @@ public class ProductionOrderPartialReleaseService {
             allocatedTotal = allocatedSizes.values().stream().mapToInt(Integer::intValue).sum();
         }
 
-        Map<String, Integer> pendingSizes = subtractMaps(orderedSizes, allocatedSizes);
+        // Cajas de bodega sin despachar: reservan piezas, así que el pendiente liberable las resta.
+        Map<String, Integer> boxSizes = boxes.forItem(item.getId());
+        int boxTotal = boxSizes.values().stream().mapToInt(Integer::intValue).sum();
+        Map<String, Integer> allocatedWithBoxes = new LinkedHashMap<>(allocatedSizes);
+        mergeAdd(allocatedWithBoxes, boxSizes);
+
+        Map<String, Integer> pendingSizes = subtractMaps(orderedSizes, allocatedWithBoxes);
         int pendingTotal = orderedSizes.isEmpty()
-                ? Math.max(0, orderedTotal - allocatedTotal)
+                ? Math.max(0, orderedTotal - allocatedTotal - boxTotal)
                 : pendingSizes.values().stream().mapToInt(Integer::intValue).sum();
 
         return PartialReleaseLineResponse.builder()
@@ -439,6 +464,8 @@ public class ProductionOrderPartialReleaseService {
                 .allocatedSizesInOtherReleases(allocatedSizes.isEmpty() ? null : allocatedSizes)
                 .pendingTotal(pendingTotal)
                 .pendingSizes(pendingSizes.isEmpty() ? null : pendingSizes)
+                .inOpenBoxes(boxTotal)
+                .inOpenBoxesSizes(boxSizes.isEmpty() ? null : new LinkedHashMap<>(boxSizes))
                 .build();
     }
 
@@ -931,6 +958,39 @@ public class ProductionOrderPartialReleaseService {
 
     private static String productColorKey(Long productId, Long colorId) {
         return (productId == null ? "null" : productId) + ":" + (colorId == null ? "null" : colorId);
+    }
+
+    /** Piezas en cajas abiertas/cerradas de la orden: línea → talla → cantidad (talla vacía = línea sin tallas). */
+    private BoxAllocation loadBoxAllocation(Long productionOrderId) {
+        if (productionOrderId == null) {
+            return BoxAllocation.empty();
+        }
+        Map<Long, Map<String, Integer>> byItem = new HashMap<>();
+        for (Object[] row : packingBoxLineRepository.sumPendingByOrder(productionOrderId)) {
+            Long itemId = ((Number) row[0]).longValue();
+            String sizeKey = row[1] == null ? "" : ProductInventorySizesJson.normalizeKey(String.valueOf(row[1]));
+            int qty = ((Number) row[2]).intValue();
+            if (qty > 0) {
+                byItem.computeIfAbsent(itemId, k -> new LinkedHashMap<>()).merge(sizeKey, qty, Integer::sum);
+            }
+        }
+        return new BoxAllocation(byItem);
+    }
+
+    private static final class BoxAllocation {
+        private final Map<Long, Map<String, Integer>> byItem;
+
+        private BoxAllocation(Map<Long, Map<String, Integer>> byItem) {
+            this.byItem = byItem;
+        }
+
+        static BoxAllocation empty() {
+            return new BoxAllocation(Map.of());
+        }
+
+        Map<String, Integer> forItem(Long itemId) {
+            return byItem.getOrDefault(itemId, Map.of());
+        }
     }
 
     private static final class ShippedAllocation {

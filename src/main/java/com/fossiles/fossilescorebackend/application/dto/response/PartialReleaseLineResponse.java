@@ -27,4 +27,7 @@ public class PartialReleaseLineResponse {
     private Map<String, Integer> allocatedSizesInOtherReleases;
     private Integer pendingTotal;
     private Map<String, Integer> pendingSizes;
+    /** Piezas de esta línea en cajas de bodega sin despachar (ya restadas del pendiente). */
+    private Integer inOpenBoxes;
+    private Map<String, Integer> inOpenBoxesSizes;
 }

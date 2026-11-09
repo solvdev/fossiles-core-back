@@ -16,4 +16,6 @@ public class PartialReleaseListResponse {
     private String productionOrderCode;
     private List<PartialReleaseResponse> releases;
     private List<PartialReleaseLineResponse> orderItemAvailability;
+    /** Piezas de la orden en cajas de bodega (abiertas o cerradas) sin despachar; el pendiente ya las resta. */
+    private Integer openBoxPieces;
 }

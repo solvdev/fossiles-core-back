@@ -67,6 +67,8 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
 
     List<ProductShipmentEntity> findByProductionOrderId(Long productionOrderId);
 
+    List<ProductShipmentEntity> findByProductionOrderIdIn(java.util.Collection<Long> productionOrderIds);
+
     List<ProductShipmentEntity> findByProductionOrderIdAndLocationIdOrderByIdAsc(Long productionOrderId, Long locationId);
 
     List<ProductShipmentEntity> findByProductionOrderIdAndLocationIdIsNullOrderByIdAsc(Long productionOrderId);
