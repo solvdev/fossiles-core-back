@@ -63,6 +63,10 @@ public interface OnlineSaleRepository extends JpaRepository<OnlineSaleEntity, Lo
     List<OnlineSaleEntity> findEligibleForProductionByDateRange(@Param("startDate") LocalDate startDate,
                                                                  @Param("endDate") LocalDate endDate);
 
+    /** Números de venta de un rango (para el correlativo mensual). */
+    @Query("SELECT s.saleNumber FROM OnlineSaleEntity s WHERE s.saleDate BETWEEN :start AND :end")
+    List<String> findSaleNumbersBetween(@Param("start") LocalDate start, @Param("end") LocalDate end);
+
     /** Contar ventas del día para generar número correlativo */
     @Query("SELECT COUNT(s) FROM OnlineSaleEntity s WHERE s.saleDate = :date")
     long countBySaleDate(@Param("date") LocalDate date);

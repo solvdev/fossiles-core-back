@@ -64,14 +64,6 @@ public final class OnlineSaleLedgerExcelExporter {
 
     private static void sales(XSSFWorkbook wb, Styles st, String period, List<LedgerRow> rows) {
         Sheet sh = wb.createSheet("Ventas");
-        Row legend = sh.createRow(0);
-        int c = 4;
-        for (Tone tone : new Tone[]{Tone.MOTO, Tone.GUATEX, Tone.FORZA, Tone.RETURN, Tone.VOID, Tone.EXCHANGE}) {
-            Cell cell = legend.createCell(c);
-            cell.setCellValue(tone.label);
-            cell.setCellStyle(st.legend(tone));
-            c += 2;
-        }
         Row title = sh.createRow(1);
         Cell t = title.createCell(0);
         t.setCellValue("VENTAS EN LÍNEA — " + period);
@@ -89,7 +81,7 @@ public final class OnlineSaleLedgerExcelExporter {
         int r = 3;
         int n = 1;
         for (LedgerRow row : rows) {
-            Tone tone = Tone.of(row);
+            Tone tone = Tone.NONE; // Excel en limpio: sin color por transporte ni estado
             Row x = sh.createRow(r);
             int excelRow = r + 1;
             num(x, 0, n, st.text(tone));
@@ -484,15 +476,13 @@ public final class OnlineSaleLedgerExcelExporter {
             XSSFFont big = wb.createFont();
             big.setBold(true);
             big.setFontHeightInPoints((short) 13);
-            XSSFFont white = wb.createFont();
-            white.setBold(true);
-            white.setColor(IndexedColors.WHITE.getIndex());
 
             title = wb.createCellStyle();
             title.setFont(big);
 
-            head = header(white, "0B6B6F");
-            headLocked = header(white, "595959");
+            // Encabezados en limpio: negrita, sin relleno de color.
+            head = header(bold, null);
+            headLocked = header(bold, null);
 
             seller = wb.createCellStyle();
             seller.setFont(big);
