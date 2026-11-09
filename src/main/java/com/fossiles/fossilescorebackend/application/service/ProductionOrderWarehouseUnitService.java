@@ -709,9 +709,11 @@ public class ProductionOrderWarehouseUnitService {
         // La pieza de una venta en línea ya anulada o devuelta no tiene a quién despacharse: es stock
         // libre que vuelve por una anulación, así que entra a Devoluciones.
         boolean closedSale = isClosedOnlineSale(item.getOnlineSaleId());
+        // OPI (orden interna): la pieza se hizo para un colaborador y el ENVI interno sale solo de Devoluciones.
+        boolean internalOpi = "INTERNA".equalsIgnoreCase(po.getOrderType() == null ? "" : po.getOrderType().trim());
         LocationEntity target = isReserveOrder(po)
                 ? productInventoryService.getOrCreateReserveLocation()
-                : (closedSale ? returnsWarehouseLocator.find().orElse(bodega) : bodega);
+                : ((closedSale || internalOpi) ? returnsWarehouseLocator.find().orElse(bodega) : bodega);
         boolean alreadyRecorded = productInventoryService.hasProductKardexMovement(
                 "PRODUCTION_ORDER_WH_UNIT",
                 unit.getId(),
@@ -734,7 +736,8 @@ public class ProductionOrderWarehouseUnitService {
                     "PRODUCTION_ORDER_WH_UNIT",
                     unit.getId(),
                     receiptRefNumber,
-                    closedSale ? "Ingreso pieza de venta anulada a Devoluciones" : "Ingreso pieza bodega PT",
+                    closedSale ? "Ingreso pieza de venta anulada a Devoluciones"
+                            : (internalOpi ? "Ingreso pieza OPI a Devoluciones" : "Ingreso pieza bodega PT"),
                     sizeKey != null && !sizeKey.isBlank() ? sizeKey : null
             );
             BigDecimal after = productInventoryService

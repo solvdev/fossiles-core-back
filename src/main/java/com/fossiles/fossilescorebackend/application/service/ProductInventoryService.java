@@ -92,7 +92,9 @@ public class ProductInventoryService {
      */
     public enum DispatchSource {
         RETURNS_FIRST,
-        PT_FIRST
+        PT_FIRST,
+        /** Solo Devoluciones: las OPI (envíos internos a colaboradores) no consumen Bodega PT. */
+        RETURNS_ONLY
     }
 
     /**
@@ -107,6 +109,12 @@ public class ProductInventoryService {
     public List<LocationEntity> getDispatchSourceWarehouses(DispatchSource source) throws BusinessException {
         List<LocationEntity> warehouses = new ArrayList<>();
         returnsWarehouseLocator.find().ifPresent(warehouses::add);
+        if (source == DispatchSource.RETURNS_ONLY) {
+            if (warehouses.isEmpty()) {
+                throw new BusinessException("No existe una ubicacion configurada para Devoluciones.");
+            }
+            return warehouses;
+        }
         LocationEntity bodegaPt = findBodegaPtLocation();
         if (bodegaPt == null) {
             throw new BusinessException("No existe una ubicacion configurada para BODEGA_PT.");
@@ -126,8 +134,14 @@ public class ProductInventoryService {
     @Transactional(readOnly = true)
     public BigDecimal getAvailableQuantityAcrossDispatchWarehouses(
             Long productId, Long colorId, String sizeLabel) throws BusinessException {
+        return getAvailableQuantityAcrossDispatchWarehouses(productId, colorId, sizeLabel, DispatchSource.RETURNS_FIRST);
+    }
+
+    @Transactional(readOnly = true)
+    public BigDecimal getAvailableQuantityAcrossDispatchWarehouses(
+            Long productId, Long colorId, String sizeLabel, DispatchSource source) throws BusinessException {
         BigDecimal total = BigDecimal.ZERO;
-        for (LocationEntity loc : getDispatchSourceWarehouses()) {
+        for (LocationEntity loc : getDispatchSourceWarehouses(source)) {
             total = total.add(getAvailableQuantity(productId, loc.getId(), colorId, sizeLabel));
         }
         return total;

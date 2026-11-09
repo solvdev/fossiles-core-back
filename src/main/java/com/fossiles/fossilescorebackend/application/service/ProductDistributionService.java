@@ -609,7 +609,7 @@ public class ProductDistributionService {
         if (normalizedProducts.isEmpty()) {
             throw new BusinessException("Debe incluir al menos un producto con cantidad.");
         }
-        assertDispatchStockAvailable(normalizedProducts);
+        assertDispatchStockAvailable(normalizedProducts, ProductInventoryService.DispatchSource.RETURNS_ONLY);
 
         String normalizedRequestType = normalizeInternalRequestType(requestType);
         ResolvedInternalDiscount discount = resolveInternalDiscount(
@@ -657,7 +657,7 @@ public class ProductDistributionService {
         if (normalized.isEmpty()) {
             throw new BusinessException("Debe incluir al menos un producto con cantidad.");
         }
-        return collectDispatchStockShortages(normalized);
+        return collectDispatchStockLines(normalized, true, ProductInventoryService.DispatchSource.RETURNS_ONLY);
     }
 
     /**
@@ -900,9 +900,15 @@ public class ProductDistributionService {
 
     private void assertDispatchStockAvailable(
             List<ProductShipmentRequest.ProductShipmentDetailRequest> products) throws BusinessException {
-        List<DispatchStockShortageResponse> shortages = collectDispatchStockShortages(products);
+        assertDispatchStockAvailable(products, ProductInventoryService.DispatchSource.RETURNS_FIRST);
+    }
+
+    private void assertDispatchStockAvailable(
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> products,
+            ProductInventoryService.DispatchSource source) throws BusinessException {
+        List<DispatchStockShortageResponse> shortages = collectDispatchStockLines(products, true, source);
         if (!shortages.isEmpty()) {
-            throw new BusinessException(formatDispatchStockShortageMessage(shortages));
+            throw new BusinessException(formatDispatchStockShortageMessage(shortages, source));
         }
     }
 
@@ -917,17 +923,13 @@ public class ProductDistributionService {
         if (normalized.isEmpty()) {
             throw new BusinessException("Debe incluir al menos un producto con cantidad.");
         }
-        return collectDispatchStockLines(normalized, false);
-    }
-
-    private List<DispatchStockShortageResponse> collectDispatchStockShortages(
-            List<ProductShipmentRequest.ProductShipmentDetailRequest> products) throws BusinessException {
-        return collectDispatchStockLines(products, true);
+        return collectDispatchStockLines(normalized, false, ProductInventoryService.DispatchSource.RETURNS_ONLY);
     }
 
     private List<DispatchStockShortageResponse> collectDispatchStockLines(
             List<ProductShipmentRequest.ProductShipmentDetailRequest> products,
-            boolean onlyShortages) throws BusinessException {
+            boolean onlyShortages,
+            ProductInventoryService.DispatchSource source) throws BusinessException {
         List<DispatchStockShortageResponse> shortages = new ArrayList<>();
         for (ProductShipmentRequest.ProductShipmentDetailRequest detail : products) {
             BigDecimal stillNeeded = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
@@ -939,7 +941,7 @@ public class ProductDistributionService {
             }
             String sizeLabel = normalizeSize(detail.getSize());
             BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
-                    detail.getProductId(), detail.getColorId(), sizeLabel);
+                    detail.getProductId(), detail.getColorId(), sizeLabel, source);
             boolean hasShortage = availableTotal.compareTo(stillNeeded) < 0;
             if (hasShortage || !onlyShortages) {
                 ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
@@ -963,8 +965,15 @@ public class ProductDistributionService {
 
     private String formatDispatchStockShortageMessage(List<DispatchStockShortageResponse> shortages)
             throws BusinessException {
+        return formatDispatchStockShortageMessage(shortages, ProductInventoryService.DispatchSource.RETURNS_FIRST);
+    }
+
+    private String formatDispatchStockShortageMessage(
+            List<DispatchStockShortageResponse> shortages,
+            ProductInventoryService.DispatchSource source) throws BusinessException {
+        boolean returnsOnly = source == ProductInventoryService.DispatchSource.RETURNS_ONLY;
         List<String> lines = new ArrayList<>();
-        List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
+        List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses(source);
         for (DispatchStockShortageResponse shortage : shortages) {
             ProductEntity product = productRepository.findById(shortage.getProductId()).orElse(null);
             String productName = product != null
@@ -976,10 +985,11 @@ public class ProductDistributionService {
                     shortage.getSize(),
                     dispatchWarehouses);
             lines.add(productName + ": disponible " + shortage.getAvailableQuantity()
-                    + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido "
-                    + shortage.getRequiredQuantity());
+                    + (returnsOnly ? " (Devoluciones: " : " (Devoluciones + Bodega PT: ") + stockBreakdown
+                    + "), requerido " + shortage.getRequiredQuantity());
         }
-        return "Stock insuficiente en Devoluciones / Bodega PT:\n• " + String.join("\n• ", lines);
+        return (returnsOnly ? "Stock insuficiente en Devoluciones:\n• " : "Stock insuficiente en Devoluciones / Bodega PT:\n• ")
+                + String.join("\n• ", lines);
     }
 
     private String buildStandaloneInternalShipmentNotes(StandaloneInternalShipmentRequest request, String recipient) {
@@ -1761,7 +1771,7 @@ public class ProductDistributionService {
             reverseSentShipmentDispatchInventory(shipment);
             assertDispatchStockAvailable(normalized.stream()
                     .filter(line -> !skipsWarehouseForLine(shipment, line.getProductId()))
-                    .collect(Collectors.toList()));
+                    .collect(Collectors.toList()), resolveDispatchSource(shipment));
         }
 
         // La cantidad sugerida por la reposición se conserva al editar líneas (sirve para medir los ajustes).
@@ -1880,6 +1890,10 @@ public class ProductDistributionService {
      * sin OP consumen Devoluciones primero.
      */
     private ProductInventoryService.DispatchSource resolveDispatchSource(ProductShipmentEntity shipment) {
+        // ENVI interno (OPI): sale solo de Devoluciones; si no hay, se produce con una OPI.
+        if (isStandaloneInternalEnviShipment(shipment)) {
+            return ProductInventoryService.DispatchSource.RETURNS_ONLY;
+        }
         if (shipment == null || shipment.getDistributionId() != null || shipment.getProductionOrderId() == null) {
             return ProductInventoryService.DispatchSource.RETURNS_FIRST;
         }
@@ -2387,7 +2401,8 @@ public class ProductDistributionService {
 
         if (!SKIP_DISPATCH_STOCK_CHECK) {
             // Pre-validar stock: Devoluciones primero, luego Bodega PT (total combinado).
-            List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
+            ProductInventoryService.DispatchSource sendSource = resolveDispatchSource(shipment);
+            List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses(sendSource);
             List<String> shortages = new java.util.ArrayList<>();
             for (ProductShipmentDetailEntity detail : details) {
                 BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
@@ -2405,7 +2420,7 @@ public class ProductDistributionService {
                 }
 
                 BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
-                        detail.getProductId(), detail.getColorId(), sizeLabel);
+                        detail.getProductId(), detail.getColorId(), sizeLabel, sendSource);
                 if (availableTotal.compareTo(stillNeeded) < 0) {
                     ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
                     String productName = product != null ? product.getCode() + " - " + product.getName() : "Producto #" + detail.getProductId();
@@ -2417,11 +2432,15 @@ public class ProductDistributionService {
                     String stockBreakdown = buildDispatchStockBreakdown(
                             detail.getProductId(), detail.getColorId(), sizeLabel, dispatchWarehouses);
                     shortages.add(productName + colorName + ": disponible " + availableTotal
-                            + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido " + stillNeeded);
+                            + (sendSource == ProductInventoryService.DispatchSource.RETURNS_ONLY
+                            ? " (Devoluciones: " : " (Devoluciones + Bodega PT: ")
+                            + stockBreakdown + "), requerido " + stillNeeded);
                 }
             }
             if (!shortages.isEmpty()) {
-                throw new BusinessException("Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• "
+                throw new BusinessException((sendSource == ProductInventoryService.DispatchSource.RETURNS_ONLY
+                        ? "Stock insuficiente en Devoluciones para enviar:\n• "
+                        : "Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• ")
                         + String.join("\n• ", shortages));
             }
         }

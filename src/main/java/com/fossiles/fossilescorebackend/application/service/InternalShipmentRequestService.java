@@ -91,14 +91,14 @@ public class InternalShipmentRequestService {
         return toResponse(entity);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestResponse createRequest(InternalShipmentRequestCreateRequest request)
             throws BusinessException, ResourceNotFoundException {
         accessGuard.assertCanCreateRequest();
         return createRequestInternal(request);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestResponse createRequestFromLegacy(StandaloneInternalShipmentRequest request)
             throws BusinessException, ResourceNotFoundException {
         accessGuard.assertCanCreateRequest();
@@ -114,7 +114,7 @@ public class InternalShipmentRequestService {
         return createRequestInternal(mapped);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestResponse approve(Long id)
             throws BusinessException, ResourceNotFoundException {
         accessGuard.assertCanApproveOrReject();
@@ -129,8 +129,8 @@ public class InternalShipmentRequestService {
         }
         List<ProductShipmentRequest.ProductShipmentDetailRequest> products = toProductLines(entity);
 
-        // El envío solo se autoriza cuando hay stock en Devoluciones / Bodega PT. Si falta, Contabilidad
-        // primero autoriza la producción del faltante (authorizeProduction) y espera el ingreso a Bodega PT.
+        // El envío solo se autoriza cuando hay stock en Devoluciones. Si falta, Contabilidad
+        // primero autoriza la producción del faltante (authorizeProduction) y espera el ingreso a Devoluciones.
         List<DispatchStockShortageResponse> shortages =
                 productDistributionService.computeDispatchStockShortages(products);
         ProductionOrderEntity activeOpi = findActiveLinkedOpi(entity);
@@ -138,7 +138,7 @@ public class InternalShipmentRequestService {
             String detail = formatShortageSummary(shortages);
             if (activeOpi == null) {
                 throw new BusinessException(
-                        "No hay stock suficiente en Devoluciones / Bodega PT. "
+                        "No hay stock suficiente en Devoluciones. "
                                 + "Autorice primero la producción del faltante.\n" + detail);
             }
             String opiRef = activeOpi.getCode() != null ? activeOpi.getCode() : "OPI #" + activeOpi.getId();
@@ -147,7 +147,7 @@ public class InternalShipmentRequestService {
                         "Debe autorizar la producción de " + opiRef + " antes de autorizar el envío.\n" + detail);
             }
             throw new BusinessException(
-                    "Aún no hay stock suficiente en Devoluciones / Bodega PT. Complete la orden " + opiRef
+                    "Aún no hay stock suficiente en Devoluciones. Complete la orden " + opiRef
                             + " e ingrese el producto terminado antes de autorizar el envío.\n" + detail);
         }
         if (activeOpi != null && "DRAFT".equalsIgnoreCase(safe(activeOpi.getStatus()))) {
@@ -176,7 +176,7 @@ public class InternalShipmentRequestService {
         return toResponse(entity);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestResponse reject(Long id, String reason)
             throws BusinessException, ResourceNotFoundException {
         accessGuard.assertCanApproveOrReject();
@@ -198,7 +198,7 @@ public class InternalShipmentRequestService {
         return getById(id);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestResponse authorizeProduction(Long id)
             throws BusinessException, ResourceNotFoundException {
         accessGuard.assertCanApproveOrReject();
@@ -218,7 +218,7 @@ public class InternalShipmentRequestService {
                     productDistributionService.computeDispatchStockShortages(toProductLines(entity));
             if (shortages.isEmpty()) {
                 throw new BusinessException(
-                        "Hay stock suficiente en Devoluciones / Bodega PT; no hace falta producir. "
+                        "Hay stock suficiente en Devoluciones; no hace falta producir. "
                                 + "Autorice el envío.");
             }
             entity.setProductionOrderId(createOpiForShortages(entity, shortages));
@@ -252,7 +252,7 @@ public class InternalShipmentRequestService {
         return toResponse(entity);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestResponse generateOpi(Long id)
             throws BusinessException, ResourceNotFoundException {
         accessGuard.assertCanApproveOrReject();
@@ -265,7 +265,7 @@ public class InternalShipmentRequestService {
         return toResponse(entity);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestResponse generateOpiByShipment(Long shipmentId)
             throws BusinessException, ResourceNotFoundException {
         if (shipmentId == null) {
@@ -281,7 +281,7 @@ public class InternalShipmentRequestService {
     /**
      * Crea solicitud tipo OPI vinculada a una orden INTERNA recién registrada (estado DRAFT).
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestEntity createRequestForManualOpi(
             ProductionOrderEntity order,
             List<ProductionOrderItemEntity> items) throws BusinessException {
@@ -477,7 +477,7 @@ public class InternalShipmentRequestService {
         String recipient = request.getRecipientName() == null ? "Colaborador" : request.getRecipientName().trim();
         ProductionOrderEntity savedOrder = createDraftInternaOrder(
                 request,
-                "OPI generada por faltante de stock PT/Devoluciones. "
+                "OPI generada por faltante de stock en Devoluciones. "
                         + "Solicitud ENVI #" + request.getId() + " (" + requestTypeLabel + "). "
                         + "Colaborador: " + recipient + ".");
 

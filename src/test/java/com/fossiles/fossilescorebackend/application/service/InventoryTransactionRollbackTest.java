@@ -22,7 +22,9 @@ class InventoryTransactionRollbackTest {
             OnlineSaleService.class,
             OnlineSaleProductionOrderService.class,
             CustomerShipmentDispatchService.class,
-            ProductionOrderWarehouseUnitService.class);
+            ProductionOrderWarehouseUnitService.class,
+            InternalShipmentRequestService.class,
+            InternalShipmentRequestSlipService.class);
 
     @Test
     void everyWritingTransactionRollsBackOnAnyException() {
