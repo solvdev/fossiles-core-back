@@ -511,7 +511,7 @@ public class OnlineSaleService {
      * Incrementa stock en la ubicación de devoluciones y crea registros de historial / documento imprimible.
      */
     public OnlineSaleResponse markAsReturn(Long id, String reason, String itemCondition) throws ResourceNotFoundException, BusinessException {
-        OnlineSaleEntity sale = saleRepository.findById(id)
+        OnlineSaleEntity sale = saleRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Venta no encontrada con id: " + id));
 
         if (!"ENVIADO".equals(sale.getStatus()) && !"ENTREGADO".equals(sale.getStatus())) {
@@ -661,7 +661,7 @@ public class OnlineSaleService {
      */
     @Transactional(rollbackFor = Exception.class)
     public OnlineSaleResponse markAsVoid(Long id, String reason) throws ResourceNotFoundException, BusinessException {
-        OnlineSaleEntity sale = saleRepository.findById(id)
+        OnlineSaleEntity sale = saleRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Venta no encontrada con id: " + id));
 
         if ("DEVOLUCION".equals(sale.getStatus())) {
@@ -698,7 +698,7 @@ public class OnlineSaleService {
     @Transactional(rollbackFor = Exception.class)
     public OnlineSaleResponse cancelDispatch(Long id, String reason)
             throws ResourceNotFoundException, BusinessException {
-        OnlineSaleEntity sale = saleRepository.findById(id)
+        OnlineSaleEntity sale = saleRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Venta no encontrada con id: " + id));
 
         if (!"ENVIADO".equals(sale.getStatus())) {
@@ -876,7 +876,7 @@ public class OnlineSaleService {
     @Transactional(rollbackFor = Exception.class)
     public OnlineSaleResponse createExchange(Long originalOnlineSaleId, OnlineSaleExchangeRequest req)
             throws ResourceNotFoundException, BusinessException {
-        OnlineSaleEntity original = saleRepository.findById(originalOnlineSaleId)
+        OnlineSaleEntity original = saleRepository.findByIdForUpdate(originalOnlineSaleId)
                 .orElseThrow(() -> new ResourceNotFoundException("Online Sale", originalOnlineSaleId));
 
         String originalStatus = original.getStatus() == null ? "" : original.getStatus().trim();

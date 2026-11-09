@@ -43,7 +43,7 @@ class CustomerShipmentDispatchGuideWarningTest {
                 .guideNumber(guide)
                 .shipmentNumber("ENVL-09999")
                 .build();
-        when(onlineSaleRepository.findById(10L)).thenReturn(Optional.of(sale));
+        when(onlineSaleRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(sale));
         return sale;
     }
 

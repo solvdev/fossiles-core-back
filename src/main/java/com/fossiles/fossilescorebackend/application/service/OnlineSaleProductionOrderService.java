@@ -156,8 +156,11 @@ public class OnlineSaleProductionOrderService {
             throw new BusinessException("Debe seleccionar al menos una venta");
         }
 
-        List<OnlineSaleEntity> sales = onlineSaleRepository.findAllById(saleIds);
-        if (sales.size() != saleIds.size()) {
+        List<OnlineSaleEntity> sales = saleIds.stream().sorted().distinct()
+                .map(onlineSaleRepository::findByIdForUpdate)
+                .filter(java.util.Optional::isPresent).map(java.util.Optional::get)
+                .collect(java.util.stream.Collectors.toList());
+        if (sales.size() != saleIds.stream().distinct().count()) {
             throw new BusinessException("Una o más ventas no existen");
         }
 
@@ -451,7 +454,7 @@ public class OnlineSaleProductionOrderService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> prepareDirectSaleFromInventory(long onlineSaleId) throws BusinessException {
-        OnlineSaleEntity sale = onlineSaleRepository.findById(onlineSaleId)
+        OnlineSaleEntity sale = onlineSaleRepository.findByIdForUpdate(onlineSaleId)
                 .orElseThrow(() -> new BusinessException("Venta no encontrada: " + onlineSaleId));
 
         if (!sale.isPaid()) {
@@ -856,7 +859,7 @@ public class OnlineSaleProductionOrderService {
             throw new BusinessException("Debe enviar al menos una resolucion de item");
         }
 
-        OnlineSaleEntity sale = onlineSaleRepository.findById(saleId)
+        OnlineSaleEntity sale = onlineSaleRepository.findByIdForUpdate(saleId)
                 .orElseThrow(() -> new BusinessException("Venta no encontrada: " + saleId));
 
         if (Boolean.TRUE.equals(sale.getInProductionOrder())) {

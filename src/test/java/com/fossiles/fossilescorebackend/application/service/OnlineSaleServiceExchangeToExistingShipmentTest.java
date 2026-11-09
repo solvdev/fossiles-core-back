@@ -94,7 +94,7 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
     void createExchange_withTarget_addsZeroPriceItemsToExistingShipment_withoutCreatingNewSale() throws Exception {
         OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
         OnlineSaleEntity target = sale(2L, "ENVIADO", "ENVL-00002"); // envío ya despachado: se permite
-        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(saleRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(original));
         when(saleRepository.findById(2L)).thenReturn(Optional.of(target));
         when(itemRepository.save(any(OnlineSaleItemEntity.class))).thenAnswer(i -> i.getArgument(0));
         when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
@@ -132,7 +132,7 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
     void createExchange_withReplacementArticle_returnsOriginalButShipsTheOtherProduct() throws Exception {
         OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
         OnlineSaleEntity target = sale(2L, "PENDIENTE", "ENVL-00002");
-        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(saleRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(original));
         when(saleRepository.findById(2L)).thenReturn(Optional.of(target));
         when(itemRepository.save(any(OnlineSaleItemEntity.class))).thenAnswer(i -> i.getArgument(0));
         when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
@@ -169,7 +169,7 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
     void createExchange_whenTargetShipmentAlreadyHasTheProduct_onlyRegistersTheReturn() throws Exception {
         OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
         OnlineSaleEntity target = sale(2L, "ENVIADO", "ENVL-00002"); // ya lleva el producto nuevo
-        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(saleRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(original));
         when(saleRepository.findById(2L)).thenReturn(Optional.of(target));
         when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
         when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
@@ -216,7 +216,7 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
     @Test
     void createExchange_noShipmentLineWithoutSentProduct_isRejected() {
         OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
-        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(saleRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(original));
         when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
         when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
 
@@ -235,7 +235,7 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
     void createExchange_noShipmentLineWithoutTarget_isRejected() {
         OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
         when(productRepository.existsById(55L)).thenReturn(true);
-        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(saleRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(original));
         when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
         when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
 
@@ -253,7 +253,7 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
     @Test
     void createExchange_withUnknownReplacementArticle_isRejected() {
         OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
-        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(saleRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(original));
         when(itemRepository.findByOnlineSaleIdOrderByIdAsc(1L)).thenReturn(List.of(soldItem(1L)));
         when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
         when(productRepository.existsById(99L)).thenReturn(false);
@@ -275,7 +275,7 @@ class OnlineSaleServiceExchangeToExistingShipmentTest {
         when(onlineSaleReturnLineRepository.findByOnlineSaleId(1L)).thenReturn(List.of());
         OnlineSaleEntity original = sale(1L, "ENVIADO", "ENVL-00001");
         OnlineSaleEntity target = sale(2L, "ANULADA", "ENVL-00002");
-        when(saleRepository.findById(1L)).thenReturn(Optional.of(original));
+        when(saleRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(original));
         when(saleRepository.findById(2L)).thenReturn(Optional.of(target));
 
         assertThatThrownBy(() -> service.createExchange(1L, request(2L)))

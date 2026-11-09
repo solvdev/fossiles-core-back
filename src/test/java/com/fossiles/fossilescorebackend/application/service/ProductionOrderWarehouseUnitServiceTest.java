@@ -318,6 +318,51 @@ class ProductionOrderWarehouseUnitServiceTest {
     }
 
     @Test
+    void pieceReceivedAfterItsSaleWasDispatched_doesNotStayInPt() throws Exception {
+        OnlineSaleEntity sale = onlineSaleRepository.save(OnlineSaleEntity.builder()
+                .saleNumber("V-TEST-LATE-PT")
+                .customerName("Cliente Despacho Antes")
+                .status("PRODUCIDO")
+                .saleDate(LocalDate.now())
+                .inProductionOrder(true)
+                .build());
+        ProductionOrderEntity po = productionOrderRepository.save(ProductionOrderEntity.builder()
+                .code("OP-WH-LATE")
+                .orderType("VENTA_EN_LINEA")
+                .status("IN_PROGRESS")
+                .startDate(LocalDate.now())
+                .build());
+        productionOrderItemRepository.save(ProductionOrderItemEntity.builder()
+                .productionOrderId(po.getId())
+                .productId(product.getId())
+                .colorId(color.getId())
+                .onlineSaleId(sale.getId())
+                .quantity(2)
+                .warehouseReceivedQty(0)
+                .build());
+        WarehouseWorkspaceResponse workspace = warehouseUnitService.getWorkspace(po.getId());
+        BigDecimal before = stockAtPt();
+
+        // El despacho no espera la recepción en bodega: la venta ya salió antes de recibir las piezas.
+        customerShipmentDispatchService.dispatchCustomerShipment(po.getId(), sale.getId(), Map.of());
+        warehouseUnitService.updateUnitsReceipt(po.getId(), WarehouseUnitReceiptRequest.builder()
+                .units(workspace.getUnits().stream()
+                        .map(u -> WarehouseUnitReceiptRequest.UnitUpdate.builder()
+                                .unitId(u.getId())
+                                .receiptStatus("RECEIVED")
+                                .build())
+                        .collect(Collectors.toList()))
+                .build());
+
+        // Entran y salen en el acto: Bodega PT no se queda con piezas que ya van con el cliente.
+        assertThat(stockAtPt()).isEqualByComparingTo(before);
+        assertThat(kardexRepository.findByReferenceTypeAndReferenceId(
+                ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH, sale.getId())).hasSize(2);
+        assertThat(unitRepository.findByProductionOrderIdOrderByProductionOrderItemIdAscSizeKeyAscUnitSeqAsc(po.getId()))
+                .allSatisfy(u -> assertThat(u.getShippedAt()).isNotNull());
+    }
+
+    @Test
     void dispatchOplReceivedUnits_decrementsPtByExactQty() throws Exception {
         OnlineSaleEntity sale = onlineSaleRepository.save(OnlineSaleEntity.builder()
                 .saleNumber("V-TEST-PT-OUT")

@@ -1,16 +1,27 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface OnlineSaleRepository extends JpaRepository<OnlineSaleEntity, Long> {
+
+    /**
+     * Toma la venta con bloqueo de escritura: anular, devolver, anular envío o despachar dos veces a la vez
+     * (doble clic) se serializan y la segunda ve el estado ya cambiado, en vez de devolver la pieza dos veces.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT s FROM OnlineSaleEntity s WHERE s.id = :id")
+    Optional<OnlineSaleEntity> findByIdForUpdate(@Param("id") Long id);
 
     List<OnlineSaleEntity> findBySaleDateOrderByIdAsc(LocalDate saleDate);
 

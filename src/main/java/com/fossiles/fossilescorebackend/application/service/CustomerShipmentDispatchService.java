@@ -43,7 +43,7 @@ public class CustomerShipmentDispatchService {
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> dispatchDirectOnlineSale(long onlineSaleId, Map<String, String> body)
             throws ResourceNotFoundException, BusinessException {
-        OnlineSaleEntity sale = onlineSaleRepository.findById(onlineSaleId)
+        OnlineSaleEntity sale = onlineSaleRepository.findByIdForUpdate(onlineSaleId)
                 .orElseThrow(() -> new ResourceNotFoundException("Online Sale", onlineSaleId));
 
         if (Boolean.TRUE.equals(sale.getInProductionOrder())) {
@@ -93,11 +93,14 @@ public class CustomerShipmentDispatchService {
             throw new BusinessException("La venta no pertenece a esta orden de producción");
         }
 
-        OnlineSaleEntity sale = onlineSaleRepository.findById(onlineSaleId)
+        OnlineSaleEntity sale = onlineSaleRepository.findByIdForUpdate(onlineSaleId)
                 .orElseThrow(() -> new ResourceNotFoundException("Online Sale", onlineSaleId));
 
         if ("ENVIADO".equals(sale.getStatus()) || "ENTREGADO".equals(sale.getStatus())) {
             throw new BusinessException("Esta venta ya fue despachada. Estado actual: " + sale.getStatus());
+        }
+        if ("ANULADA".equals(sale.getStatus()) || "CANCELADO".equals(sale.getStatus()) || "DEVOLUCION".equals(sale.getStatus())) {
+            throw new BusinessException("Esta venta está " + sale.getStatus() + " y no se puede despachar.");
         }
 
         // Sin validar recepción PT completa: el despacho operativo no debe bloquearse por piezas pendientes.

@@ -60,7 +60,7 @@ class OnlineSaleServiceCancelDispatchTest {
                 .guideNumber("58123456789")
                 .dispatchedAt(LocalDateTime.of(2026, 10, 14, 10, 30))
                 .build();
-        when(saleRepository.findById(77L)).thenReturn(Optional.of(sale));
+        when(saleRepository.findByIdForUpdate(77L)).thenReturn(Optional.of(sale));
         when(returnsWarehouseLocator.find()).thenReturn(Optional.of(LocationEntity.builder().id(5L).build()));
 
         service.cancelDispatch(77L, "Error de captura");

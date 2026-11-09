@@ -56,6 +56,22 @@ public class ProductionOrderWarehouseUnitService {
     /** Estados de venta en línea que ya no se despachan: sus piezas son stock de Devoluciones. */
     private static final Set<String> CLOSED_ONLINE_SALE_STATUSES = Set.of("ANULADA", "CANCELADO", "DEVOLUCION");
 
+    /**
+     * Venta en línea que ya se despachó sin que esta pieza estuviera recibida en bodega (el despacho operativo no
+     * espera la recepción). Si no se avisa, la pieza entra a Bodega PT al recibirse y nunca sale: queda de más.
+     */
+    private OnlineSaleEntity findAlreadyDispatchedSale(Long onlineSaleId) {
+        if (onlineSaleId == null) {
+            return null;
+        }
+        return onlineSaleRepository.findById(onlineSaleId)
+                .filter(s -> s.getStatus() != null
+                        && ("ENVIADO".equals(s.getStatus().trim()) || "ENTREGADO".equals(s.getStatus().trim())))
+                .filter(s -> !productInventoryService.hasNetOutboundForReference(
+                        ProductInventoryService.REF_ONLINE_SALE_PREPARE, s.getId()))
+                .orElse(null);
+    }
+
     private boolean isClosedOnlineSale(Long onlineSaleId) {
         if (onlineSaleId == null) {
             return false;
@@ -754,6 +770,32 @@ public class ProductionOrderWarehouseUnitService {
                     receiptRefNumber,
                     "Recepción pieza " + unit.getUnitLabel()
             );
+        }
+        // Venta ya despachada antes de recibir la pieza: la pieza entra (queda su entrada) y sale en el acto.
+        OnlineSaleEntity dispatchedSale = isReserveOrder(po) || closedSale || alreadyRecorded
+                ? null
+                : findAlreadyDispatchedSale(item.getOnlineSaleId());
+        if (dispatchedSale != null) {
+            String saleRef = dispatchedSale.getShipmentNumber() != null && !dispatchedSale.getShipmentNumber().isBlank()
+                    ? dispatchedSale.getShipmentNumber()
+                    : dispatchedSale.getSaleNumber();
+            productInventoryService.decrementFromDispatchWarehouses(
+                    item.getProductId(),
+                    item.getColorId(),
+                    sizeKey != null && !sizeKey.isBlank() ? sizeKey : null,
+                    BigDecimal.ONE,
+                    ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
+                    dispatchedSale.getId(),
+                    saleRef,
+                    "Despacho venta online a cliente #" + (saleRef != null ? saleRef : dispatchedSale.getId())
+                            + " (pieza recibida después del despacho)",
+                    ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
+                    unit.getId(),
+                    ProductInventoryService.DispatchSource.PT_FIRST);
+            unit.setShipmentRefType(REF_ONLINE_SALE);
+            unit.setShipmentRefId(dispatchedSale.getId());
+            unit.setShippedAt(now);
+            unit.setShippedBy(userId);
         }
         unit.setReceiptStatus(STATUS_RECEIVED);
         unit.setRejectionReason(null);

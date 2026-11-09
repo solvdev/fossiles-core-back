@@ -52,10 +52,13 @@ WITH param AS (SELECT DATE '2026-10-15' AS desde),
 unidades AS (
     SELECT u.id AS unit_id, po.code AS orden, i.product_id, i.color_id,
            (UPPER(COALESCE(po.seller_name, '')) LIKE '%LUIS FELIPE%'
-             AND (po.code LIKE 'OPV-%' OR po.order_type LIKE 'CINCHOS%')) AS es_reserva
+             AND (po.code LIKE 'OPV-%' OR po.order_type LIKE 'CINCHOS%')) AS es_reserva,
+           -- pieza de una venta en línea ya anulada/devuelta: entra a Devoluciones y no a Bodega PT (a propósito)
+           COALESCE(s.status IN ('ANULADA', 'CANCELADO', 'DEVOLUCION'), false) AS venta_cerrada
     FROM production_order_warehouse_unit u
     JOIN production_order po ON po.id = u.production_order_id
     JOIN production_order_item i ON i.id = u.production_order_item_id
+    LEFT JOIN online_sale s ON s.id = i.online_sale_id
     WHERE u.receipt_status = 'RECEIVED' AND u.received_at >= (SELECT desde FROM param)
 )
 SELECT '4 recibida sin entrada' AS regla, un.orden, un.unit_id, un.es_reserva
@@ -63,7 +66,9 @@ FROM unidades un
 WHERE NOT EXISTS (
     SELECT 1 FROM product_inventory_kardex k
     WHERE k.reference_type = 'PRODUCTION_ORDER_WH_UNIT' AND k.reference_id = un.unit_id
-      AND k.location_id = (SELECT id FROM locations WHERE code = CASE WHEN un.es_reserva THEN 'RESERVA_LF' ELSE 'BODEGA_PT' END)
+      AND k.location_id IN (SELECT id FROM locations
+                            WHERE code = CASE WHEN un.es_reserva THEN 'RESERVA_LF' ELSE 'BODEGA_PT' END
+                               OR (un.venta_cerrada AND code = 'DEVOLUCION'))
       -- OPV/OPC de LF recibidas antes del cambio entraron a PT y llegan a la reserva por traslado
       AND (k.movement_type = 'PRODUCTION_ENTRY' OR (un.es_reserva AND k.movement_type = 'RESERVE_TRANSFER_IN')));
 
@@ -102,6 +107,9 @@ LEFT JOIN production_order po ON po.id = s.production_order_id
 WHERE k.location_id = (SELECT id FROM locations WHERE code = 'DEVOLUCION') AND k.quantity < 0
   AND k.movement_date >= (SELECT desde FROM param)
   AND (k.movement_type = 'ONLINE_SALE_DISPATCH'
+          -- si se anuló el envío, la pieza volvió a Devoluciones y al re-despachar sale de ahí a propósito
+          AND NOT EXISTS (SELECT 1 FROM product_inventory_kardex r
+                          WHERE r.reference_type = 'ONLINE_SALE_WH_RETURN' AND r.reference_id = k.reference_id)
        OR (po.order_type IN ('CLIENTE_KIOSKO', 'INTERNA') OR po.order_type LIKE 'CINCHOS%')
           AND UPPER(COALESCE(po.seller_name, '')) NOT LIKE '%LUIS FELIPE%');
 
