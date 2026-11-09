@@ -60,6 +60,23 @@ public class ReconciliationAccessGuard {
         require(PERM_COMMISSIONS, "No tiene permiso para las comisiones.");
     }
 
+    /** true si el usuario es administrador o tiene alguno de los permisos. Lo usa el libro de ventas en línea. */
+    public boolean hasAny(String... permissionCodes) {
+        UserEntity user = currentUser();
+        if (user == null) {
+            return false;
+        }
+        if (hasRoleToken(user, "ADMIN")) {
+            return true;
+        }
+        for (String code : permissionCodes) {
+            if (hasPermission(user, code)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public Long currentUserId() {
         return securityUtil.getCurrentUserId();
     }

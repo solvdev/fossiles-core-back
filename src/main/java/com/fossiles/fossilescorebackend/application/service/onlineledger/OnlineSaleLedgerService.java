@@ -1,0 +1,577 @@
+package com.fossiles.fossilescorebackend.application.service.onlineledger;
+
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.BulkUpdateRequest;
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerResponse;
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerRow;
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.SellerCommission;
+import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.reconciliation.ReconciliationAccessGuard;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleAccountingEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleAccountingRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+import jakarta.persistence.TypedQuery;
+import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
+import java.util.*;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
+
+/**
+ * Libro de ventas en línea para Contabilidad: la misma hoja que llevaban en Excel.
+ *
+ * <p>Lectura: un rango de fechas se resuelve con tres consultas (ventas, productos y datos contables), sin facturas ni
+ * vista de bodega. Escritura: solo los campos de {@link OnlineSaleAccountingEntity}; cualquier otro nombre de campo se
+ * rechaza, así la venta (todo hasta «Total con envío») no se puede cambiar desde aquí.
+ */
+@Service
+@RequiredArgsConstructor
+public class OnlineSaleLedgerService {
+
+    public static final String PERM_SALES_VIEW = "VENTAS.VENTAS_ONLINE.VER";
+
+    /** Comisión del vendedor sobre la venta neta (hoja «Cálculo comisiones x vendedor»). */
+    public static final BigDecimal COMMISSION_RATE = new BigDecimal("0.02");
+    public static final BigDecimal VAT_RATE = new BigDecimal("0.12");
+
+    static final int MAX_ROWS = 5000;
+    private static final int BATCH = 500;
+    private static final int MAX_BULK = 2000;
+    private static final BigDecimal MAX_AMOUNT = new BigDecimal("9999999.99");
+
+    private static final Map<String, String> PAYMENT_METHOD_DISPLAY = Map.of(
+            "TRANSFERENCIA_PENDIENTE", "Transferencia Pendiente",
+            "TRANSFERENCIA_LISTA", "Transferencia",
+            "VISALINK_PAGADO", "Visalink",
+            "VISALINK_PENDIENTE", "Visalink Pendiente",
+            "TARJETA_PAGADO", "Tarjeta",
+            "DEPOSITO_LISTO", "Depósito",
+            "DEPOSITO_PENDIENTE", "Depósito Pendiente",
+            "CONTRA_ENTREGA", "Contra Entrega",
+            "CONTRA_ENTREGA_DEPOSITO", "Contra Entrega Depósito");
+
+    /** Campos que Contabilidad puede cambiar. Lo que no está aquí no se puede editar desde el libro. */
+    private static final Map<String, FieldWriter> FIELDS = new LinkedHashMap<>();
+
+    static {
+        FIELDS.put("realShippingCost", money(OnlineSaleAccountingEntity::getRealShippingCost,
+                OnlineSaleAccountingEntity::setRealShippingCost, false, "Envío real"));
+        FIELDS.put("carrierCommission", money(OnlineSaleAccountingEntity::getCarrierCommission,
+                OnlineSaleAccountingEntity::setCarrierCommission, false, "Comisión"));
+        FIELDS.put("realDepositAmount", money(OnlineSaleAccountingEntity::getRealDepositAmount,
+                OnlineSaleAccountingEntity::setRealDepositAmount, false, "Valor real depósito"));
+        FIELDS.put("shortageAmount", money(OnlineSaleAccountingEntity::getShortageAmount,
+                OnlineSaleAccountingEntity::setShortageAmount, true, "Faltante / sobrante"));
+        FIELDS.put("sentDate", date(OnlineSaleAccountingEntity::getSentDate,
+                OnlineSaleAccountingEntity::setSentDate, "Fecha de envío"));
+        FIELDS.put("receivedDate", date(OnlineSaleAccountingEntity::getReceivedDate,
+                OnlineSaleAccountingEntity::setReceivedDate, "Fecha de recepción"));
+        FIELDS.put("liquidationDate", date(OnlineSaleAccountingEntity::getLiquidationDate,
+                OnlineSaleAccountingEntity::setLiquidationDate, "Fecha de liquidación"));
+        FIELDS.put("accountingNote", text(OnlineSaleAccountingEntity::getAccountingNote,
+                OnlineSaleAccountingEntity::setAccountingNote, 1000, "Observación"));
+        FIELDS.put("paymentForm", text(OnlineSaleAccountingEntity::getPaymentForm,
+                OnlineSaleAccountingEntity::setPaymentForm, 100, "Forma de pago"));
+        FIELDS.put("depositSlipNumber", text(OnlineSaleAccountingEntity::getDepositSlipNumber,
+                OnlineSaleAccountingEntity::setDepositSlipNumber, 100, "No. de boleta"));
+        FIELDS.put("deliveryNote", text(OnlineSaleAccountingEntity::getDeliveryNote,
+                OnlineSaleAccountingEntity::setDeliveryNote, 500, "Observación de entrega"));
+        FIELDS.put("depositNote", text(OnlineSaleAccountingEntity::getDepositNote,
+                OnlineSaleAccountingEntity::setDepositNote, 500, "Observación del depósito"));
+        FIELDS.put("shortageNote", text(OnlineSaleAccountingEntity::getShortageNote,
+                OnlineSaleAccountingEntity::setShortageNote, 500, "Detalle del faltante"));
+        FIELDS.put("reviewed", new FieldWriter() {
+            @Override
+            public boolean isEmpty(OnlineSaleAccountingEntity a) {
+                return !Boolean.TRUE.equals(a.getReviewed());
+            }
+
+            @Override
+            public void write(OnlineSaleAccountingEntity a, Object raw) {
+                a.setReviewed(raw instanceof Boolean b ? b : raw != null && "true".equalsIgnoreCase(raw.toString().trim()));
+            }
+        });
+    }
+
+    private final OnlineSaleRepository saleRepository;
+    private final OnlineSaleItemRepository itemRepository;
+    private final OnlineSaleAccountingRepository accountingRepository;
+    private final ReconciliationAccessGuard guard;
+
+    @PersistenceContext
+    private EntityManager em;
+
+    // ───────── permisos ─────────
+
+    public boolean canView() {
+        return guard.hasAny(PERM_SALES_VIEW, ReconciliationAccessGuard.PERM_VIEW);
+    }
+
+    /** Editar el libro es de Administración y Contabilidad (mismo permiso que conciliar). */
+    public boolean canEdit() {
+        return guard.hasAny(ReconciliationAccessGuard.PERM_RECONCILE);
+    }
+
+    public void assertCanView() throws BusinessException {
+        if (!canView()) {
+            throw new BusinessException("No tiene permiso para ver el libro de ventas en línea.");
+        }
+    }
+
+    public void assertCanEdit() throws BusinessException {
+        if (!canEdit()) {
+            throw new BusinessException("Solo Administración y Contabilidad pueden editar el libro de ventas en línea.");
+        }
+    }
+
+    // ───────── lectura ─────────
+
+    /**
+     * Ventas del rango (por fecha de venta). Con {@code q} busca cliente, teléfono, envío, guía, autorización,
+     * dirección o producto; si no se dan fechas, la búsqueda recorre todo el historial.
+     */
+    @Transactional(readOnly = true)
+    public LedgerResponse search(LocalDate from, LocalDate to, String q) throws BusinessException {
+        String query = q == null ? "" : q.replace("%", "").replace("_", " ").trim();
+        if (query.isEmpty() && (from == null || to == null)) {
+            throw new BusinessException("Indique el rango de fechas o un texto para buscar.");
+        }
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new BusinessException("La fecha inicial no puede ser posterior a la final.");
+        }
+        if (!query.isEmpty() && query.length() < 2) {
+            throw new BusinessException("Escriba al menos 2 caracteres para buscar.");
+        }
+
+        StringBuilder jpql = new StringBuilder("SELECT s FROM OnlineSaleEntity s WHERE 1 = 1");
+        if (from != null) jpql.append(" AND s.saleDate >= :from");
+        if (to != null) jpql.append(" AND s.saleDate <= :to");
+        if (!query.isEmpty()) {
+            jpql.append(" AND (LOWER(s.customerName) LIKE :q OR s.phone LIKE :q OR s.phone2 LIKE :q")
+                    .append(" OR LOWER(s.shipmentNumber) LIKE :q OR LOWER(s.guideNumber) LIKE :q")
+                    .append(" OR LOWER(s.paymentAuthorization) LIKE :q OR LOWER(s.address) LIKE :q")
+                    .append(" OR LOWER(s.productName) LIKE :q OR s.saleNumber = :exact")
+                    .append(" OR EXISTS (SELECT 1 FROM OnlineSaleItemEntity i WHERE i.onlineSaleId = s.id")
+                    .append(" AND LOWER(i.productName) LIKE :q))");
+        }
+        jpql.append(" ORDER BY s.saleDate ASC, s.id ASC");
+
+        TypedQuery<OnlineSaleEntity> typed = em.createQuery(jpql.toString(), OnlineSaleEntity.class);
+        if (from != null) typed.setParameter("from", from);
+        if (to != null) typed.setParameter("to", to);
+        if (!query.isEmpty()) {
+            typed.setParameter("q", "%" + query.toLowerCase(Locale.ROOT) + "%");
+            typed.setParameter("exact", query);
+        }
+        typed.setMaxResults(MAX_ROWS + 1);
+        List<OnlineSaleEntity> sales = typed.getResultList();
+        boolean truncated = sales.size() > MAX_ROWS;
+        if (truncated) {
+            sales = sales.subList(0, MAX_ROWS);
+        }
+
+        return LedgerResponse.builder()
+                .from(from).to(to).query(query.isEmpty() ? null : query)
+                .rows(toRows(sales))
+                .truncated(truncated)
+                .canEdit(canEdit())
+                .commissionRate(COMMISSION_RATE)
+                .vatRate(VAT_RATE)
+                .build();
+    }
+
+    private List<LedgerRow> toRows(List<OnlineSaleEntity> sales) {
+        if (sales.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<Long> ids = sales.stream().map(OnlineSaleEntity::getId).toList();
+        Map<Long, List<OnlineSaleItemEntity>> itemsBySale = new HashMap<>();
+        Map<Long, OnlineSaleAccountingEntity> accountingBySale = new HashMap<>();
+        for (int i = 0; i < ids.size(); i += BATCH) {
+            List<Long> batch = ids.subList(i, Math.min(ids.size(), i + BATCH));
+            for (OnlineSaleItemEntity item : itemRepository.findByOnlineSaleIdInOrderByIdAsc(batch)) {
+                itemsBySale.computeIfAbsent(item.getOnlineSaleId(), k -> new ArrayList<>()).add(item);
+            }
+            for (OnlineSaleAccountingEntity a : accountingRepository.findByOnlineSaleIdIn(batch)) {
+                accountingBySale.put(a.getOnlineSaleId(), a);
+            }
+        }
+        List<LedgerRow> rows = new ArrayList<>(sales.size());
+        for (OnlineSaleEntity s : sales) {
+            rows.add(toRow(s, itemsBySale.getOrDefault(s.getId(), List.of()), accountingBySale.get(s.getId())));
+        }
+        return rows;
+    }
+
+    private LedgerRow toRow(OnlineSaleEntity s, List<OnlineSaleItemEntity> items, OnlineSaleAccountingEntity a) {
+        String products;
+        String colors;
+        String sizes;
+        if (!items.isEmpty()) {
+            List<String> p = new ArrayList<>();
+            List<String> c = new ArrayList<>();
+            List<String> z = new ArrayList<>();
+            for (OnlineSaleItemEntity it : items) {
+                String name = clean(it.getProductName());
+                if (name.isEmpty()) name = clean(it.getProductCode());
+                int qty = it.getQuantity() == null ? 1 : it.getQuantity();
+                p.add(qty > 1 ? qty + " " + name : name);
+                if (!clean(it.getColorName()).isEmpty()) c.add(clean(it.getColorName()));
+                if (!clean(it.getSize()).isEmpty()) z.add(clean(it.getSize()));
+            }
+            products = String.join(" / ", p);
+            colors = String.join(" / ", c);
+            sizes = String.join(" / ", z);
+        } else {
+            String name = clean(s.getProductName());
+            int qty = s.getQuantity() == null ? 1 : s.getQuantity();
+            products = qty > 1 && !name.isEmpty() ? qty + " " + name : name;
+            colors = clean(s.getColorName());
+            sizes = clean(s.getSize());
+        }
+        String phone = clean(s.getPhone());
+        if (!clean(s.getPhone2()).isEmpty()) {
+            phone = phone.isEmpty() ? clean(s.getPhone2()) : phone + " / " + clean(s.getPhone2());
+        }
+        BigDecimal total = s.getTotalAmount();
+        BigDecimal shipping = s.getShippingCost();
+        BigDecimal net = s.getNetAmount();
+        if (net == null && total != null) {
+            net = total.subtract(shipping == null ? BigDecimal.ZERO : shipping);
+        }
+
+        LedgerRow.LedgerRowBuilder row = LedgerRow.builder()
+                .id(s.getId())
+                .saleNumber(s.getSaleNumber())
+                .customerName(s.getCustomerName())
+                .address(s.getAddress())
+                .phone(phone)
+                .packaging(s.getPackaging())
+                .paymentMethod(s.getPaymentMethod())
+                .paymentMethodDisplay(paymentLabel(s.getPaymentMethod()))
+                .invoiceTaxId(s.getInvoiceTaxId())
+                .products(products).colors(colors).sizes(sizes)
+                .totalAmount(total).shippingCost(shipping).netAmount(net)
+                .carrier(s.getShippingCarrier())
+                .saleDate(s.getSaleDate())
+                .socialNetwork(s.getSocialNetwork())
+                .email(s.getEmail())
+                .salesperson(s.getSalesperson())
+                .guideNumber(s.getGuideNumber())
+                .shipmentNumber(s.getShipmentNumber())
+                .paymentAuthorization(s.getPaymentAuthorization())
+                .status(s.getStatus())
+                .observations(s.getObservations())
+                .dispatchedDate(s.getDispatchedAt() == null ? null : s.getDispatchedAt().toLocalDate())
+                .reviewed(false);
+        if (a != null) {
+            row.realShippingCost(a.getRealShippingCost())
+                    .carrierCommission(a.getCarrierCommission())
+                    .accountingNote(a.getAccountingNote())
+                    .sentDate(a.getSentDate())
+                    .receivedDate(a.getReceivedDate())
+                    .paymentForm(a.getPaymentForm())
+                    .liquidationDate(a.getLiquidationDate())
+                    .depositSlipNumber(a.getDepositSlipNumber())
+                    .deliveryNote(a.getDeliveryNote())
+                    .realDepositAmount(a.getRealDepositAmount())
+                    .depositNote(a.getDepositNote())
+                    .shortageAmount(a.getShortageAmount())
+                    .shortageNote(a.getShortageNote())
+                    .reviewed(Boolean.TRUE.equals(a.getReviewed()))
+                    .accountingUpdatedAt(a.getUpdatedAt());
+        }
+        return row.build();
+    }
+
+    public static String paymentLabel(String paymentMethod) {
+        if (paymentMethod == null) return "";
+        return PAYMENT_METHOD_DISPLAY.getOrDefault(paymentMethod, paymentMethod);
+    }
+
+    // ───────── escritura ─────────
+
+    /** Cambia campos contables de una venta. {@code changes}: nombre de campo → valor (null o vacío borra). */
+    public LedgerRow update(Long saleId, Map<String, Object> changes)
+            throws BusinessException, ResourceNotFoundException {
+        validateChanges(changes);
+        OnlineSaleEntity sale = saleRepository.findById(saleId)
+                .orElseThrow(() -> new ResourceNotFoundException("Venta en línea", saleId));
+        Long userId = guard.currentUserId();
+        OnlineSaleAccountingEntity saved = upsert(saleId, changes, false, userId);
+        return toRow(sale, itemRepository.findByOnlineSaleIdOrderByIdAsc(saleId), saved);
+    }
+
+    /** Aplica los mismos campos a varias ventas (por ejemplo, el envío real de todo lo de Guatex). */
+    public List<LedgerRow> bulkUpdate(BulkUpdateRequest request) throws BusinessException {
+        if (request == null || request.getSaleIds() == null || request.getSaleIds().isEmpty()) {
+            throw new BusinessException("Seleccione al menos una venta.");
+        }
+        validateChanges(request.getChanges());
+        List<Long> ids = request.getSaleIds().stream().filter(Objects::nonNull).distinct().toList();
+        if (ids.size() > MAX_BULK) {
+            throw new BusinessException("Máximo " + MAX_BULK + " ventas por cambio en lote.");
+        }
+        List<OnlineSaleEntity> sales = new ArrayList<>();
+        for (int i = 0; i < ids.size(); i += BATCH) {
+            sales.addAll(saleRepository.findAllById(ids.subList(i, Math.min(ids.size(), i + BATCH))));
+        }
+        if (sales.size() != ids.size()) {
+            throw new BusinessException("Alguna de las ventas seleccionadas ya no existe. Actualice la vista.");
+        }
+        Long userId = guard.currentUserId();
+        for (OnlineSaleEntity sale : sales) {
+            upsert(sale.getId(), request.getChanges(), request.isOnlyEmpty(), userId);
+        }
+        sales.sort(Comparator.comparing(OnlineSaleEntity::getSaleDate, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(OnlineSaleEntity::getId));
+        return toRows(sales);
+    }
+
+    private void validateChanges(Map<String, Object> changes) throws BusinessException {
+        if (changes == null || changes.isEmpty()) {
+            throw new BusinessException("No hay cambios para guardar.");
+        }
+        OnlineSaleAccountingEntity probe = new OnlineSaleAccountingEntity();
+        for (Map.Entry<String, Object> change : changes.entrySet()) {
+            FieldWriter writer = FIELDS.get(change.getKey());
+            if (writer == null) {
+                throw new BusinessException("El campo «" + change.getKey()
+                        + "» es de la venta y no se puede cambiar desde el libro.");
+            }
+            try {
+                writer.write(probe, change.getValue());
+            } catch (IllegalArgumentException e) {
+                throw new BusinessException(e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Crea o actualiza la fila contable. Dos celdas de la misma venta guardadas a la vez pueden intentar crear la
+     * fila al mismo tiempo: la restricción única rechaza la segunda y aquí se reintenta sobre la fila ya creada.
+     */
+    private OnlineSaleAccountingEntity upsert(Long saleId, Map<String, Object> changes, boolean onlyEmpty, Long userId) {
+        try {
+            return applyAndSave(saleId, changes, onlyEmpty, userId);
+        } catch (DataIntegrityViolationException e) {
+            return applyAndSave(saleId, changes, onlyEmpty, userId);
+        }
+    }
+
+    private OnlineSaleAccountingEntity applyAndSave(Long saleId, Map<String, Object> changes, boolean onlyEmpty, Long userId) {
+        OnlineSaleAccountingEntity a = accountingRepository.findByOnlineSaleId(saleId)
+                .orElseGet(() -> OnlineSaleAccountingEntity.builder().onlineSaleId(saleId).reviewed(false).build());
+        boolean touched = false;
+        for (Map.Entry<String, Object> change : changes.entrySet()) {
+            FieldWriter writer = FIELDS.get(change.getKey());
+            if (onlyEmpty && !writer.isEmpty(a)) {
+                continue;
+            }
+            writer.write(a, change.getValue());
+            touched = true;
+        }
+        if (!touched && a.getId() != null) {
+            return a;
+        }
+        a.setUpdatedBy(userId);
+        return accountingRepository.saveAndFlush(a);
+    }
+
+    // ───────── comisiones ─────────
+
+    /**
+     * Comisión por vendedor, igual que la hoja de Excel:
+     * ventas − devoluciones − anuladas − envío real − comisiones del transporte = subtotal;
+     * subtotal − IVA = ventas netas; 2% de las netas − faltantes = total a pagar.
+     */
+    public static List<SellerCommission> commissions(List<LedgerRow> rows) {
+        Map<String, Acc> bySeller = new LinkedHashMap<>();
+        for (LedgerRow r : rows) {
+            String label = clean(r.getSalesperson()).isEmpty() ? "Sin vendedor" : clean(r.getSalesperson());
+            Acc acc = bySeller.computeIfAbsent(label.toUpperCase(Locale.ROOT), k -> new Acc(label));
+            BigDecimal total = nz(r.getTotalAmount());
+            acc.count++;
+            acc.sales = acc.sales.add(total);
+            if (isReturn(r.getStatus())) {
+                acc.returnsCount++;
+                acc.returns = acc.returns.add(total);
+            } else if (isVoided(r.getStatus())) {
+                acc.voidedCount++;
+                acc.voided = acc.voided.add(total);
+            }
+            acc.realShipping = acc.realShipping.add(nz(r.getRealShippingCost()));
+            acc.carrierCommissions = acc.carrierCommissions.add(nz(r.getCarrierCommission()));
+            acc.shortages = acc.shortages.add(nz(r.getShortageAmount()));
+        }
+        List<SellerCommission> out = new ArrayList<>();
+        for (Acc acc : bySeller.values()) {
+            BigDecimal subtotal = acc.sales.subtract(acc.returns).subtract(acc.voided)
+                    .subtract(acc.realShipping).subtract(acc.carrierCommissions);
+            BigDecimal vat = subtotal.divide(BigDecimal.ONE.add(VAT_RATE), 10, RoundingMode.HALF_UP)
+                    .multiply(VAT_RATE).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal net = subtotal.subtract(vat);
+            BigDecimal commission = net.multiply(COMMISSION_RATE).setScale(2, RoundingMode.HALF_UP);
+            out.add(SellerCommission.builder()
+                    .seller(acc.label)
+                    .salesCount(acc.count).sales(acc.sales)
+                    .returnsCount(acc.returnsCount).returns(acc.returns)
+                    .voidedCount(acc.voidedCount).voided(acc.voided)
+                    .realShipping(acc.realShipping)
+                    .carrierCommissions(acc.carrierCommissions)
+                    .subtotal(subtotal).vat(vat).netSales(net)
+                    .commission(commission)
+                    .shortages(acc.shortages)
+                    .totalToPay(commission.subtract(acc.shortages))
+                    .build());
+        }
+        out.sort(Comparator.comparing(SellerCommission::getSales).reversed());
+        return out;
+    }
+
+    public static boolean isReturn(String status) {
+        return "DEVOLUCION".equalsIgnoreCase(status);
+    }
+
+    public static boolean isVoided(String status) {
+        return "ANULADA".equalsIgnoreCase(status) || "CANCELADO".equalsIgnoreCase(status);
+    }
+
+    private static final class Acc {
+        final String label;
+        int count;
+        int returnsCount;
+        int voidedCount;
+        BigDecimal sales = BigDecimal.ZERO;
+        BigDecimal returns = BigDecimal.ZERO;
+        BigDecimal voided = BigDecimal.ZERO;
+        BigDecimal realShipping = BigDecimal.ZERO;
+        BigDecimal carrierCommissions = BigDecimal.ZERO;
+        BigDecimal shortages = BigDecimal.ZERO;
+
+        Acc(String label) {
+            this.label = label;
+        }
+    }
+
+    // ───────── Excel ─────────
+
+    public record ExportFile(String fileName, byte[] bytes) {
+    }
+
+    @Transactional(readOnly = true)
+    public ExportFile export(LocalDate from, LocalDate to) throws BusinessException {
+        if (from == null || to == null) {
+            throw new BusinessException("Indique el rango de fechas para descargar el Excel.");
+        }
+        LedgerResponse data = search(from, to, null);
+        byte[] bytes = OnlineSaleLedgerExcelExporter.build(from, to, data.getRows(), commissions(data.getRows()));
+        return new ExportFile("ventas-en-linea-" + from + "_" + to + ".xlsx", bytes);
+    }
+
+    // ───────── conversión de valores ─────────
+
+    private interface FieldWriter {
+        boolean isEmpty(OnlineSaleAccountingEntity a);
+
+        /** @throws IllegalArgumentException con el mensaje para el usuario si el valor no sirve. */
+        void write(OnlineSaleAccountingEntity a, Object raw);
+    }
+
+    private static FieldWriter money(Function<OnlineSaleAccountingEntity, BigDecimal> getter,
+                                     BiConsumer<OnlineSaleAccountingEntity, BigDecimal> setter,
+                                     boolean allowNegative, String label) {
+        return new FieldWriter() {
+            @Override
+            public boolean isEmpty(OnlineSaleAccountingEntity a) {
+                return getter.apply(a) == null;
+            }
+
+            @Override
+            public void write(OnlineSaleAccountingEntity a, Object raw) {
+                String text = raw == null ? "" : raw.toString().replace(",", "").replace("Q", "").trim();
+                if (text.isEmpty()) {
+                    setter.accept(a, null);
+                    return;
+                }
+                BigDecimal value;
+                try {
+                    value = new BigDecimal(text).setScale(2, RoundingMode.HALF_UP);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException(label + ": «" + raw + "» no es un monto válido.");
+                }
+                if (!allowNegative && value.signum() < 0) {
+                    throw new IllegalArgumentException(label + ": no puede ser negativo.");
+                }
+                if (value.abs().compareTo(MAX_AMOUNT) > 0) {
+                    throw new IllegalArgumentException(label + ": el monto es demasiado grande.");
+                }
+                setter.accept(a, value);
+            }
+        };
+    }
+
+    private static FieldWriter date(Function<OnlineSaleAccountingEntity, LocalDate> getter,
+                                    BiConsumer<OnlineSaleAccountingEntity, LocalDate> setter, String label) {
+        return new FieldWriter() {
+            @Override
+            public boolean isEmpty(OnlineSaleAccountingEntity a) {
+                return getter.apply(a) == null;
+            }
+
+            @Override
+            public void write(OnlineSaleAccountingEntity a, Object raw) {
+                String text = raw == null ? "" : raw.toString().trim();
+                if (text.isEmpty()) {
+                    setter.accept(a, null);
+                    return;
+                }
+                try {
+                    setter.accept(a, LocalDate.parse(text.length() > 10 ? text.substring(0, 10) : text));
+                } catch (DateTimeParseException e) {
+                    throw new IllegalArgumentException(label + ": «" + raw + "» no es una fecha válida.");
+                }
+            }
+        };
+    }
+
+    private static FieldWriter text(Function<OnlineSaleAccountingEntity, String> getter,
+                                    BiConsumer<OnlineSaleAccountingEntity, String> setter, int max, String label) {
+        return new FieldWriter() {
+            @Override
+            public boolean isEmpty(OnlineSaleAccountingEntity a) {
+                String current = getter.apply(a);
+                return current == null || current.isBlank();
+            }
+
+            @Override
+            public void write(OnlineSaleAccountingEntity a, Object raw) {
+                String text = raw == null ? "" : raw.toString().trim();
+                if (text.length() > max) {
+                    throw new IllegalArgumentException(label + ": máximo " + max + " caracteres.");
+                }
+                setter.accept(a, text.isEmpty() ? null : text);
+            }
+        };
+    }
+
+    static BigDecimal nz(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    static String clean(String value) {
+        return value == null ? "" : value.trim();
+    }
+}
