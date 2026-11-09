@@ -69,7 +69,7 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-@Transactional
+@Transactional(rollbackFor = Exception.class)
 public class ProductDistributionService {
 
     /**
@@ -2725,7 +2725,7 @@ public class ProductDistributionService {
      * Repara inventario de kiosko para un envío DELIVERED: carga todas las líneas del documento
      * (productos, tallas y empaques SUM-) que aún no estén registradas en stock kiosco.
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ShipmentReceiptRepairResponse repairDeliveredShipmentReceiptInventory(Long shipmentId, boolean force)
             throws ResourceNotFoundException, BusinessException {
         if (force) {
@@ -2738,7 +2738,7 @@ public class ProductDistributionService {
         return repairDeliveredShipmentReceiptInventoryAdditive(shipmentId);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ShipmentReceiptRepairResponse repairDeliveredShipmentReceiptInventoryAdditive(Long shipmentId)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
@@ -2786,7 +2786,7 @@ public class ProductDistributionService {
      * Solo elimina ENTRADAs duplicadas del envío; no agrega faltantes ni reescribe kardex
      * (use Sincronizar inventario kiosco para cargar lo que falte).
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public KioscoShipmentReconcileResponse reconcileShipmentReceiptInventory(
             Long locationId,
             Long shipmentId

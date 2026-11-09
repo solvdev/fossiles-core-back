@@ -40,7 +40,7 @@ public class CustomerShipmentDispatchService {
     private final ProductInventoryService productInventoryService;
     private final SecurityUtil securityUtil;
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> dispatchDirectOnlineSale(long onlineSaleId, Map<String, String> body)
             throws ResourceNotFoundException, BusinessException {
         OnlineSaleEntity sale = onlineSaleRepository.findById(onlineSaleId)
@@ -73,7 +73,7 @@ public class CustomerShipmentDispatchService {
         return result;
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> dispatchCustomerShipment(
             long productionOrderId,
             long onlineSaleId,

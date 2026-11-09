@@ -150,7 +150,7 @@ public class OnlineSaleProductionOrderService {
      *    (se descuenta inventario, la venta pasa a PRODUCIDO).
      * 3. Solo las ventas SIN stock generan órdenes de producción.
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public FulfillmentResult processWithInventoryCheck(List<Long> saleIds) throws BusinessException {
         if (saleIds == null || saleIds.isEmpty()) {
             throw new BusinessException("Debe seleccionar al menos una venta");
@@ -449,7 +449,7 @@ public class OnlineSaleProductionOrderService {
                 decision.sourceLabel, stocks);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> prepareDirectSaleFromInventory(long onlineSaleId) throws BusinessException {
         OnlineSaleEntity sale = onlineSaleRepository.findById(onlineSaleId)
                 .orElseThrow(() -> new BusinessException("Venta no encontrada: " + onlineSaleId));
@@ -850,7 +850,7 @@ public class OnlineSaleProductionOrderService {
      *
      * No descuenta inventario ni marca PRODUCIDO.
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResolveMixedResult resolveMixedSale(long saleId, List<ItemResolution> resolutions) throws BusinessException {
         if (resolutions == null || resolutions.isEmpty()) {
             throw new BusinessException("Debe enviar al menos una resolucion de item");
@@ -1073,7 +1073,7 @@ public class OnlineSaleProductionOrderService {
     /**
      * Compatibilidad: solo retorna las OP creadas (sin detalle de boletas kiosko).
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public List<CreateResult> createFromSaleIds(List<Long> saleIds) throws BusinessException {
         return createOplFromSales(saleIds).productionOrders();
     }
@@ -1081,7 +1081,7 @@ public class OnlineSaleProductionOrderService {
     /**
      * Crea OP VENTA_EN_LINEA y, si aplica, descuenta cuero desde kioskos cuando no alcanza en taller.
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public OplCreationResult createOplFromSales(List<Long> saleIds) throws BusinessException {
         if (saleIds == null || saleIds.isEmpty()) {
             throw new BusinessException("Debe seleccionar al menos una venta");
