@@ -16,6 +16,15 @@ public interface ProductionOrderWarehouseUnitRepository extends JpaRepository<Pr
 
     long countByProductionOrderId(Long productionOrderId);
 
+    /** Piezas recibidas en reserva por orden (para la lista de Bodega PT). */
+    @Query("""
+            SELECT u.productionOrderId, COUNT(u)
+            FROM ProductionOrderWarehouseUnitEntity u
+            WHERE u.productionOrderId IN :orderIds AND u.receiptStatus = 'RECEIVED'
+            GROUP BY u.productionOrderId
+            """)
+    List<Object[]> countReceivedByOrderIds(@Param("orderIds") Collection<Long> orderIds);
+
     List<ProductionOrderWarehouseUnitEntity> findByProductionOrderItemIdOrderBySizeKeyAscUnitSeqAsc(
             Long productionOrderItemId);
 
