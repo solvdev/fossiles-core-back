@@ -17,13 +17,17 @@ public final class OnlineSaleLedgerDtos {
     private OnlineSaleLedgerDtos() {
     }
 
-    /** Una venta como fila del libro: datos de la venta (solo lectura) + lo que anota Contabilidad. */
+    /**
+     * Una venta como fila del libro: datos de la venta + lo que anota Contabilidad.
+     * Desde «Total con envío» los campos ya traen el valor efectivo (lo del libro si se corrigió, si no el de la venta);
+     * los {@code accounting*} dicen qué se corrigió y {@code saleOriginal} guarda el dato original de la venta.
+     */
     @Data
     @Builder
     @NoArgsConstructor
     @AllArgsConstructor
     public static class LedgerRow {
-        // ── De la venta: no se editan desde el libro ──
+        // ── De la venta (hasta «Total con envío» no se editan; desde ahí, valor efectivo) ──
         private Long id;
         private String saleNumber;
         private String customerName;
@@ -70,10 +74,30 @@ public final class OnlineSaleLedgerDtos {
         private Boolean reviewed;
         private LocalDateTime accountingUpdatedAt;
 
+        // ── Correcciones del libro a datos de la venta: vacío = no se corrigió ──
+        private BigDecimal accountingTotal;
+        private BigDecimal accountingShipping;
+        private BigDecimal accountingNet;
+        private String accountingCarrier;
+        private LocalDate accountingSaleDate;
+        private String accountingSocialNetwork;
+        private String accountingEmail;
+        private String accountingSalesperson;
+        private String accountingGuideNumber;
+        private String accountingShipmentNumber;
+        private String accountingStatus;
+        /** Dato original de la venta, solo de los campos corregidos (clave = nombre del campo efectivo). */
+        private Map<String, Object> saleOriginal;
+
         // ── Bloqueo: una línea bloqueada no admite cambios ──
         private Boolean locked;
         private LocalDateTime lockedAt;
         private String lockedByName;
+        /** true si la venta cae en un periodo de revisión cerrado (bloqueada aunque no tenga fila contable). */
+        private Boolean periodClosed;
+        /** true si la venta cae en un periodo de revisión abierto: solo así se edita en el libro. */
+        private Boolean periodOpen;
+        private String periodLabel;
     }
 
     @Data
@@ -94,6 +118,44 @@ public final class OnlineSaleLedgerDtos {
         private boolean canUnlock;
         private BigDecimal commissionRate;
         private BigDecimal vatRate;
+        /** Periodos de revisión que se cruzan con el rango pedido. */
+        private List<PeriodRow> periods;
+        /** true si puede abrir y cerrar periodos (quien edita el libro). */
+        private boolean canManagePeriods;
+        /** true si puede reabrir un periodo cerrado (solo administradores). */
+        private boolean canReopenPeriods;
+    }
+
+    /** Periodo de revisión: abierto mientras Contabilidad revisa; cerrado = el rango queda bloqueado. */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PeriodRow {
+        private Long id;
+        private LocalDate from;
+        private LocalDate to;
+        private String label;
+        /** OPEN o CLOSED. */
+        private String status;
+        private String note;
+        private LocalDateTime openedAt;
+        private String openedByName;
+        private LocalDateTime closedAt;
+        private String closedByName;
+        private LocalDateTime reopenedAt;
+        private String reopenedByName;
+        /** Al cerrar: cuántas líneas bloqueó el cierre. */
+        private Integer lockedCount;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PeriodRequest {
+        private LocalDate from;
+        private LocalDate to;
+        private String note;
     }
 
     /** Cambio en lote: los mismos campos a varias ventas. */
