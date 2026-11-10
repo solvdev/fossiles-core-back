@@ -28,6 +28,15 @@ public interface OnlineSaleRepository extends JpaRepository<OnlineSaleEntity, Lo
 
     List<OnlineSaleEntity> findByShipmentNumberIgnoreCaseOrderBySaleDateDescIdDesc(String shipmentNumber);
 
+    // Conciliación: ligar fondos y guías con ventas por identificador exacto
+    List<OnlineSaleEntity> findByPaymentAuthorizationIgnoreCase(String paymentAuthorization);
+
+    List<OnlineSaleEntity> findByGuideNumberIgnoreCase(String guideNumber);
+
+    List<OnlineSaleEntity> findByPaymentAuthorizationIn(java.util.Collection<String> paymentAuthorizations);
+
+    List<OnlineSaleEntity> findByShipmentNumberIn(java.util.Collection<String> shipmentNumbers);
+
     /** Ventas elegibles para orden de producción (pagadas y no asignadas aún) */
     @Query("SELECT s FROM OnlineSaleEntity s WHERE s.inProductionOrder = false " +
            "AND s.status NOT IN ('EN_PRODUCCION', 'PRODUCIDO', 'ENVIADO', 'ENTREGADO', 'ANULADA', 'CANCELADO', 'DEVOLUCION') " +
@@ -53,6 +62,10 @@ public interface OnlineSaleRepository extends JpaRepository<OnlineSaleEntity, Lo
            "ORDER BY s.saleDate ASC, s.id ASC")
     List<OnlineSaleEntity> findEligibleForProductionByDateRange(@Param("startDate") LocalDate startDate,
                                                                  @Param("endDate") LocalDate endDate);
+
+    /** Números de venta de un rango (para el correlativo mensual). */
+    @Query("SELECT s.saleNumber FROM OnlineSaleEntity s WHERE s.saleDate BETWEEN :start AND :end")
+    List<String> findSaleNumbersBetween(@Param("start") LocalDate start, @Param("end") LocalDate end);
 
     /** Contar ventas del día para generar número correlativo */
     @Query("SELECT COUNT(s) FROM OnlineSaleEntity s WHERE s.saleDate = :date")

@@ -17,13 +17,20 @@ public class WebConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(productionCenterCacheInvalidator)
                 .addPathPatterns("/api/production-orders/**", "/api/tasks/**",
-                        "/api/leather/**", "/api/product-variant-leathers/**");
+                        "/api/leather/**", "/api/product-variant-leathers/**",
+                        // Dashboard de Producción y recetas de cuero (ver DASHBOARD_PATHS).
+                        "/api/production/cinchos/**", "/api/production-order-groups/**",
+                        "/api/production/desks-count/**", "/api/boms/**", "/api/materials/**",
+                        "/api/products/**", "/api/colors/**", "/api/online-sales/**",
+                        "/api/product-distributions/**", "/api/distribuciones/**",
+                        "/api/internal-shipment-requests/**", "/api/partial-releases/**",
+                        "/api/public/online-warehouse/**");
         registry.addInterceptor(onlineSalesCacheInvalidator)
                 .addPathPatterns("/api/online-sales/**", "/api/tax-invoices/**", "/api/production-orders/**",
                         "/api/public/online-warehouse/**", "/api/partial-releases/**",
                         "/api/product-distributions/**", "/api/distribuciones/**",
                         "/api/internal-shipment-requests/**", "/api/tasks/**", "/api/products/**",
-                        "/api/colors/**", "/api/product-categories/**");
+                        "/api/colors/**", "/api/product-categories/**", "/api/reconciliation/guides/**");
     }
 
     @Override

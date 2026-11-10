@@ -392,6 +392,9 @@ class KioskExchangeServiceTest {
         assertThat(result.getSale()).isNull();
         assertThat(currentStock(originalProduct.getId())).isEqualTo(4);
         assertThat(kioscoMovementRepository.findByPhysicalSlipNumber("BC-ZERO-001")).isEmpty();
+        // Pista de stock para quien autoriza: 4 en kiosko + 1 que ingresa en la misma boleta.
+        assertThat(result.getSlip().getGivenItems()).hasSize(1);
+        assertThat(result.getSlip().getGivenItems().get(0).getAvailableStock()).isEqualByComparingTo("5");
     }
 
     @Test
@@ -438,6 +441,65 @@ class KioskExchangeServiceTest {
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_A_CLIENTE);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.VENTA);
         assertThat(slipMoves).noneMatch(m -> m.getMovementType() == KioscoMovementType.DEVOLUCION_CLIENTE);
+    }
+
+    @Test
+    void authorizeExchange_returnedItemGoesBackToHardwareItWasSoldFrom() throws Exception {
+        ProductEntity zirconia = productRepository.save(ProductEntity.builder()
+                .code("BD-ZIR")
+                .name("Bolso Zirconia")
+                .salePrice(new BigDecimal("180.00"))
+                .build());
+        seedHardwareStock(zirconia.getId(), "NUEVO", 2);
+        seedHardwareStock(zirconia.getId(), "VIEJO", 1);
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kiosk.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("180.00"))
+                .chargeWithoutDiscount(true)
+                .items(List.of(KioskPosSaleRequest.ItemRequest.builder()
+                        .productId(zirconia.getId())
+                        .colorId(negro.getId())
+                        .hardwareCondition("VIEJO")
+                        .quantity(BigDecimal.ONE)
+                        .build()))
+                .build());
+        assertThat(hardwareStock(zirconia.getId(), "VIEJO")).isZero();
+        KioskSaleItemEntity saleItem = saleItemRepository.findByKioskSaleIdOrderByIdAsc(sale.getId()).get(0);
+        // Ventas viejas no guardaban la marca en la línea: el herraje debe salir del movimiento VENTA.
+        saleItem.setHardwareCondition(null);
+        saleItemRepository.save(saleItem);
+
+        KioskExchangeCompleteResponse pending = kioskExchangeService.completeExchange(
+                KioskExchangeCompleteRequest.builder()
+                        .kioskLocationId(kiosk.getId())
+                        .originalSaleId(sale.getId())
+                        .originalSaleItemId(saleItem.getId())
+                        .givenProductId(zirconia.getId())
+                        .givenColorId(negro.getId())
+                        .givenHardwareCondition("NUEVO")
+                        .returnedQuantity(BigDecimal.ONE)
+                        .givenQuantity(BigDecimal.ONE)
+                        .physicalSlipNumber("BC-HW-VIEJO-001")
+                        .reason("Cambio por defecto")
+                        .build());
+        assertThat(pending.getSlip().getStatus()).isEqualTo("PENDING_AUTHORIZATION");
+
+        RoleEntity adminRole = roleRepository.save(RoleEntity.builder().name("ADMIN").build());
+        UserEntity admin = userRepository.save(UserEntity.builder()
+                .username("admin.exchange.hw")
+                .email("admin.exchange.hw@fossiles.test")
+                .password("x")
+                .status("ACTIVE")
+                .roles(new HashSet<>(Set.of(adminRole)))
+                .build());
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+        kioskExchangeService.authorizeExchange(pending.getSlip().getId(), kiosk.getId());
+
+        // Devuelto vuelve a VIEJO (de donde salió); el entregado sale de NUEVO.
+        assertThat(hardwareStock(zirconia.getId(), "VIEJO")).isEqualTo(1);
+        assertThat(hardwareStock(zirconia.getId(), "NUEVO")).isEqualTo(1);
     }
 
     @Test
@@ -956,6 +1018,23 @@ class KioskExchangeServiceTest {
         return kioscoStockRepository.findByLocationIdAndProductIdAndColorId(kiosk.getId(), productId, negro.getId())
                 .map(KioscoStockEntity::getCurrentStock)
                 .orElse(0);
+    }
+
+    private int hardwareStock(Long productId, String hardware) {
+        return kioscoStockRepository.findByLocationIdAndProductIdAndColorIdAndHardwareCondition(
+                        kiosk.getId(), productId, negro.getId(), hardware)
+                .map(KioscoStockEntity::getCurrentStock)
+                .orElse(0);
+    }
+
+    private void seedHardwareStock(Long productId, String hardware, int quantity) {
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kiosk.getId())
+                .productId(productId)
+                .colorId(negro.getId())
+                .hardwareCondition(hardware)
+                .currentStock(quantity)
+                .build());
     }
 
     private void seedInventory(Long productId, int quantity) {

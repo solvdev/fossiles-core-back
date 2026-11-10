@@ -16,6 +16,10 @@ public interface MaterialRepository extends JpaRepository<MaterialEntity, Long> 
     Optional<MaterialEntity> findByIdForUpdate(@Param("id") Long id);
     Optional<MaterialEntity> findBySku(String sku);
     boolean existsBySku(String sku);
+
+    List<MaterialEntity> findByNameIgnoreCase(String name);
+
+    List<MaterialEntity> findByNameIgnoreCaseAndMaterialColorId(String name, Long materialColorId);
     
     @Query("SELECT m FROM MaterialEntity m WHERE " +
            "LOWER(m.sku) LIKE LOWER(CONCAT('%', :query, '%')) OR " +

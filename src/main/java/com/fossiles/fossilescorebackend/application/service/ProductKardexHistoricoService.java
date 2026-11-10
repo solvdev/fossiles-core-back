@@ -57,8 +57,8 @@ public class ProductKardexHistoricoService {
         LocalDateTime toTs = to != null ? to.plusDays(1).atStartOfDay() : null;
 
         Page<ProductInventoryKardexHistorico> result = historicoRepository.search(
-                locationId, productId, blankToNull(movementType), blankToNull(archiveReference),
-                fromTs, toTs, blankToNull(reference), pageable);
+                locationId, productId, blankToEmpty(movementType), blankToEmpty(archiveReference),
+                fromTs, toTs, likePattern(reference), pageable);
 
         List<ProductInventoryKardexHistorico> rows = result.getContent();
         Map<Long, ProductEntity> products = indexById(productRepository.findAllById(
@@ -134,7 +134,12 @@ public class ProductKardexHistoricoService {
         return entities.stream().collect(Collectors.toMap(idGetter, e -> e, (a, b) -> a));
     }
 
-    private static String blankToNull(String value) {
-        return value == null || value.isBlank() ? null : value.trim();
+    private static String blankToEmpty(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private static String likePattern(String value) {
+        String v = blankToEmpty(value).toLowerCase(java.util.Locale.ROOT);
+        return v.isEmpty() ? "" : "%" + v + "%";
     }
 }

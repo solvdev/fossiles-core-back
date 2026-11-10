@@ -9,20 +9,28 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface LeatherMovementRepository extends JpaRepository<LeatherMovementEntity, Long> {
     boolean existsByTaskItemIdIn(java.util.List<Long> taskItemIds);
 
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("SELECT m FROM LeatherMovementEntity m WHERE m.id = :id")
-    java.util.Optional<LeatherMovementEntity> findByIdForUpdate(@Param("id") Long id);
-
     /** Ítems con historial de cuero, incluidas salidas anuladas: la llave foránea impide borrarlos. */
     @Query("SELECT DISTINCT m.taskItemId FROM LeatherMovementEntity m WHERE m.taskItemId IN :taskItemIds")
     List<Long> findTaskItemIdsWithMovements(@Param("taskItemIds") java.util.Collection<Long> taskItemIds);
     java.util.Optional<LeatherMovementEntity> findByTaskItemIdAndMovementType(Long taskItemId, String movementType);
+
+    /** Serializa la anulación de un movimiento contra la reversa desde el producto. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT m FROM LeatherMovementEntity m WHERE m.id = :id")
+    Optional<LeatherMovementEntity> findByIdForUpdate(@Param("id") Long id);
+
+    /** Salida activa de un producto de tarea (a lo sumo una, por índice único). */
+    Optional<LeatherMovementEntity> findFirstByTaskItemIdAndMovementType(Long taskItemId, String movementType);
+
+    boolean existsByTaskItemIdInAndMovementType(Collection<Long> taskItemIds, String movementType);
 
     List<LeatherMovementEntity> findByMaterialIdOrderByCreatedAtDesc(Long materialId);
 

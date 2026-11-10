@@ -17,6 +17,14 @@ public class StandaloneKioskShipmentRequest {
 
     @NotNull(message = "El kiosko destino es obligatorio")
     private Long locationId;
+    /** Opcional: distribución donde meter el envío. Sin ella se crea una distribución MANUAL de un solo envío. */
+    private Long distributionId;
+
+    /**
+     * Excepción: crea el envío sin distribución. Por defecto (false/null) el envío se mete en una distribución
+     * MANUAL. Se ignora si viene distributionId.
+     */
+    private Boolean withoutDistribution;
 
     private String notes;
 

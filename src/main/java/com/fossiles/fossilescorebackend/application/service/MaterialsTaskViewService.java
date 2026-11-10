@@ -20,6 +20,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemMaterialPickRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -47,6 +48,8 @@ public class MaterialsTaskViewService {
 
     private static final int CHUNK = 500;
     private static final String BOM_ACTIVE = "A";
+    /** Días que una tarea completada sin materiales entregados sigue saliendo para despachar. */
+    public static final int COMPLETED_PENDING_MATERIALS_DAYS = 7;
 
     private final TaskRepository taskRepository;
     private final TaskItemRepository taskItemRepository;
@@ -302,8 +305,13 @@ public class MaterialsTaskViewService {
         }
 
         boolean isPending(TaskEntity task) {
-            if (task == null || "CANCELLED".equals(task.getStatus()) || "COMPLETED".equals(task.getStatus())) {
+            if (task == null || "CANCELLED".equals(task.getStatus())) {
                 return false;
+            }
+            if ("COMPLETED".equals(task.getStatus())) {
+                // Cerrada en producción sin que bodega registrara materiales: sigue pendiente de despacho
+                // (aunque la OP ya esté completada) por unos días, para que se pueda despachar desde el app.
+                return completedRecently(task) && pendingMaterials(task);
             }
             if (task.getProductionOrderId() != null) {
                 ProductionOrderEntity order = ordersById.get(task.getProductionOrderId());
@@ -311,8 +319,17 @@ public class MaterialsTaskViewService {
                     return false;
                 }
             }
+            return pendingMaterials(task);
+        }
+
+        private boolean pendingMaterials(TaskEntity task) {
             List<TaskItemEntity> items = itemsOf(task);
             return requiresMaterials(task, items) && !requiredItemsDelivered(task, items);
+        }
+
+        private static boolean completedRecently(TaskEntity task) {
+            return task.getCompletedAt() != null
+                    && !task.getCompletedAt().isBefore(GuatemalaDateTime.now().minusDays(COMPLETED_PENDING_MATERIALS_DAYS));
         }
 
         MaterialsTaskViewResponse toView(TaskEntity task) {
@@ -497,7 +514,7 @@ public class MaterialsTaskViewService {
         }
 
         private boolean canDeliver(TaskEntity task, List<TaskItemEntity> items) {
-            if (task == null || "CANCELLED".equals(task.getStatus()) || "COMPLETED".equals(task.getStatus())) {
+            if (task == null || "CANCELLED".equals(task.getStatus())) {
                 return false;
             }
             if (!requiresMaterials(task, items)) {
@@ -507,7 +524,7 @@ public class MaterialsTaskViewService {
         }
 
         private boolean canDeliverItem(TaskEntity task, TaskItemEntity item) {
-            if (task == null || "CANCELLED".equals(task.getStatus()) || "COMPLETED".equals(task.getStatus())) {
+            if (task == null || "CANCELLED".equals(task.getStatus())) {
                 return false;
             }
             if (!itemRequiresMaterials(item)) {

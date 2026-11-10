@@ -1,10 +1,17 @@
 package com.fossiles.fossilescorebackend.application.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
-import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LeatherInventoryEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LeatherMovementEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LeatherInventoryRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LeatherMovementRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.SystemConfigRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
@@ -12,236 +19,308 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 /**
- * Entrega de cuero por producto: registra o revierte la salida del kardex según la receta, una sola por ítem, y
- * mantiene las banderas de cuero de la orden.
+ * Entrega de cuero de los productos de una tarea. Es el único camino para marcarlo: el clic por producto,
+ * la entrega de toda la tarea y «Cortar todo» pasan por aquí.
+ *
+ * <p>Con el interruptor {@value #CONFIG_PER_PRODUCT} apagado solo se mueven las banderas, igual que antes.
+ * Encendido, marcar un producto descuenta su receta del kardex de cuero con una salida ligada al producto
+ * (y a la OP de su línea, no a la de la tarea, por las consolidadas); desmarcarlo la anula y el cuero vuelve.
  */
 @Service
 @RequiredArgsConstructor
 public class TaskLeatherDeliveryService {
-    private final LeatherMovementRepository movements;
-    private final LeatherInventoryRepository inventories;
-    private final ProductRepository products;
-    private final ProductionOrderItemRepository orderItems;
-    private final TaskRepository tasks;
-    private final TaskItemRepository items;
-    private final LeatherRequirementService requirements;
-    private final SecurityUtil security;
-    private final ObjectMapper mapper;
 
-    // Una entrega por producto descuenta cuero una sola vez y conserva la salida para su reversión.
-    @Transactional(rollbackFor = Exception.class)
-    public void setDelivered(TaskEntity task, TaskItemEntity item, boolean delivered)
-            throws BusinessException, ResourceNotFoundException {
-        var active = movements.findByTaskItemIdAndMovementType(item.getId(), "SALIDA").orElse(null);
-        if (!delivered) {
-            assertCanReverse(task, item);
-            if (active != null) reverse(active);
-            else if (Boolean.TRUE.equals(item.getLeatherDelivered()) && hasManualDelivery(task.getProductionOrderId())) {
-                throw new BusinessException("Anule la entrega de cuero por orden desde su kardex antes de desmarcar el producto.");
-            }
-        } else if (active == null) {
-            var product = products.findById(item.getProductId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Product", item.getProductId()));
-            var need = requirements.resolveNeed(product, item.getColorId(), item.getQuantity() == null ? 0 : item.getQuantity());
-            if (need.blocked()) throw new BusinessException(need.reason());
-            if (!need.noneRequired()) {
-                var inventory = inventories.findByMaterialIdForUpdate(need.materialId())
-                        .orElseThrow(() -> new BusinessException("No hay inventario para el cuero requerido."));
-                var previous = movements.findByProductionOrderIdOrderByCreatedAtDesc(task.getProductionOrderId());
-                boolean manual = previous.stream().anyMatch(m -> m.getTaskItemId() == null
-                        && "SALIDA".equals(m.getMovementType()) && Objects.equals(m.getMaterialId(), need.materialId()));
-                if (manual && !orderMaterialCovered(task.getProductionOrderId(), need.materialId(), previous)) {
-                    throw new BusinessException("La orden tiene una entrega manual parcial de este cuero; complete o concilie esa entrega en el kardex para evitar duplicarla.");
-                }
-                if (!manual) {
-                    if (inventory.getQuantityAvailable().compareTo(need.qtyFt2()) < 0) {
-                        throw new BusinessException("Cuero insuficiente: se necesitan " + need.qtyFt2()
-                                + " ft² y hay " + inventory.getQuantityAvailable() + " ft² disponibles.");
-                    }
-                    inventory.setQuantityAvailable(inventory.getQuantityAvailable().subtract(need.qtyFt2()));
-                    inventory.setTotalDelivered(inventory.getTotalDelivered().add(need.qtyFt2()));
-                    inventories.save(inventory);
-                    movements.save(LeatherMovementEntity.builder().movementType("SALIDA")
-                            .taskItemId(item.getId()).productionOrderId(task.getProductionOrderId())
-                            .materialId(need.materialId()).quantity(need.qtyFt2())
-                            .movementDate(GuatemalaDateTime.today()).balanceAfter(inventory.getQuantityAvailable())
-                            .observations("Entrega a producción: tarea " + task.getCode() + ", producto " + item.getProductCode())
-                            .createdBy(security.getCurrentUserId()).build());
-                }
-            }
-        }
-        item.setLeatherDelivered(delivered);
-        item.setLeatherDeliveredAt(delivered ? (item.getLeatherDeliveredAt() == null ? GuatemalaDateTime.now() : item.getLeatherDeliveredAt()) : null);
-        items.save(item);
+    public static final String CONFIG_PER_PRODUCT = "produccion.cuero.kardex_por_producto";
+    private static final String SALIDA = "SALIDA";
+    private static final String ANULADO = "ANULADO";
+
+    private final SystemConfigRepository systemConfigRepository;
+    private final LeatherMovementRepository movementRepository;
+    private final LeatherInventoryRepository inventoryRepository;
+    private final ProductRepository productRepository;
+    private final ProductionOrderItemRepository productionOrderItemRepository;
+    private final TaskRepository taskRepository;
+    private final TaskItemRepository taskItemRepository;
+    private final LeatherRequirementService leatherRequirementService;
+    private final SecurityUtil securityUtil;
+
+    public boolean perProductEnabled() {
+        return systemConfigRepository.findByConfigKey(CONFIG_PER_PRODUCT)
+                .map(config -> "true".equalsIgnoreCase(String.valueOf(config.getConfigValue()).trim()))
+                .orElse(false);
     }
 
-    private void reverse(LeatherMovementEntity active) throws BusinessException {
-        // El bloqueo de la salida evita que la anulación desde el kardex y la del producto la reviertan dos veces.
-        var original = movements.findByIdForUpdate(active.getId()).orElse(null);
-        if (original == null || !"SALIDA".equals(original.getMovementType())) return;
-        var inventory = inventories.findByMaterialIdForUpdate(original.getMaterialId())
-                .orElseThrow(() -> new BusinessException("No hay inventario para revertir la entrega."));
+    /** Marca el cuero del producto como entregado; con el interruptor, primero lo descuenta del kardex. */
+    @Transactional(rollbackFor = Exception.class)
+    public void deliver(TaskEntity task, TaskItemEntity item) throws BusinessException {
+        if (perProductEnabled()) {
+            discount(task, item);
+        }
+        if (!Boolean.TRUE.equals(item.getLeatherDelivered())) {
+            item.setLeatherDelivered(true);
+            item.setLeatherDeliveredAt(GuatemalaDateTime.now());
+            taskItemRepository.save(item);
+        }
+    }
+
+    /**
+     * Desmarca el cuero del producto. Si tiene salida propia en el kardex se anula y el cuero vuelve al
+     * inventario, aunque el interruptor se haya apagado después de entregarlo.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void revert(TaskEntity task, TaskItemEntity item) throws BusinessException {
+        var active = movementRepository.findFirstByTaskItemIdAndMovementType(item.getId(), SALIDA);
+        if (active.isPresent()) {
+            reverse(active.get(), "Desmarcado en la tarea " + task.getCode());
+        }
+        item.setLeatherDelivered(false);
+        item.setLeatherDeliveredAt(null);
+        taskItemRepository.save(item);
+    }
+
+    private void discount(TaskEntity task, TaskItemEntity item) throws BusinessException {
+        // Ya entregado (con salida propia o con la bandera de antes del interruptor): no se descuenta otra vez.
+        if (Boolean.TRUE.equals(item.getLeatherDelivered())
+                || movementRepository.findFirstByTaskItemIdAndMovementType(item.getId(), SALIDA).isPresent()) {
+            return;
+        }
+        var need = needOf(item);
+        if (need == null || need.noneRequired()) {
+            return;
+        }
+        if (need.blocked()) {
+            throw new BusinessException(need.reason() + " (" + describe(item) + "). Complete la receta o registre "
+                    + "la entrega de cuero por orden en el kardex.");
+        }
+        Long orderId = lineOrderId(task, item);
+        // La bodega ya entregó ese cuero a la OP desde el kardex: el producto queda cubierto sin otra salida.
+        if (orderId != null && hasOrderDelivery(orderId, need.materialId())) {
+            return;
+        }
+        LeatherInventoryEntity inventory = inventoryRepository.findByMaterialIdForUpdate(need.materialId())
+                .orElseThrow(() -> new BusinessException("No hay inventario del cuero que pide la receta de "
+                        + describe(item) + "."));
+        if (inventory.getQuantityAvailable().compareTo(need.qtyFt2()) < 0) {
+            throw new BusinessException("Cuero insuficiente para " + describe(item) + ": se necesitan "
+                    + need.qtyFt2() + " ft² y hay " + inventory.getQuantityAvailable() + " ft² en el kardex.");
+        }
+        inventory.setQuantityAvailable(inventory.getQuantityAvailable().subtract(need.qtyFt2()));
+        inventory.setTotalDelivered(inventory.getTotalDelivered().add(need.qtyFt2()));
+        inventoryRepository.save(inventory);
+        movementRepository.save(LeatherMovementEntity.builder()
+                .movementType(SALIDA)
+                .materialId(need.materialId())
+                .quantity(need.qtyFt2())
+                .movementDate(GuatemalaDateTime.today())
+                .productionOrderId(orderId)
+                .taskItemId(item.getId())
+                .observations("Entrega por producto: tarea " + task.getCode() + ", " + describe(item)
+                        + " (" + nz(item.getQuantity()) + " u.)")
+                .balanceAfter(inventory.getQuantityAvailable())
+                .createdBy(securityUtil.getCurrentUserId())
+                .build());
+    }
+
+    private void reverse(LeatherMovementEntity active, String reason) throws BusinessException {
+        LeatherMovementEntity original = movementRepository.findByIdForUpdate(active.getId()).orElse(null);
+        if (original == null || !SALIDA.equals(original.getMovementType())) {
+            return;
+        }
+        LeatherInventoryEntity inventory = inventoryRepository.findByMaterialIdForUpdate(original.getMaterialId())
+                .orElseThrow(() -> new BusinessException("No hay inventario para devolver el cuero."));
         inventory.setQuantityAvailable(inventory.getQuantityAvailable().add(original.getQuantity()));
         inventory.setTotalDelivered(inventory.getTotalDelivered().subtract(original.getQuantity()));
-        inventories.save(inventory);
-        original.setMovementType("ANULADO");
-        movements.saveAndFlush(original);
-        movements.save(LeatherMovementEntity.builder().movementType("ANULADO")
-                .taskItemId(original.getTaskItemId()).productionOrderId(original.getProductionOrderId())
-                .materialId(original.getMaterialId()).quantity(original.getQuantity())
-                .movementDate(GuatemalaDateTime.today()).balanceAfter(inventory.getQuantityAvailable())
-                .observations("Reversión de entrega #" + original.getId())
-                .createdBy(security.getCurrentUserId()).build());
+        inventoryRepository.save(inventory);
+        original.setMovementType(ANULADO);
+        original.setObservations(append(original.getObservations(), "ANULADO: " + reason));
+        movementRepository.saveAndFlush(original);
+        movementRepository.save(LeatherMovementEntity.builder()
+                .movementType(ANULADO)
+                .materialId(original.getMaterialId())
+                .quantity(original.getQuantity())
+                .movementDate(GuatemalaDateTime.today())
+                .productionOrderId(original.getProductionOrderId())
+                .taskItemId(original.getTaskItemId())
+                .observations("ANULACIÓN de movimiento #" + original.getId() + " — " + reason)
+                .balanceAfter(inventory.getQuantityAvailable())
+                .createdBy(securityUtil.getCurrentUserId())
+                .build());
     }
 
-    public void assertCanReverse(TaskEntity task, TaskItemEntity item) throws BusinessException {
-        if (Boolean.TRUE.equals(task.getDieCutReady()) || Boolean.TRUE.equals(item.getDieCutReady())
-                || Boolean.TRUE.equals(task.getMaterialsDelivered()) || Boolean.TRUE.equals(item.getMaterialsDelivered())
-                || !"PENDING".equals(task.getStatus())) {
-            throw new BusinessException("No se puede revertir cuero de un producto que ya avanzó en producción.");
+    // ─── Entrega por orden desde el kardex (solo con el interruptor) ──────────
+
+    /**
+     * Antes de registrar una entrega por orden: si ya salió cuero de ese material por producto para la OP,
+     * la entrega no puede pasar de lo que les falta a los productos aún sin cuero.
+     */
+    public void assertOrderDeliveryFits(Long orderId, Long materialId, BigDecimal quantity) throws BusinessException {
+        if (orderId == null || materialId == null || quantity == null) {
+            return;
+        }
+        boolean byProduct = movementRepository.findByProductionOrderIdOrderByCreatedAtDesc(orderId).stream()
+                .anyMatch(m -> SALIDA.equals(m.getMovementType()) && m.getTaskItemId() != null
+                        && materialId.equals(m.getMaterialId()));
+        if (!byProduct) {
+            return;
+        }
+        BigDecimal pending = BigDecimal.ZERO;
+        Map<Long, TaskEntity> tasks = new LinkedHashMap<>();
+        for (TaskItemEntity item : orderItems(orderId)) {
+            if (Boolean.TRUE.equals(item.getLeatherDelivered())) continue;
+            // Las canceladas no esperan cuero; con la bandera de la tarea el producto ya puede troquelarse.
+            TaskEntity task = tasks.computeIfAbsent(item.getTaskId(), id -> taskRepository.findById(id).orElse(null));
+            if (task == null || "CANCELLED".equals(task.getStatus()) || Boolean.TRUE.equals(task.getLeatherDelivered())) continue;
+            var need = needOf(item);
+            if (need != null && !need.blocked() && materialId.equals(need.materialId())) {
+                pending = pending.add(need.qtyFt2());
+            }
+        }
+        if (quantity.compareTo(pending) > 0) {
+            throw new BusinessException("Parte de este cuero ya salió por producto para la orden; a los productos "
+                    + "que siguen sin cuero les faltan " + pending + " ft². Registre como máximo esa cantidad.");
         }
     }
 
-    public void assertMovementCanReverse(LeatherMovementEntity movement) throws BusinessException {
-        if (!"SALIDA".equals(movement.getMovementType()) || movement.getProductionOrderId() == null) return;
-        for (var task : tasks.findByProductionOrderId(movement.getProductionOrderId())) {
-            if ("CANCELLED".equals(task.getStatus())) continue;
-            var detail = items.findByTaskId(task.getId());
-            if (detail.isEmpty() && movement.getTaskItemId() == null
-                    && (!"PENDING".equals(task.getStatus()) || Boolean.TRUE.equals(task.getDieCutReady())
-                    || Boolean.TRUE.equals(task.getMaterialsDelivered()))) {
-                throw new BusinessException("No se puede revertir cuero de una tarea que ya avanzó en producción.");
-            }
-            for (var item : detail) {
-                if (movement.getTaskItemId() == null || Objects.equals(movement.getTaskItemId(), item.getId())) {
-                    assertCanReverse(task, item);
+    /**
+     * Tras una entrega por orden abre los productos de esa OP (estén en la tarea que estén) que usan ese cuero,
+     * los que no necesitan cuero y los que no tienen receta, que de otro modo no tendrían cómo abrirse.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void openOrderItems(Long orderId, Long materialId) {
+        if (orderId == null) {
+            return;
+        }
+        Map<Long, TaskEntity> touched = new LinkedHashMap<>();
+        for (TaskItemEntity item : orderItems(orderId)) {
+            if (Boolean.TRUE.equals(item.getLeatherDelivered())) continue;
+            TaskEntity task = touched.computeIfAbsent(item.getTaskId(),
+                    id -> taskRepository.findById(id).orElse(null));
+            if (task == null || "CANCELLED".equals(task.getStatus()) || Boolean.TRUE.equals(task.getLeatherDelivered())) continue;
+            var need = needOf(item);
+            boolean otherLeather = need != null && !need.blocked() && !need.noneRequired()
+                    && !Objects.equals(need.materialId(), materialId);
+            if (otherLeather) continue;
+            item.setLeatherDelivered(true);
+            item.setLeatherDeliveredAt(GuatemalaDateTime.now());
+            taskItemRepository.save(item);
+        }
+        for (TaskEntity task : touched.values()) {
+            if (task != null) refreshTaskFlag(task, false);
+        }
+    }
+
+    // ─── Anulación desde el kardex de una salida por producto ─────────────────
+
+    /** Una salida por producto solo se anula mientras ese producto no se haya troquelado ni empezado. */
+    public void assertCanCancel(LeatherMovementEntity movement) throws BusinessException {
+        if (movement.getTaskItemId() == null || !SALIDA.equals(movement.getMovementType())) {
+            return;
+        }
+        TaskItemEntity item = taskItemRepository.findById(movement.getTaskItemId()).orElse(null);
+        TaskEntity task = item == null ? null : taskRepository.findById(item.getTaskId()).orElse(null);
+        if (item == null || task == null) {
+            return;
+        }
+        if (Boolean.TRUE.equals(item.getDieCutReady()) || Boolean.TRUE.equals(task.getMaterialsDelivered())
+                || "IN_PROGRESS".equals(task.getStatus()) || "COMPLETED".equals(task.getStatus())) {
+            throw new BusinessException("No se puede anular: " + describe(item) + " de la tarea " + task.getCode()
+                    + " ya se troqueló o avanzó en producción.");
+        }
+    }
+
+    /** Tras anular una salida por producto, el producto vuelve a quedar sin cuero. */
+    @Transactional(rollbackFor = Exception.class)
+    public void afterCancel(LeatherMovementEntity movement) {
+        if (movement.getTaskItemId() == null) {
+            return;
+        }
+        taskItemRepository.findById(movement.getTaskItemId()).ifPresent(item -> {
+            item.setLeatherDelivered(false);
+            item.setLeatherDeliveredAt(null);
+            taskItemRepository.save(item);
+            taskRepository.findById(item.getTaskId()).ifPresent(task -> refreshTaskFlag(task, true));
+        });
+    }
+
+    /** Productos con salida de cuero activa: borrarlos dejaría ese cuero fuera del inventario sin dueño. */
+    public boolean hasActiveDeliveries(Collection<Long> taskItemIds) {
+        return taskItemIds != null && !taskItemIds.isEmpty()
+                && movementRepository.existsByTaskItemIdInAndMovementType(taskItemIds, SALIDA);
+    }
+
+    // ─── Apoyo ────────────────────────────────────────────────────────────────
+
+    /** Líneas propias de la OP en cualquier tarea, más los productos sin línea de las tareas de esa OP. */
+    private List<TaskItemEntity> orderItems(Long orderId) {
+        List<TaskItemEntity> result = new ArrayList<>(taskItemRepository.findBaseLineItemsByProductionOrderId(orderId));
+        for (TaskEntity task : taskRepository.findByProductionOrderId(orderId)) {
+            for (TaskItemEntity item : taskItemRepository.findByTaskId(task.getId())) {
+                if (item.getProductionOrderItemId() == null && !Boolean.TRUE.equals(item.getDaySaleExtra())) {
+                    result.add(item);
                 }
             }
         }
+        return result;
     }
 
-    // Solo abre la compuerta: una bandera sin salida propia puede venir de una entrega anterior al kardex por producto.
-    @Transactional(rollbackFor = Exception.class)
-    public void syncOrderDeliveries(Long orderId) throws BusinessException {
-        if (orderId == null) return;
-        var previous = movements.findByProductionOrderIdOrderByCreatedAtDesc(orderId);
-        Map<Long, Boolean> coverage = new HashMap<>();
-        for (var task : tasks.findByProductionOrderId(orderId)) {
-            if (!"PENDING".equals(task.getStatus())) continue;
-            var detail = items.findByTaskId(task.getId());
-            for (var item : detail) {
-                if (Boolean.TRUE.equals(item.getLeatherDelivered()) || !isCovered(orderId, item, previous, coverage)) continue;
-                item.setLeatherDelivered(true);
-                item.setLeatherDeliveredAt(GuatemalaDateTime.now());
-                items.save(item);
+    private LeatherRequirementService.LeatherNeed needOf(TaskItemEntity item) {
+        if (item.getProductId() == null) {
+            return null;
+        }
+        var product = productRepository.findById(item.getProductId()).orElse(null);
+        return product == null ? null : leatherRequirementService.resolveNeed(product, item.getColorId(), nz(item.getQuantity()));
+    }
+
+    private Long lineOrderId(TaskEntity task, TaskItemEntity item) {
+        if (item.getProductionOrderItemId() != null) {
+            var line = productionOrderItemRepository.findById(item.getProductionOrderItemId()).orElse(null);
+            if (line != null) {
+                return line.getProductionOrderId();
             }
-            if (!detail.isEmpty() && !Boolean.TRUE.equals(task.getLeatherDelivered())
-                    && detail.stream().allMatch(item -> Boolean.TRUE.equals(item.getLeatherDelivered()))) {
-                task.setLeatherDelivered(true);
-                task.setLeatherDeliveredAt(GuatemalaDateTime.now());
-                tasks.save(task);
-            }
+        }
+        return task.getProductionOrderId();
+    }
+
+    private boolean hasOrderDelivery(Long orderId, Long materialId) {
+        return movementRepository.findByProductionOrderIdOrderByCreatedAtDesc(orderId).stream()
+                .anyMatch(m -> SALIDA.equals(m.getMovementType()) && m.getTaskItemId() == null
+                        && Objects.equals(m.getMaterialId(), materialId));
+    }
+
+    /** La bandera de la tarea es el Y de sus productos; abrir productos nunca la baja, anular sí. */
+    private void refreshTaskFlag(TaskEntity task, boolean allowDowngrade) {
+        List<TaskItemEntity> items = taskItemRepository.findByTaskId(task.getId());
+        if (items.isEmpty()) {
+            return;
+        }
+        boolean all = items.stream().allMatch(i -> Boolean.TRUE.equals(i.getLeatherDelivered()));
+        if (all != Boolean.TRUE.equals(task.getLeatherDelivered()) && (all || allowDowngrade)) {
+            task.setLeatherDelivered(all);
+            task.setLeatherDeliveredAt(all ? GuatemalaDateTime.now() : null);
+            taskRepository.save(task);
         }
     }
 
-    // Al anular una salida se retiran solo las banderas que dependían de ella; las registradas antes se conservan.
-    @Transactional(rollbackFor = Exception.class)
-    public void revokeAfterCancellation(LeatherMovementEntity cancelled) throws BusinessException {
-        if (cancelled == null || cancelled.getProductionOrderId() == null) return;
-        Long orderId = cancelled.getProductionOrderId();
-        var previous = movements.findByProductionOrderIdOrderByCreatedAtDesc(orderId);
-        Map<Long, Boolean> coverage = new HashMap<>();
-        for (var task : tasks.findByProductionOrderId(orderId)) {
-            if (!"PENDING".equals(task.getStatus())) continue;
-            boolean changed = false;
-            for (var item : items.findByTaskId(task.getId())) {
-                if (!Boolean.TRUE.equals(item.getLeatherDelivered())) continue;
-                boolean dependsOnCancelled = cancelled.getTaskItemId() != null
-                        ? Objects.equals(cancelled.getTaskItemId(), item.getId())
-                        : item.getLeatherDeliveredAt() != null && cancelled.getCreatedAt() != null
-                        && !item.getLeatherDeliveredAt().isBefore(cancelled.getCreatedAt());
-                if (!dependsOnCancelled || isCovered(orderId, item, previous, coverage)) continue;
-                item.setLeatherDelivered(false);
-                item.setLeatherDeliveredAt(null);
-                items.save(item);
-                changed = true;
-            }
-            if (changed) {
-                task.setLeatherDelivered(false);
-                task.setLeatherDeliveredAt(null);
-                tasks.save(task);
-            }
-        }
+    private static String describe(TaskItemEntity item) {
+        String code = item.getProductCode() == null ? "" : item.getProductCode().trim();
+        String color = item.getColorName() == null ? "" : item.getColorName().trim();
+        String label = code.isEmpty() ? "el producto" : code;
+        return color.isEmpty() ? label : label + " " + color;
     }
 
-    // Una entrega por orden no puede repetir el cuero que ya salió por producto.
-    public void assertManualDeliveryFits(Long orderId, Long materialId, BigDecimal quantity) throws BusinessException {
-        if (orderId == null || materialId == null || quantity == null) return;
-        var previous = movements.findByProductionOrderIdOrderByCreatedAtDesc(orderId);
-        BigDecimal byProduct = deliveredQuantity(previous, materialId, true);
-        if (byProduct.signum() <= 0) return;
-        BigDecimal remaining = orderMaterialNeed(orderId, materialId).subtract(deliveredQuantity(previous, materialId, false)).max(BigDecimal.ZERO);
-        if (quantity.compareTo(remaining) > 0) {
-            throw new BusinessException("La orden ya recibió " + byProduct + " ft² de este cuero por producto; la entrega por orden admite hasta "
-                    + remaining + " ft².");
-        }
+    private static String append(String base, String extra) {
+        return base == null || base.isBlank() ? extra : base + " | " + extra;
     }
 
-    private boolean isCovered(Long orderId, TaskItemEntity item, List<LeatherMovementEntity> previous, Map<Long, Boolean> coverage)
-            throws BusinessException {
-        var product = item.getProductId() == null ? null : products.findById(item.getProductId()).orElse(null);
-        if (product == null) return false;
-        var need = requirements.resolveNeed(product, item.getColorId(), item.getQuantity() == null ? 0 : item.getQuantity());
-        if (need.blocked()) return false;
-        if (need.noneRequired() || previous.stream().anyMatch(m -> Objects.equals(m.getTaskItemId(), item.getId())
-                && "SALIDA".equals(m.getMovementType()))) return true;
-        Boolean covered = coverage.get(need.materialId());
-        if (covered == null) {
-            covered = orderMaterialCovered(orderId, need.materialId(), previous);
-            coverage.put(need.materialId(), covered);
-        }
-        return covered;
-    }
-
-    private static BigDecimal deliveredQuantity(List<LeatherMovementEntity> previous, Long materialId, boolean onlyByProduct) {
-        return previous.stream().filter(m -> "SALIDA".equals(m.getMovementType()) && Objects.equals(m.getMaterialId(), materialId)
-                        && (!onlyByProduct || m.getTaskItemId() != null))
-                .map(LeatherMovementEntity::getQuantity).reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
-    private boolean hasManualDelivery(Long orderId) {
-        return orderId != null && movements.findByProductionOrderIdOrderByCreatedAtDesc(orderId).stream()
-                .anyMatch(m -> m.getTaskItemId() == null && "SALIDA".equals(m.getMovementType()));
-    }
-
-    private boolean orderMaterialCovered(Long orderId, Long materialId, List<LeatherMovementEntity> previous)
-            throws BusinessException {
-        BigDecimal delivered = deliveredQuantity(previous, materialId, false);
-        if (delivered.signum() <= 0) return false;
-        BigDecimal total = orderMaterialNeed(orderId, materialId);
-        return total.signum() > 0 && delivered.compareTo(total) >= 0;
-    }
-
-    private BigDecimal orderMaterialNeed(Long orderId, Long materialId) throws BusinessException {
-        BigDecimal total = BigDecimal.ZERO;
-        for (var line : orderItems.findByProductionOrderId(orderId)) {
-            var product = products.findById(line.getProductId()).orElse(null);
-            if (product == null) continue;
-            int quantity = line.getQuantity() == null ? 0 : line.getQuantity();
-            if (quantity == 0 && line.getSizesData() != null) {
-                try {
-                    for (var value : mapper.readTree(line.getSizesData())) quantity += value.asInt();
-                } catch (Exception ex) { throw new BusinessException("Tallas inválidas en la receta de cuero de la orden."); }
-            }
-            var need = requirements.resolveNeed(product, line.getColorId(), quantity);
-            if (!need.blocked() && Objects.equals(need.materialId(), materialId)) total = total.add(need.qtyFt2());
-        }
-        return total;
+    private static int nz(Integer value) {
+        return value == null ? 0 : value;
     }
 }

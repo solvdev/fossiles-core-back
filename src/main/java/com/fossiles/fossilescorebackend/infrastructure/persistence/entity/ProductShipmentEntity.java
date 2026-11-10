@@ -24,6 +24,14 @@ public class ProductShipmentEntity {
     @Column(name = "distribution_id")
     private Long distributionId;
 
+    /**
+     * Excepción autorizada: envío directo a kiosko que NO pertenece a ninguna distribución.
+     * La regla chk_product_shipment_kiosk_distribution la deja pasar solo si esto es true.
+     */
+    @Column(name = "without_distribution", nullable = false)
+    @Builder.Default
+    private boolean withoutDistribution = false;
+
     /** OP manual (INTERNA / CLIENTE_KIOSKO) sin distribución. */
     @Column(name = "production_order_id")
     private Long productionOrderId;

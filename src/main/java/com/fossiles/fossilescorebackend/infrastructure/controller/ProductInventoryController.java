@@ -30,6 +30,10 @@ public class ProductInventoryController {
     private final ProductInventoryOutflowReportService outflowReportService;
     private final ProductKardexHistoricoService kardexHistoricoService;
 
+    /** Editar la cantidad directo no deja kardex y descuadra el cuadre: todo cambio manual va por Ajuste de inventario. */
+    private static final String DIRECT_EDIT_MESSAGE =
+            "No se puede editar la cantidad directamente (no deja kardex). Use Ajuste de inventario.";
+
     // ========== PRODUCT INVENTORY LOCATION ==========
 
     @GetMapping
@@ -71,16 +75,14 @@ public class ProductInventoryController {
     @PostMapping
     public ResponseEntity<ProductInventoryLocationResponse> createOrUpdateInventory(
             @Valid @RequestBody ProductInventoryLocationRequest request) throws ResourceNotFoundException, BusinessException {
-        ProductInventoryLocationResponse response = productInventoryService.createOrUpdateInventory(request);
-        return ResponseEntity.ok(response);
+        throw new BusinessException(DIRECT_EDIT_MESSAGE);
     }
 
     @PutMapping
     public ResponseEntity<ProductInventoryLocationResponse> updateInventory(
             @Valid @RequestBody ProductInventoryUpdateRequest request)
             throws ResourceNotFoundException, BusinessException {
-        ProductInventoryLocationResponse response = productInventoryService.updateInventory(request);
-        return ResponseEntity.ok(response);
+        throw new BusinessException(DIRECT_EDIT_MESSAGE);
     }
 
     // ========== KARDEX ==========

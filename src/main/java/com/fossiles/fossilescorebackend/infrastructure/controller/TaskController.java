@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.CreateManualTaskRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.TaskBoardResponse;
 import com.fossiles.fossilescorebackend.application.dto.request.PlanWindowRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DistributionQueueProductionOrderResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.MaterialsCinchoOrderResponse;
@@ -29,6 +30,7 @@ import com.fossiles.fossilescorebackend.application.service.TaskDeskBackfillServ
 import com.fossiles.fossilescorebackend.application.service.TaskDeskAssignerService;
 import com.fossiles.fossilescorebackend.application.service.ProductionCenterCache;
 import com.fossiles.fossilescorebackend.application.service.TaskOrganizerService;
+import com.fossiles.fossilescorebackend.application.service.TaskLeatherDeliveryService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
@@ -77,7 +79,7 @@ public class TaskController {
     private final BomItemRepository bomItemRepository;
     private final MaterialRepository materialRepository;
     private final LeatherMovementRepository leatherMovementRepository;
-    private final com.fossiles.fossilescorebackend.application.service.TaskLeatherDeliveryService taskLeatherDeliveryService;
+    private final TaskLeatherDeliveryService taskLeatherDeliveryService;
     private final MaterialConsumptionService materialConsumptionService;
     private final ProductionTaskGenerationService productionTaskGenerationService;
     private final TaskCodeGenerator taskCodeGenerator;
@@ -157,21 +159,6 @@ public class TaskController {
             throws ResourceNotFoundException, BusinessException {
         TaskEntity task = taskOrganizerService.createManualTask(request);
         return ResponseEntity.ok(toResponse(task));
-    }
-
-    @PostMapping("/auto-plan")
-    public ResponseEntity<ProductionAutoPlanResult> autoPlan(
-            @RequestParam(required = false) Long productionOrderId,
-            @RequestParam(defaultValue = "false") boolean regenerate,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date)
-            throws ResourceNotFoundException, BusinessException {
-        if (regenerate) {
-            return ResponseEntity.ok(productionAutoPlannerService.regenerate(productionOrderId, date));
-        }
-        if (productionOrderId != null) {
-            return ResponseEntity.ok(productionAutoPlannerService.planOrder(productionOrderId, date));
-        }
-        return ResponseEntity.ok(productionAutoPlannerService.planPending(date));
     }
 
     /**
@@ -267,12 +254,11 @@ public class TaskController {
      * (aunque la fecha sea hoy), para retomarlas y reprogramarlas.
      */
     @GetMapping("/organizer/backlog")
-    public ResponseEntity<List<TaskResponse>> getPendingBacklog() {
-        LocalDate today = GuatemalaDateTime.today();
-        List<TaskResponse> tasks = taskRepository.findPendingBacklog(today).stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
-        return ResponseEntity.ok(tasks);
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<TaskResponse>> getPendingBacklog(
+            @RequestParam(name = "page", required = false) Integer page,
+            @RequestParam(name = "size", required = false) Integer size) {
+        return pagedResponse(taskRepository.findPendingBacklog(GuatemalaDateTime.today()), page, size);
     }
 
     /**
@@ -293,20 +279,105 @@ public class TaskController {
      * que el front no necesita un formato nuevo.
      */
     @GetMapping("/organizer/die-cut-pending")
-    public ResponseEntity<List<TaskResponse>> getDieCutPending() {
-        List<TaskResponse> tasks = taskRepository.findPendingWithUncutItems().stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
-        return ResponseEntity.ok(tasks);
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<TaskResponse>> getDieCutPending(
+            @RequestParam(name = "page", required = false) Integer page,
+            @RequestParam(name = "size", required = false) Integer size) {
+        return pagedResponse(taskRepository.findPendingWithUncutItems(), page, size);
     }
 
     @GetMapping("/organizer/unfinished")
-    public ResponseEntity<List<TaskResponse>> getUnfinishedCarryOver() {
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<TaskResponse>> getUnfinishedCarryOver(
+            @RequestParam(name = "page", required = false) Integer page,
+            @RequestParam(name = "size", required = false) Integer size) {
+        return pagedResponse(taskRepository.findUnfinishedCarryOver(GuatemalaDateTime.today()), page, size);
+    }
+
+    /**
+     * Respuesta de lista con los ítems cargados en lote (antes eran una consulta por tarea).
+     * Sin {@code size} devuelve todo, igual que antes; con {@code size} recorta ANTES de cargar
+     * los ítems y deja el total en {@code X-Total-Count}.
+     */
+    private ResponseEntity<List<TaskResponse>> pagedResponse(List<TaskEntity> all, Integer page, Integer size) {
+        List<TaskEntity> slice = all;
+        if (size != null && size > 0) {
+            int pageSize = Math.min(size, 500);
+            int from = (int) Math.min((long) Math.max(page == null ? 0 : page, 0) * pageSize, all.size());
+            slice = all.subList(from, Math.min(from + pageSize, all.size()));
+        }
+        return ResponseEntity.ok()
+                .header("X-Total-Count", String.valueOf(all.size()))
+                .body(toResponses(slice));
+    }
+
+    /**
+     * Tablero de un día, liviano: una consulta de tareas activas (ese día, más las activas sin
+     * mesa), sus ítems en lote y tres conteos. No recorre órdenes de producción ni trae las
+     * tareas cerradas. Las tareas y líneas de cinchos se excluyen aquí, con la misma regla que el
+     * front usa en {@code buildTableCenterTasks}, así que el front no necesita la lista de OPs.
+     */
+    @GetMapping("/board")
+    @Transactional(readOnly = true)
+    public ResponseEntity<TaskBoardResponse> getBoard(
+            @RequestParam(name = "date", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        LocalDate day = date != null ? date : GuatemalaDateTime.today();
         LocalDate today = GuatemalaDateTime.today();
-        List<TaskResponse> tasks = taskRepository.findUnfinishedCarryOver(today).stream()
-                .map(this::toResponse)
+        // Solo lo del día hábil anterior se retoma; un día pasado, sábado o domingo, sin arrastre.
+        LocalDate carryFrom = !day.isBefore(today) && ProductionPlanningConstants.isWorkday(day)
+                ? ProductionPlanningConstants.previousWorkday(day) : null;
+        List<TaskResponse> tasks = toResponses(taskRepository.findBoardTasks(day, carryFrom)).stream()
+                .map(TaskController::withoutCinchoLines)
+                .filter(Objects::nonNull)
                 .collect(Collectors.toList());
-        return ResponseEntity.ok(tasks);
+        return ResponseEntity.ok(TaskBoardResponse.builder()
+                .date(day)
+                .tasks(tasks)
+                .counts(TaskBoardResponse.Counts.builder()
+                        .dieCutPending(taskRepository.countPendingWithUncutItems())
+                        .backlog(taskRepository.countPendingBacklog(today))
+                        .unfinished(taskRepository.countUnfinishedCarryOver(today))
+                        .build())
+                .build());
+    }
+
+    private static boolean isMesaCinchosLine(String productCode, String productName) {
+        return CinchoProductUtils.isMesaCinchosLineForProduction(
+                ProductEntity.builder().code(productCode).name(productName).build());
+    }
+
+    /**
+     * Misma regla que {@code taskForTableCenterView} del front: fuera las tareas OPC y las que
+     * solo tienen líneas de cinchos/pulseras; a las mixtas se les quitan esas líneas y se
+     * recalculan cantidad y horas. {@code null} = la tarea no va en el tablero.
+     */
+    static TaskResponse withoutCinchoLines(TaskResponse task) {
+        if (task == null) {
+            return null;
+        }
+        String code = task.getProductionOrderCode() == null ? "" : task.getProductionOrderCode().trim().toUpperCase(Locale.ROOT);
+        if (code.matches("^OPC[FM]?-.*")) {
+            return null;
+        }
+        List<TaskResponse.TaskItemDTO> items = task.getItems();
+        if (items == null || items.isEmpty()) {
+            return isMesaCinchosLine(task.getProductCode(), task.getProductName()) ? null : task;
+        }
+        List<TaskResponse.TaskItemDTO> kept = items.stream()
+                .filter(i -> !isMesaCinchosLine(i.getProductCode(), i.getProductName()))
+                .collect(Collectors.toList());
+        if (kept.isEmpty()) {
+            return null;
+        }
+        if (kept.size() == items.size()) {
+            return task;
+        }
+        task.setItems(kept);
+        task.setQuantity(kept.stream().mapToInt(i -> i.getQuantity() == null ? 0 : i.getQuantity()).sum());
+        task.setEstimatedHours(Math.round(kept.stream()
+                .mapToDouble(i -> i.getEstimatedHours() == null ? 0.0 : i.getEstimatedHours()).sum() * 100.0) / 100.0);
+        return task;
     }
 
     /**
@@ -1143,7 +1214,7 @@ public class TaskController {
                 || ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE.equals(effectiveStatus))) {
             taskDeskBackfillService.backfillFreedDeskAfterCompletion(deskToFreeAfterComplete, backfillAnchorDate, getNumDesks());
         }
-        productionTaskLifecycleService.syncProductionOrderStatusFromTasks(updated.getProductionOrderId());
+        productionTaskLifecycleService.syncProductionOrderStatusesOfTask(updated);
         return ResponseEntity.ok(toResponse(updated));
     }
 
@@ -1155,7 +1226,7 @@ public class TaskController {
                                                   @RequestBody(required = false) Map<String, String> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity task = taskWorkflowService.pause(id, body == null ? null : body.get("reason"));
-        productionTaskLifecycleService.syncProductionOrderStatusFromTasks(task.getProductionOrderId());
+        productionTaskLifecycleService.syncProductionOrderStatusesOfTask(task);
         return ResponseEntity.ok(toResponse(task));
     }
 
@@ -1472,8 +1543,13 @@ public class TaskController {
 
         List<TaskItemEntity> taskItems = taskItemRepository.findByTaskId(entity.getId());
         if (!taskItems.isEmpty()) {
+            // Todos o ninguno: si a un producto le falta cuero en el kardex, no queda la tarea a medias.
             for (TaskItemEntity item : taskItems) {
-                taskLeatherDeliveryService.setDelivered(entity, item, delivered);
+                if (delivered) {
+                    taskLeatherDeliveryService.deliver(entity, item);
+                } else {
+                    taskLeatherDeliveryService.revert(entity, item);
+                }
             }
             entity.setLeatherDelivered(areTaskItemsLeatherDelivered(entity));
             entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? GuatemalaDateTime.now() : null);
@@ -1508,7 +1584,11 @@ public class TaskController {
             throw new BusinessException("No se puede desmarcar cuero entregado porque la tarea ya avanzó a una fase posterior.");
         }
 
-        taskLeatherDeliveryService.setDelivered(entity, item, delivered);
+        if (delivered) {
+            taskLeatherDeliveryService.deliver(entity, item);
+        } else {
+            taskLeatherDeliveryService.revert(entity, item);
+        }
 
         entity.setLeatherDelivered(areTaskItemsLeatherDelivered(entity));
         entity.setLeatherDeliveredAt(Boolean.TRUE.equals(entity.getLeatherDelivered()) ? GuatemalaDateTime.now() : null);
@@ -1557,6 +1637,69 @@ public class TaskController {
             updated = taskDeskAssignerService.assignIfReady(updated.getId()).orElse(updated);
         }
         return ResponseEntity.ok(toResponse(updated));
+    }
+
+    /**
+     * Marca el corte de todos los productos de la tarea que falten, de una vez.
+     *
+     * <p>Es el «Cortar todo» de Armar el día y de la lista por troquelar: marcar producto por
+     * producto, con un diálogo cada uno, era lo tedioso. Con {@code deliverLeather} entrega
+     * antes el cuero de los que no lo tienen (el cuero va antes del troquel); sin él, esos se
+     * saltan y la respuesta dice cuántos. Todo en una transacción y la mesa se asigna una vez.
+     */
+    @PutMapping("/{id:\\d+}/die-cut/all")
+    @Transactional(rollbackFor = Exception.class)
+    public ResponseEntity<Map<String, Object>> setTaskDieCutAll(
+            @PathVariable Long id,
+            @RequestBody(required = false) Map<String, Object> body)
+            throws ResourceNotFoundException, BusinessException {
+        TaskEntity entity = taskRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Task", id));
+        if (!"PENDING".equals(entity.getStatus())) {
+            throw new BusinessException("La tarea " + entity.getCode() + " ya no está pendiente: el corte se marca antes de empezar.");
+        }
+        boolean deliverLeather = body != null && body.get("deliverLeather") != null
+                && Boolean.parseBoolean(body.get("deliverLeather").toString());
+
+        int cut = 0;
+        int leather = 0;
+        int withoutLeather = 0;
+        for (TaskItemEntity item : taskItemRepository.findByTaskId(entity.getId())) {
+            if (Boolean.TRUE.equals(item.getDieCutReady())) {
+                continue;
+            }
+            if (!hasLeatherForItem(entity, item)) {
+                if (!deliverLeather) {
+                    withoutLeather++;
+                    continue;
+                }
+                // Mismo camino que el clic por producto: con el interruptor, el cuero sale del kardex.
+                taskLeatherDeliveryService.deliver(entity, item);
+                leather++;
+            }
+            item.setDieCutReady(true);
+            item.setDieCutDate(GuatemalaDateTime.today());
+            taskItemRepository.save(item);
+            cut++;
+        }
+
+        entity.setLeatherDelivered(areTaskItemsLeatherDelivered(entity) || Boolean.TRUE.equals(entity.getLeatherDelivered()));
+        if (Boolean.TRUE.equals(entity.getLeatherDelivered()) && entity.getLeatherDeliveredAt() == null) {
+            entity.setLeatherDeliveredAt(GuatemalaDateTime.now());
+        }
+        entity.setDieCutReady(areTaskItemsDieCut(entity));
+        entity.setDieCutDate(Boolean.TRUE.equals(entity.getDieCutReady()) ? GuatemalaDateTime.today() : null);
+        TaskEntity updated = taskRepository.save(entity);
+        if (Boolean.TRUE.equals(updated.getDieCutReady())) {
+            updated = taskDeskAssignerService.assignIfReady(updated.getId()).orElse(updated);
+        }
+
+        Map<String, Object> out = new HashMap<>();
+        out.put("task", toResponse(updated));
+        out.put("cutItems", cut);
+        out.put("leatherDeliveredItems", leather);
+        out.put("skippedWithoutLeather", withoutLeather);
+        return ResponseEntity.ok(out);
     }
 
     /**
@@ -1741,11 +1884,41 @@ public class TaskController {
         return ResponseEntity.ok(toResponse(taskDeskAssignerService.assignOrExplain(id)));
     }
 
+    /**
+     * Una tarea empezada un día anterior y aún en proceso se termina en la misma mesa y con su
+     * fecha: la boleta impresa lleva esa mesa y el encargado de esa mesa en esa fecha. Mandar el
+     * mismo valor que ya tiene no es mover, así que se deja pasar.
+     */
+    private static void rejectMovingCarryOver(TaskEntity entity, Map<String, Object> body) throws BusinessException {
+        if (!"IN_PROGRESS".equals(entity.getStatus()) || entity.getScheduledDate() == null
+                || !entity.getScheduledDate().isBefore(GuatemalaDateTime.today())) {
+            return;
+        }
+        boolean deskChange = false;
+        if (body.containsKey("desk")) {
+            Object deskVal = body.get("desk");
+            Integer nueva = deskVal != null ? Integer.parseInt(deskVal.toString()) : null;
+            deskChange = !Objects.equals(nueva, entity.getDesk());
+        }
+        boolean dateChange = false;
+        if (body.containsKey("scheduledDate")) {
+            String dateStr = (String) body.get("scheduledDate");
+            LocalDate nueva = dateStr != null && !dateStr.isEmpty() ? LocalDate.parse(dateStr) : null;
+            dateChange = !Objects.equals(nueva, entity.getScheduledDate());
+        }
+        if (deskChange || dateChange) {
+            throw new BusinessException("La tarea " + entity.getCode() + " se empezó el " + entity.getScheduledDate()
+                    + (entity.getDesk() != null ? " en la mesa " + entity.getDesk() : "")
+                    + " y sigue en proceso: se termina en la misma mesa para que coincida con su boleta.");
+        }
+    }
+
     @PutMapping("/{id:\\d+}/schedule")
     public ResponseEntity<TaskResponse> scheduleTask(@PathVariable Long id, @RequestBody Map<String, Object> body)
             throws ResourceNotFoundException, BusinessException {
         TaskEntity entity = taskRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Task", id));
+        rejectMovingCarryOver(entity, body);
 
         if (body.containsKey("scheduledDate")) {
             String dateStr = (String) body.get("scheduledDate");
@@ -1972,8 +2145,13 @@ public class TaskController {
 
         boolean ready = body.get("dieCutReady") != null && Boolean.parseBoolean(body.get("dieCutReady").toString());
         if (ready && !Boolean.TRUE.equals(entity.getLeatherDelivered())) {
-            taskLeatherDeliveryService.syncOrderDeliveries(entity.getProductionOrderId());
-            if (!Boolean.TRUE.equals(entity.getLeatherDelivered())) {
+            // Backward compatibility: if leather movement exists for the PO, sync gate automatically.
+            if (hasActiveLeatherDelivery(entity.getProductionOrderId())) {
+                entity.setLeatherDelivered(true);
+                if (entity.getLeatherDeliveredAt() == null) {
+                    entity.setLeatherDeliveredAt(GuatemalaDateTime.now());
+                }
+            } else {
                 throw new BusinessException("No se puede troquelar sin entrega de cuero.");
             }
         }
@@ -2048,20 +2226,25 @@ public class TaskController {
         if (entity == null) {
             throw new ResourceNotFoundException("Task", id);
         }
-        Long productionOrderId = entity.getProductionOrderId();
         var detail = taskItemRepository.findByTaskId(id);
+        List<Long> itemIds = detail.stream().map(TaskItemEntity::getId).toList();
+        if (taskLeatherDeliveryService.hasActiveDeliveries(itemIds)) {
+            throw new BusinessException("La tarea " + entity.getCode() + " tiene cuero entregado por producto en el kardex. "
+                    + "Desmarque el cuero de sus productos antes de eliminarla para que vuelva al inventario.");
+        }
         // Las tareas de cinchos nacen con cuero, corte y a veces materiales marcados: esas marcas no son avance.
         boolean bornWithGates = isCinchoTask(entity);
         if (!"PENDING".equals(entity.getStatus()) || Boolean.TRUE.equals(entity.getMaterialsDelivered())
                 || (!bornWithGates && (Boolean.TRUE.equals(entity.getLeatherDelivered()) || Boolean.TRUE.equals(entity.getDieCutReady())
                 || detail.stream().anyMatch(item -> Boolean.TRUE.equals(item.getLeatherDelivered())
                 || Boolean.TRUE.equals(item.getDieCutReady()) || Boolean.TRUE.equals(item.getMaterialsDelivered()))))
-                || (!detail.isEmpty() && leatherMovementRepository.existsByTaskItemIdIn(detail.stream().map(TaskItemEntity::getId).toList()))) {
+                || (!itemIds.isEmpty() && leatherMovementRepository.existsByTaskItemIdIn(itemIds))) {
             throw new BusinessException("La tarea tiene entregas o producción registrada; debe conservarse para mantener su historial.");
         }
+        Set<Long> orderIds = productionTaskLifecycleService.ordersOfTask(entity);
         taskItemRepository.deleteByTaskId(id);
         taskRepository.deleteById(id);
-        productionTaskLifecycleService.syncProductionOrderStatusFromTasks(productionOrderId);
+        orderIds.forEach(productionTaskLifecycleService::syncProductionOrderStatusFromTasks);
         return ResponseEntity.noContent().build();
     }
 
@@ -2453,7 +2636,8 @@ public class TaskController {
 
     /**
      * Si {@code targetDate} es hoy (GT): suma tareas activas sin programar, atrasadas, o con mesa asignada
-     * (aunque {@code scheduledDate} sea futura — ya están en mesa).
+     * (aunque {@code scheduledDate} sea futura — ya están en mesa), y las completadas de los últimos días
+     * a las que bodega aún no les registró materiales.
      */
     private List<TaskEntity> mergeActiveMaterialsBacklogForToday(LocalDate targetDate, List<TaskEntity> base) {
         Map<Long, TaskEntity> byId = new LinkedHashMap<>();
@@ -2467,6 +2651,11 @@ public class TaskController {
             if (shouldAugmentMaterialsDayWithTask(t, targetDate)) {
                 byId.putIfAbsent(t.getId(), t);
             }
+        }
+        // Completadas en producción sin materiales entregados: bodega todavía las debe despachar.
+        for (TaskEntity t : taskRepository.findCompletedWithoutMaterialsSince(
+                GuatemalaDateTime.now().minusDays(MaterialsTaskViewService.COMPLETED_PENDING_MATERIALS_DAYS))) {
+            byId.putIfAbsent(t.getId(), t);
         }
         return new ArrayList<>(byId.values());
     }

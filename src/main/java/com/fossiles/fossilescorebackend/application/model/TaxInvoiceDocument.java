@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -18,7 +19,7 @@ public class TaxInvoiceDocument {
 
     private String transactionId;
     private LocalDateTime issuedAt;
-    /** FACT (factura) o FCAM (factura cambiaria); por defecto FACT si viene vacío. */
+    /** FACT, FCAM, NCRE o NDEB; por defecto FACT si viene vacío. */
     private String documentType;
     /** Número de control interno ya asignado (serie de ubicación + correlativo); se refleja en la Adenda del DTE. */
     private String internalNumber;
@@ -40,8 +41,25 @@ public class TaxInvoiceDocument {
     /** Código de serie de control interno de la ubicación emisora (ej. "A1"), usado para generar internalNumber. */
     private String locationInternalSeriesCode;
 
+    /** Documento origen de una NCRE/NDEB (complemento ReferenciasNota); null en facturas. */
+    private NoteReference noteReference;
+
     @Builder.Default
     private List<Line> lines = new ArrayList<>();
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class NoteReference {
+        /** UUID (número de autorización) de la factura origen. */
+        private String originAuthorizationNumber;
+        private String originSerie;
+        private String originNumero;
+        /** Fecha de emisión registrada en SAT para la factura origen (zona Guatemala). */
+        private LocalDate originEmissionDate;
+        private String adjustmentReason;
+    }
 
     @Data
     @Builder
@@ -54,5 +72,16 @@ public class TaxInvoiceDocument {
         private BigDecimal quantity;
         private BigDecimal unitPrice;
         private BigDecimal lineTotal;
+        /**
+         * Línea B-1 cobrada por paquete ({@code chargedLineTotal}).
+         * Solo esas líneas ajustan el unitario del XML FEL.
+         */
+        private boolean bundlePriced;
+
+        /**
+         * Precio unitario editado por debajo del catálogo y guardado como unitario × cantidad.
+         * El XML usa ese unitario y el descuento de la línea. Las líneas de lista no lo marcan.
+         */
+        private boolean editedUnitPrice;
     }
 }

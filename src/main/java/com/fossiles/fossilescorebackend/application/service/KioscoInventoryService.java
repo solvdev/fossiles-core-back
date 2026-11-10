@@ -2057,7 +2057,7 @@ public class KioscoInventoryService {
     }
 
     /** Dimensión de stock de la que salió la venta POS {@code referenceId}; null si no hay movimiento VENTA. */
-    private String resolveSoldHardware(
+    public String resolveSoldHardware(
             Long locationId, Long productId, Long colorId, Long referenceId, String sizeKey
     ) {
         if (referenceId == null) {

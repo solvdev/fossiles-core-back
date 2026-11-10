@@ -53,6 +53,9 @@ public class ProductShipmentRequest {
 
         /** Precio unitario de la línea (opcional; cinchos con precio por talla). */
         private java.math.BigDecimal unitPrice;
+
+        /** Opcional: cantidad que propuso la sugerencia de reposición para esta línea. */
+        private java.math.BigDecimal suggestedQuantity;
     }
 
     @Data

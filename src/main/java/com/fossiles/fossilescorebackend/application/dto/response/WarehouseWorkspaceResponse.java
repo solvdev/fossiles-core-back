@@ -27,6 +27,8 @@ public class WarehouseWorkspaceResponse {
         private int receivedUnits;
         private int rejectedUnits;
         private int shippedUnits;
+        /** Se recibieron todas las piezas de la orden. */
+        private boolean complete;
         private boolean receiptClosed;
         private LocalDateTime warehouseReceiptClosedAt;
     }

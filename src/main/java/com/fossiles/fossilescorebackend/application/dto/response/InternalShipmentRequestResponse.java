@@ -40,6 +40,17 @@ public class InternalShipmentRequestResponse {
     private Boolean canGenerateOpi;
     private Long opiAuthorizedBy;
     private LocalDateTime opiAuthorizedAt;
+    /**
+     * Estado de stock (Devoluciones + Bodega PT) para solicitudes PENDIENTES de envío:
+     * DISPONIBLE (alcanza, se puede autorizar el envío), SIN_STOCK (falta, se autoriza la producción),
+     * EN_PRODUCCION (falta, pero la OPI ya está autorizada: esperar el ingreso a Bodega PT).
+     * Null si no aplica (solicitud ya resuelta, tipo OPI o no se pudo calcular).
+     */
+    private String stockStatus;
+    /** Unidades totales faltantes (suma de líneas con faltante). */
+    private BigDecimal stockShortageTotal;
+    /** Acción principal disponible para Contabilidad: AUTORIZAR_ENVIO, AUTORIZAR_PRODUCCION o ESPERAR_PRODUCCION. */
+    private String nextAction;
     private List<LineResponse> lines;
 
     @Data
@@ -57,5 +68,9 @@ public class InternalShipmentRequestResponse {
         private String size;
         private BigDecimal quantity;
         private BigDecimal catalogPrice;
+        /** Stock disponible hoy (Devoluciones + Bodega PT); solo en solicitudes pendientes. */
+        private BigDecimal availableQuantity;
+        /** Unidades que faltan para cubrir esta línea; 0 si alcanza. */
+        private BigDecimal shortageQuantity;
     }
 }

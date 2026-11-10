@@ -33,6 +33,15 @@ public class ProductDistributionEntity {
     @Column(name = "description", columnDefinition = "TEXT")
     private String description;
 
+    /** MANUAL (pantalla de distribuciones, envíos de OPK) o REPOSICION (sugerencia de reposición de kioscos). */
+    @Column(name = "origin", nullable = false, length = 20)
+    @Builder.Default
+    private String origin = DistributionOrigin.MANUAL;
+
+    /** Días de venta analizados cuando la distribución nace de la sugerencia de reposición. */
+    @Column(name = "replenishment_window_days")
+    private Integer replenishmentWindowDays;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -51,6 +60,9 @@ public class ProductDistributionEntity {
         updatedAt = LocalDateTime.now();
         if (status == null) {
             status = "DRAFT";
+        }
+        if (origin == null || origin.isBlank()) {
+            origin = DistributionOrigin.MANUAL;
         }
     }
 

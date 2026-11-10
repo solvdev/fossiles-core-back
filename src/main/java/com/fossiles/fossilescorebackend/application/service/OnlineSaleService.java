@@ -42,7 +42,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
-@Transactional
+@Transactional(rollbackFor = Exception.class)
 public class OnlineSaleService {
 
     private final OnlineSaleRepository saleRepository;
@@ -77,14 +77,34 @@ public class OnlineSaleService {
 
     // ─── CRUD ───────────────────────────────────────────────────────
 
+    /**
+     * Siguiente número de venta del mes de {@code saleDate} (como la columna «No.» del Excel de ventas: 1, 2, 3…
+     * y vuelve a 1 cada mes). Toma el mayor entre «ventas del mes + 1» y «número más alto del mes + 1»: así no repite
+     * aunque se haya borrado una venta, y el primer mes del cambio no choca con los números por día que ya existían.
+     */
+    String nextMonthlySaleNumber(LocalDate saleDate) {
+        LocalDate date = saleDate != null ? saleDate : com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime.today();
+        LocalDate start = date.withDayOfMonth(1);
+        LocalDate end = date.withDayOfMonth(date.lengthOfMonth());
+        List<String> numbers = saleRepository.findSaleNumbersBetween(start, end);
+        long max = 0;
+        for (String n : numbers) {
+            if (n == null) continue;
+            String t = n.trim();
+            if (!t.isEmpty() && t.length() < 10 && t.chars().allMatch(Character::isDigit)) {
+                max = Math.max(max, Long.parseLong(t));
+            }
+        }
+        return String.valueOf(Math.max(numbers.size(), max) + 1);
+    }
+
     public OnlineSaleResponse create(OnlineSaleRequest req) {
         OnlineSaleEntity entity = mapToEntity(new OnlineSaleEntity(), req);
         // Estado inicial siempre automático al crear desde formulario/API
         entity.setStatus("PENDIENTE");
 
-        // Generar número correlativo del día
-        long count = saleRepository.countBySaleDate(entity.getSaleDate()) + 1;
-        entity.setSaleNumber(String.valueOf(count));
+        // Número correlativo del mes (1, 2, 3… se reinicia cada mes)
+        entity.setSaleNumber(nextMonthlySaleNumber(entity.getSaleDate()));
         entity.setCreatedBy(securityUtil.getCurrentUserId());
 
         // Si vienen items, calcular totalAmount a partir de ellos
@@ -209,9 +229,17 @@ public class OnlineSaleService {
                 .collect(Collectors.toList()));
     }
 
-    public void delete(Long id) throws ResourceNotFoundException {
+    public void delete(Long id) throws ResourceNotFoundException, BusinessException {
         if (!saleRepository.existsById(id)) {
             throw new ResourceNotFoundException("Venta no encontrada con id: " + id);
+        }
+        // Borrarla dejaría su salida de inventario sin venta y la pieza nunca regresaría a Devoluciones.
+        if (productInventoryService.hasNetOutboundForReference(ProductInventoryService.REF_ONLINE_SALE_PREPARE, id)
+                || productInventoryService.hasNetOutboundForReference(ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH, id)
+                || !onlineSaleReturnLineRepository.findByOnlineSaleId(id).isEmpty()
+                || !productionOrderItemRepository.findByOnlineSaleId(id).isEmpty()) {
+            throw new BusinessException("Esta venta ya movió inventario o tiene orden de producción; no se puede eliminar. "
+                    + "Use «Anular», «Anular envío» o «Devolución» para que las piezas regresen a Devoluciones.");
         }
         itemRepository.deleteByOnlineSaleId(id);
         saleRepository.deleteById(id);
@@ -391,8 +419,7 @@ public class OnlineSaleService {
                 if (req.getSaleNumber() != null && !req.getSaleNumber().isBlank()) {
                     entity.setSaleNumber(req.getSaleNumber());
                 } else {
-                    long count = saleRepository.countBySaleDate(entity.getSaleDate()) + 1;
-                    entity.setSaleNumber(String.valueOf(count));
+                    entity.setSaleNumber(nextMonthlySaleNumber(entity.getSaleDate()));
                 }
 
                 // Establecer montos pre-calculados del CSV
@@ -524,21 +551,18 @@ public class OnlineSaleService {
         if (!"BUENO".equalsIgnoreCase(condition.trim())) {
             returnsLocation = productInventoryService.getOrCreateNonSellableReturnsLocation();
         }
-        List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(id);
+        List<ExchangeLine> lines = linesStillWithCustomer(sale);
 
-        if (items != null && !items.isEmpty()) {
-            for (OnlineSaleItemEntity item : items) {
-                incrementReturnPhysicalStock(sale, returnsLocation, item);
-            }
-        } else {
+        for (ExchangeLine line : lines) {
+            OnlineSaleItemEntity source = line.source();
             incrementReturnPhysicalStock(
                     sale,
                     returnsLocation,
-                    sale.getProductId(),
-                    sale.getColorId(),
-                    sale.getSize(),
-                    sale.getQuantity(),
-                    null);
+                    source.getProductId(),
+                    source.getColorId(),
+                    source.getSize(),
+                    line.quantity(),
+                    source.getId());
         }
 
         sale.setStatus("DEVOLUCION");
@@ -556,82 +580,63 @@ public class OnlineSaleService {
                 .build();
         OnlineSaleReturnEntity savedHeader = onlineSaleReturnRepository.save(header);
 
-        if (items != null && !items.isEmpty()) {
-            for (OnlineSaleItemEntity item : items) {
-                OnlineSaleReturnLineEntity line = OnlineSaleReturnLineEntity.builder()
-                        .returnId(savedHeader.getId())
-                        .productId(item.getProductId())
-                        .productCode(item.getProductCode())
-                        .productName(item.getProductName())
-                        .colorId(item.getColorId())
-                        .colorName(item.getColorName())
-                        .size(item.getSize())
-                        .quantity(item.getQuantity())
-                        .unitPrice(item.getUnitPrice())
-                        .build();
-                onlineSaleReturnLineRepository.save(line);
-
-                ReturnInventoryEntity returnEntry = ReturnInventoryEntity.builder()
-                        .onlineSaleId(id)
-                        .productId(item.getProductId())
-                        .productCode(item.getProductCode())
-                        .productName(item.getProductName())
-                        .colorId(item.getColorId())
-                        .colorName(item.getColorName())
-                        .size(item.getSize())
-                        .quantity(item.getQuantity())
-                        .unitPrice(item.getUnitPrice())
-                        .returnDate(GuatemalaDateTime.today())
-                        .returnReason(reason)
-                        .itemCondition(condition)
-                        .createdBy(securityUtil.getCurrentUserId())
-                        .build();
-                returnInventoryRepository.save(returnEntry);
-            }
-        } else {
+        for (ExchangeLine line : lines) {
+            OnlineSaleItemEntity source = line.source();
             onlineSaleReturnLineRepository.save(OnlineSaleReturnLineEntity.builder()
                     .returnId(savedHeader.getId())
-                    .productId(sale.getProductId())
-                    .productCode(sale.getProductCode())
-                    .productName(sale.getProductName())
-                    .colorId(sale.getColorId())
-                    .colorName(sale.getColorName())
-                    .size(sale.getSize())
-                    .quantity(sale.getQuantity())
-                    .unitPrice(sale.getUnitPrice())
+                    .productId(source.getProductId())
+                    .productCode(source.getProductCode())
+                    .productName(source.getProductName())
+                    .colorId(source.getColorId())
+                    .colorName(source.getColorName())
+                    .size(source.getSize())
+                    .quantity(line.quantity())
+                    .unitPrice(source.getUnitPrice())
                     .build());
 
-            ReturnInventoryEntity returnEntry = ReturnInventoryEntity.builder()
+            returnInventoryRepository.save(ReturnInventoryEntity.builder()
                     .onlineSaleId(id)
-                    .productId(sale.getProductId())
-                    .productCode(sale.getProductCode())
-                    .productName(sale.getProductName())
-                    .colorId(sale.getColorId())
-                    .colorName(sale.getColorName())
-                    .size(sale.getSize())
-                    .quantity(sale.getQuantity())
-                    .unitPrice(sale.getUnitPrice())
+                    .productId(source.getProductId())
+                    .productCode(source.getProductCode())
+                    .productName(source.getProductName())
+                    .colorId(source.getColorId())
+                    .colorName(source.getColorName())
+                    .size(source.getSize())
+                    .quantity(line.quantity())
+                    .unitPrice(source.getUnitPrice())
                     .returnDate(GuatemalaDateTime.today())
                     .returnReason(reason)
                     .itemCondition(condition)
                     .createdBy(securityUtil.getCurrentUserId())
-                    .build();
-            returnInventoryRepository.save(returnEntry);
+                    .build());
         }
 
         return toResponse(sale);
     }
 
-    private void incrementReturnPhysicalStock(OnlineSaleEntity sale, LocationEntity returnsLocation, OnlineSaleItemEntity item)
-            throws BusinessException {
-        incrementReturnPhysicalStock(
-                sale,
-                returnsLocation,
-                item.getProductId(),
-                item.getColorId(),
-                item.getSize(),
-                item.getQuantity(),
-                item.getId());
+    /**
+     * Lo que el cliente todavía tiene de la venta: lo vendido menos lo que ya regresó a Devoluciones por
+     * un CAMBIO. Sin este descuento, devolver una venta que tuvo un cambio acreditaba dos veces la pieza.
+     */
+    private List<ExchangeLine> linesStillWithCustomer(OnlineSaleEntity sale) {
+        Map<String, Integer> alreadyReturned = new HashMap<>(returnedQuantityByLine(sale.getId()));
+        List<ExchangeLine> lines = new ArrayList<>();
+        for (OnlineSaleItemEntity sold : resolveOriginalSaleLines(sale)) {
+            int qty = lineQuantity(sold.getQuantity());
+            if (sold.getProductId() != null) {
+                String key = exchangeLineKey(sold.getProductId(), sold.getColorId(), sold.getSize());
+                int returned = alreadyReturned.getOrDefault(key, 0);
+                int used = Math.min(returned, qty);
+                if (used > 0) {
+                    alreadyReturned.put(key, returned - used);
+                    qty -= used;
+                }
+            }
+            if (qty > 0) {
+                lines.add(new ExchangeLine(sold, qty));
+            }
+        }
+        return lines;
     }
 
     /**
@@ -673,7 +678,7 @@ public class OnlineSaleService {
      * Si hubo egreso de inventario (prepare/despacho), el stock regresa a bodega de devoluciones.
      * ENVIADO/ENTREGADO: use {@link #cancelDispatch} o {@link #markAsReturn}.
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public OnlineSaleResponse markAsVoid(Long id, String reason) throws ResourceNotFoundException, BusinessException {
         OnlineSaleEntity sale = saleRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Venta no encontrada con id: " + id));
@@ -691,6 +696,10 @@ public class OnlineSaleService {
         }
 
         restoreOnlineSaleStockToReturns(sale, "Anulación venta online", false);
+        // Piezas de su OPL que ya están en Bodega PT: nadie las va a despachar, pasan a Devoluciones.
+        String saleRef = sale.getSaleNumber() != null ? sale.getSaleNumber() : String.valueOf(sale.getId());
+        productionOrderWarehouseUnitService.moveReceivedUnitsToReturns(
+                sale.getId(), saleRef, "Anulación venta online #" + saleRef + " → bodega devoluciones");
 
         sale.setStatus("ANULADA");
         sale.setObservations((sale.getObservations() != null ? sale.getObservations() + " | " : "")
@@ -705,7 +714,7 @@ public class OnlineSaleService {
      * Anula un despacho ENVIADO (OPL o directo): stock a bodega de devoluciones,
      * limpia marcas de piezas enviadas y deja la venta lista para volver a despachar.
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public OnlineSaleResponse cancelDispatch(Long id, String reason)
             throws ResourceNotFoundException, BusinessException {
         OnlineSaleEntity sale = saleRepository.findById(id)
@@ -721,6 +730,7 @@ public class OnlineSaleService {
         String previousStatus = Boolean.TRUE.equals(sale.getInProductionOrder()) ? "EN_PRODUCCION" : "PRODUCIDO";
         sale.setStatus(previousStatus);
         sale.setGuideNumber(null);
+        sale.setDispatchedAt(null);
         sale.setObservations((sale.getObservations() != null ? sale.getObservations() + " | " : "")
                 + "ENVÍO ANULADO: " + (reason != null && !reason.isBlank() ? reason : "Sin razón especificada")
                 + " → " + previousStatus);
@@ -939,7 +949,7 @@ public class OnlineSaleService {
 
         String baseObs = original.getObservations() != null ? original.getObservations() : "";
         String rel = original.getShipmentNumber() != null ? ("ENVIO_REL=" + original.getShipmentNumber()) : ("VENTA_REL=" + original.getId());
-        String changeTag = "CAMBIO_Q0(" + rel + ")";
+        String changeTag = EXCHANGE_TAG_PREFIX + rel + ")";
         String extra = (req != null && req.getObservations() != null && !req.getObservations().isBlank())
                 ? " " + req.getObservations().trim()
                 : "";
@@ -947,24 +957,13 @@ public class OnlineSaleService {
 
         exchange.setCreatedBy(securityUtil.getCurrentUserId());
 
-        // Generar número correlativo del día (igual que create)
-        long count = saleRepository.countBySaleDate(exchange.getSaleDate()) + 1;
-        exchange.setSaleNumber(String.valueOf(count));
+        // Número correlativo del mes (igual que create)
+        exchange.setSaleNumber(nextMonthlySaleNumber(exchange.getSaleDate()));
 
         OnlineSaleEntity saved = saleRepository.save(exchange);
 
         for (ExchangeLine line : exchangeLines) {
-            OnlineSaleItemEntity source = line.source();
-            OnlineSaleItemEntity item = OnlineSaleItemEntity.builder()
-                    .onlineSaleId(saved.getId())
-                    .productId(source.getProductId())
-                    .colorId(source.getColorId())
-                    .size(source.getSize())
-                    .quantity(line.quantity())
-                    .unitPrice(BigDecimal.ZERO)
-                    .build();
-            enrichItemWithProductAndColor(item);
-            itemRepository.save(item);
+            itemRepository.save(buildExchangeShipmentItem(saved.getId(), line));
         }
 
         onlineSaleShipmentNumberService.assignIfMissing(saved);
@@ -997,18 +996,13 @@ public class OnlineSaleService {
                     + " porque está en estado " + targetStatus);
         }
 
+        int addedLines = 0;
         for (ExchangeLine line : exchangeLines) {
-            OnlineSaleItemEntity source = line.source();
-            OnlineSaleItemEntity item = OnlineSaleItemEntity.builder()
-                    .onlineSaleId(target.getId())
-                    .productId(source.getProductId())
-                    .colorId(source.getColorId())
-                    .size(source.getSize())
-                    .quantity(line.quantity())
-                    .unitPrice(BigDecimal.ZERO)
-                    .build();
-            enrichItemWithProductAndColor(item);
-            itemRepository.save(item);
+            if (line.noShipmentLine()) {
+                continue; // el producto que se envía ya va en este envío
+            }
+            itemRepository.save(buildExchangeShipmentItem(target.getId(), line));
+            addedLines++;
         }
 
         String rel = original.getShipmentNumber() != null
@@ -1017,7 +1011,13 @@ public class OnlineSaleService {
         String extra = (req.getObservations() != null && !req.getObservations().isBlank())
                 ? " " + req.getObservations().trim()
                 : "";
-        String tag = "CAMBIO_Q0(" + rel + ")" + extra;
+        // Sin líneas agregadas el envío sigue siendo una venta normal: no se marca como cambio Q0
+        // (esa marca hace que el despacho consuma Devoluciones primero).
+        String tag = addedLines > 0
+                ? EXCHANGE_TAG_PREFIX + rel + ")" + extra
+                : "CAMBIO relacionado con " + (original.getShipmentNumber() != null
+                        ? original.getShipmentNumber() : ("venta " + original.getId()))
+                        + " (el producto ya iba en este envío)" + extra;
         String currentObs = target.getObservations();
         target.setObservations((currentObs == null || currentObs.isBlank()) ? tag : currentObs + " | " + tag);
 
@@ -1051,7 +1051,10 @@ public class OnlineSaleService {
                 ? req.getItems()
                 : List.of();
 
+        // Lo devuelto se valida contra la venta original; el reemplazo puede ser otro artículo, así que
+        // cada combinación devuelto + reemplazo es su propia línea del envío Q0.
         Map<String, Integer> requestedQty = new LinkedHashMap<>();
+        Map<String, RequestedExchange> requestedLines = new LinkedHashMap<>();
         for (OnlineSaleExchangeRequest.ExchangeItemRequest item : requested) {
             if (item == null || item.getProductId() == null) {
                 continue;
@@ -1060,7 +1063,48 @@ public class OnlineSaleService {
             if (qty <= 0) {
                 continue;
             }
-            requestedQty.merge(exchangeLineKey(item.getProductId(), item.getColorId(), item.getSize()), qty, Integer::sum);
+            String returnedKey = exchangeLineKey(item.getProductId(), item.getColorId(), item.getSize());
+            requestedQty.merge(returnedKey, qty, Integer::sum);
+
+            Long replacementProductId = item.getReplacementProductId();
+            Long replacementColorId = null;
+            String replacementSize = null;
+            if (replacementProductId != null) {
+                if (!productRepository.existsById(replacementProductId)) {
+                    throw new BusinessException("El artículo de reemplazo del cambio no existe.");
+                }
+                replacementColorId = item.getReplacementColorId();
+                replacementSize = item.getReplacementSize() != null ? item.getReplacementSize().trim() : "";
+                if (exchangeLineKey(replacementProductId, replacementColorId, replacementSize).equals(returnedKey)) {
+                    // Eligió el mismo artículo en el selector: es un cambio normal.
+                    replacementProductId = null;
+                    replacementColorId = null;
+                    replacementSize = null;
+                }
+            }
+            boolean noShipmentLine = Boolean.TRUE.equals(item.getNoShipmentLine());
+            if (noShipmentLine) {
+                if (req.getTargetOnlineSaleId() == null) {
+                    throw new BusinessException(
+                            "«Ya va en el envío» solo se puede usar al agregar el cambio a un envío existente.");
+                }
+                if (item.getReplacementProductId() == null) {
+                    throw new BusinessException(
+                            "Indique qué producto se envió (el que ya va en el envío existente).");
+                }
+            }
+            String sentKey = replacementProductId == null
+                    ? "SAME"
+                    : exchangeLineKey(replacementProductId, replacementColorId, replacementSize);
+            String lineKey = returnedKey + "=>" + (noShipmentLine ? "NOLINE:" : "") + sentKey;
+            RequestedExchange prev = requestedLines.get(lineKey);
+            requestedLines.put(lineKey, new RequestedExchange(
+                    returnedKey,
+                    (prev != null ? prev.quantity() : 0) + qty,
+                    replacementProductId,
+                    replacementColorId,
+                    replacementSize,
+                    noShipmentLine));
         }
         if (requestedQty.isEmpty()) {
             throw new BusinessException("Debe especificar al menos un item para el CAMBIO");
@@ -1078,7 +1122,6 @@ public class OnlineSaleService {
         }
 
         Map<String, Integer> alreadyReturned = returnedQuantityByLine(original.getId());
-        List<ExchangeLine> lines = new ArrayList<>();
         for (Map.Entry<String, Integer> entry : requestedQty.entrySet()) {
             OnlineSaleItemEntity source = soldByKey.get(entry.getKey());
             if (source == null) {
@@ -1090,10 +1133,28 @@ public class OnlineSaleService {
                 throw new BusinessException(
                         "La cantidad del cambio de " + label + " supera lo disponible. Disponible: " + Math.max(remaining, 0));
             }
-            lines.add(new ExchangeLine(source, entry.getValue()));
+        }
+
+        List<ExchangeLine> lines = new ArrayList<>();
+        for (RequestedExchange req1 : requestedLines.values()) {
+            lines.add(new ExchangeLine(
+                    soldByKey.get(req1.returnedKey()),
+                    req1.quantity(),
+                    req1.replacementProductId(),
+                    req1.replacementColorId(),
+                    req1.replacementSize(),
+                    req1.noShipmentLine()));
         }
         return lines;
     }
+
+    private record RequestedExchange(
+            String returnedKey,
+            int quantity,
+            Long replacementProductId,
+            Long replacementColorId,
+            String replacementSize,
+            boolean noShipmentLine) {}
 
     private List<OnlineSaleItemEntity> resolveOriginalSaleLines(OnlineSaleEntity sale) {
         List<OnlineSaleItemEntity> items = itemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId());
@@ -1172,6 +1233,8 @@ public class OnlineSaleService {
 
         for (ExchangeLine line : lines) {
             OnlineSaleItemEntity source = line.source();
+            // Lo que salió a cambio (mismo artículo, otro, o el que ya iba en el envío destino)
+            OnlineSaleItemEntity sent = buildExchangeShipmentItem(null, line);
             onlineSaleReturnLineRepository.save(OnlineSaleReturnLineEntity.builder()
                     .returnId(header.getId())
                     .productId(source.getProductId())
@@ -1182,6 +1245,12 @@ public class OnlineSaleService {
                     .size(source.getSize())
                     .quantity(line.quantity())
                     .unitPrice(source.getUnitPrice())
+                    .sentProductId(sent.getProductId())
+                    .sentProductCode(sent.getProductCode())
+                    .sentProductName(sent.getProductName())
+                    .sentColorId(sent.getColorId())
+                    .sentColorName(sent.getColorName())
+                    .sentSize(sent.getSize())
                     .build());
             returnInventoryRepository.save(ReturnInventoryEntity.builder()
                     .onlineSaleId(original.getId())
@@ -1199,6 +1268,18 @@ public class OnlineSaleService {
                     .createdBy(securityUtil.getCurrentUserId())
                     .build());
         }
+    }
+
+    /** Marca que deja `createExchange` en las observaciones de la venta de reemplazo. */
+    public static final String EXCHANGE_TAG_PREFIX = "CAMBIO_Q0(";
+
+    /**
+     * True si la venta es un cambio (envío Q0 de reemplazo). La pieza regresó a Devoluciones al crear el
+     * cambio, así que el despacho debe consumir Devoluciones primero.
+     */
+    public static boolean isExchangeSale(OnlineSaleEntity sale) {
+        return sale != null && sale.getObservations() != null
+                && sale.getObservations().contains(EXCHANGE_TAG_PREFIX);
     }
 
     private void noteOriginalSaleExchange(OnlineSaleEntity original, String exchangeShipmentNumber) {
@@ -1241,7 +1322,43 @@ public class OnlineSaleService {
         return value.substring(0, max);
     }
 
-    private record ExchangeLine(OnlineSaleItemEntity source, int quantity) {}
+    /**
+     * {@code source} es lo que el cliente devuelve (regresa a Devoluciones). Si {@code replacementProductId}
+     * es null se reenvía el mismo artículo; si no, sale ese otro artículo (con su color y talla).
+     * Con {@code noShipmentLine} lo que se envía ya va en el envío destino: solo se registra la devolución.
+     */
+    private record ExchangeLine(
+            OnlineSaleItemEntity source,
+            int quantity,
+            Long replacementProductId,
+            Long replacementColorId,
+            String replacementSize,
+            boolean noShipmentLine) {
+
+        ExchangeLine(OnlineSaleItemEntity source, int quantity) {
+            this(source, quantity, null, null, null, false);
+        }
+
+        boolean isReplacedByOtherArticle() {
+            return replacementProductId != null;
+        }
+    }
+
+    /** Línea del envío Q0 (precio 0): el mismo artículo devuelto o el de reemplazo elegido. */
+    private OnlineSaleItemEntity buildExchangeShipmentItem(Long onlineSaleId, ExchangeLine line) {
+        OnlineSaleItemEntity source = line.source();
+        boolean other = line.isReplacedByOtherArticle();
+        OnlineSaleItemEntity item = OnlineSaleItemEntity.builder()
+                .onlineSaleId(onlineSaleId)
+                .productId(other ? line.replacementProductId() : source.getProductId())
+                .colorId(other ? line.replacementColorId() : source.getColorId())
+                .size(other ? line.replacementSize() : source.getSize())
+                .quantity(line.quantity())
+                .unitPrice(BigDecimal.ZERO)
+                .build();
+        enrichItemWithProductAndColor(item);
+        return item;
+    }
 
     private void enrichItemWithProductAndColor(OnlineSaleItemEntity item) {
         if (item.getProductId() != null) {
@@ -1308,6 +1425,19 @@ public class OnlineSaleService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         LocalDate returnDate = header.getCreatedAt() != null ? header.getCreatedAt().toLocalDate() : GuatemalaDateTime.today();
+        List<OnlineSaleReturnPrintResponse.ReturnLine> sentItems = lines.stream()
+                .filter(l -> l.getSentProductId() != null)
+                .map(l -> OnlineSaleReturnPrintResponse.ReturnLine.builder()
+                        .productId(l.getSentProductId())
+                        .productCode(l.getSentProductCode())
+                        .productName(l.getSentProductName())
+                        .colorId(l.getSentColorId())
+                        .colorName(l.getSentColorName())
+                        .size(l.getSentSize())
+                        .quantity(l.getQuantity())
+                        .build())
+                .toList();
+
         return OnlineSaleReturnPrintResponse.builder()
                 .returnId(header.getId())
                 .onlineSaleId(sale.getId())
@@ -1323,7 +1453,46 @@ public class OnlineSaleService {
                 .returnDate(returnDate)
                 .totalAmount(total)
                 .items(items)
+                .sentItems(sentItems)
                 .build();
+    }
+
+    /**
+     * Resumen legible por documento para el listado de cambios/devoluciones:
+     * {@code returned} = lo que regresó, {@code sent} = lo que se envió a cambio (vacío si no se registró).
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, Map<String, String>> summarizeReturnEventLines(List<OnlineSaleReturnEntity> events) {
+        List<Long> ids = events.stream().map(OnlineSaleReturnEntity::getId).toList();
+        Map<Long, Map<String, String>> out = new HashMap<>();
+        if (ids.isEmpty()) {
+            return out;
+        }
+        Map<Long, List<OnlineSaleReturnLineEntity>> byReturn = onlineSaleReturnLineRepository
+                .findByReturnIdInOrderByIdAsc(ids).stream()
+                .collect(Collectors.groupingBy(OnlineSaleReturnLineEntity::getReturnId, LinkedHashMap::new, Collectors.toList()));
+        for (Long id : ids) {
+            List<OnlineSaleReturnLineEntity> lines = byReturn.getOrDefault(id, List.of());
+            Map<String, String> row = new LinkedHashMap<>();
+            row.put("returned", lines.stream()
+                    .map(l -> describeArticle(l.getProductCode(), l.getProductName(), l.getColorName(), l.getSize(), l.getQuantity()))
+                    .collect(Collectors.joining("\n")));
+            row.put("sent", lines.stream()
+                    .filter(l -> l.getSentProductId() != null)
+                    .map(l -> describeArticle(l.getSentProductCode(), l.getSentProductName(), l.getSentColorName(), l.getSentSize(), l.getQuantity()))
+                    .collect(Collectors.joining("\n")));
+            out.put(id, row);
+        }
+        return out;
+    }
+
+    private static String describeArticle(String code, String name, String color, String size, Integer qty) {
+        String variant = java.util.stream.Stream.of(color, size)
+                .filter(v -> v != null && !v.isBlank())
+                .collect(Collectors.joining(" / "));
+        return (code != null ? code + " " : "") + (name != null ? name : "")
+                + (variant.isBlank() ? "" : " · " + variant)
+                + " x" + (qty != null ? qty : 1);
     }
 
     // ─── Vincular a OP ──────────────────────────────────────────────

@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.PendingShipmentR
 import com.fossiles.fossilescorebackend.application.dto.request.ProductDistributionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentDestinationRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentObservationsRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskReplenishmentDistributionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentShippingCostRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
@@ -35,11 +36,14 @@ import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -48,6 +52,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -64,7 +69,7 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-@Transactional
+@Transactional(rollbackFor = Exception.class)
 public class ProductDistributionService {
 
     /**
@@ -83,11 +88,20 @@ public class ProductDistributionService {
     /** Envío interno ENVI sin orden de producción (colaborador, salida PT/Devoluciones). */
     public static final String INTERNAL_ENVI_TAG = "INTERNAL_ENVI:1";
     public static final String REQUEST_TYPE_TAG = "REQUEST_TYPE:";
+    /**
+     * Envío de reposición que espera producción: se creó en borrador con el faltante de bodega de un kiosco y se
+     * confirma cuando la OPK sugerida ya dejó el producto en Bodega PT.
+     */
+    public static final String PENDING_PRODUCTION_TAG = "PENDING_PRODUCTION:1";
+    /** Descripción de la distribución que envuelve un envío directo a kiosco (sin OP). */
+    public static final String DIRECT_KIOSK_DISTRIBUTION_DESCRIPTION = "Envío directo a kiosko";
     private static final String DISCOUNT_PERCENT_TAG = "DISCOUNT_PERCENT:";
     private static final String DISCOUNT_AMOUNT_TAG = "DISCOUNT_AMOUNT:";
     private static final String APPLY_HALF_PRICE_TAG = "APPLY_HALF_PRICE:";
     private static final String COLABORADOR_PHONE_TAG = "COLABORADOR_PHONE:";
     private static final String COLABORADOR_TAX_TAG = "COLABORADOR_NIT:";
+    private static final int LF_DISPATCH_DEFAULT_LIMIT = 50;
+    private static final int LF_DISPATCH_MAX_LIMIT = 200;
 
     private final ProductDistributionRepository distributionRepository;
     private final ProductShipmentRepository shipmentRepository;
@@ -104,6 +118,7 @@ public class ProductDistributionService {
     private final DocumentSeriesRepository documentSeriesRepository;
     private final OpiVendorShipmentNumberService opiVendorShipmentNumberService;
     private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
+    private final ShipmentNumberCounterService shipmentNumberCounterService;
     private final CustomerRepository customerRepository;
     private final UserRepository userRepository;
     private final ColorRepository colorRepository;
@@ -124,7 +139,15 @@ public class ProductDistributionService {
      * Obtiene todas las distribuciones
      */
     public List<ProductDistributionResponse> getAllDistributions() {
+        return getAllDistributions(null);
+    }
+
+    /** {@code origin} opcional (MANUAL / REPOSICION); null o vacío devuelve todas, como antes. */
+    public List<ProductDistributionResponse> getAllDistributions(String origin) {
+        boolean filter = origin != null && !origin.isBlank();
+        String wanted = filter ? DistributionOrigin.normalize(origin) : null;
         return distributionRepository.findAll().stream()
+                .filter(d -> !filter || wanted.equals(DistributionOrigin.normalize(d.getOrigin())))
                 .map(this::toDistributionResponse)
                 .collect(Collectors.toList());
     }
@@ -151,6 +174,7 @@ public class ProductDistributionService {
                 .distributionDate(request.getDistributionDate())
                 .status(request.getStatus() != null ? request.getStatus() : "DRAFT")
                 .description(request.getDescription())
+                .origin(DistributionOrigin.MANUAL)
                 .createdBy(currentUserId)
                 .updatedBy(currentUserId)
                 .build();
@@ -202,9 +226,7 @@ public class ProductDistributionService {
      * Obtiene todos los envíos de una distribución
      */
     public List<ProductShipmentResponse> getShipmentsByDistribution(Long distributionId) {
-        return shipmentRepository.findByDistributionId(distributionId).stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findByDistributionId(distributionId));
     }
 
     /**
@@ -214,9 +236,7 @@ public class ProductDistributionService {
             throws ResourceNotFoundException {
         productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductionOrder", productionOrderId));
-        return shipmentRepository.findByProductionOrderId(productionOrderId).stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findByProductionOrderId(productionOrderId));
     }
 
     /**
@@ -227,7 +247,9 @@ public class ProductDistributionService {
         ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductionOrder", productionOrderId));
         Map<Long, ProductShipmentResponse> byId = new java.util.LinkedHashMap<>();
-        if (po.getDistributionId() != null) {
+        // Solo la OP generada desde una distribución (OPD) trae todos los envíos de la distribución. Una OPK ligada
+        // a una distribución (de reposición o la suya) ve solo sus propios envíos, igual que antes.
+        if (po.getDistributionId() != null && "DISTRIBUTION".equalsIgnoreCase(safeTrim(po.getOrderType()))) {
             for (ProductShipmentResponse s : getShipmentsByDistribution(po.getDistributionId())) {
                 byId.put(s.getId(), s);
             }
@@ -275,6 +297,10 @@ public class ProductDistributionService {
             location = locationRepository.findById(reqLocationId)
                     .orElseThrow(() -> new ResourceNotFoundException("Location", reqLocationId));
         }
+        // OPK a kiosco: el envío vive en la distribución ligada a la OPK (la de reposición que la sugirió, o la
+        // suya propia, que se crea con el primer envío). OPCK, LF, OPI y cinchos siguen sin distribución.
+        boolean opkKioskShipment = location != null && isKioskReplenishmentOrder(order);
+        Long opkDistributionId = opkKioskShipment ? order.getDistributionId() : null;
 
         List<ProductShipmentRequest.ProductShipmentDetailRequest> normalizedProducts =
                 normalizeShipmentProducts(request.getProducts());
@@ -293,7 +319,8 @@ public class ProductDistributionService {
             if (!productionOrderId.equals(targetShipment.getProductionOrderId())) {
                 throw new BusinessException("El envío no pertenece a esta orden de producción.");
             }
-            if (targetShipment.getDistributionId() != null) {
+            if (targetShipment.getDistributionId() != null
+                    && !java.util.Objects.equals(targetShipment.getDistributionId(), opkDistributionId)) {
                 throw new BusinessException("Este envío pertenece a una distribución; use el flujo de distribución.");
             }
             if (!java.util.Objects.equals(reqLocationId, targetShipment.getLocationId())) {
@@ -327,19 +354,46 @@ public class ProductDistributionService {
             shipmentRepository.delete(draft);
         }
 
+        if (opkKioskShipment) {
+            // La distribución se crea hasta aquí, ya pasadas las validaciones.
+            order = ensureOpkDistribution(order);
+            opkDistributionId = order.getDistributionId();
+            // Si la reposición dejó un envío pendiente de producción para este kiosco, la OPK lo cumple: se reusa
+            // (conserva su número) en vez de crear otro envío al mismo kiosco en la misma distribución.
+            Optional<ProductShipmentEntity> pending = findPendingProductionShipment(opkDistributionId, reqLocationId);
+            if (pending.isPresent()) {
+                ProductShipmentEntity reuse = pending.get();
+                reuse.setProductionOrderId(productionOrderId);
+                reuse.setPartialReleaseId(partialReleaseId);
+                reuse.setNotes(persistedNotes);
+                reuse.setPackingItems(serializePackingItems(request.getPackingItems()));
+                reuse.setShippingCost(normalizeShippingCost(request.getShippingCost()));
+                reuse.setUpdatedBy(securityUtil.getCurrentUserId());
+                ProductShipmentEntity savedReuse = shipmentRepository.save(reuse);
+                if (!normalizedProducts.isEmpty()) {
+                    updateShipmentProducts(savedReuse.getId(), normalizedProducts);
+                } else {
+                    shipmentDetailRepository.deleteByShipmentId(savedReuse.getId());
+                }
+                return toShipmentResponse(shipmentRepository.findById(savedReuse.getId()).orElse(savedReuse));
+            }
+        }
+
         String shipmentNumber;
         if (location != null) {
             shipmentNumber = generateShipmentNumber(location);
+        } else if (isLuisFelipeVendorOrder(order) && isCincho) {
+            order = ensureLfEnvpOnOrderIfMissing(order);
+            shipmentNumber = generateOpcShipmentNumber(order);
         } else if (isLuisFelipeVendorOrder(order)) {
-            order = ensureOpvVendorShipmentNumberOnOrder(order);
-            shipmentNumber = allocateLfCinchoPhysicalShipmentNumber(order);
+            shipmentNumber = allocateLfEnvpShipmentNumber(order);
         } else if (isCincho || isEntreCuerosCustomerOpv(order)) {
             shipmentNumber = generateOpcShipmentNumber(order);
         } else {
             shipmentNumber = generateShipmentNumberForOpiDocument(order);
         }
         ProductShipmentEntity shipment = ProductShipmentEntity.builder()
-                .distributionId(null)
+                .distributionId(opkDistributionId)
                 .productionOrderId(productionOrderId)
                 .partialReleaseId(partialReleaseId)
                 .shipmentNumber(shipmentNumber)
@@ -383,7 +437,6 @@ public class ProductDistributionService {
         clearVendorShipmentVoidFlag(order);
 
         if (isLuisFelipeVendorOrder(order)) {
-            order = ensureOpvVendorShipmentNumberOnOrder(order);
             assertNoDuplicateLfShipment(productionOrderId, request.getLocationId());
         }
 
@@ -435,10 +488,6 @@ public class ProductDistributionService {
         }
         if (products == null || products.isEmpty()) {
             throw new BusinessException("La liberación no tiene productos con cantidad.");
-        }
-
-        if (isLuisFelipeVendorOrder(order)) {
-            order = ensureOpvVendorShipmentNumberOnOrder(order);
         }
 
         String destination = request.getDestinationAddress() == null ? "" : request.getDestinationAddress().trim();
@@ -502,6 +551,7 @@ public class ProductDistributionService {
         assertShipmentDetailsHaveCinchoSize(shipmentId);
         // Congela precios en la línea del envío al confirmar (CxC usa este precio, no el catálogo futuro).
         freezeMissingShipmentDetailUnitPrices(shipment, details);
+        shipment.setNotes(stripPendingProductionTag(shipment.getNotes()));
         shipment.setStatus("CONFIRMED");
         ProductShipmentEntity saved = shipmentRepository.save(shipment);
         if (saved.getProductionOrderId() != null) {
@@ -560,7 +610,7 @@ public class ProductDistributionService {
         if (normalizedProducts.isEmpty()) {
             throw new BusinessException("Debe incluir al menos un producto con cantidad.");
         }
-        assertDispatchStockAvailable(normalizedProducts);
+        assertDispatchStockAvailable(normalizedProducts, ProductInventoryService.DispatchSource.RETURNS_ONLY);
 
         String normalizedRequestType = normalizeInternalRequestType(requestType);
         ResolvedInternalDiscount discount = resolveInternalDiscount(
@@ -608,7 +658,7 @@ public class ProductDistributionService {
         if (normalized.isEmpty()) {
             throw new BusinessException("Debe incluir al menos un producto con cantidad.");
         }
-        return collectDispatchStockShortages(normalized);
+        return collectDispatchStockLines(normalized, true, ProductInventoryService.DispatchSource.RETURNS_ONLY);
     }
 
     /**
@@ -629,9 +679,7 @@ public class ProductDistributionService {
     }
 
     public List<ProductShipmentResponse> listStandaloneInternalShipments() {
-        return shipmentRepository.findStandaloneInternalEnviShipments().stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findStandaloneInternalEnviShipments());
     }
 
     /**
@@ -660,10 +708,18 @@ public class ProductDistributionService {
         boolean confirmOnly = request.getConfirmOnly() == null || Boolean.TRUE.equals(request.getConfirmOnly());
 
         String persistedNotes = mergeDocumentDateIntoNotes(request.getNotes(), request.getDocumentDate());
-        String shipmentNumber = generateShipmentNumber(location);
         Long currentUserId = securityUtil.getCurrentUserId();
+        // Por regla todo envío a kiosco vive en una distribución (la indicada o una MANUAL nueva). Excepción
+        // explícita: withoutDistribution=true y sin distributionId crea el envío suelto.
+        boolean withoutDistribution = request.getDistributionId() == null
+                && Boolean.TRUE.equals(request.getWithoutDistribution());
+        Long distributionId = withoutDistribution
+                ? null
+                : resolveDirectKioskDistribution(request.getDistributionId(), location, currentUserId);
+        String shipmentNumber = generateShipmentNumber(location);
         ProductShipmentEntity shipment = ProductShipmentEntity.builder()
-                .distributionId(null)
+                .distributionId(distributionId)
+                .withoutDistribution(withoutDistribution)
                 .productionOrderId(null)
                 .partialReleaseId(null)
                 .shipmentNumber(shipmentNumber)
@@ -685,10 +741,122 @@ public class ProductDistributionService {
         return sendShipment(saved.getId());
     }
 
+    /**
+     * Crea en una sola transacción la distribución de reposición con sus envíos: por kiosco, un envío CONFIRMED con lo
+     * que se manda ahora (el inventario sale de bodega al Enviar, como cualquier envío confirmado) y, si hubo
+     * faltante, un envío DRAFT pendiente de producción con ese faltante. Si algo falla no se crea nada.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ProductDistributionResponse createReplenishmentDistribution(KioskReplenishmentDistributionRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        if (request == null || request.getKiosks() == null || request.getKiosks().isEmpty()) {
+            throw new BusinessException("Debe incluir al menos un kiosco con unidades para enviar.");
+        }
+        record KioskPlan(LocationEntity location, String notes,
+                         List<ProductShipmentRequest.ProductShipmentDetailRequest> send,
+                         List<ProductShipmentRequest.ProductShipmentDetailRequest> shortage) {
+        }
+        Set<Long> seen = new HashSet<>();
+        List<KioskPlan> plans = new ArrayList<>();
+        for (KioskReplenishmentDistributionRequest.Kiosk kiosk : request.getKiosks()) {
+            if (kiosk == null || kiosk.getLocationId() == null) {
+                throw new BusinessException("Cada kiosco de la reposición necesita su ubicación.");
+            }
+            if (!seen.add(kiosk.getLocationId())) {
+                throw new BusinessException("Un kiosco viene repetido en la reposición.");
+            }
+            LocationEntity location = locationRepository.findById(kiosk.getLocationId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Location", kiosk.getLocationId()));
+            assertKioskLocation(location);
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> send = new ArrayList<>();
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> shortage = new ArrayList<>();
+            for (KioskReplenishmentDistributionRequest.Line line : kiosk.getLines() == null
+                    ? List.<KioskReplenishmentDistributionRequest.Line>of() : kiosk.getLines()) {
+                if (line == null || line.getProductId() == null) {
+                    continue;
+                }
+                if (positive(line.getQuantity())) {
+                    send.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
+                            .productId(line.getProductId())
+                            .colorId(line.getColorId())
+                            .size(line.getSize())
+                            .hardwareCondition(line.getHardwareCondition())
+                            .quantity(line.getQuantity())
+                            .suggestedQuantity(line.getSuggestedQuantity())
+                            .build());
+                }
+                if (positive(line.getShortage())) {
+                    shortage.add(ProductShipmentRequest.ProductShipmentDetailRequest.builder()
+                            .productId(line.getProductId())
+                            .colorId(line.getColorId())
+                            .size(line.getSize())
+                            .hardwareCondition(line.getHardwareCondition())
+                            .quantity(line.getShortage())
+                            .suggestedQuantity(line.getShortage())
+                            .build());
+                }
+            }
+            if (!send.isEmpty() || !shortage.isEmpty()) {
+                plans.add(new KioskPlan(location, kiosk.getNotes(), send, shortage));
+            }
+        }
+        if (plans.isEmpty()) {
+            throw new BusinessException("Ningún kiosco tiene unidades para enviar ni faltante para producir.");
+        }
+
+        Integer window = request.getWindowDays();
+        String description = request.getDescription() == null || request.getDescription().isBlank()
+                ? "Reposición automática" + (window != null ? " — venta de " + window + " días" : "")
+                : request.getDescription().trim();
+        Long userId = securityUtil.getCurrentUserId();
+        ProductDistributionEntity distribution = distributionRepository.save(ProductDistributionEntity.builder()
+                .distributionNumber(generateDistributionNumber())
+                .distributionDate(request.getDistributionDate() != null ? request.getDistributionDate() : LocalDate.now())
+                .status("IN_PROGRESS")
+                .origin(DistributionOrigin.REPOSICION)
+                .replenishmentWindowDays(window)
+                .description(description)
+                .createdBy(userId)
+                .updatedBy(userId)
+                .build());
+
+        for (KioskPlan plan : plans) {
+            String notes = plan.notes() == null || plan.notes().isBlank() ? description : plan.notes().trim();
+            if (!plan.send().isEmpty()) {
+                ProductShipmentEntity shipment = shipmentRepository.save(ProductShipmentEntity.builder()
+                        .distributionId(distribution.getId())
+                        .shipmentNumber(generateShipmentNumber(plan.location()))
+                        .locationId(plan.location().getId())
+                        .status("DRAFT")
+                        .notes(notes)
+                        .createdBy(userId)
+                        .updatedBy(userId)
+                        .build());
+                updateShipmentProducts(shipment.getId(), plan.send());
+                confirmShipmentDraft(shipment.getId());
+            }
+            if (!plan.shortage().isEmpty()) {
+                ProductShipmentEntity pending = shipmentRepository.save(ProductShipmentEntity.builder()
+                        .distributionId(distribution.getId())
+                        .shipmentNumber(generateShipmentNumber(plan.location()))
+                        .locationId(plan.location().getId())
+                        .status("DRAFT")
+                        .notes(notes + "\n" + PENDING_PRODUCTION_TAG)
+                        .createdBy(userId)
+                        .updatedBy(userId)
+                        .build());
+                updateShipmentProducts(pending.getId(), plan.shortage());
+            }
+        }
+        return toDistributionResponse(distributionRepository.findById(distribution.getId()).orElse(distribution));
+    }
+
+    private static boolean positive(BigDecimal value) {
+        return value != null && value.compareTo(BigDecimal.ZERO) > 0;
+    }
+
     public List<ProductShipmentResponse> listStandaloneKioskShipments() {
-        return shipmentRepository.findStandaloneKioskShipments().stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findStandaloneKioskShipments());
     }
 
     private void assertKioskLocation(LocationEntity location) throws BusinessException {
@@ -699,20 +867,27 @@ public class ProductDistributionService {
     }
 
     public List<ProductShipmentResponse> listAllInternalEnviShipments() {
-        return shipmentRepository.findAllInternalEnviShipments().stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findAllInternalEnviShipments());
     }
 
     public DispatchStockPreviewResponse previewDispatchStock(Long productId, Long colorId, String size)
+            throws BusinessException {
+        return previewDispatchStock(productId, colorId, size, false);
+    }
+
+    /** {@code internal}: envío interno (OPI) cuenta solo Devoluciones; el resto, Devoluciones + Bodega PT. */
+    public DispatchStockPreviewResponse previewDispatchStock(Long productId, Long colorId, String size, boolean internal)
             throws BusinessException {
         if (productId == null) {
             throw new BusinessException("Producto requerido.");
         }
         String sizeLabel = normalizeSize(size);
-        List<LocationEntity> warehouses = productInventoryService.getDispatchSourceWarehouses();
+        ProductInventoryService.DispatchSource source = internal
+                ? ProductInventoryService.DispatchSource.RETURNS_ONLY
+                : ProductInventoryService.DispatchSource.RETURNS_FIRST;
+        List<LocationEntity> warehouses = productInventoryService.getDispatchSourceWarehouses(source);
         BigDecimal total = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
-                productId, colorId, sizeLabel);
+                productId, colorId, sizeLabel, source);
         List<DispatchStockPreviewResponse.DispatchStockBreakdownRow> breakdown = new ArrayList<>();
         for (LocationEntity loc : warehouses) {
             if (loc == null) {
@@ -735,14 +910,36 @@ public class ProductDistributionService {
 
     private void assertDispatchStockAvailable(
             List<ProductShipmentRequest.ProductShipmentDetailRequest> products) throws BusinessException {
-        List<DispatchStockShortageResponse> shortages = collectDispatchStockShortages(products);
+        assertDispatchStockAvailable(products, ProductInventoryService.DispatchSource.RETURNS_FIRST);
+    }
+
+    private void assertDispatchStockAvailable(
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> products,
+            ProductInventoryService.DispatchSource source) throws BusinessException {
+        List<DispatchStockShortageResponse> shortages = collectDispatchStockLines(products, true, source);
         if (!shortages.isEmpty()) {
-            throw new BusinessException(formatDispatchStockShortageMessage(shortages));
+            throw new BusinessException(formatDispatchStockShortageMessage(shortages, source));
         }
     }
 
-    private List<DispatchStockShortageResponse> collectDispatchStockShortages(
-            List<ProductShipmentRequest.ProductShipmentDetailRequest> products) throws BusinessException {
+    /**
+     * Disponibilidad por línea (Devoluciones + Bodega PT) para todas las líneas solicitadas,
+     * con o sin faltante. {@code shortageQuantity} es 0 cuando alcanza el stock.
+     */
+    public List<DispatchStockShortageResponse> computeDispatchStockLines(
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
+            throws BusinessException, ResourceNotFoundException {
+        List<ProductShipmentRequest.ProductShipmentDetailRequest> normalized = normalizeShipmentProducts(products);
+        if (normalized.isEmpty()) {
+            throw new BusinessException("Debe incluir al menos un producto con cantidad.");
+        }
+        return collectDispatchStockLines(normalized, false, ProductInventoryService.DispatchSource.RETURNS_ONLY);
+    }
+
+    private List<DispatchStockShortageResponse> collectDispatchStockLines(
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> products,
+            boolean onlyShortages,
+            ProductInventoryService.DispatchSource source) throws BusinessException {
         List<DispatchStockShortageResponse> shortages = new ArrayList<>();
         for (ProductShipmentRequest.ProductShipmentDetailRequest detail : products) {
             BigDecimal stillNeeded = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
@@ -754,12 +951,13 @@ public class ProductDistributionService {
             }
             String sizeLabel = normalizeSize(detail.getSize());
             BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
-                    detail.getProductId(), detail.getColorId(), sizeLabel);
-            if (availableTotal.compareTo(stillNeeded) < 0) {
+                    detail.getProductId(), detail.getColorId(), sizeLabel, source);
+            boolean hasShortage = availableTotal.compareTo(stillNeeded) < 0;
+            if (hasShortage || !onlyShortages) {
                 ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
                 String productCode = product != null ? product.getCode() : null;
                 String productName = product != null ? product.getName() : "Producto";
-                BigDecimal shortageQty = stillNeeded.subtract(availableTotal);
+                BigDecimal shortageQty = hasShortage ? stillNeeded.subtract(availableTotal) : BigDecimal.ZERO;
                 shortages.add(DispatchStockShortageResponse.builder()
                         .productId(detail.getProductId())
                         .productCode(productCode)
@@ -777,8 +975,15 @@ public class ProductDistributionService {
 
     private String formatDispatchStockShortageMessage(List<DispatchStockShortageResponse> shortages)
             throws BusinessException {
+        return formatDispatchStockShortageMessage(shortages, ProductInventoryService.DispatchSource.RETURNS_FIRST);
+    }
+
+    private String formatDispatchStockShortageMessage(
+            List<DispatchStockShortageResponse> shortages,
+            ProductInventoryService.DispatchSource source) throws BusinessException {
+        boolean returnsOnly = source == ProductInventoryService.DispatchSource.RETURNS_ONLY;
         List<String> lines = new ArrayList<>();
-        List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
+        List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses(source);
         for (DispatchStockShortageResponse shortage : shortages) {
             ProductEntity product = productRepository.findById(shortage.getProductId()).orElse(null);
             String productName = product != null
@@ -790,10 +995,11 @@ public class ProductDistributionService {
                     shortage.getSize(),
                     dispatchWarehouses);
             lines.add(productName + ": disponible " + shortage.getAvailableQuantity()
-                    + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido "
-                    + shortage.getRequiredQuantity());
+                    + (returnsOnly ? " (Devoluciones: " : " (Devoluciones + Bodega PT: ") + stockBreakdown
+                    + "), requerido " + shortage.getRequiredQuantity());
         }
-        return "Stock insuficiente en Devoluciones / Bodega PT:\n• " + String.join("\n• ", lines);
+        return (returnsOnly ? "Stock insuficiente en Devoluciones:\n• " : "Stock insuficiente en Devoluciones / Bodega PT:\n• ")
+                + String.join("\n• ", lines);
     }
 
     private String buildStandaloneInternalShipmentNotes(StandaloneInternalShipmentRequest request, String recipient) {
@@ -1182,9 +1388,13 @@ public class ProductDistributionService {
                 .orElse(BigDecimal.ZERO);
     }
 
-    private String generateOpcShipmentNumber(ProductionOrderEntity order) {
+    private String generateOpcShipmentNumber(ProductionOrderEntity order) throws BusinessException {
         String opCode = order.getCode() == null ? "OPC" : order.getCode().trim().toUpperCase();
         opCode = opCode.replaceAll("[^A-Za-z0-9_-]", "_");
+        if (isLuisFelipeVendorOrder(order)) {
+            long sequence = shipmentNumberCounterService.nextOpcSequence();
+            return String.format("%s-ENV-%05d", opCode, sequence);
+        }
         int maxSequence = shipmentRepository.findByProductionOrderId(order.getId()).stream()
                 .map(ProductShipmentEntity::getShipmentNumber)
                 .mapToInt(this::extractTrailingSequence)
@@ -1228,7 +1438,8 @@ public class ProductDistributionService {
     }
 
     /**
-     * Obtiene un envío por ID
+     * GET /shipments/{id} para reimpresión: products[] (size, hardwareCondition, unitPrice,
+     * brandName derivado), packingItems, notes, shippingCost y shipmentNumber.
      */
     public ProductShipmentResponse getShipmentById(Long id) throws ResourceNotFoundException {
         ProductShipmentEntity entity = shipmentRepository.findById(id)
@@ -1246,10 +1457,9 @@ public class ProductDistributionService {
             return List.of();
         }
         int max = Math.min(Math.max(limit, 1), 50);
-        return shipmentRepository.searchByShipmentNumberContaining(q).stream()
+        return toShipmentResponses(shipmentRepository.searchByShipmentNumberContaining(q).stream()
                 .limit(max)
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+                .collect(Collectors.toList()));
     }
 
     /**
@@ -1264,7 +1474,13 @@ public class ProductDistributionService {
         if (request.getLocationId() == null) {
             throw new BusinessException("La distribución requiere ubicación destino (kiosko).");
         }
-        
+
+        // Una distribución completada se puede seguir modificando mientras tenga envíos sin despachar.
+        boolean distributionCompleted = "COMPLETED".equalsIgnoreCase(String.valueOf(distribution.getStatus()).trim());
+        if (distributionCompleted) {
+            assertCompletedDistributionEditable(distribution);
+        }
+
         // Validar que el kiosko existe
         LocationEntity location = locationRepository.findById(request.getLocationId())
                 .orElseThrow(() -> new ResourceNotFoundException("Location", request.getLocationId()));
@@ -1291,6 +1507,14 @@ public class ProductDistributionService {
 
         if (targetShipment != null) {
             assertShipmentProductsEditable(targetShipment);
+            if (distributionCompleted) {
+                String targetStatus = String.valueOf(targetShipment.getStatus()).trim().toUpperCase();
+                if (!"DRAFT".equals(targetStatus) && !"CONFIRMED".equals(targetStatus)) {
+                    throw new BusinessException(
+                            "En una distribución completada solo se editan envíos que aún no se han despachado. "
+                                    + "Estado del envío: " + targetStatus);
+                }
+            }
             if (!normalizedProducts.isEmpty()) {
                 updateShipmentProducts(targetShipment.getId(), normalizedProducts);
             } else {
@@ -1303,9 +1527,12 @@ public class ProductDistributionService {
             return toShipmentResponse(saved);
         }
 
-        // Flujo principal: para kiosko sin shipmentId específico, reemplaza envíos DRAFT del kiosko
+        // Flujo principal: para kiosko sin shipmentId específico, reemplaza envíos DRAFT del kiosko.
+        // Los pendientes de producción (faltante de una reposición) y los de OPK no se tocan aquí.
         List<ProductShipmentEntity> draftShipments = allShipmentsForLocation.stream()
                 .filter(s -> "DRAFT".equalsIgnoreCase(s.getStatus()))
+                .filter(s -> !isPendingProductionShipment(s))
+                .filter(s -> s.getProductionOrderId() == null)
                 .collect(Collectors.toList());
         for (ProductShipmentEntity draft : draftShipments) {
             shipmentDetailRepository.deleteByShipmentId(draft.getId());
@@ -1328,7 +1555,37 @@ public class ProductDistributionService {
         if (!normalizedProducts.isEmpty()) {
             updateShipmentProducts(saved.getId(), normalizedProducts);
         }
+        if (distributionCompleted) {
+            // La distribución ya se finalizó: el envío nuevo nace confirmado, como los demás.
+            return confirmShipmentDraft(saved.getId());
+        }
         return toShipmentResponse(saved);
+    }
+
+    /**
+     * Una distribución COMPLETED no implica que ya se despachó. Se puede modificar mientras tenga al menos
+     * un envío sin despachar (DRAFT/CONFIRMED) y no tenga orden de producción generada al finalizar
+     * (esa orden suma los productos de los envíos y quedaría desfasada).
+     */
+    private void assertCompletedDistributionEditable(ProductDistributionEntity distribution)
+            throws BusinessException {
+        if (DistributionOrigin.REPOSICION.equals(DistributionOrigin.normalize(distribution.getOrigin()))) {
+            throw new BusinessException("Las distribuciones de reposición no se modifican: su faltante ya se "
+                    + "calculó para la OPK sugerida.");
+        }
+        Optional<ProductionOrderEntity> order =
+                productionOrderRepository.findFirstByDistributionIdOrderByIdAsc(distribution.getId());
+        if (order.isPresent()) {
+            throw new BusinessException("La distribución ya generó la orden de producción " + order.get().getCode()
+                    + "; no se puede modificar sin desfasarla.");
+        }
+        boolean hasUnsent = shipmentRepository.findByDistributionId(distribution.getId()).stream()
+                .map(s -> String.valueOf(s.getStatus()).trim().toUpperCase())
+                .anyMatch(st -> "DRAFT".equals(st) || "CONFIRMED".equals(st));
+        if (!hasUnsent) {
+            throw new BusinessException(
+                    "La distribución completada ya no tiene envíos pendientes de despachar; no se puede modificar.");
+        }
     }
 
     /**
@@ -1340,8 +1597,31 @@ public class ProductDistributionService {
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findById(shipmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("ProductShipment", shipmentId));
-        shipment.setPackingItems(serializePackingItems(packingItems));
+        shipment.setPackingItems(serializePackingItems(zeroPackingPricesForLuisFelipe(shipment, packingItems)));
         return toShipmentResponse(shipmentRepository.save(shipment));
+    }
+
+    /** OPV/OPC de Luis Felipe: el empaque no se cobra, el envío no debe guardar precio de empaque. */
+    private List<ProductShipmentRequest.PackingItemRequest> zeroPackingPricesForLuisFelipe(
+            ProductShipmentEntity shipment,
+            List<ProductShipmentRequest.PackingItemRequest> packingItems) {
+        if (packingItems == null || shipment.getProductionOrderId() == null) {
+            return packingItems;
+        }
+        boolean luisFelipe = productionOrderRepository.findById(shipment.getProductionOrderId())
+                .map(this::isLuisFelipeVendorOrder)
+                .orElse(false);
+        if (!luisFelipe) {
+            return packingItems;
+        }
+        return packingItems.stream()
+                .filter(Objects::nonNull)
+                .map(item -> ProductShipmentRequest.PackingItemRequest.builder()
+                        .materialId(item.getMaterialId())
+                        .quantity(item.getQuantity())
+                        .unitPrice(BigDecimal.ZERO)
+                        .build())
+                .collect(Collectors.toList());
     }
 
     /**
@@ -1474,8 +1754,8 @@ public class ProductDistributionService {
     }
 
     /**
-     * Actualiza los productos de un envío (borrador, confirmado o en tránsito).
-     * Si el envío ya salió de PT, revierte la salida anterior y aplica la nueva composición.
+     * PUT /shipments/{id}/products: reemplazo total. Persiste size, hardwareCondition y unitPrice
+     * de cada línea (reimpresión). Si el envío ya salió de PT, revierte y reaplica inventario.
      */
     @Transactional(rollbackFor = Exception.class)
     public ProductShipmentResponse updateShipmentProducts(Long shipmentId, List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
@@ -1500,7 +1780,9 @@ public class ProductDistributionService {
         if (sentStatus && dispatchInventory) {
             reverseSentShipmentDispatchInventory(shipment);
             try {
-                assertDispatchStockAvailable(normalized);
+                assertDispatchStockAvailable(normalized.stream()
+                        .filter(line -> !skipsWarehouseForLine(shipment, line.getProductId()))
+                        .collect(Collectors.toList()), resolveDispatchSource(shipment));
             } catch (BusinessException ex) {
                 // La devolución a PT ya se escribió: sin rollback quedaría stock que no existe con el envío aún SENT.
                 org.springframework.transaction.interceptor.TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
@@ -1508,9 +1790,20 @@ public class ProductDistributionService {
             }
         }
 
+        // La cantidad sugerida por la reposición se conserva al editar líneas (sirve para medir los ajustes).
+        Map<String, BigDecimal> previousSuggested = new HashMap<>();
+        for (ProductShipmentDetailEntity old : shipmentDetailRepository.findByShipmentId(shipmentId)) {
+            if (old.getSuggestedQuantity() != null) {
+                previousSuggested.put(suggestedKey(old.getProductId(), old.getColorId(), old.getSizeLabel()),
+                        old.getSuggestedQuantity());
+            }
+        }
         shipmentDetailRepository.deleteByShipmentId(shipmentId);
         try {
             for (ProductShipmentRequest.ProductShipmentDetailRequest line : normalized) {
+                BigDecimal suggested = line.getSuggestedQuantity() != null
+                        ? line.getSuggestedQuantity()
+                        : previousSuggested.get(suggestedKey(line.getProductId(), line.getColorId(), line.getSize()));
                 ProductShipmentDetailEntity detail = ProductShipmentDetailEntity.builder()
                         .shipmentId(shipmentId)
                         .productId(line.getProductId())
@@ -1523,6 +1816,7 @@ public class ProductDistributionService {
                                 line.getSize()))
                         .quantity(line.getQuantity())
                         .unitPrice(line.getUnitPrice())
+                        .suggestedQuantity(suggested)
                         .build();
                 shipmentDetailRepository.save(detail);
             }
@@ -1575,11 +1869,74 @@ public class ProductDistributionService {
         if (shipmentLocationId != null) {
             return true;
         }
+        if (isVendorReserveShipment(shipment, linkedPoOpt)) {
+            return false;
+        }
         boolean opcPtOutOnly = linkedPoOpt
                 .map(po -> isCinchoOrderType(po.getOrderType())
                         && !extractDestinationFromNotes(shipment.getNotes()).isBlank())
                 .orElse(false);
         return opcPtOutOnly || standaloneInternalEnvi;
+    }
+
+    /**
+     * Cincho con destino Entrecueros (kiosko Entrecueros, o destino "Entrecueros" en las notas de un
+     * envío sin kiosko): no pasa por Devoluciones/Bodega PT, así que no valida stock, no sale de
+     * bodega ni queda en tránsito.
+     */
+    private boolean skipsWarehouseForLine(ProductShipmentEntity shipment, Long productId) {
+        if (shipment == null || productId == null || !isShipmentDestinationEntrecueros(shipment)) {
+            return false;
+        }
+        ProductEntity product = productRepository.findById(productId).orElse(null);
+        return KioscoInventoryInitRules.isCinchoProduct(product)
+                || CinchoProductUtils.isCinchoLineForProduction(product);
+    }
+
+    private boolean isShipmentDestinationEntrecueros(ProductShipmentEntity shipment) {
+        if (shipment.getLocationId() != null) {
+            return KioskPosMode.isEntrecueros(locationRepository.findById(shipment.getLocationId()).orElse(null));
+        }
+        return normalizeEntreCuerosToken(extractDestinationFromNotes(shipment.getNotes())).contains("ENTRECUEROS");
+    }
+
+    /**
+     * De qué bodega sale primero un envío. Las OP hechas a pedido (kiosko cliente, interna, cinchos)
+     * entraron a Bodega PT al recibirse, así que salen de PT; las distribuciones de OPK y los envíos
+     * sin OP consumen Devoluciones primero.
+     */
+    private ProductInventoryService.DispatchSource resolveDispatchSource(ProductShipmentEntity shipment) {
+        // ENVI interno (OPI): sale solo de Devoluciones; si no hay, se produce con una OPI.
+        if (isStandaloneInternalEnviShipment(shipment)) {
+            return ProductInventoryService.DispatchSource.RETURNS_ONLY;
+        }
+        if (shipment == null || shipment.getDistributionId() != null || shipment.getProductionOrderId() == null) {
+            return ProductInventoryService.DispatchSource.RETURNS_FIRST;
+        }
+        return productionOrderRepository.findById(shipment.getProductionOrderId())
+                .map(po -> {
+                    String type = po.getOrderType() == null ? "" : po.getOrderType().trim().toUpperCase();
+                    boolean madeToOrder = "INTERNA".equals(type)
+                            || "CLIENTE_KIOSKO".equals(type)
+                            || isCinchoOrderType(type);
+                    return madeToOrder
+                            ? ProductInventoryService.DispatchSource.PT_FIRST
+                            : ProductInventoryService.DispatchSource.RETURNS_FIRST;
+                })
+                .orElse(ProductInventoryService.DispatchSource.RETURNS_FIRST);
+    }
+
+    /**
+     * Envío de una OP de Luis Felipe sin kiosko destino. Esas piezas ya están vendidas: viven en la
+     * reserva desde que se reciben y salen de ella al cerrar la recepción en bodega, así que el envío
+     * no vuelve a mover inventario.
+     */
+    private boolean isVendorReserveShipment(ProductShipmentEntity shipment, Optional<ProductionOrderEntity> linkedPoOpt) {
+        return shipment.getLocationId() == null
+                && linkedPoOpt
+                .map(po -> ProductionPlanningConstants.isLuisFelipeReserveOrder(
+                        po.getSellerName(), po.getOrderType(), po.getCode()))
+                .orElse(false);
     }
 
     private void reverseSentShipmentDispatchInventory(ProductShipmentEntity shipment) throws BusinessException {
@@ -1625,7 +1982,7 @@ public class ProductDistributionService {
             if (qty.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
-            if (isPackagingProduct(detail.getProductId())) {
+            if (isPackagingProduct(detail.getProductId()) || skipsWarehouseForLine(shipment, detail.getProductId())) {
                 continue;
             }
             productInventoryService.decrementFromDispatchWarehouses(
@@ -1639,7 +1996,8 @@ public class ProductDistributionService {
                     "Reenvío tras edición hacia " + destinationLabel,
                     ProductInventoryService.MOVEMENT_SHIPMENT,
                     detail.getId(),
-                    !SKIP_DISPATCH_STOCK_CHECK);
+                    !SKIP_DISPATCH_STOCK_CHECK,
+                    resolveDispatchSource(shipment));
             creditShipmentLineInTransit(shipment, detail, qty, destinationLabel);
         }
     }
@@ -1837,8 +2195,14 @@ public class ProductDistributionService {
             throw new BusinessException("La distribución ya está completada");
         }
         
+        if (DistributionOrigin.REPOSICION.equals(DistributionOrigin.normalize(distribution.getOrigin()))) {
+            throw new BusinessException("La distribución de reposición ya nace con sus envíos confirmados. "
+                    + "El faltante se produce con la OPK sugerida desde Órdenes de producción.");
+        }
+
         // Verificar si ya existe una OP vinculada.
-        Optional<ProductionOrderEntity> existingOrder = productionOrderRepository.findByDistributionId(distributionId);
+        Optional<ProductionOrderEntity> existingOrder =
+                productionOrderRepository.findFirstByDistributionIdOrderByIdAsc(distributionId);
         if (existingOrder.isPresent() && generateProductionOrder) {
             throw new BusinessException("Esta distribución ya tiene una orden de producción generada: " + existingOrder.get().getCode());
         }
@@ -1923,8 +2287,12 @@ public class ProductDistributionService {
             }
         }
         
-        // Actualizar estado de los envíos
+        // Actualizar estado de los envíos: solo los borradores; un envío ya enviado, recibido o cancelado no
+        // regresa a confirmado.
         for (ProductShipmentEntity shipment : shipments) {
+            if (!"DRAFT".equalsIgnoreCase(safeTrim(shipment.getStatus()))) {
+                continue;
+            }
             shipment.setStatus("CONFIRMED");
             shipmentRepository.save(shipment);
         }
@@ -2027,7 +2395,8 @@ public class ProductDistributionService {
             return toShipmentResponse(shipmentRepository.save(shipment));
         }
 
-        if (shipmentLocationId == null && !ptWarehouseOut) {
+        boolean vendorReserveShipment = isVendorReserveShipment(shipment, linkedPoOpt);
+        if (shipmentLocationId == null && !ptWarehouseOut && !vendorReserveShipment) {
             throw new BusinessException("El envío no tiene destino (kiosko); no se puede registrar salida de PT.");
         }
 
@@ -2042,6 +2411,9 @@ public class ProductDistributionService {
         if (details.isEmpty()) {
             return transitionConfirmedShipmentToSent(shipmentId, shipment);
         }
+        if (vendorReserveShipment) {
+            return transitionConfirmedShipmentToSent(shipmentId, shipment);
+        }
 
         // El envío a kiosko también descarga bodega: su recepción carga stock del kiosko y sin esta
         // salida las mismas unidades quedarían contadas en los dos lados.
@@ -2049,12 +2421,14 @@ public class ProductDistributionService {
 
         if (!SKIP_DISPATCH_STOCK_CHECK) {
             // Pre-validar stock: Devoluciones primero, luego Bodega PT (total combinado).
-            List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses();
+            ProductInventoryService.DispatchSource sendSource = resolveDispatchSource(shipment);
+            List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses(sendSource);
             List<String> shortages = new java.util.ArrayList<>();
             for (ProductShipmentDetailEntity detail : details) {
                 BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
                 if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
                 if (isPackagingProduct(detail.getProductId())) continue;
+                if (skipsWarehouseForLine(shipment, detail.getProductId())) continue;
 
                 String sizeLabel = detail.getSizeLabel();
                 BigDecimal alreadyOut = productInventoryService.getNetConsumedForLine(
@@ -2066,7 +2440,7 @@ public class ProductDistributionService {
                 }
 
                 BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
-                        detail.getProductId(), detail.getColorId(), sizeLabel);
+                        detail.getProductId(), detail.getColorId(), sizeLabel, sendSource);
                 if (availableTotal.compareTo(stillNeeded) < 0) {
                     ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
                     String productName = product != null ? product.getCode() + " - " + product.getName() : "Producto #" + detail.getProductId();
@@ -2078,11 +2452,15 @@ public class ProductDistributionService {
                     String stockBreakdown = buildDispatchStockBreakdown(
                             detail.getProductId(), detail.getColorId(), sizeLabel, dispatchWarehouses);
                     shortages.add(productName + colorName + ": disponible " + availableTotal
-                            + " (Devoluciones + Bodega PT: " + stockBreakdown + "), requerido " + stillNeeded);
+                            + (sendSource == ProductInventoryService.DispatchSource.RETURNS_ONLY
+                            ? " (Devoluciones: " : " (Devoluciones + Bodega PT: ")
+                            + stockBreakdown + "), requerido " + stillNeeded);
                 }
             }
             if (!shortages.isEmpty()) {
-                throw new BusinessException("Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• "
+                throw new BusinessException((sendSource == ProductInventoryService.DispatchSource.RETURNS_ONLY
+                        ? "Stock insuficiente en Devoluciones para enviar:\n• "
+                        : "Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• ")
                         + String.join("\n• ", shortages));
             }
         }
@@ -2091,6 +2469,7 @@ public class ProductDistributionService {
             BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
             if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
             if (isPackagingProduct(detail.getProductId())) continue;
+            if (skipsWarehouseForLine(shipment, detail.getProductId())) continue;
 
             productInventoryService.decrementFromDispatchWarehouses(
                     detail.getProductId(),
@@ -2103,7 +2482,8 @@ public class ProductDistributionService {
                     "Salida a envio en transito hacia " + destinationLabel,
                     ProductInventoryService.MOVEMENT_SHIPMENT,
                     detail.getId(),
-                    !SKIP_DISPATCH_STOCK_CHECK);
+                    !SKIP_DISPATCH_STOCK_CHECK,
+                    resolveDispatchSource(shipment));
             creditShipmentLineInTransit(shipment, detail, qtyToSend, destinationLabel);
         }
 
@@ -2351,10 +2731,12 @@ public class ProductDistributionService {
                 if (scope != null) {
                     throw new BusinessException("Solo un administrador puede regresar pendientes a Bodega PT.");
                 }
-                productInventoryService.returnTransitToBodegaPt(
-                        detail.getProductId(), detail.getColorId(), detail.getSizeLabel(), qty,
-                        shipment.getId(), number, "Pendiente del envío " + number + " regresa a Bodega PT",
-                        detail.getId());
+                if (!skipsWarehouseForLine(shipment, detail.getProductId())) {
+                    productInventoryService.returnTransitToBodegaPt(
+                            detail.getProductId(), detail.getColorId(), detail.getSizeLabel(), qty,
+                            shipment.getId(), number, "Pendiente del envío " + number + " regresa a Bodega PT",
+                            detail.getId());
+                }
                 // Lo que vuelve a bodega deja de estar pendiente y deja de contar como enviado.
                 detail.setQuantity(sent.subtract(qty));
                 anyReturned = true;
@@ -2382,7 +2764,7 @@ public class ProductDistributionService {
      * Repara inventario de kiosko para un envío DELIVERED: carga todas las líneas del documento
      * (productos, tallas y empaques SUM-) que aún no estén registradas en stock kiosco.
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ShipmentReceiptRepairResponse repairDeliveredShipmentReceiptInventory(Long shipmentId, boolean force)
             throws ResourceNotFoundException, BusinessException {
         if (force) {
@@ -2395,7 +2777,7 @@ public class ProductDistributionService {
         return repairDeliveredShipmentReceiptInventoryAdditive(shipmentId);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ShipmentReceiptRepairResponse repairDeliveredShipmentReceiptInventoryAdditive(Long shipmentId)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
@@ -2443,7 +2825,7 @@ public class ProductDistributionService {
      * Solo elimina ENTRADAs duplicadas del envío; no agrega faltantes ni reescribe kardex
      * (use Sincronizar inventario kiosco para cargar lo que falte).
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public KioscoShipmentReconcileResponse reconcileShipmentReceiptInventory(
             Long locationId,
             Long shipmentId
@@ -4246,6 +4628,72 @@ public class ProductDistributionService {
     }
 
     /**
+     * Envíos OPV Luis Felipe para despacho móvil. Solo lectura.
+     * Con {@code productionOrderId} se usa el tope 200 para no truncar la orden del QR.
+     */
+    @Transactional(readOnly = true)
+    public List<ProductShipmentResponse> getLfDispatchShipments(
+            String status, String q, Long productionOrderId, Integer limit) {
+        String normalizedStatus = (status == null || status.isBlank()) ? "CONFIRMED" : status.trim();
+        String query = q == null ? "" : q.trim();
+        int requested = limit == null
+                ? LF_DISPATCH_DEFAULT_LIMIT
+                : Math.min(Math.max(limit, 1), LF_DISPATCH_MAX_LIMIT);
+        int max = productionOrderId != null ? LF_DISPATCH_MAX_LIMIT : requested;
+
+        List<ProductShipmentEntity> shipments = new ArrayList<>(shipmentRepository.findLfDispatchShipments(
+                normalizedStatus,
+                query,
+                productionOrderId,
+                PageRequest.of(0, LF_DISPATCH_MAX_LIMIT)));
+
+        Map<Long, ProductionOrderEntity> ordersById = loadById(
+                collectIds(shipments, ProductShipmentEntity::getProductionOrderId),
+                productionOrderRepository::findAllById,
+                ProductionOrderEntity::getId);
+        shipments.removeIf(s -> {
+            ProductionOrderEntity po = ordersById.get(s.getProductionOrderId());
+            return po == null
+                    || po.getCode() == null
+                    || po.getCode().isBlank()
+                    || !ProductionOrderCodeService.normalizeForSellerMatch(po.getSellerName()).contains("LUIS FELIPE");
+        });
+
+        Set<Long> cinchoShipmentIds = findShipmentIdsWithCinchoLines(shipments);
+        if (!cinchoShipmentIds.isEmpty()) {
+            shipments.removeIf(s -> cinchoShipmentIds.contains(s.getId()));
+        }
+        if (shipments.size() > max) {
+            shipments = new ArrayList<>(shipments.subList(0, max));
+        }
+
+        List<ProductShipmentResponse> responses = toShipmentResponses(shipments);
+        responses.removeIf(r -> r.getProductionOrderCode() == null || r.getProductionOrderCode().isBlank());
+        return responses;
+    }
+
+    /** Excluye el envío entero si alguna línea es cincho; no se recortan líneas del DTO. */
+    private Set<Long> findShipmentIdsWithCinchoLines(Collection<ProductShipmentEntity> shipments) {
+        Set<Long> shipmentIds = collectIds(shipments, ProductShipmentEntity::getId);
+        if (shipmentIds.isEmpty()) {
+            return Set.of();
+        }
+        List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentIdIn(shipmentIds);
+        Set<Long> productIds = details.stream()
+                .map(ProductShipmentDetailEntity::getProductId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, ProductEntity> productsById = loadById(productIds, productRepository::findAllById, ProductEntity::getId);
+        Set<Long> cinchoShipmentIds = new HashSet<>();
+        for (ProductShipmentDetailEntity detail : details) {
+            if (CinchoProductUtils.isCinchoLineForProduction(productsById.get(detail.getProductId()))) {
+                cinchoShipmentIds.add(detail.getShipmentId());
+            }
+        }
+        return cinchoShipmentIds;
+    }
+
+    /**
      * Obtiene envíos por estado
      */
     public List<ProductShipmentResponse> getShipmentsByStatus(String status) {
@@ -4253,10 +4701,7 @@ public class ProductDistributionService {
             return List.of();
         }
         String normalizedStatus = status.trim();
-        return shipmentRepository.findAll().stream()
-                .filter(s -> normalizedStatus.equalsIgnoreCase(safeTrim(s.getStatus())))
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(shipmentRepository.findByStatusIgnoreCase(normalizedStatus));
     }
 
     /**
@@ -4265,13 +4710,37 @@ public class ProductDistributionService {
      * Sin parámetro: admin ve todos; encargada ve sus kioskos asignados (pantalla distribución).
      */
     public List<ProductShipmentResponse> getShipmentsInTransit(Long kioskLocationId) throws BusinessException {
-        return findShipmentsInTransitEntities(kioskLocationId).stream()
-                .map(this::toShipmentResponse)
-                .collect(Collectors.toList());
+        return toShipmentResponses(findShipmentsInTransitEntities(kioskLocationId));
+    }
+
+    /**
+     * Pendientes de recepción de un kiosko en una sola consulta: envíos en tránsito (SENT) más los ya
+     * entregados con líneas aún por recibir (quantity_received &lt; quantity), en ese orden.
+     */
+    public List<ProductShipmentResponse> getShipmentsPendingReceipt(Long kioskLocationId) throws BusinessException {
+        if (kioskLocationId == null) {
+            throw new BusinessException("Indica el kiosko para consultar las recepciones pendientes.");
+        }
+        assertMayAccessKioskLocation(kioskLocationId, resolveReceiptLocationScope());
+        List<ProductShipmentEntity> pending = new ArrayList<>(
+                shipmentRepository.findByStatusIgnoreCaseAndLocationId("SENT", kioskLocationId));
+        pending.addAll(shipmentRepository.findDeliveredWithPendingLinesByLocationId(kioskLocationId));
+        return toShipmentResponses(pending);
     }
 
     public long countShipmentsInTransit(Long kioskLocationId) throws BusinessException {
-        return findShipmentsInTransitEntities(kioskLocationId).size();
+        Set<Long> scopedLocationIds = resolveReceiptLocationScope();
+        if (kioskLocationId != null) {
+            assertMayAccessKioskLocation(kioskLocationId, scopedLocationIds);
+            return shipmentRepository.countByStatusIgnoreCaseAndLocationId("SENT", kioskLocationId);
+        }
+        if (scopedLocationIds == null) {
+            return shipmentRepository.findByStatusIgnoreCase("SENT").size();
+        }
+        if (scopedLocationIds.isEmpty()) {
+            return 0L;
+        }
+        return shipmentRepository.countByStatusIgnoreCaseAndLocationIdIn("SENT", scopedLocationIds);
     }
 
     private List<ProductShipmentEntity> findShipmentsInTransitEntities(Long kioskLocationId) throws BusinessException {
@@ -4358,13 +4827,39 @@ public class ProductDistributionService {
      * Genera número de distribución automáticamente basado en el ID secuencial
      */
     private String generateDistributionNumber() {
-        // Obtener el siguiente ID disponible (contar distribuciones existentes + 1)
-        long nextId = distributionRepository.count() + 1;
+        // Formato: DIST-YYYYMMDD-001. El correlativo final es global: el mayor en uso + 1 (antes era count()+1, que
+        // chocaba con el índice único cuando se había borrado alguna distribución).
         String prefix = "DIST";
         String dateStr = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-        
-        // Formato: DIST-YYYYMMDD-001 (basado en ID secuencial)
-        return String.format("%s-%s-%03d", prefix, dateStr, nextId);
+        long next = nextDistributionSequence(distributionRepository.findAllDistributionNumbers());
+        String candidate = String.format("%s-%s-%03d", prefix, dateStr, next);
+        while (distributionRepository.existsByDistributionNumber(candidate)) {
+            next++;
+            candidate = String.format("%s-%s-%03d", prefix, dateStr, next);
+        }
+        return candidate;
+    }
+
+    /** Mayor correlativo final de los números DIST-YYYYMMDD-NNN existentes, más uno. */
+    static long nextDistributionSequence(Collection<String> existingNumbers) {
+        long max = 0;
+        if (existingNumbers != null) {
+            for (String number : existingNumbers) {
+                if (number == null) {
+                    continue;
+                }
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("^DIST-\\d{8}-(\\d+)$")
+                        .matcher(number.trim().toUpperCase(Locale.ROOT));
+                if (m.matches()) {
+                    try {
+                        max = Math.max(max, Long.parseLong(m.group(1)));
+                    } catch (NumberFormatException ignored) {
+                        // número fuera de rango: no cuenta
+                    }
+                }
+            }
+        }
+        return max + 1;
     }
 
     /**
@@ -4409,8 +4904,9 @@ public class ProductDistributionService {
     private ProductDistributionResponse toDistributionResponse(ProductDistributionEntity entity) {
         List<ProductShipmentEntity> shipments = shipmentRepository.findByDistributionId(entity.getId());
         
-        // Buscar si hay una orden de producción vinculada
-        Optional<ProductionOrderEntity> linkedOrder = productionOrderRepository.findByDistributionId(entity.getId());
+        // Órdenes de producción vinculadas (OPD generada desde la distribución, u OPK sugerida por una reposición).
+        List<ProductionOrderEntity> linkedOrders = productionOrderRepository.findByDistributionIdOrderByIdAsc(entity.getId());
+        Optional<ProductionOrderEntity> linkedOrder = linkedOrders.stream().findFirst();
         
         return ProductDistributionResponse.builder()
                 .id(entity.getId())
@@ -4418,12 +4914,20 @@ public class ProductDistributionService {
                 .distributionDate(entity.getDistributionDate())
                 .status(entity.getStatus())
                 .description(entity.getDescription())
+                .origin(DistributionOrigin.normalize(entity.getOrigin()))
+                .replenishmentWindowDays(entity.getReplenishmentWindowDays())
                 .shipmentCount(shipments.size())
-                .shipments(shipments.stream()
-                        .map(this::toShipmentResponse)
-                        .collect(Collectors.toList()))
+                .shipments(toShipmentResponses(shipments))
                 .productionOrderId(linkedOrder.map(ProductionOrderEntity::getId).orElse(null))
                 .productionOrderCode(linkedOrder.map(ProductionOrderEntity::getCode).orElse(null))
+                .linkedProductionOrders(linkedOrders.stream()
+                        .map(po -> ProductDistributionResponse.LinkedProductionOrder.builder()
+                                .id(po.getId())
+                                .code(po.getCode())
+                                .orderType(po.getOrderType())
+                                .status(po.getStatus())
+                                .build())
+                        .collect(Collectors.toList()))
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
                 .createdByName(resolveUserDisplayName(
@@ -4438,64 +4942,170 @@ public class ProductDistributionService {
             return null;
         }
         return userRepository.findById(userId)
-                .map(user -> {
-                    String first = user.getFirstName() != null ? user.getFirstName().trim() : "";
-                    String last = user.getLastName() != null ? user.getLastName().trim() : "";
-                    String full = (first + " " + last).trim();
-                    return full.isEmpty() ? user.getUsername() : full;
-                })
+                .map(this::userDisplayName)
                 .orElse(null);
+    }
+
+    private String userDisplayName(UserEntity user) {
+        String first = user.getFirstName() != null ? user.getFirstName().trim() : "";
+        String last = user.getLastName() != null ? user.getLastName().trim() : "";
+        String full = (first + " " + last).trim();
+        return full.isEmpty() ? user.getUsername() : full;
     }
 
     /**
      * Convierte entidad de envío a DTO de respuesta
      */
     private ProductShipmentResponse toShipmentResponse(ProductShipmentEntity entity) {
-        List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentId(entity.getId());
-        LocationEntity location = entity.getLocationId() == null
-                ? null
-                : locationRepository.findById(entity.getLocationId()).orElse(null);
-        ProductDistributionEntity distribution = entity.getDistributionId() == null
-                ? null
-                : distributionRepository.findById(entity.getDistributionId()).orElse(null);
-        ProductionOrderEntity linkedPo = entity.getProductionOrderId() == null
-                ? null
-                : productionOrderRepository.findById(entity.getProductionOrderId()).orElse(null);
-
-        String locationName = location != null ? location.getName() : virtualDestinationForDirectShipment(linkedPo, entity);
-        String locationCode = location != null ? location.getCode() : null;
-
-        return ProductShipmentResponse.builder()
-                .id(entity.getId())
-                .distributionId(entity.getDistributionId())
-                .productionOrderId(entity.getProductionOrderId())
-                .partialReleaseId(entity.getPartialReleaseId())
-                .productionOrderCode(linkedPo != null ? linkedPo.getCode() : null)
-                .distributionNumber(distribution != null ? distribution.getDistributionNumber() : null)
-                .shipmentNumber(entity.getShipmentNumber())
-                .locationId(entity.getLocationId())
-                .locationCode(locationCode)
-                .locationName(locationName)
-                .status(entity.getStatus())
-                .notes(entity.getNotes())
-                .packingItems(parsePackingItems(entity.getPackingItems()))
-                .shippingCost(entity.getShippingCost())
-                .sentAt(entity.getSentAt())
-                .sentBy(entity.getSentBy())
-                .receivedAt(entity.getReceivedAt())
-                .receivedBy(entity.getReceivedBy())
-                .receivedNotes(entity.getReceivedNotes())
-                .products(details.stream()
-                        .map(this::toShipmentDetailResponse)
-                        .collect(Collectors.toList()))
-                .createdAt(entity.getCreatedAt())
-                .createdBy(entity.getCreatedBy())
-                .createdByName(resolveUserDisplayName(
-                        entity.getCreatedBy() != null ? entity.getCreatedBy() : entity.getUpdatedBy()))
-                .updatedAt(entity.getUpdatedAt())
-                .updatedBy(entity.getUpdatedBy())
-                .build();
+        return toShipmentResponses(List.of(entity)).get(0);
     }
+
+    /**
+     * Convierte varios envíos a DTO cargando detalles, productos, colores, categorías, ubicaciones,
+     * distribuciones, órdenes, usuarios y materiales en consultas por lote (sin N+1 por envío/línea).
+     */
+    private List<ProductShipmentResponse> toShipmentResponses(Collection<ProductShipmentEntity> entities) {
+        if (entities == null || entities.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<ProductShipmentEntity> shipments = new ArrayList<>(entities);
+
+        Set<Long> shipmentIds = collectIds(shipments, ProductShipmentEntity::getId);
+        Map<Long, List<ProductShipmentDetailEntity>> detailsByShipment = new HashMap<>();
+        if (!shipmentIds.isEmpty()) {
+            shipmentDetailRepository.findByShipmentIdIn(shipmentIds).stream()
+                    .sorted(Comparator.comparing(ProductShipmentDetailEntity::getId,
+                            Comparator.nullsLast(Comparator.naturalOrder())))
+                    .forEach(d -> detailsByShipment.computeIfAbsent(d.getShipmentId(), k -> new ArrayList<>()).add(d));
+        }
+
+        Set<Long> productIds = new HashSet<>();
+        Set<Long> colorIds = new HashSet<>();
+        detailsByShipment.values().forEach(list -> list.forEach(d -> {
+            if (d.getProductId() != null) productIds.add(d.getProductId());
+            if (d.getColorId() != null) colorIds.add(d.getColorId());
+        }));
+        Map<Long, ProductEntity> productsById = loadById(productIds, productRepository::findAllById,
+                ProductEntity::getId);
+        Set<Long> categoryIds = productsById.values().stream()
+                .map(ProductEntity::getCategoryId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, String> categoryNames = new HashMap<>();
+        loadById(categoryIds, productCategoryRepository::findAllById, ProductCategoryEntity::getId)
+                .forEach((id, c) -> categoryNames.put(id, c.getName()));
+        Map<Long, String> colorNames = new HashMap<>();
+        loadById(colorIds, colorRepository::findAllById, ColorEntity::getId)
+                .forEach((id, c) -> colorNames.put(id, c.getName()));
+
+        Map<Long, LocationEntity> locationsById = loadById(
+                collectIds(shipments, ProductShipmentEntity::getLocationId),
+                locationRepository::findAllById, LocationEntity::getId);
+        Map<Long, ProductDistributionEntity> distributionsById = loadById(
+                collectIds(shipments, ProductShipmentEntity::getDistributionId),
+                distributionRepository::findAllById, ProductDistributionEntity::getId);
+        Map<Long, ProductionOrderEntity> ordersById = loadById(
+                collectIds(shipments, ProductShipmentEntity::getProductionOrderId),
+                productionOrderRepository::findAllById, ProductionOrderEntity::getId);
+
+        Set<Long> userIds = new HashSet<>();
+        shipments.forEach(s -> {
+            Long uid = s.getCreatedBy() != null ? s.getCreatedBy() : s.getUpdatedBy();
+            if (uid != null) userIds.add(uid);
+        });
+        Map<Long, String> userNames = new HashMap<>();
+        loadById(userIds, userRepository::findAllById, UserEntity::getId)
+                .forEach((id, u) -> userNames.put(id, userDisplayName(u)));
+
+        Map<Long, List<ProductShipmentRequest.PackingItemRequest>> rawPacking = new HashMap<>();
+        Set<Long> materialIds = new HashSet<>();
+        for (ProductShipmentEntity s : shipments) {
+            List<ProductShipmentRequest.PackingItemRequest> items = readPackingItems(s.getPackingItems());
+            if (s.getId() != null && !items.isEmpty()) {
+                rawPacking.put(s.getId(), items);
+                items.forEach(i -> materialIds.add(i.getMaterialId()));
+            }
+        }
+        Map<Long, MaterialEntity> materialsById = loadById(materialIds, materialRepository::findAllById,
+                MaterialEntity::getId);
+        Map<String, String> brandByProductColor = loadBrandNamesByProductColor(
+                collectIds(shipments, ProductShipmentEntity::getProductionOrderId));
+
+        List<ProductShipmentResponse> result = new ArrayList<>(shipments.size());
+        for (ProductShipmentEntity entity : shipments) {
+            LocationEntity location = entity.getLocationId() == null ? null : locationsById.get(entity.getLocationId());
+            ProductDistributionEntity distribution = entity.getDistributionId() == null
+                    ? null
+                    : distributionsById.get(entity.getDistributionId());
+            ProductionOrderEntity linkedPo = entity.getProductionOrderId() == null
+                    ? null
+                    : ordersById.get(entity.getProductionOrderId());
+            String locationName = location != null ? location.getName() : virtualDestinationForDirectShipment(linkedPo, entity);
+            String locationCode = location != null ? location.getCode() : null;
+            Long creatorId = entity.getCreatedBy() != null ? entity.getCreatedBy() : entity.getUpdatedBy();
+            List<ProductShipmentDetailEntity> details = entity.getId() == null
+                    ? List.of()
+                    : detailsByShipment.getOrDefault(entity.getId(), List.of());
+            List<ProductShipmentResponse.PackingItemResponse> packingItems = entity.getId() == null
+                    ? List.of()
+                    : rawPacking.getOrDefault(entity.getId(), List.of()).stream()
+                            .map(item -> toPackingItemResponse(item, materialsById.get(item.getMaterialId())))
+                            .collect(Collectors.toList());
+
+            result.add(ProductShipmentResponse.builder()
+                    .id(entity.getId())
+                    .distributionId(entity.getDistributionId())
+                    .distributionOrigin(distribution != null ? DistributionOrigin.normalize(distribution.getOrigin()) : null)
+                    .pendingProduction(isPendingProductionShipment(entity))
+                    .productionOrderId(entity.getProductionOrderId())
+                    .partialReleaseId(entity.getPartialReleaseId())
+                    .productionOrderCode(linkedPo != null ? linkedPo.getCode() : null)
+                    .distributionNumber(distribution != null ? distribution.getDistributionNumber() : null)
+                    .shipmentNumber(entity.getShipmentNumber())
+                    .locationId(entity.getLocationId())
+                    .locationCode(locationCode)
+                    .locationName(locationName)
+                    .status(entity.getStatus())
+                    .notes(entity.getNotes())
+                    .packingItems(packingItems)
+                    .shippingCost(entity.getShippingCost())
+                    .sentAt(entity.getSentAt())
+                    .sentBy(entity.getSentBy())
+                    .receivedAt(entity.getReceivedAt())
+                    .receivedBy(entity.getReceivedBy())
+                    .receivedNotes(entity.getReceivedNotes())
+                    .products(details.stream()
+                            .map(d -> toShipmentDetailResponse(
+                                    d, productsById, colorNames, categoryNames, brandByProductColor))
+                            .collect(Collectors.toList()))
+                    .createdAt(entity.getCreatedAt())
+                    .createdBy(entity.getCreatedBy())
+                    .createdByName(creatorId != null ? userNames.get(creatorId) : null)
+                    .updatedAt(entity.getUpdatedAt())
+                    .updatedBy(entity.getUpdatedBy())
+                    .build());
+        }
+        return result;
+    }
+
+    private static Set<Long> collectIds(Collection<ProductShipmentEntity> shipments,
+                                        java.util.function.Function<ProductShipmentEntity, Long> getter) {
+        return shipments.stream().map(getter).filter(Objects::nonNull).collect(Collectors.toCollection(HashSet::new));
+    }
+
+    /** findAllById en una sola consulta; mapa vacío (sin consultar) si no hay ids. */
+    private static <T> Map<Long, T> loadById(
+            Set<Long> ids,
+            java.util.function.Function<Set<Long>, ? extends Iterable<T>> loader,
+            java.util.function.Function<T, Long> idGetter) {
+        Map<Long, T> map = new HashMap<>();
+        if (ids.isEmpty()) {
+            return map;
+        }
+        loader.apply(ids).forEach(e -> map.put(idGetter.apply(e), e));
+        return map;
+    }
+
     private static final String PACKAGING_PRODUCT_CODE_PREFIX = "SUM";
 
     private boolean isPackagingProduct(Long productId) {
@@ -4538,17 +5148,20 @@ public class ProductDistributionService {
     /**
      * Convierte entidad de detalle a DTO de respuesta
      */
-    private ProductShipmentDetailResponse toShipmentDetailResponse(ProductShipmentDetailEntity entity) {
-        ProductEntity product = entity.getProductId() == null
-                ? null
-                : productRepository.findById(entity.getProductId()).orElse(null);
-        String colorName = null;
-        if (entity.getColorId() != null) {
-            ColorEntity color = colorRepository.findById(entity.getColorId()).orElse(null);
-            colorName = color != null ? color.getName() : null;
-        }
+    private ProductShipmentDetailResponse toShipmentDetailResponse(
+            ProductShipmentDetailEntity entity,
+            Map<Long, ProductEntity> productsById,
+            Map<Long, String> colorNames,
+            Map<Long, String> categoryNames,
+            Map<String, String> brandByProductColor) {
+        ProductEntity product = entity.getProductId() == null ? null : productsById.get(entity.getProductId());
+        String colorName = entity.getColorId() == null ? null : colorNames.get(entity.getColorId());
         Long categoryId = product != null ? product.getCategoryId() : null;
-        String categoryName = resolveProductCategoryName(categoryId);
+        String categoryName = categoryId == null ? null : categoryNames.get(categoryId);
+        String brandName = brandByProductColor.get(receiptProductColorKey(entity.getProductId(), entity.getColorId()));
+        if (brandName == null || brandName.isBlank()) {
+            brandName = ProductBrandNames.normalize(entity.getHardwareCondition());
+        }
 
         return ProductShipmentDetailResponse.builder()
                 .id(entity.getId())
@@ -4563,12 +5176,30 @@ public class ProductDistributionService {
                 .colorName(colorName)
                 .size(entity.getSizeLabel())
                 .hardwareCondition(entity.getHardwareCondition())
+                .brandName(brandName)
                 .quantity(entity.getQuantity())
+                .suggestedQuantity(entity.getSuggestedQuantity())
                 .unitPrice(entity.getUnitPrice())
                 .quantityReceived(entity.getQuantityReceived())
                 .quantityDifference(entity.getQuantityDifference())
                 .receivedLineNotes(entity.getReceivedLineNotes())
                 .build();
+    }
+
+    private Map<String, String> loadBrandNamesByProductColor(Set<Long> productionOrderIds) {
+        Map<String, String> brands = new HashMap<>();
+        if (productionOrderIds == null || productionOrderIds.isEmpty()) {
+            return brands;
+        }
+        for (ProductionOrderItemEntity item : productionOrderItemRepository.findByProductionOrderIdIn(productionOrderIds)) {
+            if (item.getBrandName() == null || item.getBrandName().isBlank()) {
+                continue;
+            }
+            brands.putIfAbsent(
+                    receiptProductColorKey(item.getProductId(), item.getColorId()),
+                    item.getBrandName().trim());
+        }
+        return brands;
     }
 
     private String resolveProductCategoryName(Long categoryId) {
@@ -4667,6 +5298,7 @@ public class ProductDistributionService {
         Map<String, String> keyToSize = new HashMap<>();
         Map<String, String> keyToHardware = new HashMap<>();
         Map<String, BigDecimal> keyToUnitPrice = new HashMap<>();
+        Map<String, BigDecimal> keyToSuggested = new HashMap<>();
 
         if (products != null) {
             for (ProductShipmentRequest.ProductShipmentDetailRequest productRequest : products) {
@@ -4694,6 +5326,9 @@ public class ProductDistributionService {
                 if (productRequest.getUnitPrice() != null && !keyToUnitPrice.containsKey(key)) {
                     keyToUnitPrice.put(key, productRequest.getUnitPrice());
                 }
+                if (productRequest.getSuggestedQuantity() != null) {
+                    keyToSuggested.merge(key, productRequest.getSuggestedQuantity(), BigDecimal::add);
+                }
             }
         }
 
@@ -4705,6 +5340,7 @@ public class ProductDistributionService {
                         .hardwareCondition(keyToHardware.getOrDefault(entry.getKey(), ""))
                         .quantity(entry.getValue())
                         .unitPrice(keyToUnitPrice.get(entry.getKey()))
+                        .suggestedQuantity(keyToSuggested.get(entry.getKey()))
                         .build())
                 .collect(Collectors.toList());
     }
@@ -4754,47 +5390,34 @@ public class ProductDistributionService {
         }
     }
 
-    /**
-     * Número en product_shipment para cinchos Luis Felipe: siempre ENVP-xxxxx-ENV-nnnnn (o OPC-ENV si no hay ENVP).
-     * El impreso sigue usando vendorShipmentNumber de la OP (ENVP puro), sin colisión con envíos de otras OP.
-     */
-    private String allocateLfCinchoPhysicalShipmentNumber(ProductionOrderEntity order) throws BusinessException {
-        String envp = order.getVendorShipmentNumber();
-        String base = (envp != null && !envp.isBlank())
-                ? envp.trim().toUpperCase()
-                : (order.getCode() == null ? "OPC" : order.getCode().trim().toUpperCase().replaceAll("[^A-Za-z0-9_-]", "_"));
-        return nextUniqueShipmentNumberWithPrefix(order.getId(), base + "-ENV-");
+    /** ENVP-nnnnn en el envío. En la OP solo se copia el primero, nunca se pisa. */
+    private String allocateLfEnvpShipmentNumber(ProductionOrderEntity order) throws BusinessException {
+        String number = opvVendorShipmentNumberService.nextNumber();
+        ensureLfEnvpOnOrderIfMissing(order, number);
+        return number;
     }
 
-    private String nextUniqueShipmentNumberWithPrefix(Long productionOrderId, String prefix) throws BusinessException {
-        int maxOnOrder = shipmentRepository.findByProductionOrderId(productionOrderId).stream()
-                .map(ProductShipmentEntity::getShipmentNumber)
-                .filter(n -> n != null && n.toUpperCase().startsWith(prefix.toUpperCase()))
-                .mapToInt(this::extractTrailingSequence)
-                .max()
-                .orElse(0);
-        for (int seq = maxOnOrder + 1; seq < maxOnOrder + 10000; seq++) {
-            String candidate = String.format("%s%05d", prefix, seq);
-            if (!shipmentRepository.existsByShipmentNumber(candidate)) {
-                return candidate;
-            }
+    /** Cinchos LF: si la OP no tiene ENVP, lo toma del correlativo (nunca fallback OPC-ENV). */
+    private ProductionOrderEntity ensureLfEnvpOnOrderIfMissing(ProductionOrderEntity order) throws BusinessException {
+        if (order.getVendorShipmentNumber() != null && !order.getVendorShipmentNumber().isBlank()) {
+            return order;
         }
-        throw new BusinessException("No se pudo generar un número de envío único para la orden.");
+        return ensureLfEnvpOnOrderIfMissing(order, opvVendorShipmentNumberService.nextNumber());
     }
 
-    private ProductionOrderEntity ensureOpvVendorShipmentNumberOnOrder(ProductionOrderEntity order) {
-        rotateVendorShipmentNumberIfTaken(order);
-        String before = order.getVendorShipmentNumber();
-        opvVendorShipmentNumberService.assignIfMissing(order);
-        boolean reconciled = opvVendorShipmentNumberService.reconcileVendorNumberIfColliding(order);
-        if (reconciled || !java.util.Objects.equals(before, order.getVendorShipmentNumber())) {
-            return productionOrderRepository.save(order);
+    private ProductionOrderEntity ensureLfEnvpOnOrderIfMissing(ProductionOrderEntity order, String envp)
+            throws BusinessException {
+        if (order.getVendorShipmentNumber() != null && !order.getVendorShipmentNumber().isBlank()) {
+            return order;
         }
-        return order;
+        order.setVendorShipmentNumber(envp);
+        order.setUpdatedBy(securityUtil.getCurrentUserId());
+        return productionOrderRepository.save(order);
     }
 
     /**
      * El documento anulado conserva su número. El siguiente envío de esa OP usa correlativo nuevo.
+     * Luis Felipe no rota: vendor_shipment_number es el ENVP de la primera entrega y no se pisa.
      */
     private void rotateVendorNumberAfterCancellingShipment(ProductShipmentEntity cancelled) {
         if (cancelled == null || cancelled.getProductionOrderId() == null) {
@@ -4802,7 +5425,7 @@ public class ProductDistributionService {
         }
         ProductionOrderEntity order = productionOrderRepository.findById(cancelled.getProductionOrderId())
                 .orElse(null);
-        if (order == null || !vendorNumberAppliesToShipment(order, cancelled)) {
+        if (order == null || isLuisFelipeVendorOrder(order) || !vendorNumberAppliesToShipment(order, cancelled)) {
             return;
         }
         boolean otherActive = shipmentRepository.findByProductionOrderId(order.getId()).stream()
@@ -4815,7 +5438,7 @@ public class ProductDistributionService {
     }
 
     private void rotateVendorShipmentNumberIfTaken(ProductionOrderEntity order) {
-        if (order == null) {
+        if (order == null || isLuisFelipeVendorOrder(order)) {
             return;
         }
         String vendor = safeTrim(order.getVendorShipmentNumber());
@@ -4828,12 +5451,10 @@ public class ProductDistributionService {
     }
 
     private void assignNextVendorShipmentNumber(ProductionOrderEntity order) {
-        if (order == null) {
+        if (order == null || isLuisFelipeVendorOrder(order)) {
             return;
         }
-        String next = isLuisFelipeVendorOrder(order)
-                ? opvVendorShipmentNumberService.nextNumber()
-                : opiVendorShipmentNumberService.nextNumber();
+        String next = opiVendorShipmentNumberService.nextNumber();
         order.setVendorShipmentNumber(next);
         order.setUpdatedBy(securityUtil.getCurrentUserId());
         productionOrderRepository.save(order);
@@ -4870,6 +5491,101 @@ public class ProductDistributionService {
         String nfd = java.text.Normalizer.normalize(value.trim(), java.text.Normalizer.Form.NFD);
         String withoutMarks = nfd.replaceAll("\\p{M}+", "");
         return withoutMarks.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
+    }
+
+    /**
+     * OPK: orden NORMAL de kioscos (código OPK-…), fuera de Luis Felipe y Entre Cueros. Solo estas ponen sus envíos
+     * a kiosco dentro de una distribución; OPCK y las demás siguen con envío directo.
+     */
+    boolean isKioskReplenishmentOrder(ProductionOrderEntity order) {
+        if (order == null) {
+            return false;
+        }
+        String orderType = order.getOrderType() == null ? "" : order.getOrderType().trim().toUpperCase(Locale.ROOT);
+        String code = order.getCode() == null ? "" : order.getCode().trim().toUpperCase(Locale.ROOT);
+        return "NORMAL".equals(orderType)
+                && code.startsWith("OPK")
+                && !isLuisFelipeVendorOrder(order)
+                && !isEntreCuerosCustomerOpv(order);
+    }
+
+    /** Liga la OPK a una distribución: la que ya tenga (p. ej. la reposición que la sugirió) o una MANUAL nueva. */
+    private ProductionOrderEntity ensureOpkDistribution(ProductionOrderEntity order) {
+        if (order.getDistributionId() != null && distributionRepository.existsById(order.getDistributionId())) {
+            return order;
+        }
+        Long userId = securityUtil.getCurrentUserId();
+        ProductDistributionEntity created = distributionRepository.save(ProductDistributionEntity.builder()
+                .distributionNumber(generateDistributionNumber())
+                .distributionDate(LocalDate.now())
+                .status("IN_PROGRESS")
+                .origin(DistributionOrigin.MANUAL)
+                .description("Envíos de " + (order.getCode() == null ? "OPK #" + order.getId() : order.getCode()))
+                .createdBy(userId)
+                .updatedBy(userId)
+                .build());
+        order.setDistributionId(created.getId());
+        order.setUpdatedBy(userId);
+        return productionOrderRepository.save(order);
+    }
+
+    /**
+     * Distribución para un envío directo a kiosco sin OP: la indicada (debe existir y no estar cerrada) o una
+     * MANUAL nueva de un solo envío.
+     */
+    private Long resolveDirectKioskDistribution(Long requestedDistributionId, LocationEntity location, Long userId)
+            throws ResourceNotFoundException, BusinessException {
+        if (requestedDistributionId != null) {
+            ProductDistributionEntity dist = distributionRepository.findById(requestedDistributionId)
+                    .orElseThrow(() -> new ResourceNotFoundException("ProductDistribution", requestedDistributionId));
+            if ("COMPLETED".equalsIgnoreCase(safeTrim(dist.getStatus()))) {
+                throw new BusinessException("La distribución " + dist.getDistributionNumber() + " ya está completada.");
+            }
+            return dist.getId();
+        }
+        String kioskName = location.getName() == null || location.getName().isBlank()
+                ? String.valueOf(location.getCode())
+                : location.getName().trim();
+        ProductDistributionEntity created = distributionRepository.save(ProductDistributionEntity.builder()
+                .distributionNumber(generateDistributionNumber())
+                .distributionDate(LocalDate.now())
+                .status("IN_PROGRESS")
+                .origin(DistributionOrigin.MANUAL)
+                .description(DIRECT_KIOSK_DISTRIBUTION_DESCRIPTION + " · " + kioskName)
+                .createdBy(userId)
+                .updatedBy(userId)
+                .build());
+        return created.getId();
+    }
+
+    static boolean isPendingProductionShipment(ProductShipmentEntity shipment) {
+        return shipment != null
+                && "DRAFT".equalsIgnoreCase(shipment.getStatus() == null ? "" : shipment.getStatus().trim())
+                && shipment.getNotes() != null
+                && shipment.getNotes().contains(PENDING_PRODUCTION_TAG);
+    }
+
+    private Optional<ProductShipmentEntity> findPendingProductionShipment(Long distributionId, Long locationId) {
+        return shipmentRepository.findByDistributionIdAndLocationIdOrderByIdAsc(distributionId, locationId).stream()
+                .filter(s -> s.getProductionOrderId() == null)
+                .filter(ProductDistributionService::isPendingProductionShipment)
+                .findFirst();
+    }
+
+    static String stripPendingProductionTag(String notes) {
+        if (notes == null || !notes.contains(PENDING_PRODUCTION_TAG)) {
+            return notes;
+        }
+        String cleaned = java.util.Arrays.stream(notes.split("\\R"))
+                .filter(line -> !line.trim().equals(PENDING_PRODUCTION_TAG))
+                .collect(Collectors.joining("\n"))
+                .trim();
+        return cleaned.isEmpty() ? null : cleaned;
+    }
+
+    private static String suggestedKey(Long productId, Long colorId, String size) {
+        return productId + "|" + (colorId == null ? "" : colorId) + "|"
+                + (size == null ? "" : size.trim().toUpperCase(Locale.ROOT));
     }
 
     private boolean isEntreCuerosCustomerOpv(ProductionOrderEntity order) {
@@ -4949,6 +5665,15 @@ public class ProductDistributionService {
     }
 
     private List<ProductShipmentResponse.PackingItemResponse> parsePackingItems(String packingItemsRaw) {
+        return readPackingItems(packingItemsRaw).stream()
+                .map(item -> toPackingItemResponse(
+                        item,
+                        materialRepository.findById(item.getMaterialId()).orElse(null)))
+                .collect(Collectors.toList());
+    }
+
+    /** Parsea packing_items y deja solo líneas válidas (material y cantidad &gt; 0); no consulta materiales. */
+    private List<ProductShipmentRequest.PackingItemRequest> readPackingItems(String packingItemsRaw) {
         try {
             if (packingItemsRaw == null || packingItemsRaw.trim().isEmpty()) {
                 return List.of();
@@ -4963,20 +5688,21 @@ public class ProductDistributionService {
                             && item.getMaterialId() > 0
                             && item.getQuantity() != null
                             && item.getQuantity().compareTo(BigDecimal.ZERO) > 0)
-                    .map(item -> {
-                        MaterialEntity material = materialRepository.findById(item.getMaterialId()).orElse(null);
-                        return ProductShipmentResponse.PackingItemResponse.builder()
-                                .materialId(item.getMaterialId())
-                                .materialSku(material != null ? material.getSku() : null)
-                                .materialName(material != null ? material.getName() : null)
-                                .quantity(item.getQuantity())
-                                .unitPrice(item.getUnitPrice())
-                                .build();
-                    })
                     .collect(Collectors.toList());
         } catch (Exception _err) {
             return List.of();
         }
     }
-}
 
+    private ProductShipmentResponse.PackingItemResponse toPackingItemResponse(
+            ProductShipmentRequest.PackingItemRequest item,
+            MaterialEntity material) {
+        return ProductShipmentResponse.PackingItemResponse.builder()
+                .materialId(item.getMaterialId())
+                .materialSku(material != null ? material.getSku() : null)
+                .materialName(material != null ? material.getName() : null)
+                .quantity(item.getQuantity())
+                .unitPrice(item.getUnitPrice())
+                .build();
+    }
+}

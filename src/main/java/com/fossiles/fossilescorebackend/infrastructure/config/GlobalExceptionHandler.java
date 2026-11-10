@@ -1,6 +1,10 @@
 package com.fossiles.fossilescorebackend.infrastructure.config;
 
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.application.exception.LfPackingConflictException;
+import com.fossiles.fossilescorebackend.application.exception.LfPackingForbiddenException;
+import com.fossiles.fossilescorebackend.application.exception.LfPackingUnauthenticatedException;
+import com.fossiles.fossilescorebackend.application.exception.ProductionOrderItemConflictException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -99,6 +103,48 @@ public class GlobalExceptionHandler {
         errors.put("status", status.value());
         errors.put("message", message);
         return new ResponseEntity<>(errors, status);
+    }
+
+    @ExceptionHandler(ProductionOrderItemConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleProductionOrderItemConflict(
+            ProductionOrderItemConflictException ex) {
+        Map<String, Object> errors = new HashMap<>();
+        errors.put("timestamp", LocalDateTime.now());
+        errors.put("status", HttpStatus.CONFLICT.value());
+        errors.put("message", ex.getMessage());
+        return new ResponseEntity<>(errors, HttpStatus.CONFLICT);
+    }
+
+    /** Cajas de Luis Felipe: 409 con código y detalle (qué pieza falta, cuánto hay disponible...). */
+    @ExceptionHandler(LfPackingConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleLfPackingConflict(LfPackingConflictException ex) {
+        Map<String, Object> errors = new HashMap<>();
+        errors.put("timestamp", LocalDateTime.now());
+        errors.put("status", HttpStatus.CONFLICT.value());
+        errors.put("code", ex.getCode());
+        errors.put("message", ex.getMessage());
+        errors.put("details", ex.getDetails());
+        return new ResponseEntity<>(errors, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(LfPackingUnauthenticatedException.class)
+    public ResponseEntity<Map<String, Object>> handleLfPackingUnauthenticated(LfPackingUnauthenticatedException ex) {
+        Map<String, Object> errors = new HashMap<>();
+        errors.put("timestamp", LocalDateTime.now());
+        errors.put("status", HttpStatus.UNAUTHORIZED.value());
+        errors.put("code", "LF_PACKING_UNAUTHENTICATED");
+        errors.put("message", ex.getMessage());
+        return new ResponseEntity<>(errors, HttpStatus.UNAUTHORIZED);
+    }
+
+    @ExceptionHandler(LfPackingForbiddenException.class)
+    public ResponseEntity<Map<String, Object>> handleLfPackingForbidden(LfPackingForbiddenException ex) {
+        Map<String, Object> errors = new HashMap<>();
+        errors.put("timestamp", LocalDateTime.now());
+        errors.put("status", HttpStatus.FORBIDDEN.value());
+        errors.put("code", "LF_PACKING_FORBIDDEN");
+        errors.put("message", ex.getMessage());
+        return new ResponseEntity<>(errors, HttpStatus.FORBIDDEN);
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)

@@ -509,7 +509,9 @@ public class DayPlanService {
                 .plannedHours(round2(plannedHours)).totalHours(round2(total))
                 .remainingHours(round2(Math.max(0, total - plannedHours)))
                 .requestedHours(round2(requestedHours))
-                .excessHours(round2(Math.max(0, plannedHours + requestedHours - total)))
+                // Un día que ya venía pasado de cupo no bloquea un plan que no le suma horas (p. ej. solo OPL).
+                .excessHours(requestedHours <= EPS ? 0.0
+                        : round2(Math.max(0, plannedHours + requestedHours - total)))
                 .build();
     }
 
@@ -573,6 +575,7 @@ public class DayPlanService {
                     CreateManualTaskRequest.builder()
                             .productionOrderId(host.draft.getProductionOrderId()).items(items).desk(null)
                             .scheduledDate(host.draft.getScheduledDate()).observations(host.draft.getObservations())
+                            .consolidateVendorOrders(host.draft.getConsolidateVendorOrders())
                             .build(),
                     TaskOrganizerService.CreateMode.MANUAL, lockItems, plan.reserved);
             combined.quantityByItemId().forEach((id, q) -> plan.reserved.merge(id, q, Integer::sum));
@@ -639,6 +642,7 @@ public class DayPlanService {
                     .desk(null)
                     .scheduledDate(draft.getScheduledDate())
                     .observations(draft.getObservations())
+                    .consolidateVendorOrders(draft.getConsolidateVendorOrders())
                     .build();
             try {
                 p.prepared = taskOrganizerService.prepareDraft(

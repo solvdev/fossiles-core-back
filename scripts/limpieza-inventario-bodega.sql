@@ -59,9 +59,11 @@ ORDER BY l.code;
 -- Si quedan documentos a medio camino, al moverlos después de la limpieza descontarían
 -- otra vez del inventario nuevo. Ciérrelos antes de limpiar.
 
--- 1a. Envíos en camino (SENT): que el kiosko los reciba, o anúlelos ANTES de limpiar.
+-- 1a. Envíos a kiosko en camino (SENT con kiosko destino): que el kiosko los reciba ANTES de limpiar.
+--     Los envíos sin kiosko destino (ENVP, ENVI, OPC a cliente) terminan en SENT y no aparecen aquí:
+--     ya están cerrados. Solo no los anule ni edite después de la limpieza.
 SELECT s.id, s.shipment_number, s.status, s.sent_at, l.name AS destino
-FROM product_shipment s LEFT JOIN locations l ON l.id = s.location_id
+FROM product_shipment s JOIN locations l ON l.id = s.location_id
 WHERE s.status = 'SENT'
 ORDER BY s.sent_at;
 

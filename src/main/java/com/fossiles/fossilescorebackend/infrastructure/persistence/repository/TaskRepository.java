@@ -32,6 +32,18 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     boolean existsByCode(String code);
     List<TaskEntity> findByProductionOrderId(Long productionOrderId);
     List<TaskEntity> findByProductionOrderIdIn(Collection<Long> productionOrderIds);
+
+    /**
+     * Líneas de OP citadas por una tarea que no está cancelada
+     * ({@code task.production_order_item_id}). Una tarea sin estado también cuenta.
+     */
+    @Query("""
+            SELECT DISTINCT t.productionOrderItemId
+            FROM TaskEntity t
+            WHERE t.productionOrderItemId IN :itemIds
+              AND (t.status IS NULL OR t.status <> 'CANCELLED')
+            """)
+    List<Long> findNonCancelledItemIds(@Param("itemIds") Collection<Long> itemIds);
     List<TaskEntity> findByDesk(Integer desk);
     @Query("SELECT t FROM TaskEntity t WHERE t.scheduledDate = :scheduledDate ORDER BY COALESCE(t.priority, 9999), t.deliveryDate, t.desk, t.id")
     List<TaskEntity> findByScheduledDate(@Param("scheduledDate") LocalDate scheduledDate);
@@ -136,6 +148,19 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     @Query("SELECT t FROM TaskEntity t WHERE t.status NOT IN ('COMPLETED', 'CANCELLED') ORDER BY t.scheduledDate, t.desk, t.priority")
     List<TaskEntity> findPendingAndInProgressOrdered();
 
+    /**
+     * Tareas completadas desde {@code since} sin materiales entregados: producción las cerró antes de que
+     * bodega las despachara. La vista de materiales las sigue mostrando para poder registrar la entrega.
+     */
+    @Query("""
+            SELECT t FROM TaskEntity t
+            WHERE t.status = 'COMPLETED'
+              AND t.completedAt >= :since
+              AND (t.materialsDelivered IS NULL OR t.materialsDelivered = FALSE)
+            ORDER BY t.completedAt DESC
+            """)
+    List<TaskEntity> findCompletedWithoutMaterialsSince(@Param("since") LocalDateTime since);
+
     @Query("""
             SELECT t FROM TaskEntity t
             WHERE t.status = 'COMPLETED'
@@ -172,6 +197,82 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
             ORDER BY t.deliveryDate ASC NULLS LAST, t.id ASC
             """)
     List<TaskEntity> findPendingWithUncutItems();
+
+    /**
+     * Tareas del tablero de un día: las activas (ni CANCELLED ni COMPLETED) programadas ese día,
+     * más las pendientes o en proceso sin mesa cuya fecha es nula o anterior. Las
+     * AWAITING_WAREHOUSE (sin mesa por diseño) solo entran si son de ese día: de otro modo todas
+     * las que esperan bodega inundarían el tablero. Sin tareas de OPs de cinchos.
+     *
+     * <p>Con {@code carryFrom} (el día hábil anterior) entran también las IN_PROGRESS con mesa de
+     * ese día (las que quedaron a medias a las 17:00): se retoman en la misma mesa, que es la de
+     * su boleta. Solo las de ese día, no de más atrás: las viejas confunden y ya están en «No
+     * terminadas». {@code null} = sin arrastre (un día pasado, sábado o domingo).
+     */
+    @Query("""
+            SELECT t FROM TaskEntity t
+            WHERE t.status NOT IN ('CANCELLED', 'COMPLETED')
+              AND (
+                    t.scheduledDate = :date
+                 OR (t.status IN ('PENDING', 'IN_PROGRESS')
+                     AND t.desk IS NULL
+                     AND (t.scheduledDate IS NULL OR t.scheduledDate < :date))
+                 OR (t.status = 'IN_PROGRESS'
+                     AND t.desk IS NOT NULL
+                     AND t.scheduledDate = :carryFrom)
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM ProductionOrderEntity po
+                WHERE po.id = t.productionOrderId
+                  AND UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              )
+            ORDER BY t.desk ASC NULLS LAST, COALESCE(t.priority, 9999), t.id
+            """)
+    List<TaskEntity> findBoardTasks(@Param("date") LocalDate date, @Param("carryFrom") LocalDate carryFrom);
+
+    /** Cuántas tareas trae {@link #findPendingWithUncutItems()} (pestaña «Por cortar»). */
+    @Query("""
+            SELECT COUNT(t) FROM TaskEntity t
+            WHERE t.status = 'PENDING'
+              AND EXISTS (
+                SELECT 1 FROM TaskItemEntity ti
+                WHERE ti.taskId = t.id
+                  AND (ti.dieCutReady IS NULL OR ti.dieCutReady = FALSE)
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM ProductionOrderEntity po
+                WHERE po.id = t.productionOrderId
+                  AND UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              )
+            """)
+    long countPendingWithUncutItems();
+
+    /** Cuántas tareas trae {@link #findPendingBacklog}, sin las de OPs de cinchos. */
+    @Query("""
+            SELECT COUNT(t) FROM TaskEntity t
+            WHERE t.status = 'PENDING'
+              AND (t.desk IS NULL OR t.scheduledDate IS NULL OR t.scheduledDate < :today)
+              AND NOT EXISTS (
+                SELECT 1 FROM ProductionOrderEntity po
+                WHERE po.id = t.productionOrderId
+                  AND UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              )
+            """)
+    long countPendingBacklog(@Param("today") LocalDate today);
+
+    /** Cuántas tareas trae {@link #findUnfinishedCarryOver}, sin las de OPs de cinchos. */
+    @Query("""
+            SELECT COUNT(t) FROM TaskEntity t
+            WHERE t.status = 'IN_PROGRESS'
+              AND t.scheduledDate IS NOT NULL
+              AND t.scheduledDate < :today
+              AND NOT EXISTS (
+                SELECT 1 FROM ProductionOrderEntity po
+                WHERE po.id = t.productionOrderId
+                  AND UPPER(TRIM(COALESCE(po.orderType, ''))) IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS')
+              )
+            """)
+    long countUnfinishedCarryOver(@Param("today") LocalDate today);
 
     @Query("SELECT DISTINCT t.scheduledDate FROM TaskEntity t WHERE t.status NOT IN ('COMPLETED', 'CANCELLED') ORDER BY t.scheduledDate")
     List<LocalDate> findDistinctScheduledDates();

@@ -8,6 +8,8 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Sy
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,6 +38,61 @@ public class SystemAnnouncementService {
     // Cache en memoria para atender consultas de clientes sin tocar la base de datos
     private volatile SystemAnnouncementResponse cachedActiveAnnouncement = null;
 
+    // Cambia en cada arranque: el front lo compara para saber que el servidor ya se reinició
+    private final long bootId = System.currentTimeMillis();
+
+    public long getBootId() {
+        return bootId;
+    }
+
+    /**
+     * Al arrancar, los avisos de reinicio que quedaron activos ya se cumplieron: sin esto, un aviso de
+     * 10 min con deploy en el minuto 3 reaparecía con 7 min restantes después del reinicio.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    @Transactional
+    public void closeRestartAnnouncementsOnBoot() {
+        try {
+            int closed = announcementRepository.deactivateActiveRestarts(LocalDateTime.now(ZONE_GUATEMALA));
+            if (closed > 0) {
+                log.info("Arranque {}: {} aviso(s) de reinicio cerrados", bootId, closed);
+            }
+        } catch (Exception e) {
+            log.warn("No se pudieron cerrar avisos de reinicio al arrancar: {}", e.getMessage());
+        }
+        this.cachedActiveAnnouncement = null;
+    }
+
+    /**
+     * Deploy (GitHub Actions): usa el aviso de reinicio activo si un admin ya lo emitió; si no, crea uno.
+     * Con minutes <= 0 no avisa.
+     */
+    @Transactional
+    public Optional<SystemAnnouncementResponse> announceDeployRestart(Integer minutes) {
+        Optional<SystemAnnouncementResponse> active = getActiveRestartAnnouncement();
+        if (active.isPresent() || minutes == null || minutes <= 0) {
+            return active;
+        }
+        SystemAnnouncementRequest request = SystemAnnouncementRequest.builder()
+                .title("Actualización del sistema")
+                .message("El sistema se reiniciará para aplicar una actualización. Guarde sus cambios antes de que termine la cuenta regresiva.")
+                .announcementType("RESTART_WARNING")
+                .targetAction("RESTART")
+                .durationMinutes(minutes)
+                .build();
+        return Optional.of(broadcastAnnouncement(request, null));
+    }
+
+    public Optional<SystemAnnouncementResponse> getActiveRestartAnnouncement() {
+        return getActiveAnnouncement().filter(a -> "RESTART".equals(a.getTargetAction()));
+    }
+
+    /** Deploy a punto de detener el servicio: los clientes pasan a "Reiniciando…" aunque falten segundos. */
+    public void notifyRestarting() {
+        log.info("Deploy: reinicio en curso, avisando a {} cliente(s)", emitters.size());
+        sendToAllEmitters("RESTARTING", Map.of("bootId", bootId, "serverNowEpochMs", System.currentTimeMillis()));
+    }
+
     /**
      * Suscribe un cliente para recibir anuncios en tiempo real vía SSE
      */
@@ -62,7 +119,8 @@ public class SystemAnnouncementService {
             // Enviar saludo inicial
             emitter.send(SseEmitter.event()
                     .name("INIT")
-                    .data(Map.of("status", "CONNECTED", "timestamp", LocalDateTime.now(ZONE_GUATEMALA).toString())));
+                    .data(Map.of("status", "CONNECTED", "timestamp", LocalDateTime.now(ZONE_GUATEMALA).toString(),
+                            "bootId", bootId)));
 
             // Si hay un anuncio activo actualmente, enviarlo de inmediato al cliente recién conectado
             getActiveAnnouncement().ifPresent(active -> {
@@ -158,6 +216,7 @@ public class SystemAnnouncementService {
             if (cached.getExpiresAt() != null && cached.getExpiresAt().isAfter(now) && Boolean.TRUE.equals(cached.getIsActive())) {
                 long remaining = Duration.between(now, cached.getExpiresAt()).getSeconds();
                 cached.setRemainingSeconds(Math.max(0L, remaining));
+                cached.setServerNowEpochMs(System.currentTimeMillis());
                 return Optional.of(cached);
             } else {
                 this.cachedActiveAnnouncement = null;
@@ -184,7 +243,7 @@ public class SystemAnnouncementService {
     @Scheduled(fixedRate = 25000)
     public void sendHeartbeat() {
         if (emitters.isEmpty()) return;
-        sendToAllEmitters("PING", Map.of("ping", System.currentTimeMillis()));
+        sendToAllEmitters("PING", Map.of("ping", System.currentTimeMillis(), "bootId", bootId));
     }
 
     private void sendToAllEmitters(String eventName, Object data) {
@@ -246,6 +305,10 @@ public class SystemAnnouncementService {
                 .isActive(entity.getIsActive() && remainingSeconds > 0)
                 .createdByUsername(createdByUsername)
                 .createdByName(createdByName)
+                .expiresAtEpochMs(entity.getExpiresAt() != null
+                        ? entity.getExpiresAt().atZone(ZONE_GUATEMALA).toInstant().toEpochMilli() : null)
+                .serverNowEpochMs(System.currentTimeMillis())
+                .bootId(bootId)
                 .build();
     }
 }

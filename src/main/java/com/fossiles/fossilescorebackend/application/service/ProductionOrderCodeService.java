@@ -47,7 +47,7 @@ public class ProductionOrderCodeService {
         return getOrderCodePrefix(orderType, null);
     }
 
-    private static String normalizeForSellerMatch(String sellerName) {
+    public static String normalizeForSellerMatch(String sellerName) {
         if (sellerName == null) {
             return "";
         }

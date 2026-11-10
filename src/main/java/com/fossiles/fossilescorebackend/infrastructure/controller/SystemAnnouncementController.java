@@ -27,6 +27,9 @@ public class SystemAnnouncementController {
     private final SystemAnnouncementService announcementService;
     private final UserService userService;
 
+    @org.springframework.beans.factory.annotation.Value("${DEPLOY_HOOK_TOKEN:}")
+    private String deployHookToken;
+
     /**
      * Canal SSE para suscripción de notificaciones y alertas en tiempo real
      */
@@ -70,6 +73,62 @@ public class SystemAnnouncementController {
         String username = getAuthenticatedUsernameAndAuthorize();
         announcementService.dismissActiveAnnouncement(username);
         return ResponseEntity.ok(Map.of("success", true, "message", "Alerta cancelada"));
+    }
+
+    /**
+     * Confirma que el back terminó de arrancar. El front lo consulta mientras muestra "Reiniciando…"
+     * y el deploy lo usa para verificar el servicio (bootId cambia en cada arranque).
+     */
+    @GetMapping("/ping")
+    public ResponseEntity<Map<String, Object>> ping() {
+        return ResponseEntity.ok(Map.of(
+                "bootId", announcementService.getBootId(),
+                "serverNowEpochMs", System.currentTimeMillis()));
+    }
+
+    /**
+     * Gancho del deploy (GitHub Actions, vía SSH a localhost). Protegido con el header X-Deploy-Token,
+     * que debe ser igual a la variable de entorno DEPLOY_HOOK_TOKEN del servicio.
+     * phase: ANNOUNCE (crea o reutiliza el aviso), STATUS (aviso activo o 204), RESTARTING (avisa que se detiene).
+     */
+    @PostMapping("/deploy-hook")
+    public ResponseEntity<?> deployHook(
+            @RequestHeader(value = "X-Deploy-Token", required = false) String token,
+            @RequestBody(required = false) Map<String, Object> body) {
+        if (deployHookToken == null || deployHookToken.isBlank()) {
+            return ResponseEntity.notFound().build();
+        }
+        if (token == null || !java.security.MessageDigest.isEqual(
+                deployHookToken.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                token.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        String phase = body != null && body.get("phase") != null ? body.get("phase").toString().toUpperCase() : "STATUS";
+        switch (phase) {
+            case "ANNOUNCE": {
+                Integer minutes = null;
+                if (body.get("minutes") != null) {
+                    try {
+                        minutes = Integer.valueOf(body.get("minutes").toString().trim());
+                    } catch (NumberFormatException ignored) {
+                        minutes = null;
+                    }
+                }
+                return announcementService.announceDeployRestart(minutes)
+                        .<ResponseEntity<?>>map(ResponseEntity::ok)
+                        .orElseGet(() -> ResponseEntity.noContent().build());
+            }
+            case "RESTARTING":
+                announcementService.notifyRestarting();
+                return ResponseEntity.ok(Map.of("success", true, "bootId", announcementService.getBootId()));
+            case "STATUS":
+                return announcementService.getActiveRestartAnnouncement()
+                        .<ResponseEntity<?>>map(ResponseEntity::ok)
+                        .orElseGet(() -> ResponseEntity.noContent().build());
+            default:
+                return ResponseEntity.badRequest().body(Map.of("message", "phase no válida: " + phase));
+        }
     }
 
     private String getAuthenticatedUsernameAndAuthorize() {

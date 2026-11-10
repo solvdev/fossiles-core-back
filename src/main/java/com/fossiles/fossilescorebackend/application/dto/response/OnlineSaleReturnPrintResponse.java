@@ -33,6 +33,8 @@ public class OnlineSaleReturnPrintResponse {
 
     private BigDecimal totalAmount;
     private List<ReturnLine> items;
+    /** Artículos que se enviaron a cambio de lo devuelto (solo CAMBIOS registrados con este dato). */
+    private List<ReturnLine> sentItems;
 
     @Data
     @Builder

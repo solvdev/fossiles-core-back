@@ -2,11 +2,9 @@ package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LeatherInventoryEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductVariantLeatherEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LeatherInventoryRepository;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductVariantLeatherRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskRepository;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +16,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Disponibilidad de cuero (ft²) vs receta {@code product_variant_leather}.
@@ -27,7 +26,7 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class LeatherRequirementService {
 
-    private final ProductVariantLeatherRepository variantLeatherRepository;
+    private final LeatherRecipeCatalog recipeCatalog;
     private final LeatherInventoryRepository leatherInventoryRepository;
     private final TaskRepository taskRepository;
     private final TaskItemRepository taskItemRepository;
@@ -55,43 +54,65 @@ public class LeatherRequirementService {
         if (product == null || quantity <= 0) {
             return LeatherNeed.ok(null, BigDecimal.ZERO);
         }
-        Optional<ProductVariantLeatherEntity> mapping = resolveMapping(product.getId(), colorId);
+        Optional<LeatherRecipeCatalog.LeatherRecipe> mapping = resolveMapping(product.getId(), colorId);
         if (mapping.isEmpty()) {
             return LeatherNeed.blocked("Sin receta de cuero (product_variant_leather) para "
                     + product.getCode());
         }
-        ProductVariantLeatherEntity row = mapping.get();
-        BigDecimal perUnit = row.getQtyPerUnit() != null ? row.getQtyPerUnit() : BigDecimal.ONE;
+        LeatherRecipeCatalog.LeatherRecipe row = mapping.get();
+        BigDecimal perUnit = row.qtyPerUnit() != null ? row.qtyPerUnit() : BigDecimal.ONE;
         BigDecimal needed = perUnit.multiply(BigDecimal.valueOf(quantity)).setScale(3, RoundingMode.HALF_UP);
-        return LeatherNeed.ok(row.getLeatherMaterialId(), needed);
+        return LeatherNeed.ok(row.leatherMaterialId(), needed);
+    }
+
+    /** Receta de una pieza sin redondear (reportes que multiplican después). Mismo criterio que {@link #resolveNeed}. */
+    public LeatherNeed resolvePerUnit(ProductEntity product, Long colorId) {
+        if (product == null) {
+            return LeatherNeed.ok(null, BigDecimal.ZERO);
+        }
+        Optional<LeatherRecipeCatalog.LeatherRecipe> mapping = resolveMapping(product.getId(), colorId);
+        if (mapping.isEmpty()) {
+            return LeatherNeed.blocked("Sin receta de cuero (product_variant_leather) para "
+                    + product.getCode());
+        }
+        LeatherRecipeCatalog.LeatherRecipe row = mapping.get();
+        BigDecimal perUnit = row.qtyPerUnit() != null ? row.qtyPerUnit() : BigDecimal.ONE;
+        return LeatherNeed.ok(row.leatherMaterialId(), perUnit);
     }
 
     public Map<Long, BigDecimal> committedFt2ByMaterial() {
         Map<Long, BigDecimal> committed = new HashMap<>();
         List<TaskEntity> active = taskRepository.findPendingAndInProgressOrdered();
-        for (TaskEntity task : active) {
-            if (task == null || task.getId() == null) {
-                continue;
-            }
-            if (Boolean.TRUE.equals(task.getLeatherDelivered())) {
-                continue;
-            }
-            for (TaskItemEntity item : taskItemRepository.findByTaskId(task.getId())) {
+        List<Long> taskIds = active.stream()
+                .filter(task -> task != null && task.getId() != null)
+                .filter(task -> !Boolean.TRUE.equals(task.getLeatherDelivered()))
+                .map(TaskEntity::getId)
+                .distinct()
+                .toList();
+        if (taskIds.isEmpty()) {
+            return committed;
+        }
+        // Una sola consulta para todas las tareas (antes una por tarea).
+        Map<Long, List<TaskItemEntity>> itemsByTask = taskItemRepository.findByTaskIdIn(taskIds).stream()
+                .filter(item -> item != null && item.getTaskId() != null)
+                .collect(Collectors.groupingBy(TaskItemEntity::getTaskId));
+        for (Long taskId : taskIds) {
+            for (TaskItemEntity item : itemsByTask.getOrDefault(taskId, List.of())) {
                 if (item == null || Boolean.TRUE.equals(item.getLeatherDelivered())) {
                     continue;
                 }
                 if (item.getProductId() == null || item.getQuantity() == null || item.getQuantity() <= 0) {
                     continue;
                 }
-                Optional<ProductVariantLeatherEntity> mapping =
+                Optional<LeatherRecipeCatalog.LeatherRecipe> mapping =
                         resolveMapping(item.getProductId(), item.getColorId());
                 if (mapping.isEmpty()) {
                     continue;
                 }
-                ProductVariantLeatherEntity row = mapping.get();
-                BigDecimal perUnit = row.getQtyPerUnit() != null ? row.getQtyPerUnit() : BigDecimal.ONE;
+                LeatherRecipeCatalog.LeatherRecipe row = mapping.get();
+                BigDecimal perUnit = row.qtyPerUnit() != null ? row.qtyPerUnit() : BigDecimal.ONE;
                 BigDecimal qty = perUnit.multiply(BigDecimal.valueOf(item.getQuantity()));
-                committed.merge(row.getLeatherMaterialId(), qty, BigDecimal::add);
+                committed.merge(row.leatherMaterialId(), qty, BigDecimal::add);
             }
         }
         return committed;
@@ -121,17 +142,8 @@ public class LeatherRequirementService {
                 + " ft² y hay " + free.max(BigDecimal.ZERO) + " ft² disponibles.";
     }
 
-    private Optional<ProductVariantLeatherEntity> resolveMapping(Long productId, Long colorId) {
-        if (productId == null) {
-            return Optional.empty();
-        }
-        if (colorId != null) {
-            Optional<ProductVariantLeatherEntity> byColor =
-                    variantLeatherRepository.findByProductIdAndColorId(productId, colorId);
-            if (byColor.isPresent()) {
-                return byColor;
-            }
-        }
-        return variantLeatherRepository.findByProductIdAndColorIdIsNull(productId);
+    /** Receta guardada o derivada; ver {@link LeatherRecipeCatalog}. */
+    private Optional<LeatherRecipeCatalog.LeatherRecipe> resolveMapping(Long productId, Long colorId) {
+        return recipeCatalog.resolve(productId, colorId);
     }
 }

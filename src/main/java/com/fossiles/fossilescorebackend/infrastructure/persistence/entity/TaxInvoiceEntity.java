@@ -111,6 +111,14 @@ public class TaxInvoiceEntity {
     @Column(name = "fel_void_uuid", length = 64)
     private String felVoidUuid;
 
+    /** Factura (FACT/FCAM) a la que hace referencia una nota NCRE/NDEB; null en facturas. */
+    @Column(name = "origin_invoice_id")
+    private Long originInvoiceId;
+
+    /** MotivoAjuste del complemento ReferenciasNota (solo NCRE/NDEB). */
+    @Column(name = "adjustment_reason", length = 255)
+    private String adjustmentReason;
+
     @OneToMany(mappedBy = "taxInvoice", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     private List<TaxInvoiceLineEntity> lines = new ArrayList<>();

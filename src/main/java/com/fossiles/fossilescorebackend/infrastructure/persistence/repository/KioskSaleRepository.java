@@ -13,6 +13,10 @@ import java.util.Optional;
 
 @Repository
 public interface KioskSaleRepository extends JpaRepository<KioskSaleEntity, Long> {
+
+    /** Ventas de prueba (kiosko en modo piloto) entre los ids dados. */
+    @Query("SELECT k.id FROM KioskSaleEntity k WHERE k.id IN :ids AND k.testSale = true")
+    List<Long> findTestSaleIdsIn(@Param("ids") java.util.Collection<Long> ids);
     long countBySaleDate(LocalDate saleDate);
 
     Optional<KioskSaleEntity> findByKioskLocationIdAndSaleNumberIgnoreCase(

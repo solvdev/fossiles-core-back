@@ -25,7 +25,11 @@ public class ProductShipmentDetailResponse {
     private String size;
     /** NUEVO | VIEJO */
     private String hardwareCondition;
+    /** Marca OPV (derivada del ítem de la orden o de hardware_condition). */
+    private String brandName;
     private BigDecimal quantity;
+    /** Cantidad que propuso la sugerencia de reposición; null si la línea no viene de una sugerencia. */
+    private BigDecimal suggestedQuantity;
     /** Precio unitario de la línea (override por talla / cliente). */
     private BigDecimal unitPrice;
     private BigDecimal quantityReceived;

@@ -76,6 +76,19 @@ public interface TaskItemRepository extends JpaRepository<TaskItemEntity, Long> 
         return out;
     }
 
+    /**
+     * Avance de cuero por línea de OP: [productionOrderItemId, cantidad, estado tarea,
+     * cuero entregado (tarea), cuero entregado (línea)]. Sin tareas canceladas.
+     */
+    @Query("""
+            SELECT ti.productionOrderItemId, ti.quantity, t.status, t.leatherDelivered, ti.leatherDelivered
+            FROM TaskItemEntity ti, TaskEntity t
+            WHERE t.id = ti.taskId
+              AND ti.productionOrderItemId IN :itemIds
+              AND t.status <> 'CANCELLED'
+            """)
+    List<Object[]> findLeatherProgressRowsByItemIds(@Param("itemIds") Collection<Long> itemIds);
+
     boolean existsByProductionOrderItemIdAndDaySaleExtraTrue(Long productionOrderItemId);
     List<TaskItemEntity> findByProductionOrderItemIdInAndDaySaleExtraTrue(List<Long> productionOrderItemIds);
     List<TaskItemEntity> findByDaySaleExtraTrue();
@@ -90,6 +103,53 @@ public interface TaskItemRepository extends JpaRepository<TaskItemEntity, Long> 
               AND poi.productionOrderId IN :orderIds
             """)
     List<Object[]> findTaskLinksByProductionOrderIdIn(@Param("orderIds") Collection<Long> orderIds);
+
+    /**
+     * Tareas que trabajan productos de la orden como línea propia (no extra OPL), aunque su OP
+     * base sea otra: las tareas consolidadas de OPV de Luis Felipe.
+     */
+    @Query("""
+            SELECT DISTINCT ti.taskId
+            FROM TaskItemEntity ti, ProductionOrderItemEntity poi
+            WHERE ti.productionOrderItemId = poi.id
+              AND poi.productionOrderId = :orderId
+              AND (ti.daySaleExtra IS NULL OR ti.daySaleExtra = false)
+            """)
+    List<Long> findBaseLineTaskIdsByProductionOrderId(@Param("orderId") Long orderId);
+
+    /** Órdenes de las líneas propias (no extra OPL) de una tarea. */
+    @Query("""
+            SELECT DISTINCT poi.productionOrderId
+            FROM TaskItemEntity ti, ProductionOrderItemEntity poi
+            WHERE ti.productionOrderItemId = poi.id
+              AND ti.taskId = :taskId
+              AND (ti.daySaleExtra IS NULL OR ti.daySaleExtra = false)
+            """)
+    List<Long> findBaseLineOrderIdsByTaskId(@Param("taskId") Long taskId);
+
+    /**
+     * Líneas de OP citadas por un {@code task_item} cuya tarea no está cancelada.
+     * Si la tarea ya no existe, la cita sigue contando: borrar la línea la dejaría huérfana.
+     */
+    @Query("""
+            SELECT DISTINCT ti.productionOrderItemId
+            FROM TaskItemEntity ti
+            WHERE ti.productionOrderItemId IN :itemIds
+              AND NOT EXISTS (
+                SELECT 1 FROM TaskEntity t
+                WHERE t.id = ti.taskId AND t.status = 'CANCELLED'
+              )
+            """)
+    List<Long> findNonCancelledItemIds(@Param("itemIds") Collection<Long> itemIds);
+    /** Productos de tarea que trabajan líneas propias de la orden, estén en la tarea que estén (consolidadas incluidas). */
+    @Query("""
+            SELECT ti
+            FROM TaskItemEntity ti, ProductionOrderItemEntity poi
+            WHERE ti.productionOrderItemId = poi.id
+              AND poi.productionOrderId = :orderId
+              AND (ti.daySaleExtra IS NULL OR ti.daySaleExtra = false)
+            """)
+    List<TaskItemEntity> findBaseLineItemsByProductionOrderId(@Param("orderId") Long orderId);
 
     @Modifying
     @Transactional

@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.persistence.repository;
 
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductShipmentEntity;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
@@ -45,11 +46,28 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
 
     List<ProductShipmentEntity> findByStatusIgnoreCaseAndLocationIdIn(String status, Collection<Long> locationIds);
 
+    /** Entregados al kiosko con al menos una línea por recibir (quedan unidades en tránsito). */
+    @Query("""
+        SELECT s FROM ProductShipmentEntity s
+        WHERE s.locationId = :locationId
+          AND UPPER(TRIM(COALESCE(s.status, ''))) = 'DELIVERED'
+          AND EXISTS (
+            SELECT 1 FROM ProductShipmentDetailEntity d
+            WHERE d.shipmentId = s.id
+              AND d.quantityReceived IS NOT NULL
+              AND d.quantityReceived < d.quantity
+          )
+        ORDER BY s.id ASC
+        """)
+    List<ProductShipmentEntity> findDeliveredWithPendingLinesByLocationId(@Param("locationId") Long locationId);
+
     long countByStatusIgnoreCaseAndLocationId(String status, Long locationId);
 
     long countByStatusIgnoreCaseAndLocationIdIn(String status, Collection<Long> locationIds);
 
     List<ProductShipmentEntity> findByProductionOrderId(Long productionOrderId);
+
+    List<ProductShipmentEntity> findByProductionOrderIdIn(java.util.Collection<Long> productionOrderIds);
 
     List<ProductShipmentEntity> findByProductionOrderIdAndLocationIdOrderByIdAsc(Long productionOrderId, Long locationId);
 
@@ -77,13 +95,20 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
     List<ProductShipmentEntity> findStandaloneInternalEnviShipments();
 
     /**
-     * Envíos directos a kiosko sin OP ni distribución (replenishment ad-hoc).
+     * Envíos a kiosko sin OP: los directos (hoy envueltos en una distribución MANUAL con descripción
+     * "Envío directo a kiosko…"), los de reposición y los viejos que aún no tengan distribución. Mantiene lo que
+     * devolvía GET /shipments/standalone-kiosk antes de que todo envío a kiosco viviera en una distribución.
      */
     @Query("""
         SELECT s FROM ProductShipmentEntity s
+        LEFT JOIN s.distribution d
         WHERE s.productionOrderId IS NULL
-          AND s.distributionId IS NULL
           AND s.locationId IS NOT NULL
+          AND (
+            s.distributionId IS NULL
+            OR d.origin = 'REPOSICION'
+            OR COALESCE(d.description, '') LIKE 'Envío directo a kiosko%'
+          )
         ORDER BY s.id DESC
         """)
     List<ProductShipmentEntity> findStandaloneKioskShipments();
@@ -129,6 +154,31 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
             ORDER BY s.id DESC
             """)
     List<ProductShipmentEntity> searchByShipmentNumberContaining(@Param("q") String q);
+
+    /**
+     * Envíos de mercancía OPV Luis Felipe para despacho móvil: con OP, código OPV-,
+     * sin distribución, sin tipo cincho/MARCAS, sin nota de envío histórico.
+     * El vendedor LF y las líneas cincho se filtran en servicio.
+     */
+    @Query("""
+            SELECT s FROM ProductShipmentEntity s
+            JOIN s.productionOrder po
+            WHERE s.productionOrderId IS NOT NULL
+              AND s.distributionId IS NULL
+              AND UPPER(TRIM(COALESCE(s.status, ''))) = UPPER(TRIM(:status))
+              AND UPPER(TRIM(COALESCE(po.code, ''))) LIKE 'OPV-%'
+              AND UPPER(TRIM(COALESCE(po.orderType, ''))) NOT IN ('CINCHOS', 'CINCHOS_FOSSILES', 'CINCHOS_MARCAS', 'MARCAS')
+              AND (CAST(:productionOrderId AS Long) IS NULL OR s.productionOrderId = CAST(:productionOrderId AS Long))
+              AND (:q = '' OR LOWER(COALESCE(po.code, '')) LIKE LOWER(CONCAT('%', :q, '%'))
+                   OR LOWER(COALESCE(s.shipmentNumber, '')) LIKE LOWER(CONCAT('%', :q, '%')))
+              AND UPPER(TRIM(COALESCE(s.notes, ''))) NOT LIKE 'ENVIO HISTORICO%'
+            ORDER BY s.id DESC
+            """)
+    List<ProductShipmentEntity> findLfDispatchShipments(
+            @Param("status") String status,
+            @Param("q") String q,
+            @Param("productionOrderId") Long productionOrderId,
+            Pageable pageable);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s FROM ProductShipmentEntity s WHERE s.id = :id")

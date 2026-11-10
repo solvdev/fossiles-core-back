@@ -34,7 +34,7 @@ public class InternalShipmentRequestSlipService {
     /**
      * Imprime/reserva un lote de boletas de solicitud con correlativo continuo (BLS-nnnnn).
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public synchronized InternalShipmentRequestSlipPrintResponse printBatch(int quantity) throws BusinessException {
         accessGuard.assertCanCreateRequest();
         int safeQuantity = Math.min(Math.max(quantity, 1), 500);
@@ -76,7 +76,7 @@ public class InternalShipmentRequestSlipService {
     /**
      * Valida y asocia una boleta de solicitud física al registrar la solicitud en el sistema.
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public String validateAndUseSlip(String rawSlipNumber, Long requestId) throws BusinessException {
         String normalized = normalizeSlipNumber(rawSlipNumber);
         if (normalized == null || normalized.isBlank()) {

@@ -42,6 +42,7 @@ public class ProductionTaskGenerationService {
     private final ColorRepository colorRepository;
     private final TaskCodeGenerator taskCodeGenerator;
     private final LeatherMovementRepository leatherMovementRepository;
+    private final TaskLeatherDeliveryService taskLeatherDeliveryService;
 
     @Transactional
     public List<TaskEntity> generateTasks(long productionOrderId, boolean forceRegenerate)
@@ -65,12 +66,12 @@ public class ProductionTaskGenerationService {
                         "Esta OP ya tiene tareas en ejecución o mezcladas con otras órdenes. "
                                 + "Para regenerar de forma explícita use force=true. Detalle: " + risk.message);
             }
-            // Ni con force: los ítems con salidas de cuero conservan su kardex y la llave foránea impide borrarlos.
+            // Ni con force: regenerar dejaría el cuero entregado por producto fuera del inventario y sin producto.
             List<Long> existingItemIds = taskItemRepository.findByTaskIdIn(existingTasks.stream().map(TaskEntity::getId).toList())
                     .stream().map(TaskItemEntity::getId).toList();
-            if (!existingItemIds.isEmpty() && leatherMovementRepository.existsByTaskItemIdIn(existingItemIds)) {
-                throw new BusinessException("La OP tiene entregas de cuero registradas por producto; sus tareas conservan ese historial "
-                        + "y no se pueden regenerar. Ajuste las tareas desde el organizador.");
+            if (taskLeatherDeliveryService.hasActiveDeliveries(existingItemIds)) {
+                throw new BusinessException("La OP tiene cuero entregado por producto en el kardex; desmarque ese cuero "
+                        + "antes de regenerar sus tareas o ajústelas desde el organizador.");
             }
             taskItemRepository.deleteByProductionOrderId(productionOrderId);
             taskRepository.deleteByProductionOrderId(productionOrderId);

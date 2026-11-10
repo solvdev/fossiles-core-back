@@ -79,7 +79,7 @@ public class PublicOnlineWarehouseController {
     }
 
     @PutMapping("/orders/{productionOrderId}/dispatch/{onlineSaleId}")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> dispatch(
             @PathVariable Long productionOrderId,
             @PathVariable Long onlineSaleId,
@@ -91,7 +91,7 @@ public class PublicOnlineWarehouseController {
     }
 
     @PutMapping("/orders/{productionOrderId}/cancel-dispatch/{onlineSaleId}")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<OnlineSaleResponse> cancelDispatchFromOrder(
             @PathVariable Long productionOrderId,
             @PathVariable Long onlineSaleId,
@@ -103,7 +103,7 @@ public class PublicOnlineWarehouseController {
     }
 
     @PutMapping("/direct-sales/{onlineSaleId}/dispatch")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> dispatchDirectSale(
             @PathVariable Long onlineSaleId,
             @RequestBody(required = false) Map<String, String> body)
@@ -133,7 +133,7 @@ public class PublicOnlineWarehouseController {
      * legado sin rutas y con OP igual.
      */
     @PutMapping("/direct-sales/{onlineSaleId}/prepare")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> prepareDirectSale(@PathVariable Long onlineSaleId)
             throws BusinessException {
         return ResponseEntity.ok(onlineSaleProductionOrderService.prepareDirectSaleFromInventory(onlineSaleId));

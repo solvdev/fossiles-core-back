@@ -25,4 +25,10 @@ public class SystemAnnouncementResponse {
     private Boolean isActive;
     private String createdByUsername;
     private String createdByName;
+
+    /** Instantes absolutos (epoch ms) para que el front cuente sin depender de zona ni de pollings. */
+    private Long expiresAtEpochMs;
+    private Long serverNowEpochMs;
+    /** Identifica el arranque actual del back; cambia en cada reinicio. */
+    private Long bootId;
 }

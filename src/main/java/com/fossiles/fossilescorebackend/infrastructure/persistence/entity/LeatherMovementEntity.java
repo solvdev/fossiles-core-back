@@ -67,6 +67,7 @@ public class LeatherMovementEntity {
     @Column(name = "production_order_id")
     private Long productionOrderId;
 
+    /** Producto de la tarea que recibió el cuero (salidas por producto); null en entregas por orden */
     @Column(name = "task_item_id")
     private Long taskItemId;
 

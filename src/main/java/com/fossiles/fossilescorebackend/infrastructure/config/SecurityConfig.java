@@ -33,6 +33,9 @@ public class SecurityConfig {
             "/api/auth/**",
             "/api/public/**",
             "/api/system-announcements/stream", "/api/system-announcements/active",
+            "/api/system-announcements/ping",
+            // Gancho del deploy: se valida con X-Deploy-Token en el controlador
+            "/api/system-announcements/deploy-hook",
             // Flujo móvil Bodega PT sin login (dispositivo dedicado)
             "/api/product-distributions/**",
             "/api/public/online-warehouse/**",

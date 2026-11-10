@@ -3,13 +3,16 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderWarehouseUnitEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderWarehouseUnitRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -20,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -30,12 +34,13 @@ public class CustomerShipmentDispatchService {
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final ProductionOrderWarehouseUnitRepository warehouseUnitRepository;
     private final OnlineSaleRepository onlineSaleRepository;
+    private final OnlineSaleItemRepository onlineSaleItemRepository;
     private final OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
     private final ProductionOrderWarehouseUnitService productionOrderWarehouseUnitService;
     private final ProductInventoryService productInventoryService;
     private final SecurityUtil securityUtil;
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> dispatchDirectOnlineSale(long onlineSaleId, Map<String, String> body)
             throws ResourceNotFoundException, BusinessException {
         OnlineSaleEntity sale = onlineSaleRepository.findById(onlineSaleId)
@@ -51,16 +56,12 @@ public class CustomerShipmentDispatchService {
             throw new BusinessException("Solo se pueden despachar ventas directas en estado PRODUCIDO. Estado actual: " + sale.getStatus());
         }
 
-        // Inventario ya salió en prepare (ONLINE_SALE_PREPARE); aquí solo cambia estado.
+        // Inventario ya salió en prepare (ONLINE_SALE_PREPARE); aquí solo cambia estado. Si un «Anular envío»
+        // regresó esa salida a Devoluciones, la pieza vuelve a salir de ahí.
+        redeductPrepareReversedToReturns(sale);
         onlineSaleShipmentNumberService.assignIfMissing(sale);
         String shipmentNumber = sale.getShipmentNumber();
-        sale.setStatus("ENVIADO");
-        if (body != null && body.get("guideNumber") != null) {
-            sale.setGuideNumber(body.get("guideNumber"));
-        }
-        if (body != null && body.get("shippingCarrier") != null) {
-            sale.setShippingCarrier(body.get("shippingCarrier"));
-        }
+        String guideWarning = markDispatched(sale, body);
         onlineSaleRepository.save(sale);
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -68,10 +69,11 @@ public class CustomerShipmentDispatchService {
         result.put("shipmentNumber", shipmentNumber);
         result.put("saleStatus", sale.getStatus());
         result.put("allDispatched", true);
+        putGuideWarning(result, guideWarning);
         return result;
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> dispatchCustomerShipment(
             long productionOrderId,
             long onlineSaleId,
@@ -104,13 +106,7 @@ public class CustomerShipmentDispatchService {
 
         deductInventoryForReceivedUnits(productionOrderId, sale);
 
-        sale.setStatus("ENVIADO");
-        if (body != null && body.get("guideNumber") != null) {
-            sale.setGuideNumber(body.get("guideNumber"));
-        }
-        if (body != null && body.get("shippingCarrier") != null) {
-            sale.setShippingCarrier(body.get("shippingCarrier"));
-        }
+        String guideWarning = markDispatched(sale, body);
         onlineSaleRepository.save(sale);
 
         productionOrderWarehouseUnitService.markUnitsShippedForOnlineSale(
@@ -134,7 +130,42 @@ public class CustomerShipmentDispatchService {
         result.put("shipmentNumber", shipmentNumber);
         result.put("saleStatus", sale.getStatus());
         result.put("allDispatched", allDispatched);
+        putGuideWarning(result, guideWarning);
         return result;
+    }
+
+    /** Transportistas que generan guía; sin ella la conciliación no puede ligar lo que liquidan con la venta. */
+    static final Set<String> CARRIERS_WITH_GUIDE = Set.of("FORZA_DELIVERY", "GUATEX");
+
+    /**
+     * Pasa la venta a ENVIADO, guarda guía y transportista si vienen y registra el momento del despacho.
+     * La guía es solo un aviso: el despacho físico nunca se bloquea por ella.
+     *
+     * @return mensaje de aviso si falta la guía de un transportista que la genera; null si no hay nada que avisar
+     */
+    String markDispatched(OnlineSaleEntity sale, Map<String, String> body) {
+        sale.setStatus("ENVIADO");
+        sale.setDispatchedAt(GuatemalaDateTime.now());
+        if (body != null && body.get("guideNumber") != null) {
+            sale.setGuideNumber(body.get("guideNumber"));
+        }
+        if (body != null && body.get("shippingCarrier") != null) {
+            sale.setShippingCarrier(body.get("shippingCarrier"));
+        }
+        boolean needsGuide = sale.getShippingCarrier() != null
+                && CARRIERS_WITH_GUIDE.contains(sale.getShippingCarrier().trim().toUpperCase());
+        boolean hasGuide = sale.getGuideNumber() != null && !sale.getGuideNumber().isBlank();
+        if (needsGuide && !hasGuide) {
+            return "El envío salió sin número de guía. Regístrela en Ventas Online: sin guía no se puede conciliar el cobro con "
+                    + sale.getShippingCarrier().trim() + ".";
+        }
+        return null;
+    }
+
+    private static void putGuideWarning(Map<String, Object> result, String guideWarning) {
+        if (guideWarning != null) {
+            result.put("warning", guideWarning);
+        }
     }
 
     /**
@@ -167,6 +198,12 @@ public class CustomerShipmentDispatchService {
                 : sale.getSaleNumber();
         String description = "Despacho venta online a cliente #"
                 + (referenceNumber != null ? referenceNumber : sale.getId());
+        // La pieza se produjo para esta venta y entró a Bodega PT: sale de PT. Si antes se anuló su envío, la
+        // pieza quedó en Devoluciones y sale de ahí.
+        ProductInventoryService.DispatchSource source = productInventoryService.hasAnyMovementForReference(
+                ProductInventoryService.REF_ONLINE_SALE_WH_RETURN, sale.getId())
+                ? ProductInventoryService.DispatchSource.RETURNS_FIRST
+                : ProductInventoryService.DispatchSource.PT_FIRST;
 
         for (ProductionOrderWarehouseUnitEntity unit : units) {
             if (!ProductionOrderWarehouseUnitService.STATUS_RECEIVED.equals(
@@ -195,7 +232,44 @@ public class CustomerShipmentDispatchService {
                     referenceNumber,
                     description,
                     ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
-                    unit.getId());
+                    unit.getId(),
+                    source);
+        }
+    }
+
+    /**
+     * Venta directa preparada desde inventario cuyo envío se anuló: la anulación devolvió la salida
+     * {@code ONLINE_SALE_PREPARE} a Devoluciones, así que al despacharla de nuevo hay que descontarla otra
+     * vez (Devoluciones primero). Sin esto la pieza salía físicamente y seguía en Devoluciones.
+     */
+    private void redeductPrepareReversedToReturns(OnlineSaleEntity sale) throws BusinessException {
+        if (!productInventoryService.hasAnyMovementForReference(ProductInventoryService.REF_ONLINE_SALE_PREPARE, sale.getId())
+                || productInventoryService.hasNetOutboundForReference(ProductInventoryService.REF_ONLINE_SALE_PREPARE, sale.getId())) {
+            return;
+        }
+        String description = "Despacho venta online #" + (sale.getSaleNumber() != null ? sale.getSaleNumber() : sale.getId())
+                + " tras anular envío";
+        for (OnlineSaleItemEntity item : onlineSaleItemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId())) {
+            if (item.getProductId() == null) {
+                continue;
+            }
+            int qty = item.getQuantity() != null ? item.getQuantity() : 1;
+            if (qty <= 0) {
+                continue;
+            }
+            productInventoryService.decrementFromDispatchWarehouses(
+                    item.getProductId(),
+                    item.getColorId(),
+                    item.getSize(),
+                    BigDecimal.valueOf(qty),
+                    ProductInventoryService.REF_ONLINE_SALE_PREPARE,
+                    sale.getId(),
+                    sale.getSaleNumber(),
+                    description,
+                    ProductInventoryService.REF_ONLINE_SALE_PREPARE,
+                    item.getId(),
+                    false,
+                    ProductInventoryService.DispatchSource.RETURNS_FIRST);
         }
     }
 

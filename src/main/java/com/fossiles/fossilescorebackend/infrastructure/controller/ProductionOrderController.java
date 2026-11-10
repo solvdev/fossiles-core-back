@@ -19,11 +19,10 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.application.service.CustomerShipmentDispatchService;
 import com.fossiles.fossilescorebackend.application.service.InternalShipmentRequestService;
 import com.fossiles.fossilescorebackend.application.service.OnlineSaleService;
-import com.fossiles.fossilescorebackend.application.service.OpiVendorShipmentNumberService;
-import com.fossiles.fossilescorebackend.application.service.OpvVendorShipmentNumberService;
 import com.fossiles.fossilescorebackend.application.service.ProductDistributionService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderPartialReleaseService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderCodeService;
+import com.fossiles.fossilescorebackend.application.service.ProductionOrderItemSyncService;
 import com.fossiles.fossilescorebackend.application.service.SmartMaterialRequestService;
 import com.fossiles.fossilescorebackend.application.service.ProductionAutoPlannerService;
 import com.fossiles.fossilescorebackend.application.service.ProductionOrderWarehouseUnitService;
@@ -67,6 +66,8 @@ public class ProductionOrderController {
     private final ProductionOrderRepository productionOrderRepository;
     private final ProductionOrderListService productionOrderListService;
     private final ProductionOrderItemRepository productionOrderItemRepository;
+    private final ProductionOrderItemSyncService productionOrderItemSyncService;
+    /** Solo para saber si la orden ya tiene producción o recepción (no se cambia de tipo ni se elimina). */
     private final com.fossiles.fossilescorebackend.application.service.ProductionOrderItemUpdateService productionOrderItemUpdateService;
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
@@ -77,7 +78,6 @@ public class ProductionOrderController {
     private final com.fossiles.fossilescorebackend.application.service.ProductionCenterCache productionCenterCache;
     private final com.fossiles.fossilescorebackend.application.service.OnlineSalesReadCache onlineSalesReadCache;
     private final ProductionOrderCodeService productionOrderCodeService;
-    private final OpvVendorShipmentNumberService opvVendorShipmentNumberService;
     private final WarehouseOrderViewAssembler warehouseOrderViewAssembler;
     private final CustomerShipmentDispatchService customerShipmentDispatchService;
     private final OnlineSaleService onlineSaleService;
@@ -101,6 +101,7 @@ public class ProductionOrderController {
     private final InternalShipmentRequestService internalShipmentRequestService;
     private final ProductionOrderTimeEstimateService productionOrderTimeEstimateService;
     private final ProductionOrderLeatherEstimateService productionOrderLeatherEstimateService;
+    private final com.fossiles.fossilescorebackend.application.service.ProductionLeatherDemandService productionLeatherDemandService;
     private final ProductionOrderMaterialsEstimateService productionOrderMaterialsEstimateService;
     private final com.fossiles.fossilescorebackend.application.service.ProductionDeskCountService productionDeskCountService;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -136,9 +137,7 @@ public class ProductionOrderController {
     }
 
     private List<ProductionOrderResponse> listAllOrders() {
-        return productionOrderRepository.findAll().stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
+        return toResponses(productionOrderRepository.findAll());
     }
 
     /**
@@ -209,12 +208,11 @@ public class ProductionOrderController {
     }
 
     @GetMapping("/{id}")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductionOrderResponse> getById(@PathVariable Long id) throws ResourceNotFoundException {
         ProductionOrderEntity entity = productionOrderRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
-        ProductionOrderEntity resolved = ensureOpvVendorShipmentNumber(entity);
-        return ResponseEntity.ok(toResponse(resolved));
+        return ResponseEntity.ok(toResponse(entity));
     }
 
     /**
@@ -232,7 +230,8 @@ public class ProductionOrderController {
     }
 
     /**
-     * Cuero requerido por OP: ft² por línea según color (product_variant_leather).
+     * Cuero restante por OP: ft² por línea según color (product_variant_leather),
+     * descontando lo ya usado con la misma regla que el dashboard de producción.
      */
     @GetMapping("/{id}/leather-estimate")
     @Transactional(readOnly = true)
@@ -256,7 +255,7 @@ public class ProductionOrderController {
      * Envíos de producto: distribución vinculada (si aplica) + envíos directos OPI/OPCK/OPC.
      */
     @GetMapping("/{id}/shipments")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<List<ProductShipmentResponse>> getShipmentsForOrder(@PathVariable Long id)
             throws ResourceNotFoundException {
         productionOrderRepository.findById(id)
@@ -285,6 +284,10 @@ public class ProductionOrderController {
             @PathVariable Long id,
             @Valid @RequestBody com.fossiles.fossilescorebackend.application.dto.request.OpcShipmentGenerateRequest request)
             throws ResourceNotFoundException, BusinessException {
+        // Con un parcial ya enviado, generar «desde la orden» manda solo lo que falta (no la orden completa otra vez).
+        if (productionOrderPartialReleaseService.hasActivePartialShipment(id)) {
+            return ResponseEntity.ok(productionOrderPartialReleaseService.generateRemainderShipment(id, request));
+        }
         return ResponseEntity.ok(productDistributionService.generateShipmentFromProductionOrder(id, request));
     }
 
@@ -292,7 +295,7 @@ public class ProductionOrderController {
      * Anula documento de envío OPV/OPI impreso sin registro product_shipment activo.
      */
     @PutMapping("/{id}/void-shipment-document")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<ProductionOrderResponse> voidVendorShipmentDocument(@PathVariable Long id)
             throws ResourceNotFoundException, BusinessException {
         ProductionOrderEntity order = productDistributionService.voidVendorShipmentDocument(id);
@@ -326,17 +329,13 @@ public class ProductionOrderController {
 
     @GetMapping("/type/{orderType}")
     public ResponseEntity<List<ProductionOrderResponse>> getByType(@PathVariable String orderType) {
-        List<ProductionOrderResponse> orders = productionOrderRepository.findByOrderType(orderType).stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
+        List<ProductionOrderResponse> orders = toResponses(productionOrderRepository.findByOrderType(orderType));
         return ResponseEntity.ok(orders);
     }
 
     @GetMapping("/status/{status}")
     public ResponseEntity<List<ProductionOrderResponse>> getByStatus(@PathVariable String status) {
-        List<ProductionOrderResponse> orders = productionOrderRepository.findByStatus(status).stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
+        List<ProductionOrderResponse> orders = toResponses(productionOrderRepository.findByStatus(status));
         return ResponseEntity.ok(orders);
     }
 
@@ -372,11 +371,6 @@ public class ProductionOrderController {
             entity.setStatus("DRAFT");
         }
         ProductionOrderEntity saved = productionOrderRepository.save(entity);
-
-        if (isOpvVendorShipmentFlow(saved)) {
-            opvVendorShipmentNumberService.assignIfMissing(saved);
-            saved = productionOrderRepository.save(saved);
-        }
 
         // Guardar items
         if (request.getItems() != null && !request.getItems().isEmpty()) {
@@ -455,34 +449,18 @@ public class ProductionOrderController {
             throw new BusinessException("Invalid order type. Must be one of: CINCHOS, CINCHOS_FOSSILES, CINCHOS_MARCAS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA, CLIENTE_KIOSKO, INTERNA(OPI)");
         }
 
-        com.fossiles.fossilescorebackend.application.service.ProductionOrderItemUpdateService.UpdatePlan itemPlan = null;
-        if (request.getItems() != null) {
-            List<ProductionOrderItemEntity> proposed = new ArrayList<>();
-            for (ProductionOrderItemRequest item : request.getItems()) {
-                validateProductionOrderItemRequest(item, effectiveOrderType);
-                proposed.add(ProductionOrderItemEntity.builder()
-                        .id(item.getId()).productionOrderId(id)
-                        .productId(item.getProductId()).colorId(item.getColorId())
-                        .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, item.getBrandName()))
-                        .quantity(item.getQuantity()).sizesData(item.getSizes() == null ? null : convertSizesToJson(item.getSizes()))
-                        .observations(item.getObservations()).unitPrice(item.getUnitPrice())
-                        .unitPricesJson(convertUnitPricesToJson(item.getUnitPrices())).build());
-            }
-            itemPlan = productionOrderItemUpdateService.prepare(id, proposed);
-        }
-
         updateEntity(entity, request);
         entity.setOrderType(effectiveOrderType);
         applyDefaultSchedulingPriority(entity, effectiveOrderType);
         applyCustomerFields(entity, request, effectiveOrderType);
         ProductionOrderEntity updated = productionOrderRepository.save(entity);
 
-        if (isOpvVendorShipmentFlow(updated)) {
-            opvVendorShipmentNumberService.assignIfMissing(updated);
-            updated = productionOrderRepository.save(updated);
+        if (request.getItems() != null) {
+            for (ProductionOrderItemRequest itemRequest : request.getItems()) {
+                validateProductionOrderItemRequest(itemRequest, effectiveOrderType);
+            }
+            productionOrderItemSyncService.sync(updated.getId(), effectiveOrderType, request.getItems());
         }
-
-        if (itemPlan != null) productionOrderItemUpdateService.apply(itemPlan);
 
         return ResponseEntity.ok(toResponse(updated));
     }
@@ -572,6 +550,36 @@ public class ProductionOrderController {
         return ResponseEntity.ok(toResponse(entity));
     }
 
+    /**
+     * Actualiza solo empaques SUM- y costo de envío de la orden (meta en observaciones), sin tocar ítems.
+     * Lo usa Preparar envíos en el documento OPV armado desde la orden (sin fila en product_shipment).
+     * El PUT general sincroniza las líneas y rechaza quitar una que tenga tareas o unidades de bodega.
+     */
+    @PutMapping("/{id}/packing")
+    @Transactional(rollbackFor = Exception.class)
+    public ResponseEntity<ProductionOrderResponse> updatePacking(
+            @PathVariable Long id,
+            @RequestBody ProductionOrderRequest request) throws ResourceNotFoundException {
+        ProductionOrderEntity entity = productionOrderRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
+        OrderMeta existingMeta = parseOrderMeta(entity.getObservations());
+        List<ProductionOrderRequest.PackingItemRequest> packing = request != null && request.getPackingItems() != null
+                ? request.getPackingItems()
+                : existingMeta.packingItems.stream()
+                        .map(item -> ProductionOrderRequest.PackingItemRequest.builder()
+                                .materialId(item.materialId)
+                                .quantity(item.quantity)
+                                .unitPrice(item.unitPrice)
+                                .build())
+                        .collect(Collectors.toList());
+        BigDecimal shippingCost = request != null && request.getShippingCost() != null
+                ? request.getShippingCost()
+                : existingMeta.shippingCost;
+        entity.setObservations(composeOrderObservations(existingMeta.baseObservations, packing, shippingCost));
+        productionOrderRepository.save(entity);
+        return ResponseEntity.ok(toResponse(entity));
+    }
+
     @DeleteMapping("/{id}")
     @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException, BusinessException {
@@ -633,13 +641,21 @@ public class ProductionOrderController {
 
         List<Long> saleIds = productionOrderItemRepository.findDistinctOnlineSaleIdsByProductionOrderId(id);
         List<CustomerShipmentResponse> shipments = new ArrayList<>();
+        if (saleIds.isEmpty()) {
+            return ResponseEntity.ok(shipments);
+        }
+        // Líneas de la OP, productos y colores una sola vez (antes por venta y por línea).
+        List<ProductionOrderItemEntity> orderItems = productionOrderItemRepository.findByProductionOrderId(id);
+        Map<Long, ProductEntity> productsById = byIds(orderItems, ProductionOrderItemEntity::getProductId,
+                productRepository::findAllById, ProductEntity::getId);
+        Map<Long, ColorEntity> colorsById = byIds(orderItems, ProductionOrderItemEntity::getColorId,
+                colorRepository::findAllById, ColorEntity::getId);
 
         for (Long saleId : saleIds) {
             OnlineSaleEntity sale = onlineSaleRepository.findById(saleId).orElse(null);
             if (sale == null) continue;
 
-            List<ProductionOrderItemEntity> items = productionOrderItemRepository
-                    .findByProductionOrderId(id).stream()
+            List<ProductionOrderItemEntity> items = orderItems.stream()
                     .filter(i -> saleId.equals(i.getOnlineSaleId()))
                     .toList();
 
@@ -650,16 +666,17 @@ public class ProductionOrderController {
             List<CustomerShipmentResponse.ShipmentItem> shipmentItems = items.stream()
                     .map(item -> {
                         ProductEntity product = item.getProductId() != null
-                                ? productRepository.findById(item.getProductId()).orElse(null) : null;
+                                ? productsById.get(item.getProductId()) : null;
                         ColorEntity color = item.getColorId() != null
-                                ? colorRepository.findById(item.getColorId()).orElse(null) : null;
+                                ? colorsById.get(item.getColorId()) : null;
 
-                        // Find matching sale item for size info
+                        // Find matching sale item for size info (talla null = sin talla; antes reventaba con NPE)
                         String size = saleItems.stream()
                                 .filter(si -> Objects.equals(si.getProductId(), item.getProductId())
                                         && Objects.equals(si.getColorId(), item.getColorId()))
+                                .findFirst()
                                 .map(OnlineSaleItemEntity::getSize)
-                                .findFirst().orElse(null);
+                                .orElse(null);
 
                         return CustomerShipmentResponse.ShipmentItem.builder()
                                 .productionOrderItemId(item.getId())
@@ -701,7 +718,7 @@ public class ProductionOrderController {
      * Mark a customer shipment as dispatched (updates online sale status to ENVIADO).
      */
     @PutMapping("/{id}/dispatch-customer/{onlineSaleId}")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> dispatchCustomerShipment(
             @PathVariable Long id,
             @PathVariable Long onlineSaleId,
@@ -712,7 +729,7 @@ public class ProductionOrderController {
     }
 
     @PutMapping("/{id}/cancel-customer-dispatch/{onlineSaleId}")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<?> cancelCustomerDispatch(
             @PathVariable Long id,
             @PathVariable Long onlineSaleId,
@@ -755,7 +772,7 @@ public class ProductionOrderController {
     }
 
     @PutMapping("/{id}/warehouse-units/receipt")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> updateWarehouseUnitsReceipt(
             @PathVariable Long id,
             @RequestBody WarehouseUnitReceiptRequest request)
@@ -764,7 +781,7 @@ public class ProductionOrderController {
     }
 
     @PostMapping("/{id}/warehouse-receipt/close")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> closeWarehouseReceipt(@PathVariable Long id)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(productionOrderWarehouseUnitService.closeWarehouseReceipt(id));
@@ -773,7 +790,7 @@ public class ProductionOrderController {
     // ==================== MATERIAL CONSUMPTION ====================
 
     @PostMapping("/{id}/consume-materials")
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ResponseEntity<Map<String, Object>> consumeMaterials(@PathVariable Long id)
             throws ResourceNotFoundException, BusinessException {
         return ResponseEntity.ok(materialConsumptionService.consumeMaterialsForOrder(id));
@@ -788,9 +805,12 @@ public class ProductionOrderController {
     @GetMapping("/{id}/consumption-history")
     public ResponseEntity<List<Map<String, Object>>> getConsumptionHistory(@PathVariable Long id) {
         List<MaterialConsumptionEntity> consumptions = materialConsumptionRepository.findByProductionOrderId(id);
+        // Materiales en una consulta (antes una por consumo; hay OP con más de 700).
+        Map<Long, MaterialEntity> materialsById = byIds(consumptions, MaterialConsumptionEntity::getMaterialId,
+                materialRepository::findAllById, MaterialEntity::getId);
         List<Map<String, Object>> result = new ArrayList<>();
         for (MaterialConsumptionEntity c : consumptions) {
-            MaterialEntity mat = materialRepository.findById(c.getMaterialId()).orElse(null);
+            MaterialEntity mat = c.getMaterialId() != null ? materialsById.get(c.getMaterialId()) : null;
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("id", c.getId());
             map.put("materialId", c.getMaterialId());
@@ -806,11 +826,32 @@ public class ProductionOrderController {
 
     // ==================== DASHBOARD & REPORTS ====================
 
+    /**
+     * Cuero que piden todas las OP activas: por color, por cuero y por orden (total, entregado, falta).
+     *
+     * <p>Desde la caché del Dashboard de Producción (hasta 2 min; se suelta con cualquier escritura de órdenes,
+     * tareas, cuero, recetas o materiales, ver {@code ProductionCenterCacheInvalidator}).
+     */
+    @GetMapping("/leather-demand")
+    @Transactional(readOnly = true)
+    public ResponseEntity<com.fossiles.fossilescorebackend.application.dto.response.ProductionLeatherDemandResponse> getLeatherDemand() {
+        return ResponseEntity.ok(productionCenterCache.dashboard("leather-demand", productionLeatherDemandService::report));
+    }
+
+    /**
+     * KPIs del Dashboard de Producción para un rango. Desde la caché del Dashboard (hasta 2 min, por from/to;
+     * sin {@code to} el día de referencia es hoy y entra en la clave).
+     */
     @GetMapping("/dashboard-v2")
     @Transactional(readOnly = true)
     public ResponseEntity<ProductionDashboardV2Response> getDashboardV2(
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate to) {
+        String key = "dashboard-v2|" + from + "|" + (to != null ? to : "hoy:" + GuatemalaDateTime.today());
+        return ResponseEntity.ok(productionCenterCache.dashboard(key, () -> buildDashboardV2(from, to)));
+    }
+
+    private ProductionDashboardV2Response buildDashboardV2(java.time.LocalDate from, java.time.LocalDate to) {
         // Sin "from": arranca en el corte post-saneamiento KPI (misma base de eficiencia).
         java.time.LocalDate rangeFrom = from != null
                 ? from
@@ -861,7 +902,7 @@ public class ProductionOrderController {
                 .productStages(buildProductStages(scopedTasks))
                 .build();
 
-        return ResponseEntity.ok(response);
+        return response;
     }
 
     @GetMapping("/dashboard-stats")
@@ -1216,16 +1257,63 @@ public class ProductionOrderController {
         return ResponseEntity.ok(report);
     }
 
+    /**
+     * Productos, colores y materiales ya cargados para armar respuestas de OP. Cada orden carga en una consulta
+     * solo los que faltan (antes era una consulta por línea); en los listados se comparte entre todas las órdenes.
+     */
+    private static final class OrderRefs {
+        private final Map<Long, ProductEntity> products = new HashMap<>();
+        private final Map<Long, ColorEntity> colors = new HashMap<>();
+        private final Map<Long, MaterialEntity> materials = new HashMap<>();
+    }
+
+    /** Agrega a {@code cache} los ids que falten, en una consulta; los que no existen quedan en null. */
+    private static <E> void loadMissing(Map<Long, E> cache, Collection<Long> ids,
+                                        java.util.function.Function<Set<Long>, List<E>> loader,
+                                        java.util.function.Function<E, Long> entityId) {
+        Set<Long> missing = ids.stream()
+                .filter(Objects::nonNull)
+                .filter(id -> !cache.containsKey(id))
+                .collect(Collectors.toSet());
+        if (missing.isEmpty()) {
+            return;
+        }
+        missing.forEach(id -> cache.put(id, null));
+        for (E e : loader.apply(missing)) {
+            cache.put(entityId.apply(e), e);
+        }
+    }
+
+    private List<ProductionOrderResponse> toResponses(List<ProductionOrderEntity> orders) {
+        OrderRefs refs = new OrderRefs();
+        return orders.stream()
+                .map(order -> toResponse(order, refs))
+                .collect(Collectors.toList());
+    }
+
     private ProductionOrderResponse toResponse(ProductionOrderEntity entity) {
+        return toResponse(entity, new OrderRefs());
+    }
+
+    private ProductionOrderResponse toResponse(ProductionOrderEntity entity, OrderRefs refs) {
         List<ProductionOrderItemEntity> items = productionOrderItemRepository.findByProductionOrderId(entity.getId());
         OrderMeta meta = parseOrderMeta(entity.getObservations());
+        loadMissing(refs.products, items.stream().map(ProductionOrderItemEntity::getProductId).toList(),
+                productRepository::findAllById, ProductEntity::getId);
+        loadMissing(refs.colors, items.stream().map(ProductionOrderItemEntity::getColorId).toList(),
+                colorRepository::findAllById, ColorEntity::getId);
+        loadMissing(refs.materials, meta.packingItems.stream().map(item -> item.materialId).toList(),
+                materialRepository::findAllById, MaterialEntity::getId);
+        Map<Long, ProductEntity> productsById = refs.products;
+        Map<Long, ColorEntity> colorsById = refs.colors;
+        Map<Long, MaterialEntity> packingMaterialsById = refs.materials;
         
         List<ProductionOrderItemResponse> itemResponses = items.stream()
                 .map(item -> {
                     ProductEntity product = item.getProductId() != null ? 
-                            productRepository.findById(item.getProductId()).orElse(null) : null;
+                            productsById.get(item.getProductId()) : null;
                     ColorEntity color = item.getColorId() != null ? 
-                            colorRepository.findById(item.getColorId()).orElse(null) : null;
+                            colorsById.get(item.getColorId()) : null;
 
                     Map<String, Integer> sizes = null;
                     if (item.getSizesData() != null && !item.getSizesData().isEmpty()) {
@@ -1297,7 +1385,7 @@ public class ProductionOrderController {
                 .shippingCost(meta.shippingCost)
                 .packingItems(meta.packingItems.stream().map(item -> {
                     MaterialEntity material = item.materialId != null
-                            ? materialRepository.findById(item.materialId).orElse(null)
+                            ? packingMaterialsById.get(item.materialId)
                             : null;
                     return ProductionOrderResponse.PackingItemResponse.builder()
                             .materialId(item.materialId)
@@ -1339,6 +1427,19 @@ public class ProductionOrderController {
         builder.distributionShipments(mergedShipments);
 
         return builder.build();
+    }
+
+    /** Carga en una consulta las entidades referidas por {@code idOf} en {@code rows}, indexadas por id. */
+    private static <R, E> Map<Long, E> byIds(Collection<R> rows,
+                                             java.util.function.Function<R, Long> idOf,
+                                             java.util.function.Function<Set<Long>, List<E>> loader,
+                                             java.util.function.Function<E, Long> entityId) {
+        Set<Long> ids = rows.stream().map(idOf).filter(Objects::nonNull).collect(Collectors.toSet());
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return loader.apply(ids).stream()
+                .collect(Collectors.toMap(entityId, e -> e, (a, b) -> a));
     }
 
     private ProductionOrderEntity toEntity(ProductionOrderRequest request) {
@@ -1972,15 +2073,6 @@ public class ProductionOrderController {
             entity.setCustomerId(c.getId());
             entity.setCustomerName(c.getName());
         });
-    }
-
-    private ProductionOrderEntity ensureOpvVendorShipmentNumber(ProductionOrderEntity entity) {
-        if (isOpvVendorShipmentFlow(entity)
-                && (entity.getVendorShipmentNumber() == null || entity.getVendorShipmentNumber().isBlank())) {
-            opvVendorShipmentNumberService.assignIfMissing(entity);
-            return productionOrderRepository.save(entity);
-        }
-        return entity;
     }
 
     /** OPV vendedor: Luis Felipe (incluye cinchos OPC; correlativo ENVP de envío). */

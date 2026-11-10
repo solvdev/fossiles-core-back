@@ -42,5 +42,7 @@ public class DayPlanRequest {
         /** null = el sistema propone el día. */
         private LocalDate scheduledDate;
         private String observations;
+        /** true = la tarea junta ítems de varias OPV de Luis Felipe (la OP base es la cabecera). */
+        private Boolean consolidateVendorOrders;
     }
 }

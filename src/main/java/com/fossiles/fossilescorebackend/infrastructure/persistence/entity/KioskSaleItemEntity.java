@@ -52,6 +52,17 @@ public class KioskSaleItemEntity {
     @Column(name = "line_total", precision = 12, scale = 2, nullable = false)
     private BigDecimal lineTotal;
 
+    /** Solicitud de complemento extra que autorizó esta línea. */
+    @Column(name = "extra_request_id")
+    private Long extraRequestId;
+
+    /** Extra cobrado por pieza (ya incluido en unit_price). Null = sin complemento. */
+    @Column(name = "extra_amount", precision = 12, scale = 2)
+    private BigDecimal extraAmount;
+
+    @Column(name = "extra_description", length = 300)
+    private String extraDescription;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

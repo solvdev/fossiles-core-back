@@ -4,6 +4,9 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskCashSession
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosDepositSlipUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosPromotionEstimateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosExtraRequestCreateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPosHeldCartRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPosExtraRequestResponse;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionTierRequest;
@@ -43,6 +46,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.RoleRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
+import com.fossiles.fossilescorebackend.infrastructure.config.FelEmissionProperties;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,11 +58,14 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -71,6 +78,12 @@ class KioskPosServiceTest {
 
     @Autowired
     private KioskPosService kioskPosService;
+
+    @Autowired
+    private KioskPosExtraRequestService extraRequestService;
+
+    @Autowired
+    private KioskPosHeldCartService heldCartService;
 
     @Autowired
     private UserRepository userRepository;
@@ -107,6 +120,15 @@ class KioskPosServiceTest {
 
     @Autowired
     private TaxInvoiceService taxInvoiceService;
+
+    @Autowired
+    private KioskSaleInvoiceMapper saleInvoiceMapper;
+
+    @Autowired
+    private FelFactXmlBuilder felFactXmlBuilder;
+
+    @Autowired
+    private FelEmissionProperties felEmissionProperties;
 
     @Autowired
     private KioskSiteRepository kioskSiteRepository;
@@ -221,7 +243,7 @@ class KioskPosServiceTest {
                 .build());
 
         assertThat(sale.getSaleNumber()).startsWith("POS-");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("450.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("500.00");
 
         KioscoStockEntity kiosco = kioscoStockRepository
                 .findByLocationIdAndProductIdAndColorId(kioskA.getId(), wallet.getId(), negro.getId())
@@ -446,12 +468,12 @@ class KioskPosServiceTest {
         KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
                 .kioskLocationId(kioskA.getId())
                 .paymentMethod("EFECTIVO")
-                .amountReceived(new BigDecimal("225.00"))
+                .amountReceived(new BigDecimal("250.00"))
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
         assertThat(sale.getSaleNumber()).startsWith("POS-");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("225.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("250.00");
 
         ProductInventoryLocation legacyAfter = inventoryRepository
                 .findByProductIdAndLocationIdAndColorId(wallet.getId(), kioskA.getId(), negro.getId())
@@ -782,13 +804,13 @@ class KioskPosServiceTest {
                 .build());
 
         assertThat(sale.getSubtotal()).isEqualByComparingTo("300.00");
-        // dama 10% (tier) + unisex sin match → 10% base = 20 + 10
-        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("30.00");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("270.00");
+        // dama 10% (tier) = 20; unisex con tier en 0 → sin descuento
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("20.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("280.00");
     }
 
     @Test
-    void discount_tiered_percent_mixed_with_default_per_line() throws Exception {
+    void discount_tiered_percent_only_applies_to_lines_with_tier() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
 
         ProductCategoryEntity mariconerasCategory = productCategoryRepository.save(ProductCategoryEntity.builder()
@@ -843,10 +865,10 @@ class KioskPosServiceTest {
                         item(billetera.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
-        // 708*10% + 517*15% = 70.80 + 77.55 = 148.35 (no piso cart-level 10%)
+        // mariconera sin tier → 0; billetera 517*15% = 77.55
         assertThat(sale.getSubtotal()).isEqualByComparingTo("1225.00");
-        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("148.35");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("1076.65");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("77.55");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("1147.45");
     }
 
     @Test
@@ -893,7 +915,7 @@ class KioskPosServiceTest {
     }
 
     @Test
-    void default_pos_discount_applies_without_promotion() throws Exception {
+    void no_discount_applies_without_promotion() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
 
         KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
@@ -906,13 +928,14 @@ class KioskPosServiceTest {
                 .build());
 
         assertThat(sale.getSubtotal()).isEqualByComparingTo("250.00");
-        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("25.00");
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("225.00");
-        assertThat(sale.getPromotionName()).isEqualTo("Descuento 10%");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("0.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("250.00");
+        assertThat(sale.getPromotionId()).isNull();
+        assertThat(sale.getPromotionName()).isNull();
     }
 
     @Test
-    void promotion_percent_replaces_default_on_original_price_not_stacked() throws Exception {
+    void promotion_percent_applies_on_original_price() throws Exception {
         when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
 
         KioskPromotionEntity percentPromo = promotionRepository.save(KioskPromotionEntity.builder()
@@ -1257,9 +1280,9 @@ class KioskPosServiceTest {
                 .items(List.of(item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
                 .build());
 
-        assertThat(sale.getTotalAmount()).isEqualByComparingTo("225.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("250.00");
         assertThat(sale.getAmountReceived()).isEqualByComparingTo("300.00");
-        assertThat(sale.getChangeAmount()).isEqualByComparingTo("75.00");
+        assertThat(sale.getChangeAmount()).isEqualByComparingTo("50.00");
     }
 
     @Test
@@ -1287,8 +1310,8 @@ class KioskPosServiceTest {
 
         assertThat(report.getSalesCount()).isEqualTo(2);
         assertThat(report.getTotalItems()).isEqualByComparingTo("2");
-        assertThat(report.getTotalAmount()).isEqualByComparingTo("450.00");
-        assertThat(report.getAverageTicket()).isEqualByComparingTo("225.00");
+        assertThat(report.getTotalAmount()).isEqualByComparingTo("500.00");
+        assertThat(report.getAverageTicket()).isEqualByComparingTo("250.00");
     }
 
     @Test
@@ -1958,6 +1981,466 @@ class KioskPosServiceTest {
                 .findByLocationIdAndProductIdAndColorId(kioskA.getId(), productId, negro.getId())
                 .map(row -> row.getCurrentStock() != null ? row.getCurrentStock() : 0)
                 .orElse(0);
+    }
+
+    private KioskPosExtraRequestResponse requestExtra(BigDecimal qty, String extra) throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        return extraRequestService.create(KioskPosExtraRequestCreateRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .productId(wallet.getId())
+                .colorId(negro.getId())
+                .quantity(qty)
+                .description("Hebilla grabada")
+                .extraAmount(new BigDecimal(extra))
+                .catalogUnitPrice(new BigDecimal("250.00"))
+                .build());
+    }
+
+    @Test
+    void createSale_withApprovedExtra_chargesExtraWithoutDiscountAndConsumesRequest() throws Exception {
+        KioskPosExtraRequestResponse request = requestExtra(new BigDecimal("2"), "15.00");
+        assertThat(request.getStatus()).isEqualTo("PENDING");
+        assertThat(request.getExtraTotal()).isEqualByComparingTo("30.00");
+
+        KioskPromotionEntity percentPromo = promotionRepository.save(KioskPromotionEntity.builder()
+                .name("10%")
+                .discountType("PERCENT")
+                .discountValue(new BigDecimal("10"))
+                .active(true)
+                .build());
+        KioskPosSaleRequest.ItemRequest withExtra = item(wallet.getId(), negro.getId(), new BigDecimal("2"));
+        withExtra.setExtraRequestId(request.getId());
+        KioskPosSaleRequest sale = KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("1000.00"))
+                .promotionId(percentPromo.getId())
+                .items(List.of(withExtra, item(wallet.getId(), negro.getId(), BigDecimal.ONE)))
+                .build();
+
+        // Sin autorizar no se puede cobrar.
+        assertThatThrownBy(() -> kioskPosService.createSale(sale))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("no está autorizado");
+
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+        assertThat(extraRequestService.authorize(request.getId()).getStatus()).isEqualTo("APPROVED");
+
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        KioskPosSaleResponse saved = kioskPosService.createSale(sale);
+
+        // 3 piezas × 250 + extra 2 × 15 = 780; el 10% solo sobre la base (750 → 75).
+        assertThat(saved.getSubtotal()).isEqualByComparingTo("780.00");
+        assertThat(saved.getDiscountAmount()).isEqualByComparingTo("75.00");
+        assertThat(saved.getTotalAmount()).isEqualByComparingTo("705.00");
+        KioskPosSaleResponse.Item extraLine = saved.getItems().stream()
+                .filter(i -> i.getExtraRequestId() != null).findFirst().orElseThrow();
+        assertThat(extraLine.getUnitPrice()).isEqualByComparingTo("265.00");
+        assertThat(extraLine.getExtraAmount()).isEqualByComparingTo("15.00");
+        assertThat(extraLine.getExtraDescription()).isEqualTo("Hebilla grabada");
+
+        // La solicitud queda usada y no se puede reutilizar.
+        assertThat(extraRequestService.listForKiosk(kioskA.getId())).isEmpty();
+        KioskPosSaleRequest reuse = KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("1000.00"))
+                .items(List.of(withExtra))
+                .build();
+        assertThatThrownBy(() -> kioskPosService.createSale(reuse))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("ya se usó");
+    }
+
+    @Test
+    void createSale_extraLineMustMatchRequestedQuantity() throws Exception {
+        KioskPosExtraRequestResponse request = requestExtra(new BigDecimal("2"), "15.00");
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+        extraRequestService.authorize(request.getId());
+
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        KioskPosSaleRequest.ItemRequest wrongQty = item(wallet.getId(), negro.getId(), new BigDecimal("1"));
+        wrongQty.setExtraRequestId(request.getId());
+        assertThatThrownBy(() -> kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("1000.00"))
+                .items(List.of(wrongQty))
+                .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("no corresponde");
+    }
+
+    @Test
+    void rejectedExtraRequest_blocksSaleAndShowsReason() throws Exception {
+        KioskPosExtraRequestResponse request = requestExtra(BigDecimal.ONE, "20.00");
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+        var rejected = extraRequestService.reject(
+                request.getId(),
+                new com.fossiles.fossilescorebackend.application.dto.request.KioskExchangeRejectRequest("No aplica"));
+        assertThat(rejected.getStatus()).isEqualTo("REJECTED");
+
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        assertThat(extraRequestService.listForKiosk(kioskA.getId()))
+                .singleElement()
+                .satisfies(row -> assertThat(row.getRejectionReason()).isEqualTo("No aplica"));
+        // La encargada no puede autorizar sus propias solicitudes.
+        assertThatThrownBy(() -> extraRequestService.authorize(request.getId()))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void heldCart_roundTripsAndIsRemovedOnResume() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        var held = heldCartService.hold(KioskPosHeldCartRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .label("Cliente gorra")
+                .cartJson("{\"cart\":[{\"key\":\"1\"}]}")
+                .build());
+        assertThat(heldCartService.list(kioskA.getId())).hasSize(1);
+
+        var resumed = heldCartService.resume(held.getId());
+        assertThat(resumed.getCartJson()).contains("\"key\":\"1\"");
+        assertThat(heldCartService.list(kioskA.getId())).isEmpty();
+        assertThatThrownBy(() -> heldCartService.resume(held.getId())).isInstanceOf(BusinessException.class);
+    }
+
+    private static final String PRICE_EDIT_DENIED =
+            "Solo el kiosko Miraflores (A15) o administración pueden editar precios de venta.";
+
+    @Test
+    void editedPrice_a15AcceptsLowerFinalPriceWithoutDiscount() throws Exception {
+        UserEntity seller = saveSeller("a15.pos");
+        LocationEntity a15 = saveKiosk("A15", "Kiosko Zona 15", seller);
+        seedInventoryAt(a15.getId(), wallet.getId(), 5);
+        openSession(seller, a15.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(cashSale(a15.getId(), new BigDecimal("180.00"), List.of(
+                pricedItem(wallet.getId(), new BigDecimal("180.00"), true, BigDecimal.ONE))));
+
+        assertThat(sale.getItems()).hasSize(1);
+        assertThat(sale.getItems().get(0).getUnitPrice()).isEqualByComparingTo("180.00");
+        assertThat(sale.getItems().get(0).getLineTotal()).isEqualByComparingTo("180.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("0.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("180.00");
+        assertFelIdentity(sale.getId());
+        assertThat(felItem(sale.getId(), "Billetera Clasica").unit()).isEqualByComparingTo("180.00");
+        assertThat(felItem(sale.getId(), "Billetera Clasica").discount()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    void editedPrice_adminAtOtherKioskAcceptsLowerPriceAsFinal() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(cashSale(kioskA.getId(), new BigDecimal("190.00"), List.of(
+                pricedItem(wallet.getId(), new BigDecimal("190.00"), null, BigDecimal.ONE))));
+
+        assertThat(sale.getItems().get(0).getUnitPrice()).isEqualByComparingTo("190.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("0.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("190.00");
+    }
+
+    @Test
+    void editedPrice_kioskNamedMirafloresAcceptsLowerPrice() throws Exception {
+        UserEntity seller = saveSeller("miraflores.pos");
+        LocationEntity kiosk = saveKiosk("B20", "Sucursal Miraflores", seller);
+        seedInventoryAt(kiosk.getId(), wallet.getId(), 5);
+        openSession(seller, kiosk.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(cashSale(kiosk.getId(), new BigDecimal("150.00"), List.of(
+                pricedItem(wallet.getId(), new BigDecimal("150.00"), true, BigDecimal.ONE))));
+
+        assertThat(sale.getKioskCode()).isEqualTo("B20");
+        assertThat(sale.getItems().get(0).getUnitPrice()).isEqualByComparingTo("150.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("0.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("150.00");
+    }
+
+    @Test
+    void editedPrice_unauthorizedKioskRejectsUnitPrice() {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        assertThatThrownBy(() -> kioskPosService.createSale(cashSale(kioskA.getId(), new BigDecimal("100.00"), List.of(
+                pricedItem(wallet.getId(), new BigDecimal("100.00"), false, BigDecimal.ONE)))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage(PRICE_EDIT_DENIED);
+    }
+
+    @Test
+    void editedPrice_priceFinalFalseDiscountsTheEditedBase() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+        ProductEntity bag = productRepository.save(ProductEntity.builder()
+                .code("BOL-EDIT")
+                .name("Bolso Lista")
+                .salePrice(new BigDecimal("100.00"))
+                .build());
+        seedInventory(bag.getId(), 5);
+
+        KioskPosSaleRequest.ItemRequest edited = pricedItem(wallet.getId(), new BigDecimal("200.00"), false, BigDecimal.ONE);
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("270.00"))
+                .manualDiscountPercent(new BigDecimal("10"))
+                .items(List.of(edited, item(bag.getId(), negro.getId(), BigDecimal.ONE)))
+                .build());
+
+        assertThat(sale.getSubtotal()).isEqualByComparingTo("300.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("30.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("270.00");
+        assertThat(sale.getItems().get(0).getUnitPrice()).isEqualByComparingTo("200.00");
+        assertThat(sale.getItems().get(0).getLineTotal()).isEqualByComparingTo("200.00");
+        assertFelIdentity(sale.getId());
+        FelLine editedLine = felItem(sale.getId(), "Billetera Clasica");
+        assertThat(editedLine.unit()).isEqualByComparingTo("200.00");
+        assertThat(editedLine.discount()).isEqualByComparingTo("20.00");
+        assertThat(editedLine.total()).isEqualByComparingTo("180.00");
+        FelLine catalogLine = felItem(sale.getId(), "Bolso Lista");
+        assertThat(catalogLine.discount()).isEqualByComparingTo("0.00");
+        assertThat(catalogLine.total()).isEqualByComparingTo("90.00");
+    }
+
+    @Test
+    void editedPrice_priceFinalFalseAppliesDiscountOnAwkwardQuantity() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+
+        KioskPosSaleResponse sale = kioskPosService.createSale(KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("89.99"))
+                .manualDiscountPercent(new BigDecimal("10"))
+                .items(List.of(pricedItem(wallet.getId(), new BigDecimal("33.33"), false, new BigDecimal("3"))))
+                .build());
+
+        assertThat(sale.getSubtotal()).isEqualByComparingTo("99.99");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("10.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("89.99");
+        assertThat(sale.getItems().get(0).getUnitPrice()).isEqualByComparingTo("33.33");
+        assertThat(sale.getItems().get(0).getLineTotal()).isEqualByComparingTo("99.99");
+        assertFelIdentity(sale.getId());
+        FelLine line = felItem(sale.getId(), "Billetera Clasica");
+        assertThat(line.unit()).isEqualByComparingTo("33.33");
+        assertThat(line.discount()).isEqualByComparingTo("10.00");
+        assertThat(line.total()).isEqualByComparingTo("89.99");
+    }
+
+    @Test
+    void editedPrice_entrecuerosAdminUsesEditedPriceWithoutMovingOtherTiers() throws Exception {
+        enableEntrecuerosKiosk();
+        when(securityUtil.getCurrentUserId()).thenReturn(admin.getId());
+        ProductEntity bundle = saveSyntheticWallet("B-1", "Billetera Uno");
+        ProductEntity other = saveSyntheticWallet("B-10", "Billetera Megan");
+
+        KioskPosSaleResponse bundled = kioskPosService.createSale(entrecuerosSale(List.of(
+                syntheticItem(bundle.getId(), new BigDecimal("3"), null, null))));
+        assertThat(bundled.getItems().get(0).getUnitPrice()).isEqualByComparingTo("43.33");
+        assertThat(bundled.getItems().get(0).getLineTotal()).isEqualByComparingTo("130.00");
+        assertThat(bundled.getDiscountAmount()).isEqualByComparingTo("0.00");
+        assertThat(felItem(bundled.getId(), "Billetera Uno").bundleAdjusted()).isTrue();
+
+        KioskPosSaleRequest.ItemRequest edited = syntheticItem(
+                bundle.getId(), new BigDecimal("3"), new BigDecimal("25.00"), false);
+        KioskPosSaleResponse sale = kioskPosService.createSale(entrecuerosSale(List.of(
+                syntheticItem(other.getId(), BigDecimal.ONE, null, null),
+                edited)));
+
+        KioskPosSaleResponse.Item otherLine = lineByCode(sale, "B-10");
+        KioskPosSaleResponse.Item editedLine = lineByCode(sale, "B-1");
+        assertThat(otherLine.getUnitPrice()).isEqualByComparingTo("40.00");
+        assertThat(otherLine.getLineTotal()).isEqualByComparingTo("40.00");
+        assertThat(editedLine.getUnitPrice()).isEqualByComparingTo("25.00");
+        assertThat(editedLine.getLineTotal()).isEqualByComparingTo("75.00");
+        assertThat(sale.getDiscountAmount()).isEqualByComparingTo("0.00");
+        assertThat(sale.getTotalAmount()).isEqualByComparingTo("115.00");
+        assertFelIdentity(sale.getId());
+        assertThat(felItem(sale.getId(), "Billetera Uno").unit()).isEqualByComparingTo("25.00");
+        assertThat(felItem(sale.getId(), "Billetera Uno").discount()).isEqualByComparingTo("0.00");
+        assertThat(felItem(sale.getId(), "Billetera Megan").unit()).isEqualByComparingTo("40.00");
+    }
+
+    @Test
+    void editedPrice_entrecuerosUnauthorizedUnitPriceIsRejected() {
+        enableEntrecuerosKiosk();
+        wallet.setEntrecuerosEnabled(true);
+        wallet = productRepository.save(wallet);
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+        long salesBefore = saleRepository.count();
+
+        assertThatThrownBy(() -> kioskPosService.createSale(entrecuerosSale(List.of(
+                pricedItem(wallet.getId(), new BigDecimal("20.00"), false, BigDecimal.ONE)))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage(PRICE_EDIT_DENIED);
+        assertThat(saleRepository.count()).isEqualTo(salesBefore);
+    }
+
+    private KioskPosSaleResponse.Item lineByCode(KioskPosSaleResponse sale, String code) {
+        return sale.getItems().stream()
+                .filter(line -> code.equals(line.getProductCode()))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private ProductEntity saveSyntheticWallet(String code, String name) {
+        ProductEntity product = productRepository.save(ProductEntity.builder()
+                .code(code)
+                .name(name)
+                .salePrice(new BigDecimal("200.00"))
+                .entrecuerosEnabled(true)
+                .build());
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(kioskA.getId())
+                .productId(product.getId())
+                .colorId(negro.getId())
+                .hardwareCondition("SINTETICO")
+                .currentStock(10)
+                .build());
+        return product;
+    }
+
+    private KioskPosSaleRequest entrecuerosSale(List<KioskPosSaleRequest.ItemRequest> items) {
+        return KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskA.getId())
+                .paymentMethod("EFECTIVO")
+                .amountReceived(new BigDecimal("500.00"))
+                .shippingSheetNumber("1842")
+                .manualDiscountPercent(new BigDecimal("10"))
+                .items(items)
+                .build();
+    }
+
+    private KioskPosSaleRequest.ItemRequest syntheticItem(
+            Long productId,
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            Boolean priceFinal
+    ) {
+        return KioskPosSaleRequest.ItemRequest.builder()
+                .productId(productId)
+                .colorId(negro.getId())
+                .hardwareCondition("SINTETICO")
+                .quantity(quantity)
+                .unitPrice(unitPrice)
+                .priceFinal(priceFinal)
+                .build();
+    }
+
+    private KioskPosSaleRequest cashSale(
+            Long kioskId,
+            BigDecimal amountReceived,
+            List<KioskPosSaleRequest.ItemRequest> items
+    ) {
+        return KioskPosSaleRequest.builder()
+                .kioskLocationId(kioskId)
+                .paymentMethod("EFECTIVO")
+                .amountReceived(amountReceived)
+                .manualDiscountPercent(new BigDecimal("10"))
+                .items(items)
+                .build();
+    }
+
+    private KioskPosSaleRequest.ItemRequest pricedItem(
+            Long productId,
+            BigDecimal unitPrice,
+            Boolean priceFinal,
+            BigDecimal quantity
+    ) {
+        KioskPosSaleRequest.ItemRequest line = item(productId, negro.getId(), quantity);
+        line.setUnitPrice(unitPrice);
+        line.setPriceFinal(priceFinal);
+        return line;
+    }
+
+    private UserEntity saveSeller(String username) {
+        RoleEntity role = roleRepository.findByName("ENCARGADA").orElseThrow();
+        return userRepository.save(UserEntity.builder()
+                .username(username)
+                .email(username + "@fossiles.test")
+                .password("x")
+                .status("ACTIVE")
+                .roles(new HashSet<>(Set.of(role)))
+                .build());
+    }
+
+    private LocationEntity saveKiosk(String code, String name, UserEntity encargado) {
+        return locationRepository.save(LocationEntity.builder()
+                .code(code)
+                .name(name)
+                .categoria("KIOSKO")
+                .encargadoId(encargado.getId())
+                .build());
+    }
+
+    private void seedInventoryAt(Long locationId, Long productId, int quantity) {
+        inventoryRepository.save(ProductInventoryLocation.builder()
+                .productId(productId)
+                .locationId(locationId)
+                .colorId(negro.getId())
+                .quantity(new BigDecimal(quantity))
+                .build());
+        kioscoStockRepository.save(KioscoStockEntity.builder()
+                .locationId(locationId)
+                .productId(productId)
+                .colorId(negro.getId())
+                .currentStock(quantity)
+                .build());
+    }
+
+    private void openSession(UserEntity user, Long kioskId) throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
+        kioskPosService.openCashSession(KioskCashSessionOpenRequest.builder()
+                .kioskLocationId(kioskId)
+                .build());
+    }
+
+    private void assertFelIdentity(Long saleId) {
+        String xml = felXml(saleId);
+        Matcher items = Pattern.compile("<dte:Item\\b.*?</dte:Item>", Pattern.DOTALL).matcher(xml);
+        assertThat(items.find()).isTrue();
+        do {
+            FelLine line = felLine(items.group());
+            assertThat(line.unit().multiply(line.quantity()).setScale(2, RoundingMode.HALF_UP).subtract(line.discount()))
+                    .isEqualByComparingTo(line.total());
+        } while (items.find());
+    }
+
+    private FelLine felItem(Long saleId, String descriptionPart) {
+        String xml = felXml(saleId);
+        Matcher items = Pattern.compile("<dte:Item\\b.*?</dte:Item>", Pattern.DOTALL).matcher(xml);
+        while (items.find()) {
+            String block = items.group();
+            if (block.contains(descriptionPart)) {
+                return felLine(block);
+            }
+        }
+        throw new AssertionError("No FEL line contains " + descriptionPart);
+    }
+
+    private String felXml(Long saleId) {
+        KioskSaleEntity sale = saleRepository.findById(saleId).orElseThrow();
+        return felFactXmlBuilder.buildUnsignedXml(
+                saleInvoiceMapper.fromSale(sale),
+                felEmissionProperties.resolveCredentials(true));
+    }
+
+    private static FelLine felLine(String block) {
+        return new FelLine(
+                xmlAmount(block, "Cantidad"),
+                xmlAmount(block, "PrecioUnitario"),
+                xmlAmount(block, "Descuento"),
+                xmlAmount(block, "Total"),
+                block.contains("<dte:PrecioUnitario>43.34</dte:PrecioUnitario>"));
+    }
+
+    private static BigDecimal xmlAmount(String block, String tag) {
+        Matcher matcher = Pattern.compile("<dte:" + tag + ">([^<]+)</dte:" + tag + ">").matcher(block);
+        if (!matcher.find()) {
+            throw new AssertionError("Missing " + tag + " in " + block);
+        }
+        return new BigDecimal(matcher.group(1));
+    }
+
+    private record FelLine(BigDecimal quantity, BigDecimal unit, BigDecimal discount, BigDecimal total,
+                           boolean bundleAdjusted) {
     }
 
     private static KioskPosSaleRequest.ItemRequest item(Long productId, Long colorId, BigDecimal qty) {

@@ -28,6 +28,10 @@ public class KioskExchangePreviewResponse {
     private BigDecimal returnedAmount;
     private BigDecimal givenAmount;
     private BigDecimal differenceAmount;
+    /** Lo entregado a precio de catálogo de hoy (informativo; no cambia lo cobrado). */
+    private BigDecimal catalogGivenAmount;
+    /** Catálogo de hoy menos lo que ingresa: si es positivo, el cliente pagó menos que el precio actual. */
+    private BigDecimal catalogDifferenceAmount;
     /** Crédito de empaques SUM aplicado a la liquidación (0 si no hay diferencia de producto). */
     private BigDecimal packagingReturnedAmount;
     /** Crédito de empaques SUM de la factura original (potencial; no siempre se aplica). */
@@ -53,5 +57,10 @@ public class KioskExchangePreviewResponse {
         private BigDecimal quantity;
         private BigDecimal unitPrice;
         private BigDecimal lineTotal;
+        /**
+         * Stock disponible en el kiosko para entregar esta línea (incluye lo que ingresa en la misma boleta).
+         * Solo se informa en boletas pendientes de autorización; null en el resto.
+         */
+        private BigDecimal availableStock;
     }
 }

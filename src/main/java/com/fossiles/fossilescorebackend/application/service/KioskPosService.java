@@ -52,6 +52,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskC
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPromotionTierEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskPosExtraRequestEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleSequenceEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoStockEntity;
@@ -160,6 +161,7 @@ public class KioskPosService {
     private final KioscoInventoryService kioscoInventoryService;
     private final KioskSiteRepository kioskSiteRepository;
     private final KioskSalesSourceResolver kioskSalesSourceResolver;
+    private final KioskPosExtraRequestService kioskPosExtraRequestService;
 
     @Transactional(readOnly = true)
     public KioskPosContextResponse getCurrentContext(
@@ -336,7 +338,8 @@ public class KioskPosService {
         LocationEntity kiosk = resolveTargetKiosk(availableKiosks, request.getKioskLocationId());
         boolean entrecueros = KioskPosMode.isEntrecueros(kiosk);
         KioskCashSessionEntity openSession = requireOpenCashSession(kiosk.getId());
-        LocalDate saleDate = request.getSaleDate() != null ? request.getSaleDate() : GuatemalaDateTime.today();
+        // La fecha de una venta nueva es la del servidor: un POS abierto desde ayer mandaba la fecha de ayer.
+        LocalDate saleDate = GuatemalaDateTime.today();
         String normalizedPaymentMethod = normalizePaymentMethod(request.getPaymentMethod(), entrecueros);
         if (!entrecueros) {
             validateCardFields(
@@ -375,12 +378,21 @@ public class KioskPosService {
         }
 
         List<PreparedLine> preparedLines = new ArrayList<>();
+        Set<Long> usedExtraRequestIds = new HashSet<>();
+        List<KioskPosExtraRequestEntity> extraRequestsToMark = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal totalItems = BigDecimal.ZERO;
         Map<String, BigDecimal> qtyByPriceKey = new HashMap<>();
         if (entrecueros) {
             for (KioskPosSaleRequest.ItemRequest itemRequest : request.getItems()) {
                 if (itemRequest == null || itemRequest.getProductId() == null || itemRequest.getQuantity() == null) {
+                    continue;
+                }
+                // Un precio editado autorizado no entra al volumen: si se sumara, las otras
+                // líneas cambiarían de tier. El cambio sigue contando como hoy.
+                if (!exchangeSale
+                        && isPosUnitPriceOverride(itemRequest)
+                        && allowsPosUnitPriceEdit(kiosk, admin)) {
                     continue;
                 }
                 ProductEntity volumeProduct = productRepository.findById(itemRequest.getProductId()).orElse(null);
@@ -444,26 +456,60 @@ public class KioskPosService {
                 throw new BusinessException("Debe seleccionar talla para " + product.getName() + ".");
             }
 
-            // Entrecueros: el servidor recalcula y guarda el precio. El unitPrice del cliente no se usa.
-            BigDecimal unitPrice = entrecueros
-                    ? resolveEntrecuerosLineUnitPrice(product, hardware, quantity, qtyByPriceKey)
-                    : resolvePosUnitPrice(product, sizeLabel);
-            // Línea con precio editado (Miraflores): monto final, sin descuento sobre esa línea.
-            boolean finalUnitPrice = false;
-            if (!entrecueros && itemRequest.getUnitPrice() != null
-                    && itemRequest.getUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
-                if (!exchangeSale && !allowsPosUnitPriceEdit(kiosk)) {
-                    throw new BusinessException(
-                            "Solo el kiosko Miraflores (A15) puede editar precios de venta.");
-                }
-                unitPrice = itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
-                if (!exchangeSale && allowsPosUnitPriceEdit(kiosk)) {
-                    finalUnitPrice = true;
-                }
+            // Precio editado autorizado: se usa el unitario del cliente (también en Entrecueros).
+            // Quien no está autorizado y lo envía recibe el mismo error; no se ignora.
+            // La venta de cambio conserva el comportamiento anterior.
+            boolean priceOverride = !exchangeSale && isPosUnitPriceOverride(itemRequest);
+            if (priceOverride && !allowsPosUnitPriceEdit(kiosk, admin)) {
+                throw new BusinessException(
+                        "Solo el kiosko Miraflores (A15) o administración pueden editar precios de venta.");
             }
-            BigDecimal lineTotal = entrecueros
-                    ? EntrecuerosPriceLists.lineTotal(unitPrice, quantity)
-                    : unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal unitPrice;
+            BigDecimal lineTotal;
+            boolean finalUnitPrice = false;
+            if (priceOverride) {
+                unitPrice = itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
+                lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+                // Entrecueros no descuenta: la línea editada queda final aunque priceFinal sea false.
+                // priceFinal null o true: sin descuento POS/promo. false: el editado es la base.
+                finalUnitPrice = entrecueros || !Boolean.FALSE.equals(itemRequest.getPriceFinal());
+            } else if (entrecueros) {
+                unitPrice = resolveEntrecuerosLineUnitPrice(product, hardware, quantity, qtyByPriceKey);
+                lineTotal = EntrecuerosPriceLists.chargedLineTotal(product, hardware, quantity, qtyByPriceKey);
+            } else {
+                unitPrice = resolvePosUnitPrice(product, sizeLabel);
+                if (exchangeSale && isPosUnitPriceOverride(itemRequest)) {
+                    unitPrice = itemRequest.getUnitPrice().setScale(2, RoundingMode.HALF_UP);
+                }
+                lineTotal = unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+            }
+
+            // Complemento extra autorizado: se suma al precio por pieza; el extra no entra a descuentos.
+            BigDecimal extraUnit = BigDecimal.ZERO;
+            Long extraRequestId = null;
+            String extraDescription = null;
+            if (itemRequest.getExtraRequestId() != null) {
+                if (exchangeSale) {
+                    throw new BusinessException("Una venta de cambio no admite complemento extra.");
+                }
+                if (!usedExtraRequestIds.add(itemRequest.getExtraRequestId())) {
+                    throw new BusinessException("Un mismo complemento no puede usarse en dos líneas.");
+                }
+                KioskPosExtraRequestEntity extraRequest = kioskPosExtraRequestService.lockApprovedForSale(
+                        itemRequest.getExtraRequestId(),
+                        kiosk.getId(),
+                        itemRequest.getProductId(),
+                        itemRequest.getColorId(),
+                        sizeLabel,
+                        hardware,
+                        quantity);
+                extraRequestsToMark.add(extraRequest);
+                extraUnit = extraRequest.getExtraAmount();
+                extraRequestId = extraRequest.getId();
+                extraDescription = extraRequest.getDescription();
+                unitPrice = unitPrice.add(extraUnit);
+                lineTotal = lineTotal.add(extraUnit.multiply(quantity).setScale(2, RoundingMode.HALF_UP));
+            }
 
             preparedLines.add(new PreparedLine(
                     product,
@@ -473,7 +519,10 @@ public class KioskPosService {
                     unitPrice,
                     lineTotal,
                     finalUnitPrice,
-                    hardware
+                    hardware,
+                    extraUnit,
+                    extraRequestId,
+                    extraDescription
             ));
             subtotal = subtotal.add(lineTotal);
             totalItems = totalItems.add(quantity);
@@ -627,11 +676,17 @@ public class KioskPosService {
                     .quantity(line.quantity())
                     .unitPrice(line.unitPrice())
                     .lineTotal(line.lineTotal())
+                    .extraRequestId(line.extraRequestId())
+                    .extraAmount(line.extraRequestId() != null ? line.extraUnitAmount() : null)
+                    .extraDescription(line.extraDescription())
                     .build();
             sale.getItems().add(saleItem);
         }
 
         KioskSaleEntity saved = kioskSaleRepository.save(sale);
+        for (KioskPosExtraRequestEntity extraRequest : extraRequestsToMark) {
+            kioskPosExtraRequestService.markUsed(extraRequest, saved.getId());
+        }
 
         for (Map.Entry<String, BigDecimal> entry : aggregatedQty.entrySet()) {
             ParsedInventoryKey parsed = parseInventoryKey(entry.getKey());
@@ -2377,7 +2432,7 @@ public class KioskPosService {
         }
         List<PreparedLine> eligibleLines = filterLinesByPromotionAudience(lines, promotion.getAudienceCategory());
         BigDecimal eligibleSubtotal = eligibleLines.stream()
-                .map(PreparedLine::lineTotal)
+                .map(PreparedLine::discountableTotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         if (eligibleSubtotal.compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;
@@ -2390,16 +2445,18 @@ public class KioskPosService {
             return BigDecimal.ZERO;
         }
         if ("PERCENT".equals(type)) {
-            // Líneas de la audiencia → % promo; resto elegible → 10% base (empaque 0%).
+            // Solo las líneas de la audiencia llevan el % de la promo; el resto no recibe descuento.
             BigDecimal discount = BigDecimal.ZERO;
             for (PreparedLine line : filterDiscountEligibleLines(lines)) {
                 boolean inPromo = ProductAudienceCategory.productMatchesPromotion(
                         line.product().getAudienceCategory(),
                         promotion.getAudienceCategory()
                 );
-                BigDecimal pct = inPromo ? value : DEFAULT_POS_DISCOUNT_PERCENT;
-                discount = discount.add(line.lineTotal()
-                        .multiply(pct)
+                if (!inPromo) {
+                    continue;
+                }
+                discount = discount.add(line.discountableTotal()
+                        .multiply(value)
                         .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP));
             }
             return discount.max(BigDecimal.ZERO).min(subtotal).setScale(2, RoundingMode.HALF_UP);
@@ -2408,7 +2465,7 @@ public class KioskPosService {
     }
 
     /**
-     * Descuento por línea: si hay tier, usa ese %; si no, el 10% base.
+     * Descuento por línea: solo las líneas con tier aplicable llevan descuento.
      * Empaque nunca entra (isDiscountEligibleProduct).
      */
     BigDecimal calculateTieredPercentDiscount(List<PreparedLine> lines, List<KioskPromotionEntity> promotions) {
@@ -2432,11 +2489,11 @@ public class KioskPosService {
             if (promoPct.compareTo(BigDecimal.ZERO) > 0) {
                 anyTierMatch = true;
             }
-            BigDecimal pct = promoPct.compareTo(BigDecimal.ZERO) > 0
-                    ? promoPct
-                    : DEFAULT_POS_DISCOUNT_PERCENT;
-            discount = discount.add(line.lineTotal()
-                    .multiply(pct)
+            if (promoPct.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            discount = discount.add(line.discountableTotal()
+                    .multiply(promoPct)
                     .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP));
         }
         BigDecimal maxDiscount = lines.stream()
@@ -2470,56 +2527,22 @@ public class KioskPosService {
             BigDecimal eligibleSubtotal = eligibleDiscountSubtotal(lines);
             BigDecimal discount = eligibleSubtotal.multiply(pct)
                     .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
-            return applyDefaultPosDiscountFloor(
-                    new DiscountResolution(
-                            discount,
-                            null,
-                            resolvePromotionDisplayName(null, pct),
-                            false
-                    ),
-                    lines
+            return new DiscountResolution(
+                    discount,
+                    null,
+                    resolvePromotionDisplayName(null, pct),
+                    false
             );
         }
         if (selectedPromotion != null) {
-            DiscountResolution resolved = new DiscountResolution(
+            return new DiscountResolution(
                     calculatePromotionDiscount(subtotal, selectedPromotion, lines),
                     selectedPromotion.getId(),
                     resolvePromotionDisplayName(selectedPromotion, null),
                     false
             );
-            return applyDefaultPosDiscountFloor(resolved, lines);
         }
-        return applyDefaultPosDiscountFloor(
-                resolveAutoPromotionDiscount(subtotal, lines, kioskId, saleDate),
-                lines
-        );
-    }
-
-    private BigDecimal calculateDefaultPosDiscount(List<PreparedLine> lines) {
-        return eligibleDiscountSubtotal(lines)
-                .multiply(DEFAULT_POS_DISCOUNT_PERCENT)
-                .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
-    }
-
-    /**
-     * Piso cart-level solo si el descuento resuelto queda por debajo del 10% base
-     * (p. ej. combo que no aplica). El descuento TIERED/PERCENT ya aplica 10% por línea
-     * en productos sin match de promo.
-     */
-    private DiscountResolution applyDefaultPosDiscountFloor(DiscountResolution resolved, List<PreparedLine> lines) {
-        BigDecimal defaultDiscount = calculateDefaultPosDiscount(lines);
-        if (defaultDiscount.compareTo(BigDecimal.ZERO) <= 0) {
-            return resolved;
-        }
-        if (resolved.discountAmount().compareTo(defaultDiscount) >= 0) {
-            return resolved;
-        }
-        return new DiscountResolution(
-                defaultDiscount,
-                null,
-                DEFAULT_POS_DISCOUNT_NAME,
-                true
-        );
+        return resolveAutoPromotionDiscount(subtotal, lines, kioskId, saleDate);
     }
 
     private DiscountResolution resolveAutoPromotionDiscount(
@@ -2623,7 +2646,7 @@ public class KioskPosService {
 
     private BigDecimal eligibleDiscountSubtotal(List<PreparedLine> lines) {
         return filterDiscountEligibleLines(lines).stream()
-                .map(PreparedLine::lineTotal)
+                .map(PreparedLine::discountableTotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
@@ -2703,8 +2726,16 @@ public class KioskPosService {
                     ? resolveEntrecuerosLineUnitPrice(product, hardware, quantity, qtyByPriceKey)
                     : resolvePosUnitPrice(product, sizeLabel);
             BigDecimal lineTotal = entrecueros
-                    ? EntrecuerosPriceLists.lineTotal(unitPrice, quantity)
+                    ? EntrecuerosPriceLists.chargedLineTotal(product, hardware, quantity, qtyByPriceKey)
                     : unitPrice.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal extraUnit = itemRequest.getExtraAmount() != null
+                    && itemRequest.getExtraAmount().compareTo(BigDecimal.ZERO) > 0
+                    ? itemRequest.getExtraAmount().setScale(2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
+            if (extraUnit.signum() > 0) {
+                unitPrice = unitPrice.add(extraUnit);
+                lineTotal = lineTotal.add(extraUnit.multiply(quantity).setScale(2, RoundingMode.HALF_UP));
+            }
             preparedLines.add(new PreparedLine(
                     product,
                     color,
@@ -2713,7 +2744,10 @@ public class KioskPosService {
                     unitPrice,
                     lineTotal,
                     false,
-                    hardware
+                    hardware,
+                    extraUnit,
+                    null,
+                    null
             ));
         }
         return preparedLines;
@@ -2742,7 +2776,7 @@ public class KioskPosService {
         for (PreparedLine line : lines) {
             int wholeUnits = line.quantity().setScale(0, RoundingMode.DOWN).intValue();
             for (int i = 0; i < wholeUnits; i++) {
-                units.add(line.unitPrice());
+                units.add(line.baseUnitPrice());
             }
         }
         if (units.isEmpty()) {
@@ -3118,15 +3152,21 @@ public class KioskPosService {
     }
 
     private static final String PACKAGING_PRODUCT_CODE_PREFIX = "SUM";
-    /** Descuento base POS sobre precio de catálogo (no acumula con promos; la promo mayor reemplaza). */
-    private static final BigDecimal DEFAULT_POS_DISCOUNT_PERCENT = new BigDecimal("10");
-    private static final String DEFAULT_POS_DISCOUNT_NAME = "Descuento 10%";
     /** Códigos/nombres de Miraflores autorizados a editar unitPrice en venta POS. */
     private static final String POS_UNIT_PRICE_EDIT_KIOSK_CODE = "A15";
 
-    private static boolean allowsPosUnitPriceEdit(LocationEntity kiosk) {
+    /** Unitario informado y positivo: el cliente pide un precio distinto al de lista. */
+    private static boolean isPosUnitPriceOverride(KioskPosSaleRequest.ItemRequest item) {
+        return item.getUnitPrice() != null && item.getUnitPrice().compareTo(BigDecimal.ZERO) > 0;
+    }
+
+    /** Administración (acceso a todos los kioscos) edita precios en cualquier kiosco; si no, solo Miraflores. */
+    private static boolean allowsPosUnitPriceEdit(LocationEntity kiosk, boolean admin) {
         if (kiosk == null) {
             return false;
+        }
+        if (admin) {
+            return true;
         }
         if (POS_UNIT_PRICE_EDIT_KIOSK_CODE.equalsIgnoreCase(safeTrimStatic(kiosk.getCode()))) {
             return true;
@@ -3673,6 +3713,9 @@ public class KioskPosService {
                         .quantity(row.getQuantity())
                         .unitPrice(row.getUnitPrice())
                         .lineTotal(row.getLineTotal())
+                        .extraAmount(row.getExtraAmount())
+                        .extraDescription(row.getExtraDescription())
+                        .extraRequestId(row.getExtraRequestId())
                         .build())
                 .collect(Collectors.toList());
 
@@ -5236,11 +5279,44 @@ public class KioskPosService {
             BigDecimal quantity,
             BigDecimal unitPrice,
             BigDecimal lineTotal,
-            /** Precio editado (Miraflores): no recibe descuento POS/promo sobre esa línea. */
+            /** Precio editado final: no recibe descuento POS/promo. priceFinal false lo deja en false. */
             boolean finalUnitPrice,
             /** Dimensión de stock de la línea (marca, NINO/DAMA, NUEVO/VIEJO); null al restaurar ventas. */
-            String hardware
-    ) {}
+            String hardware,
+            /** Complemento extra autorizado POR PIEZA (ya incluido en unitPrice/lineTotal); no recibe descuentos. */
+            BigDecimal extraUnitAmount,
+            Long extraRequestId,
+            String extraDescription
+    ) {
+        PreparedLine(
+                ProductEntity product,
+                ColorEntity color,
+                String size,
+                BigDecimal quantity,
+                BigDecimal unitPrice,
+                BigDecimal lineTotal,
+                boolean finalUnitPrice,
+                String hardware
+        ) {
+            this(product, color, size, quantity, unitPrice, lineTotal, finalUnitPrice, hardware,
+                    BigDecimal.ZERO, null, null);
+        }
+
+        /** Total de la línea sin el complemento: base sobre la que aplican promociones y descuentos. */
+        BigDecimal discountableTotal() {
+            return lineTotal.subtract(extraTotal());
+        }
+
+        BigDecimal extraTotal() {
+            return extraUnitAmount == null
+                    ? BigDecimal.ZERO
+                    : extraUnitAmount.multiply(quantity).setScale(2, RoundingMode.HALF_UP);
+        }
+
+        BigDecimal baseUnitPrice() {
+            return extraUnitAmount == null ? unitPrice : unitPrice.subtract(extraUnitAmount);
+        }
+    }
 
     record PaymentSnapshot(
             BigDecimal amountReceived,

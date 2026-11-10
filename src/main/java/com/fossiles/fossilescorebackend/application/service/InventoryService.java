@@ -39,7 +39,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
-@Transactional
+@Transactional(rollbackFor = Exception.class)
 public class InventoryService {
 
     private final InventoryLocationRepository inventoryLocationRepository;

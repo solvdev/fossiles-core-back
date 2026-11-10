@@ -1,6 +1,8 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.WarehouseItemReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.WarehouseLfReceiptResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.WarehouseUnitResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.WarehouseWorkspaceResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -9,6 +11,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -28,6 +31,8 @@ public class ProductionOrderWarehouseUnitService {
     public static final String STATUS_REJECTED = "REJECTED";
     public static final String REF_ONLINE_SALE = "ONLINE_SALE";
     public static final String REF_PRODUCT_SHIPMENT = "PRODUCT_SHIPMENT";
+    /** Pieza de OPV/OPC de Luis Felipe entregada al cerrar la recepción (sale de la reserva). */
+    public static final String REF_VENDOR_DELIVERY = "VENDOR_DELIVERY";
 
     private final ProductionOrderRepository productionOrderRepository;
     private final ProductionOrderItemRepository productionOrderItemRepository;
@@ -46,8 +51,176 @@ public class ProductionOrderWarehouseUnitService {
     private final ProductShipmentDetailRepository shipmentDetailRepository;
     private final OnlineSaleItemRepository onlineSaleItemRepository;
     private final OnlineSaleRepository onlineSaleRepository;
+    private final OnlineSaleReturnsWarehouseLocator returnsWarehouseLocator;
 
-    @Transactional
+    /** Estados de venta en línea que ya no se despachan: sus piezas son stock de Devoluciones. */
+    private static final Set<String> CLOSED_ONLINE_SALE_STATUSES = Set.of("ANULADA", "CANCELADO", "DEVOLUCION");
+
+    private boolean isClosedOnlineSale(Long onlineSaleId) {
+        if (onlineSaleId == null) {
+            return false;
+        }
+        return onlineSaleRepository.findById(onlineSaleId)
+                .map(s -> s.getStatus() != null && CLOSED_ONLINE_SALE_STATUSES.contains(s.getStatus().trim()))
+                .orElse(false);
+    }
+
+    /**
+     * Al anular una venta en línea, las piezas de su OPL que ya se recibieron en Bodega PT y no salieron
+     * pasan a Devoluciones (TRANSFER_OUT en PT + RETURN en Devoluciones). Idempotente por pieza.
+     *
+     * @return unidades trasladadas en esta llamada
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public BigDecimal moveReceivedUnitsToReturns(Long onlineSaleId, String saleRef, String description)
+            throws BusinessException {
+        if (onlineSaleId == null) {
+            return BigDecimal.ZERO;
+        }
+        LocationEntity returns = returnsWarehouseLocator.find().orElse(null);
+        if (returns == null) {
+            return BigDecimal.ZERO;
+        }
+        LocationEntity bodega = getFinishedGoodsLocation();
+        BigDecimal moved = BigDecimal.ZERO;
+        for (ProductionOrderItemEntity item : productionOrderItemRepository.findByOnlineSaleId(onlineSaleId)) {
+            if (item.getProductId() == null) {
+                continue;
+            }
+            for (ProductionOrderWarehouseUnitEntity unit
+                    : unitRepository.findByProductionOrderItemIdOrderBySizeKeyAscUnitSeqAsc(item.getId())) {
+                if (!STATUS_RECEIVED.equals(normalizeReceiptStatus(unit.getReceiptStatus()))
+                        || unit.getShippedAt() != null) {
+                    continue;
+                }
+                // Solo lo que entró a PT; lo recibido directo en Devoluciones ya está ahí.
+                boolean enteredPt = productInventoryService.hasProductKardexMovement(
+                        "PRODUCTION_ORDER_WH_UNIT", unit.getId(), "PRODUCTION_ENTRY",
+                        item.getProductId(), bodega.getId(), item.getColorId());
+                if (!enteredPt) {
+                    continue;
+                }
+                String sizeKey = unit.getSizeKey() == null || unit.getSizeKey().isBlank() ? null : unit.getSizeKey();
+                moved = moved.add(productInventoryService.transferFromBodegaPtToReturns(
+                        item.getProductId(),
+                        item.getColorId(),
+                        sizeKey,
+                        BigDecimal.ONE,
+                        returns.getId(),
+                        onlineSaleId,
+                        saleRef,
+                        description,
+                        unit.getId()));
+            }
+        }
+        return moved;
+    }
+
+    private static final int LF_RECEIPT_LIST_LIMIT = 60;
+
+    /** La orden está completa cuando todas sus piezas ya se recibieron (las rechazadas no cuentan). */
+    private static boolean isReceiptComplete(int totalUnits, int receivedUnits) {
+        return totalUnits > 0 && receivedUnits >= totalUnits;
+    }
+
+    private static boolean isLuisFelipeOpv(ProductionOrderEntity po) {
+        return po != null && ProductionPlanningConstants.isLuisFelipeVendorOrder(
+                po.getSellerName(), po.getOrderType(), po.getCode());
+    }
+
+    /** Estos endpoints no piden login (dispositivo de bodega), así que solo sirven para las OPV de Luis Felipe. */
+    private ProductionOrderEntity requireLuisFelipeOpv(Long productionOrderId)
+            throws ResourceNotFoundException, BusinessException {
+        ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
+        if (!isLuisFelipeOpv(po)) {
+            throw new BusinessException("Solo las OPV de Luis Felipe se reciben pieza por pieza en la reserva.");
+        }
+        return po;
+    }
+
+    /** OPV de Luis Felipe con la recepción abierta y cuántas piezas lleva recibidas cada una. */
+    @Transactional(readOnly = true)
+    public List<WarehouseLfReceiptResponse> listLuisFelipeReceipts(String query) {
+        String needle = query == null ? "" : query.trim().toUpperCase(Locale.ROOT);
+        List<ProductionOrderEntity> orders = productionOrderRepository.findLuisFelipeOrdersWithOpenWarehouseReceipt()
+                .stream()
+                .filter(ProductionOrderWarehouseUnitService::isLuisFelipeOpv)
+                .filter(po -> needle.isEmpty()
+                        || (po.getCode() != null && po.getCode().toUpperCase(Locale.ROOT).contains(needle)))
+                .limit(LF_RECEIPT_LIST_LIMIT)
+                .collect(Collectors.toList());
+        Map<Long, List<ProductionOrderItemEntity>> itemsByOrder = productionOrderItemRepository
+                .findByProductionOrderIdIn(orders.stream().map(ProductionOrderEntity::getId).collect(Collectors.toList()))
+                .stream()
+                .collect(Collectors.groupingBy(ProductionOrderItemEntity::getProductionOrderId));
+        return orders.stream().map(po -> {
+            List<ProductionOrderItemEntity> items = itemsByOrder.getOrDefault(po.getId(), List.of());
+            int total = items.stream().mapToInt(i -> i.getQuantity() != null ? Math.max(i.getQuantity(), 0) : 0).sum();
+            int received = items.stream()
+                    .mapToInt(i -> i.getWarehouseReceivedQty() != null ? Math.max(i.getWarehouseReceivedQty(), 0) : 0)
+                    .sum();
+            return WarehouseLfReceiptResponse.builder()
+                    .productionOrderId(po.getId())
+                    .productionOrderCode(po.getCode())
+                    .status(po.getStatus())
+                    .deliveryDate(po.getDeliveryDate())
+                    .totalUnits(total)
+                    .receivedUnits(received)
+                    .complete(isReceiptComplete(total, received))
+                    .build();
+        }).collect(Collectors.toList());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public WarehouseWorkspaceResponse getLuisFelipeWorkspace(Long productionOrderId)
+            throws ResourceNotFoundException, BusinessException {
+        requireLuisFelipeOpv(productionOrderId);
+        return getWorkspace(productionOrderId);
+    }
+
+    /**
+     * Recibe en la reserva las piezas pendientes que indique cada línea (las primeras de la línea), sin
+     * escoger pieza por pieza. La orden se puede recibir en varias tandas hasta completarla.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> receiveItemQuantities(Long productionOrderId, WarehouseItemReceiptRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        requireLuisFelipeOpv(productionOrderId);
+        List<WarehouseItemReceiptRequest.Line> lines = request == null || request.getLines() == null
+                ? List.of()
+                : request.getLines().stream()
+                        .filter(l -> l != null && l.getProductionOrderItemId() != null && l.getQuantity() > 0)
+                        .collect(Collectors.toList());
+        if (lines.isEmpty()) {
+            throw new BusinessException("Indique cuántas piezas recibe.");
+        }
+        ProductionOrderEntity po = productionOrderRepository.findByIdForUpdate(productionOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
+        ensureUnitsForOrder(po);
+        List<WarehouseUnitReceiptRequest.UnitUpdate> updates = new ArrayList<>();
+        for (WarehouseItemReceiptRequest.Line line : lines) {
+            String sizeKey = normalizeUnitSizeKey(line.getSizeKey());
+            List<ProductionOrderWarehouseUnitEntity> pending = unitRepository
+                    .findByProductionOrderItemIdOrderBySizeKeyAscUnitSeqAsc(line.getProductionOrderItemId()).stream()
+                    .filter(u -> Objects.equals(u.getProductionOrderId(), productionOrderId))
+                    .filter(u -> STATUS_PENDING.equals(normalizeReceiptStatus(u.getReceiptStatus())))
+                    .filter(u -> normalizeUnitSizeKey(u.getSizeKey()).equals(sizeKey))
+                    .collect(Collectors.toList());
+            if (pending.size() < line.getQuantity()) {
+                throw new BusinessException("En esa línea solo quedan " + pending.size()
+                        + " pieza(s) por recibir y se pidieron " + line.getQuantity() + ".");
+            }
+            pending.subList(0, line.getQuantity()).forEach(u -> updates.add(
+                    WarehouseUnitReceiptRequest.UnitUpdate.builder()
+                            .unitId(u.getId())
+                            .receiptStatus(STATUS_RECEIVED)
+                            .build()));
+        }
+        return updateUnitsReceipt(productionOrderId, WarehouseUnitReceiptRequest.builder().units(updates).build());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public WarehouseWorkspaceResponse getWorkspace(Long productionOrderId) throws ResourceNotFoundException {
         ProductionOrderEntity po = productionOrderRepository.findById(productionOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", productionOrderId));
@@ -279,12 +452,87 @@ public class ProductionOrderWarehouseUnitService {
         if (pending > 0) {
             throw new BusinessException("Aún hay " + pending + " pieza(s) pendientes de recepción. No se puede cerrar la orden en bodega.");
         }
-        po.setWarehouseReceiptClosedAt(LocalDateTime.now());
+        LocalDateTime closedAt = LocalDateTime.now();
+        int released = isReserveOrder(po) ? releaseReservedUnits(po, closedAt) : 0;
+        po.setWarehouseReceiptClosedAt(closedAt);
         productionOrderRepository.save(po);
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("releasedFromReserve", released);
         result.put("message", "Recepción en bodega cerrada para la orden " + po.getCode());
         result.put("warehouseReceiptClosedAt", po.getWarehouseReceiptClosedAt());
         return result;
+    }
+
+    private static boolean isReserveOrder(ProductionOrderEntity po) {
+        return po != null && ProductionPlanningConstants.isLuisFelipeReserveOrder(
+                po.getSellerName(), po.getOrderType(), po.getCode());
+    }
+
+    /**
+     * Cierre de recepción de una OPV/OPC de Luis Felipe: las piezas recibidas ya se entregan al
+     * vendedor, así que salen de la reserva (no quedan en stock ni en Devoluciones). Idempotente por
+     * pieza. Las piezas recibidas antes de existir la reserva viven en Bodega PT y salen de ahí.
+     *
+     * @return piezas liberadas en esta llamada
+     */
+    private int releaseReservedUnits(ProductionOrderEntity po, LocalDateTime now)
+            throws BusinessException, ResourceNotFoundException {
+        LocationEntity reserve = productInventoryService.getOrCreateReserveLocation();
+        LocationEntity bodega = getFinishedGoodsLocation();
+        Long userId = securityUtil.getCurrentUserId();
+        Map<Long, ProductionOrderItemEntity> itemsById = productionOrderItemRepository
+                .findByProductionOrderId(po.getId()).stream()
+                .collect(Collectors.toMap(ProductionOrderItemEntity::getId, i -> i, (a, b) -> a));
+        int released = 0;
+        for (ProductionOrderWarehouseUnitEntity unit : unitRepository
+                .findByProductionOrderIdOrderByProductionOrderItemIdAscSizeKeyAscUnitSeqAsc(po.getId())) {
+            if (!STATUS_RECEIVED.equals(normalizeReceiptStatus(unit.getReceiptStatus()))) {
+                continue;
+            }
+            ProductionOrderItemEntity item = itemsById.get(unit.getProductionOrderItemId());
+            if (item == null || item.getProductId() == null) {
+                continue;
+            }
+            if (releasedFrom(unit, item, reserve) || releasedFrom(unit, item, bodega)) {
+                continue;
+            }
+            String sizeKey = unit.getSizeKey() == null || unit.getSizeKey().isBlank() ? null : unit.getSizeKey();
+            boolean inReserve = productInventoryService
+                    .getAvailableQuantity(item.getProductId(), reserve.getId(), item.getColorId(), sizeKey)
+                    .compareTo(BigDecimal.ONE) >= 0;
+            LocationEntity from = inReserve ? reserve : bodega;
+            productInventoryService.decrementInventory(
+                    item.getProductId(),
+                    from.getId(),
+                    item.getColorId(),
+                    BigDecimal.ONE,
+                    "PRODUCTION_ORDER_WH_UNIT",
+                    unit.getId(),
+                    po.getCode() + "-WH-UNIT-" + unit.getId(),
+                    "Entrega a vendedor al cerrar recepción: " + unit.getUnitLabel(),
+                    sizeKey,
+                    ProductInventoryService.MOVEMENT_RESERVE_RELEASE,
+                    unit.getId());
+            if (unit.getShippedAt() == null) {
+                unit.setShippedAt(now);
+                unit.setShippedBy(userId);
+                unit.setShipmentRefType(REF_VENDOR_DELIVERY);
+                unitRepository.save(unit);
+            }
+            released++;
+        }
+        return released;
+    }
+
+    private boolean releasedFrom(
+            ProductionOrderWarehouseUnitEntity unit, ProductionOrderItemEntity item, LocationEntity location) {
+        return productInventoryService.hasProductKardexMovement(
+                "PRODUCTION_ORDER_WH_UNIT",
+                unit.getId(),
+                ProductInventoryService.MOVEMENT_RESERVE_RELEASE,
+                item.getProductId(),
+                location.getId(),
+                item.getColorId());
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -457,37 +705,47 @@ public class ProductionOrderWarehouseUnitService {
         }
 
         String receiptRefNumber = po.getCode() + "-WH-UNIT-" + unit.getId();
+        // OPV/OPC de Luis Felipe ya están vendidas: entran a la reserva y no a Bodega PT.
+        // La pieza de una venta en línea ya anulada o devuelta no tiene a quién despacharse: es stock
+        // libre que vuelve por una anulación, así que entra a Devoluciones.
+        boolean closedSale = isClosedOnlineSale(item.getOnlineSaleId());
+        // OPI (orden interna): la pieza se hizo para un colaborador y el ENVI interno sale solo de Devoluciones.
+        boolean internalOpi = "INTERNA".equalsIgnoreCase(po.getOrderType() == null ? "" : po.getOrderType().trim());
+        LocationEntity target = isReserveOrder(po)
+                ? productInventoryService.getOrCreateReserveLocation()
+                : ((closedSale || internalOpi) ? returnsWarehouseLocator.find().orElse(bodega) : bodega);
         boolean alreadyRecorded = productInventoryService.hasProductKardexMovement(
                 "PRODUCTION_ORDER_WH_UNIT",
                 unit.getId(),
                 "PRODUCTION_ENTRY",
                 item.getProductId(),
-                bodega.getId(),
+                target.getId(),
                 item.getColorId(),
                 receiptRefNumber);
 
         if (!alreadyRecorded) {
             BigDecimal before = productInventoryService
-                    .getInventoryByProductAndLocationAndColor(item.getProductId(), bodega.getId(), item.getColorId())
+                    .getInventoryByProductAndLocationAndColor(item.getProductId(), target.getId(), item.getColorId())
                     .getQuantity();
             productInventoryService.incrementInventory(
                     item.getProductId(),
-                    bodega.getId(),
+                    target.getId(),
                     item.getColorId(),
                     BigDecimal.ONE,
                     null,
                     "PRODUCTION_ORDER_WH_UNIT",
                     unit.getId(),
                     receiptRefNumber,
-                    "Ingreso pieza bodega PT",
+                    closedSale ? "Ingreso pieza de venta anulada a Devoluciones"
+                            : (internalOpi ? "Ingreso pieza OPI a Devoluciones" : "Ingreso pieza bodega PT"),
                     sizeKey != null && !sizeKey.isBlank() ? sizeKey : null
             );
             BigDecimal after = productInventoryService
-                    .getInventoryByProductAndLocationAndColor(item.getProductId(), bodega.getId(), item.getColorId())
+                    .getInventoryByProductAndLocationAndColor(item.getProductId(), target.getId(), item.getColorId())
                     .getQuantity();
             productInventoryService.recordMovement(
                     item.getProductId(),
-                    bodega.getId(),
+                    target.getId(),
                     item.getColorId(),
                     "PRODUCTION_ENTRY",
                     BigDecimal.ONE,
@@ -679,6 +937,7 @@ public class ProductionOrderWarehouseUnitService {
                 .receivedUnits(received)
                 .rejectedUnits(rejected)
                 .shippedUnits(shipped)
+                .complete(isReceiptComplete(units.size(), received))
                 .receiptClosed(po.getWarehouseReceiptClosedAt() != null)
                 .warehouseReceiptClosedAt(po.getWarehouseReceiptClosedAt())
                 .build();

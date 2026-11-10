@@ -47,6 +47,10 @@ public class ProductShipmentDetailEntity {
     @Column(name = "unit_price", precision = 12, scale = 2)
     private BigDecimal unitPrice;
 
+    /** Cantidad que propuso la sugerencia de reposición (null si la línea no viene de una sugerencia). */
+    @Column(name = "suggested_quantity", precision = 12, scale = 3)
+    private BigDecimal suggestedQuantity;
+
     @Column(name = "quantity_received", precision = 12, scale = 3)
     private BigDecimal quantityReceived;
 
