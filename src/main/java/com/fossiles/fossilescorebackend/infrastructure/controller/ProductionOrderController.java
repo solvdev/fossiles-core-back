@@ -282,6 +282,10 @@ public class ProductionOrderController {
             @PathVariable Long id,
             @Valid @RequestBody com.fossiles.fossilescorebackend.application.dto.request.OpcShipmentGenerateRequest request)
             throws ResourceNotFoundException, BusinessException {
+        // Con un parcial ya enviado, generar «desde la orden» manda solo lo que falta (no la orden completa otra vez).
+        if (productionOrderPartialReleaseService.hasActivePartialShipment(id)) {
+            return ResponseEntity.ok(productionOrderPartialReleaseService.generateRemainderShipment(id, request));
+        }
         return ResponseEntity.ok(productDistributionService.generateShipmentFromProductionOrder(id, request));
     }
 
