@@ -37,7 +37,8 @@ import java.util.function.Function;
  *
  * <p>Lectura: un rango de fechas se resuelve con tres consultas (ventas, productos y datos contables), sin facturas ni
  * vista de bodega. Escritura: solo los campos de {@link OnlineSaleAccountingEntity}; cualquier otro nombre de campo se
- * rechaza, así la venta (todo hasta «Total con envío») no se puede cambiar desde aquí.
+ * rechaza. Hasta «Total con envío» nada se edita; desde ahí todo se puede corregir en el libro (columnas propias de
+ * online_sale_accounting: la venta, el inventario y Ventas en línea no cambian).
  */
 @Service
 @RequiredArgsConstructor
@@ -97,6 +98,29 @@ public class OnlineSaleLedgerService {
                 OnlineSaleAccountingEntity::setDepositNote, 500, "Observación del depósito"));
         FIELDS.put("shortageNote", text(OnlineSaleAccountingEntity::getShortageNote,
                 OnlineSaleAccountingEntity::setShortageNote, 500, "Detalle del faltante"));
+        // Desde «Total con envío»: correcciones del libro a datos de la venta (vacío = el dato de la venta).
+        FIELDS.put("accountingTotal", money(OnlineSaleAccountingEntity::getTotalAmount,
+                OnlineSaleAccountingEntity::setTotalAmount, false, "Total con envío"));
+        FIELDS.put("accountingShipping", money(OnlineSaleAccountingEntity::getShippingCost,
+                OnlineSaleAccountingEntity::setShippingCost, false, "Envío"));
+        FIELDS.put("accountingNet", money(OnlineSaleAccountingEntity::getNetAmount,
+                OnlineSaleAccountingEntity::setNetAmount, true, "Sin envío"));
+        FIELDS.put("accountingCarrier", choice(OnlineSaleAccountingEntity::getCarrier,
+                OnlineSaleAccountingEntity::setCarrier, 50, "Transporte", OnlineSaleLedgerService::normalizeCarrier));
+        FIELDS.put("accountingSaleDate", date(OnlineSaleAccountingEntity::getSaleDate,
+                OnlineSaleAccountingEntity::setSaleDate, "Fecha"));
+        FIELDS.put("accountingSocialNetwork", choice(OnlineSaleAccountingEntity::getSocialNetwork,
+                OnlineSaleAccountingEntity::setSocialNetwork, 50, "Red social", OnlineSaleLedgerService::normalizeSocial));
+        FIELDS.put("accountingEmail", text(OnlineSaleAccountingEntity::getEmail,
+                OnlineSaleAccountingEntity::setEmail, 200, "Correo"));
+        FIELDS.put("accountingSalesperson", text(OnlineSaleAccountingEntity::getSalesperson,
+                OnlineSaleAccountingEntity::setSalesperson, 150, "Vendedor"));
+        FIELDS.put("accountingGuideNumber", text(OnlineSaleAccountingEntity::getGuideNumber,
+                OnlineSaleAccountingEntity::setGuideNumber, 100, "Guía"));
+        FIELDS.put("accountingShipmentNumber", text(OnlineSaleAccountingEntity::getShipmentNumber,
+                OnlineSaleAccountingEntity::setShipmentNumber, 100, "No. de envío"));
+        FIELDS.put("accountingStatus", choice(OnlineSaleAccountingEntity::getStatus,
+                OnlineSaleAccountingEntity::setStatus, 30, "Estado", OnlineSaleLedgerService::normalizeStatus));
         FIELDS.put("reviewed", new FieldWriter() {
             @Override
             public boolean isEmpty(OnlineSaleAccountingEntity a) {
@@ -318,9 +342,136 @@ public class OnlineSaleLedgerService {
                     .accountingUpdatedAt(a.getUpdatedAt())
                     .locked(Boolean.TRUE.equals(a.getLocked()))
                     .lockedAt(a.getLockedAt())
-                    .lockedByName(a.getLockedByName());
+                    .lockedByName(a.getLockedByName())
+                    .accountingTotal(a.getTotalAmount())
+                    .accountingShipping(a.getShippingCost())
+                    .accountingNet(a.getNetAmount())
+                    .accountingCarrier(a.getCarrier())
+                    .accountingSaleDate(a.getSaleDate())
+                    .accountingSocialNetwork(a.getSocialNetwork())
+                    .accountingEmail(a.getEmail())
+                    .accountingSalesperson(a.getSalesperson())
+                    .accountingGuideNumber(a.getGuideNumber())
+                    .accountingShipmentNumber(a.getShipmentNumber())
+                    .accountingStatus(a.getStatus());
         }
-        return row.build();
+        LedgerRow built = row.build();
+        if (a != null) {
+            applyOverrides(built, a);
+        }
+        return built;
+    }
+
+    /**
+     * Desde «Total con envío» manda lo corregido en el libro: los campos de la fila pasan a ser el valor efectivo
+     * (así comisiones, totales y Excel usan lo corregido) y el dato de la venta queda en {@code saleOriginal}.
+     */
+    private static void applyOverrides(LedgerRow row, OnlineSaleAccountingEntity a) {
+        Map<String, Object> original = new LinkedHashMap<>();
+        boolean amountsChanged = false;
+        if (a.getTotalAmount() != null) {
+            original.put("totalAmount", row.getTotalAmount());
+            row.setTotalAmount(a.getTotalAmount());
+            amountsChanged = true;
+        }
+        if (a.getShippingCost() != null) {
+            original.put("shippingCost", row.getShippingCost());
+            row.setShippingCost(a.getShippingCost());
+            amountsChanged = true;
+        }
+        if (a.getNetAmount() != null) {
+            original.put("netAmount", row.getNetAmount());
+            row.setNetAmount(a.getNetAmount());
+        } else if (amountsChanged) {
+            // Sin envío no anotado: es la fórmula total − envío con los montos ya corregidos.
+            original.put("netAmount", row.getNetAmount());
+            row.setNetAmount(nz(row.getTotalAmount()).subtract(nz(row.getShippingCost())));
+        }
+        if (a.getCarrier() != null) {
+            original.put("carrier", row.getCarrier());
+            row.setCarrier(a.getCarrier());
+        }
+        if (a.getSaleDate() != null) {
+            original.put("saleDate", row.getSaleDate());
+            row.setSaleDate(a.getSaleDate());
+        }
+        if (a.getSocialNetwork() != null) {
+            original.put("socialNetwork", row.getSocialNetwork());
+            row.setSocialNetwork(a.getSocialNetwork());
+        }
+        if (a.getEmail() != null) {
+            original.put("email", row.getEmail());
+            row.setEmail(a.getEmail());
+        }
+        if (a.getSalesperson() != null) {
+            original.put("salesperson", row.getSalesperson());
+            row.setSalesperson(a.getSalesperson());
+        }
+        if (a.getGuideNumber() != null) {
+            original.put("guideNumber", row.getGuideNumber());
+            row.setGuideNumber(a.getGuideNumber());
+        }
+        if (a.getShipmentNumber() != null) {
+            original.put("shipmentNumber", row.getShipmentNumber());
+            row.setShipmentNumber(a.getShipmentNumber());
+        }
+        if (a.getStatus() != null) {
+            original.put("status", row.getStatus());
+            row.setStatus(a.getStatus());
+        }
+        if (!original.isEmpty()) {
+            row.setSaleOriginal(original);
+        }
+    }
+
+    // ───────── valores con lista ─────────
+
+    /** Texto sin tildes, en mayúsculas y con espacios simples, para reconocer lo que se escribe a mano o se pega. */
+    static String foldUpper(String value) {
+        String t = java.text.Normalizer.normalize(clean(value), java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "");
+        return t.toUpperCase(Locale.ROOT).replace('_', ' ').replaceAll("\\s+", " ").trim();
+    }
+
+    static String normalizeCarrier(String raw) {
+        String t = foldUpper(raw);
+        if (t.startsWith("MOTO")) return "MOTORISTA";
+        if (t.startsWith("FORZA")) return "FORZA";
+        if (t.startsWith("GUATEX")) return "GUATEX";
+        return t.replace(' ', '_');
+    }
+
+    static String normalizeSocial(String raw) {
+        String t = foldUpper(raw);
+        if (t.startsWith("WHATS") || t.equals("WA") || t.equals("WSP")) return "WHATSAPP";
+        if (t.startsWith("FACE") || t.equals("FB")) return "FACEBOOK";
+        if (t.startsWith("INSTA") || t.equals("IG")) return "INSTAGRAM";
+        if (t.startsWith("TIK")) return "TIKTOK";
+        if (t.contains("WEB") || t.startsWith("PAGINA")) return "WEB";
+        return t.replace(' ', '_');
+    }
+
+    private static final Map<String, String> STATUS_ALIASES = Map.ofEntries(
+            Map.entry("PENDIENTE", "PENDIENTE"),
+            Map.entry("EN PRODUCCION", "EN_PRODUCCION"),
+            Map.entry("PRODUCCION", "EN_PRODUCCION"),
+            Map.entry("PRODUCIDO", "PRODUCIDO"),
+            Map.entry("ENVIADO", "ENVIADO"),
+            Map.entry("ENTREGADO", "ENTREGADO"),
+            Map.entry("CANCELADO", "CANCELADO"),
+            Map.entry("CANCELADA", "CANCELADO"),
+            Map.entry("ANULADO", "ANULADA"),
+            Map.entry("ANULADA", "ANULADA"),
+            Map.entry("DEVOLUCION", "DEVOLUCION"),
+            Map.entry("DEVUELTO", "DEVOLUCION"));
+
+    static String normalizeStatus(String raw) {
+        String code = STATUS_ALIASES.get(foldUpper(raw));
+        if (code == null) {
+            throw new IllegalArgumentException("Estado: «" + raw + "» no es un estado. Use Pendiente, En producción, "
+                    + "Producido, Enviado, Entregado, Cancelado, Anulado o Devolución.");
+        }
+        return code;
     }
 
     public static String paymentLabel(String paymentMethod) {
@@ -673,6 +824,33 @@ public class OnlineSaleLedgerService {
                     throw new IllegalArgumentException(label + ": máximo " + max + " caracteres.");
                 }
                 setter.accept(a, text.isEmpty() ? null : text);
+            }
+        };
+    }
+
+    /** Texto de una lista (transporte, red, estado): se guarda ya normalizado. */
+    private static FieldWriter choice(Function<OnlineSaleAccountingEntity, String> getter,
+                                      BiConsumer<OnlineSaleAccountingEntity, String> setter, int max, String label,
+                                      Function<String, String> normalizer) {
+        return new FieldWriter() {
+            @Override
+            public boolean isEmpty(OnlineSaleAccountingEntity a) {
+                String current = getter.apply(a);
+                return current == null || current.isBlank();
+            }
+
+            @Override
+            public void write(OnlineSaleAccountingEntity a, Object raw) {
+                String text = raw == null ? "" : raw.toString().trim();
+                if (text.isEmpty()) {
+                    setter.accept(a, null);
+                    return;
+                }
+                String value = normalizer.apply(text);
+                if (value.length() > max) {
+                    throw new IllegalArgumentException(label + ": máximo " + max + " caracteres.");
+                }
+                setter.accept(a, value);
             }
         };
     }

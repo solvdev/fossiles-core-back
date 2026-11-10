@@ -17,13 +17,17 @@ public final class OnlineSaleLedgerDtos {
     private OnlineSaleLedgerDtos() {
     }
 
-    /** Una venta como fila del libro: datos de la venta (solo lectura) + lo que anota Contabilidad. */
+    /**
+     * Una venta como fila del libro: datos de la venta + lo que anota Contabilidad.
+     * Desde «Total con envío» los campos ya traen el valor efectivo (lo del libro si se corrigió, si no el de la venta);
+     * los {@code accounting*} dicen qué se corrigió y {@code saleOriginal} guarda el dato original de la venta.
+     */
     @Data
     @Builder
     @NoArgsConstructor
     @AllArgsConstructor
     public static class LedgerRow {
-        // ── De la venta: no se editan desde el libro ──
+        // ── De la venta (hasta «Total con envío» no se editan; desde ahí, valor efectivo) ──
         private Long id;
         private String saleNumber;
         private String customerName;
@@ -69,6 +73,21 @@ public final class OnlineSaleLedgerDtos {
         private String shortageNote;
         private Boolean reviewed;
         private LocalDateTime accountingUpdatedAt;
+
+        // ── Correcciones del libro a datos de la venta: vacío = no se corrigió ──
+        private BigDecimal accountingTotal;
+        private BigDecimal accountingShipping;
+        private BigDecimal accountingNet;
+        private String accountingCarrier;
+        private LocalDate accountingSaleDate;
+        private String accountingSocialNetwork;
+        private String accountingEmail;
+        private String accountingSalesperson;
+        private String accountingGuideNumber;
+        private String accountingShipmentNumber;
+        private String accountingStatus;
+        /** Dato original de la venta, solo de los campos corregidos (clave = nombre del campo efectivo). */
+        private Map<String, Object> saleOriginal;
 
         // ── Bloqueo: una línea bloqueada no admite cambios ──
         private Boolean locked;
