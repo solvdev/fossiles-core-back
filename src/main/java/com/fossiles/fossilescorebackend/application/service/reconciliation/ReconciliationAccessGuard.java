@@ -77,6 +77,18 @@ public class ReconciliationAccessGuard {
         return false;
     }
 
+    /** true solo para roles de administrador (sin mirar permisos). */
+    public boolean isAdmin() {
+        UserEntity user = currentUser();
+        return user != null && hasRoleToken(user, "ADMIN");
+    }
+
+    /** Nombre de usuario de quien hace la petición, para dejar constancia de quién hizo algo. */
+    public String currentUsername() {
+        UserEntity user = currentUser();
+        return user == null ? null : user.getUsername();
+    }
+
     public Long currentUserId() {
         return securityUtil.getCurrentUserId();
     }

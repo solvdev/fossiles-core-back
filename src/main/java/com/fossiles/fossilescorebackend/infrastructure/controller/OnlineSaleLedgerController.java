@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.BulkUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerResponse;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerRow;
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LockRequest;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.onlineledger.OnlineSaleLedgerService;
@@ -50,6 +51,12 @@ public class OnlineSaleLedgerController {
     public ResponseEntity<List<LedgerRow>> bulk(@RequestBody BulkUpdateRequest request) throws BusinessException {
         service.assertCanEdit();
         return ResponseEntity.ok(service.bulkUpdate(request));
+    }
+
+    /** Bloquea o desbloquea líneas. Bloquear: quien edita el libro. Desbloquear: solo administradores. */
+    @PostMapping("/lock")
+    public ResponseEntity<List<LedgerRow>> lock(@RequestBody LockRequest request) throws BusinessException {
+        return ResponseEntity.ok(service.setLocked(request));
     }
 
     @GetMapping("/export")

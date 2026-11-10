@@ -67,6 +67,11 @@ public final class OnlineSaleLedgerDtos {
         private String shortageNote;
         private Boolean reviewed;
         private LocalDateTime accountingUpdatedAt;
+
+        // ── Bloqueo: una línea bloqueada no admite cambios ──
+        private Boolean locked;
+        private LocalDateTime lockedAt;
+        private String lockedByName;
     }
 
     @Data
@@ -81,6 +86,10 @@ public final class OnlineSaleLedgerDtos {
         /** true si la búsqueda se cortó en el máximo de filas. */
         private boolean truncated;
         private boolean canEdit;
+        /** true si el usuario puede bloquear líneas ya revisadas. */
+        private boolean canLock;
+        /** true si el usuario puede desbloquear (solo administradores). */
+        private boolean canUnlock;
         private BigDecimal commissionRate;
         private BigDecimal vatRate;
     }
@@ -94,6 +103,16 @@ public final class OnlineSaleLedgerDtos {
         private Map<String, Object> changes;
         /** true = solo llena los campos que están vacíos (no pisa lo ya anotado). */
         private boolean onlyEmpty;
+    }
+
+    /** Bloquear o desbloquear varias líneas del libro. */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class LockRequest {
+        private List<Long> saleIds;
+        /** true = bloquear, false = desbloquear. */
+        private boolean locked;
     }
 
     /** Cálculo de comisión de un vendedor, con las mismas líneas de la hoja «Cálculo comisiones x vendedor». */

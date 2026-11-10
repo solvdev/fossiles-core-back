@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.application.service.onlineledger;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.BulkUpdateRequest;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerResponse;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerRow;
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LockRequest;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.SellerCommission;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -13,6 +14,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Online
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleAccountingRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineSaleRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.TypedQuery;
@@ -24,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.function.BiConsumer;
@@ -124,6 +127,19 @@ public class OnlineSaleLedgerService {
         return guard.hasAny(ReconciliationAccessGuard.PERM_RECONCILE);
     }
 
+    /** Bloquear líneas revisadas: quien puede editar el libro. */
+    public boolean canLock() {
+        return canEdit();
+    }
+
+    /**
+     * Desbloquear es solo de administradores: si quien edita pudiera desbloquear, el bloqueo no impediría volver a
+     * modificar lo ya revisado.
+     */
+    public boolean canUnlock() {
+        return guard.isAdmin();
+    }
+
     public void assertCanView() throws BusinessException {
         if (!canView()) {
             throw new BusinessException("No tiene permiso para ver el libro de ventas en línea.");
@@ -187,6 +203,8 @@ public class OnlineSaleLedgerService {
                 .rows(toRows(sales))
                 .truncated(truncated)
                 .canEdit(canEdit())
+                .canLock(canLock())
+                .canUnlock(canUnlock())
                 .commissionRate(COMMISSION_RATE)
                 .vatRate(VAT_RATE)
                 .build();
@@ -275,7 +293,8 @@ public class OnlineSaleLedgerService {
                 .status(s.getStatus())
                 .observations(s.getObservations())
                 .dispatchedDate(s.getDispatchedAt() == null ? null : s.getDispatchedAt().toLocalDate())
-                .reviewed(false);
+                .reviewed(false)
+                .locked(false);
         if (a != null) {
             row.realShippingCost(a.getRealShippingCost())
                     .carrierCommission(a.getCarrierCommission())
@@ -291,7 +310,10 @@ public class OnlineSaleLedgerService {
                     .shortageAmount(a.getShortageAmount())
                     .shortageNote(a.getShortageNote())
                     .reviewed(Boolean.TRUE.equals(a.getReviewed()))
-                    .accountingUpdatedAt(a.getUpdatedAt());
+                    .accountingUpdatedAt(a.getUpdatedAt())
+                    .locked(Boolean.TRUE.equals(a.getLocked()))
+                    .lockedAt(a.getLockedAt())
+                    .lockedByName(a.getLockedByName());
         }
         return row.build();
     }
@@ -331,9 +353,85 @@ public class OnlineSaleLedgerService {
         if (sales.size() != ids.size()) {
             throw new BusinessException("Alguna de las ventas seleccionadas ya no existe. Actualice la vista.");
         }
+        // Se revisa antes de escribir nada: con una sola línea bloqueada no se aplica el cambio a ninguna.
+        long lockedCount = 0;
+        for (int i = 0; i < ids.size(); i += BATCH) {
+            lockedCount += accountingRepository.findByOnlineSaleIdIn(ids.subList(i, Math.min(ids.size(), i + BATCH)))
+                    .stream().filter(a -> Boolean.TRUE.equals(a.getLocked())).count();
+        }
+        if (lockedCount > 0) {
+            throw new BusinessException(lockedCount == 1
+                    ? "Una de las ventas seleccionadas está bloqueada y no se puede modificar. Quítela de la selección."
+                    : lockedCount + " de las ventas seleccionadas están bloqueadas y no se pueden modificar. "
+                    + "Quítelas de la selección.");
+        }
         Long userId = guard.currentUserId();
         for (OnlineSaleEntity sale : sales) {
             upsert(sale.getId(), request.getChanges(), request.isOnlyEmpty(), userId);
+        }
+        sales.sort(Comparator.comparing(OnlineSaleEntity::getSaleDate, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(OnlineSaleEntity::getId));
+        return toRows(sales);
+    }
+
+    /**
+     * Bloquea o desbloquea líneas. Bloquear una línea sin datos contables crea su fila (queda bloqueada tal cual,
+     * con las celdas vacías). Lo que ya está en el estado pedido no se toca: conserva quién y cuándo la bloqueó.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public List<LedgerRow> setLocked(LockRequest request) throws BusinessException {
+        if (request == null || request.getSaleIds() == null || request.getSaleIds().isEmpty()) {
+            throw new BusinessException("Seleccione al menos una venta.");
+        }
+        boolean lock = request.isLocked();
+        if (lock && !canLock()) {
+            throw new BusinessException("Solo Administración y Contabilidad pueden bloquear líneas del libro.");
+        }
+        if (!lock && !canUnlock()) {
+            throw new BusinessException("Solo un administrador puede desbloquear líneas del libro.");
+        }
+        List<Long> ids = request.getSaleIds().stream().filter(Objects::nonNull).distinct().toList();
+        if (ids.size() > MAX_ROWS) {
+            throw new BusinessException("Máximo " + MAX_ROWS + " ventas por bloqueo.");
+        }
+        List<OnlineSaleEntity> sales = new ArrayList<>();
+        Map<Long, OnlineSaleAccountingEntity> existing = new HashMap<>();
+        for (int i = 0; i < ids.size(); i += BATCH) {
+            List<Long> batch = ids.subList(i, Math.min(ids.size(), i + BATCH));
+            sales.addAll(saleRepository.findAllById(batch));
+            for (OnlineSaleAccountingEntity a : accountingRepository.findByOnlineSaleIdIn(batch)) {
+                existing.put(a.getOnlineSaleId(), a);
+            }
+        }
+        if (sales.size() != ids.size()) {
+            throw new BusinessException("Alguna de las ventas seleccionadas ya no existe. Actualice la vista.");
+        }
+        Long userId = guard.currentUserId();
+        String username = guard.currentUsername();
+        LocalDateTime now = GuatemalaDateTime.now();
+        List<OnlineSaleAccountingEntity> toSave = new ArrayList<>();
+        for (Long id : ids) {
+            OnlineSaleAccountingEntity a = existing.get(id);
+            if (a == null) {
+                if (!lock) {
+                    continue;
+                }
+                a = OnlineSaleAccountingEntity.builder().onlineSaleId(id).reviewed(false).locked(false).build();
+            }
+            if (Boolean.TRUE.equals(a.getLocked()) == lock) {
+                continue;
+            }
+            a.setLocked(lock);
+            a.setLockedAt(lock ? now : null);
+            a.setLockedBy(lock ? userId : null);
+            a.setLockedByName(lock ? username : null);
+            a.setUpdatedBy(userId);
+            toSave.add(a);
+        }
+        try {
+            accountingRepository.saveAllAndFlush(toSave);
+        } catch (DataIntegrityViolationException e) {
+            throw new BusinessException("Otra persona estaba guardando en esas ventas al mismo tiempo. Intente de nuevo.");
         }
         sales.sort(Comparator.comparing(OnlineSaleEntity::getSaleDate, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(OnlineSaleEntity::getId));
@@ -363,7 +461,8 @@ public class OnlineSaleLedgerService {
      * Crea o actualiza la fila contable. Dos celdas de la misma venta guardadas a la vez pueden intentar crear la
      * fila al mismo tiempo: la restricción única rechaza la segunda y aquí se reintenta sobre la fila ya creada.
      */
-    private OnlineSaleAccountingEntity upsert(Long saleId, Map<String, Object> changes, boolean onlyEmpty, Long userId) {
+    private OnlineSaleAccountingEntity upsert(Long saleId, Map<String, Object> changes, boolean onlyEmpty, Long userId)
+            throws BusinessException {
         try {
             return applyAndSave(saleId, changes, onlyEmpty, userId);
         } catch (DataIntegrityViolationException e) {
@@ -371,9 +470,15 @@ public class OnlineSaleLedgerService {
         }
     }
 
-    private OnlineSaleAccountingEntity applyAndSave(Long saleId, Map<String, Object> changes, boolean onlyEmpty, Long userId) {
+    private OnlineSaleAccountingEntity applyAndSave(Long saleId, Map<String, Object> changes, boolean onlyEmpty, Long userId)
+            throws BusinessException {
         OnlineSaleAccountingEntity a = accountingRepository.findByOnlineSaleId(saleId)
                 .orElseGet(() -> OnlineSaleAccountingEntity.builder().onlineSaleId(saleId).reviewed(false).build());
+        if (Boolean.TRUE.equals(a.getLocked())) {
+            throw new BusinessException("Esta línea está bloqueada"
+                    + (a.getLockedByName() == null ? "" : " por " + a.getLockedByName())
+                    + " y no se puede modificar. Un administrador puede desbloquearla.");
+        }
         boolean touched = false;
         for (Map.Entry<String, Object> change : changes.entrySet()) {
             FieldWriter writer = FIELDS.get(change.getKey());
