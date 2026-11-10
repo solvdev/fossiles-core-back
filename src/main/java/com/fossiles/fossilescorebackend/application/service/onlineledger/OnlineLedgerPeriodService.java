@@ -26,7 +26,7 @@ import java.util.*;
 /**
  * Periodos de revisión del libro de ventas en línea (apertura y cierre por rango o mes).
  *
- * <p>Abrir registra que Contabilidad empieza a revisar el rango; no es obligatorio para editar. Cerrar bloquea todas
+ * <p>Abrir es obligatorio para editar: el libro solo admite cambios en ventas de un periodo abierto. Cerrar bloquea todas
  * las ventas con fecha de venta dentro del rango (crea su fila contable si no la tenía) y, mientras siga cerrado, el
  * libro rechaza cambios también en ventas que se registren después con fecha dentro del periodo. Reabrir es solo de
  * administradores y desbloquea únicamente lo que bloqueó el cierre.
@@ -75,6 +75,12 @@ public class OnlineLedgerPeriodService {
     public List<PeriodRow> overlapping(LocalDate from, LocalDate to) {
         if (from == null || to == null) return List.of();
         return periodRepository.findOverlapping(from, to).stream().map(p -> toRow(p, null)).toList();
+    }
+
+    /** Todos los periodos (abiertos y cerrados) que se cruzan con el rango. */
+    public List<OnlineLedgerPeriodEntity> between(LocalDate from, LocalDate to) {
+        if (from == null || to == null) return List.of();
+        return periodRepository.findOverlapping(from, to);
     }
 
     /** Periodos cerrados que se cruzan con el rango (para marcar filas y rechazar cambios). */

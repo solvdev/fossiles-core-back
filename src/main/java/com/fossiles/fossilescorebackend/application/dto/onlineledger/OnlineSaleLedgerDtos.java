@@ -95,6 +95,8 @@ public final class OnlineSaleLedgerDtos {
         private String lockedByName;
         /** true si la venta cae en un periodo de revisión cerrado (bloqueada aunque no tenga fila contable). */
         private Boolean periodClosed;
+        /** true si la venta cae en un periodo de revisión abierto: solo así se edita en el libro. */
+        private Boolean periodOpen;
         private String periodLabel;
     }
 

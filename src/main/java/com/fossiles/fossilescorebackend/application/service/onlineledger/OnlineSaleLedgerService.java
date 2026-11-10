@@ -259,7 +259,8 @@ public class OnlineSaleLedgerService {
                 accountingBySale.put(a.getOnlineSaleId(), a);
             }
         }
-        // Periodos cerrados que tocan estas ventas: sus filas se ven bloqueadas aunque no tengan fila contable.
+        // Periodos que tocan estas ventas. Cerrado: la fila se ve bloqueada aunque no tenga fila contable.
+        // Abierto: la fila se puede editar. Sin periodo: solo lectura hasta que se abra la revisión.
         LocalDate min = null;
         LocalDate max = null;
         for (OnlineSaleEntity s : sales) {
@@ -268,21 +269,25 @@ public class OnlineSaleLedgerService {
             if (min == null || d.isBefore(min)) min = d;
             if (max == null || d.isAfter(max)) max = d;
         }
-        List<OnlineLedgerPeriodEntity> closed = periodService.closedBetween(min, max);
+        List<OnlineLedgerPeriodEntity> periods = periodService.between(min, max);
         List<LedgerRow> rows = new ArrayList<>(sales.size());
         for (OnlineSaleEntity s : sales) {
             LedgerRow row = toRow(s, itemsBySale.getOrDefault(s.getId(), List.of()), accountingBySale.get(s.getId()));
-            for (OnlineLedgerPeriodEntity p : closed) {
-                if (p.contains(s.getSaleDate())) {
-                    row.setPeriodClosed(true);
-                    row.setPeriodLabel(p.getLabel());
-                    if (!Boolean.TRUE.equals(row.getLocked())) {
-                        row.setLocked(true);
-                        row.setLockedAt(p.getClosedAt());
-                        row.setLockedByName(p.getClosedByName());
-                    }
+            row.setPeriodOpen(false);
+            for (OnlineLedgerPeriodEntity p : periods) {
+                if (!p.contains(s.getSaleDate())) continue;
+                row.setPeriodLabel(p.getLabel());
+                if (!p.isClosed()) {
+                    row.setPeriodOpen(true);
                     break;
                 }
+                row.setPeriodClosed(true);
+                if (!Boolean.TRUE.equals(row.getLocked())) {
+                    row.setLocked(true);
+                    row.setLockedAt(p.getClosedAt());
+                    row.setLockedByName(p.getClosedByName());
+                }
+                break;
             }
             rows.add(row);
         }
@@ -307,6 +312,28 @@ public class OnlineSaleLedgerService {
                         + (p.getClosedByName() == null ? "" : " por " + p.getClosedByName())
                         + ". Un administrador puede reabrirlo.");
             }
+        }
+    }
+
+    /**
+     * Solo se edita lo que está en una revisión abierta: la venta tiene que caer en un periodo abierto (y no en uno
+     * cerrado). Así nadie cambia el libro de un mes que todavía no se empezó a revisar o que ya se cerró.
+     */
+    private void assertInOpenPeriod(Collection<OnlineSaleEntity> sales) throws BusinessException {
+        assertNotInClosedPeriod(sales);
+        LocalDate min = null;
+        LocalDate max = null;
+        for (OnlineSaleEntity s : sales) {
+            LocalDate d = s.getSaleDate();
+            if (d == null) continue;
+            if (min == null || d.isBefore(min)) min = d;
+            if (max == null || d.isAfter(max)) max = d;
+        }
+        List<OnlineLedgerPeriodEntity> open = periodService.between(min, max).stream().filter(p -> !p.isClosed()).toList();
+        long outside = sales.stream().filter(s -> open.stream().noneMatch(p -> p.contains(s.getSaleDate()))).count();
+        if (outside > 0) {
+            throw new BusinessException((outside == 1 ? "Esta venta no tiene" : outside + " de las ventas no tienen")
+                    + " revisión abierta. Abra la revisión del periodo («Abrir revisión» en la barra Revisión) para poder editar.");
         }
     }
 
@@ -536,7 +563,7 @@ public class OnlineSaleLedgerService {
         validateChanges(changes);
         OnlineSaleEntity sale = saleRepository.findById(saleId)
                 .orElseThrow(() -> new ResourceNotFoundException("Venta en línea", saleId));
-        assertNotInClosedPeriod(List.of(sale));
+        assertInOpenPeriod(List.of(sale));
         Long userId = guard.currentUserId();
         upsert(saleId, changes, false, userId);
         return toRows(List.of(sale)).get(0);
@@ -559,7 +586,7 @@ public class OnlineSaleLedgerService {
         if (sales.size() != ids.size()) {
             throw new BusinessException("Alguna de las ventas seleccionadas ya no existe. Actualice la vista.");
         }
-        assertNotInClosedPeriod(sales);
+        assertInOpenPeriod(sales);
         // Se revisa antes de escribir nada: con una sola línea bloqueada no se aplica el cambio a ninguna.
         long lockedCount = 0;
         for (int i = 0; i < ids.size(); i += BATCH) {
