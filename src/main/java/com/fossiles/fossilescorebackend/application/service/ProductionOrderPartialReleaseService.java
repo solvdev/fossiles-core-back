@@ -915,9 +915,15 @@ public class ProductionOrderPartialReleaseService {
                 .map(ProductShipmentEntity::getId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
+        List<ProductShipmentDetailEntity> details = shipmentDetailRepository.findByShipmentIdIn(shipmentIds);
+        // El «ENVIO HISTORICO» de cartera trae toda la orden como líneas pero no es una salida: no resta pendiente.
+        Set<Long> historical = unsentHistoricalIds(active, details);
         Map<String, Integer> bySize = new HashMap<>();
         Map<String, Integer> byProductColor = new HashMap<>();
-        for (ProductShipmentDetailEntity detail : shipmentDetailRepository.findByShipmentIdIn(shipmentIds)) {
+        for (ProductShipmentDetailEntity detail : details) {
+            if (historical.contains(detail.getShipmentId())) {
+                continue;
+            }
             int qty = detail.getQuantity() == null ? 0 : detail.getQuantity().intValue();
             if (qty <= 0) {
                 continue;
@@ -928,6 +934,37 @@ public class ProductionOrderPartialReleaseService {
             byProductColor.merge(pcKey, qty, Integer::sum);
         }
         return new ShippedAllocation(bySize, byProductColor);
+    }
+
+    /**
+     * Ids de los envíos históricos de cartera que siguen sin enviarse (ver {@link HistoricalReceivableShipments}).
+     * No cuentan como despachado ni se listan como envío real de la orden.
+     */
+    public Set<Long> unsentHistoricalShipmentIds(Collection<ProductShipmentEntity> shipments) {
+        if (shipments == null || shipments.isEmpty()) {
+            return Set.of();
+        }
+        Set<Long> ids = shipments.stream()
+                .map(ProductShipmentEntity::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (ids.isEmpty()) {
+            return Set.of();
+        }
+        return unsentHistoricalIds(shipments, shipmentDetailRepository.findByShipmentIdIn(ids));
+    }
+
+    private static Set<Long> unsentHistoricalIds(
+            Collection<ProductShipmentEntity> shipments, List<ProductShipmentDetailEntity> details) {
+        Map<Long, List<ProductShipmentDetailEntity>> byShipment = details.stream()
+                .filter(d -> d.getShipmentId() != null)
+                .collect(Collectors.groupingBy(ProductShipmentDetailEntity::getShipmentId));
+        return shipments.stream()
+                .filter(s -> s.getId() != null)
+                .filter(s -> HistoricalReceivableShipments.isUnsentHistorical(
+                        s, byShipment.getOrDefault(s.getId(), List.of())))
+                .map(ProductShipmentEntity::getId)
+                .collect(Collectors.toSet());
     }
 
     private static void mergeShippedIntoAllocated(
