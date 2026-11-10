@@ -55,6 +55,8 @@ public final class OnlineSaleLedgerDtos {
         private BigDecimal realShippingCost;
         private BigDecimal carrierCommission;
         private String accountingNote;
+        /** Autorización anotada en el libro; vacía = rige {@code paymentAuthorization} de la venta. */
+        private String accountingAuthorization;
         private LocalDate sentDate;
         private LocalDate receivedDate;
         private String paymentForm;

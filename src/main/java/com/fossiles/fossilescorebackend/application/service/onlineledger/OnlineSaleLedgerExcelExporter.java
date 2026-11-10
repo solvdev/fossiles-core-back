@@ -105,7 +105,7 @@ public final class OnlineSaleLedgerExcelExporter {
             text(x, 18, row.getSalesperson(), st.text(tone));
             text(x, 19, row.getGuideNumber(), st.text(tone));
             text(x, 20, row.getShipmentNumber(), st.text(tone));
-            text(x, 21, row.getPaymentAuthorization(), st.text(tone));
+            text(x, 21, clean(row.getAccountingAuthorization()).isEmpty() ? row.getPaymentAuthorization() : row.getAccountingAuthorization(), st.text(tone));
             text(x, 22, statusLabel(row.getStatus()), st.text(tone));
             text(x, 23, row.getAccountingNote(), st.text(tone));
             Cell net = x.createCell(24);
