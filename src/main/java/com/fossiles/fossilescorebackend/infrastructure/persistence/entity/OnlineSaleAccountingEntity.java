@@ -136,6 +136,10 @@ public class OnlineSaleAccountingEntity {
     @Column(name = "locked_by_name", length = 150)
     private String lockedByName;
 
+    /** Periodo de revisión cuyo cierre bloqueó la línea; al reabrir el periodo se desbloquean solo estas. */
+    @Column(name = "locked_period_id")
+    private Long lockedPeriodId;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

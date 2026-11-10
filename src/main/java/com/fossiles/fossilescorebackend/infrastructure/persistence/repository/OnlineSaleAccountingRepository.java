@@ -14,4 +14,6 @@ public interface OnlineSaleAccountingRepository extends JpaRepository<OnlineSale
     Optional<OnlineSaleAccountingEntity> findByOnlineSaleId(Long onlineSaleId);
 
     List<OnlineSaleAccountingEntity> findByOnlineSaleIdIn(Collection<Long> onlineSaleIds);
+
+    List<OnlineSaleAccountingEntity> findByLockedPeriodId(Long lockedPeriodId);
 }

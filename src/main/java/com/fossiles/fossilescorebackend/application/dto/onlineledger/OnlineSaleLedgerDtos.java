@@ -93,6 +93,9 @@ public final class OnlineSaleLedgerDtos {
         private Boolean locked;
         private LocalDateTime lockedAt;
         private String lockedByName;
+        /** true si la venta cae en un periodo de revisión cerrado (bloqueada aunque no tenga fila contable). */
+        private Boolean periodClosed;
+        private String periodLabel;
     }
 
     @Data
@@ -113,6 +116,44 @@ public final class OnlineSaleLedgerDtos {
         private boolean canUnlock;
         private BigDecimal commissionRate;
         private BigDecimal vatRate;
+        /** Periodos de revisión que se cruzan con el rango pedido. */
+        private List<PeriodRow> periods;
+        /** true si puede abrir y cerrar periodos (quien edita el libro). */
+        private boolean canManagePeriods;
+        /** true si puede reabrir un periodo cerrado (solo administradores). */
+        private boolean canReopenPeriods;
+    }
+
+    /** Periodo de revisión: abierto mientras Contabilidad revisa; cerrado = el rango queda bloqueado. */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PeriodRow {
+        private Long id;
+        private LocalDate from;
+        private LocalDate to;
+        private String label;
+        /** OPEN o CLOSED. */
+        private String status;
+        private String note;
+        private LocalDateTime openedAt;
+        private String openedByName;
+        private LocalDateTime closedAt;
+        private String closedByName;
+        private LocalDateTime reopenedAt;
+        private String reopenedByName;
+        /** Al cerrar: cuántas líneas bloqueó el cierre. */
+        private Integer lockedCount;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PeriodRequest {
+        private LocalDate from;
+        private LocalDate to;
+        private String note;
     }
 
     /** Cambio en lote: los mismos campos a varias ventas. */

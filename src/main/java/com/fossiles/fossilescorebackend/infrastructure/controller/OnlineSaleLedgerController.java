@@ -4,6 +4,9 @@ import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleL
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerResponse;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerRow;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LockRequest;
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.PeriodRequest;
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.PeriodRow;
+import com.fossiles.fossilescorebackend.application.service.onlineledger.OnlineLedgerPeriodService;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.onlineledger.OnlineSaleLedgerService;
@@ -30,6 +33,7 @@ public class OnlineSaleLedgerController {
     private static final String XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     private final OnlineSaleLedgerService service;
+    private final OnlineLedgerPeriodService periodService;
 
     @GetMapping
     public ResponseEntity<LedgerResponse> search(
@@ -57,6 +61,35 @@ public class OnlineSaleLedgerController {
     @PostMapping("/lock")
     public ResponseEntity<List<LedgerRow>> lock(@RequestBody LockRequest request) throws BusinessException {
         return ResponseEntity.ok(service.setLocked(request));
+    }
+
+    // ── Periodos de revisión: abrir, cerrar (bloquea el rango), reabrir (solo admin) ──
+
+    @GetMapping("/periods")
+    public ResponseEntity<List<PeriodRow>> periods() throws BusinessException {
+        service.assertCanView();
+        return ResponseEntity.ok(periodService.list());
+    }
+
+    @PostMapping("/periods")
+    public ResponseEntity<PeriodRow> openPeriod(@RequestBody PeriodRequest request) throws BusinessException {
+        return ResponseEntity.ok(periodService.open(request));
+    }
+
+    @PostMapping("/periods/{id}/close")
+    public ResponseEntity<PeriodRow> closePeriod(@PathVariable Long id) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(periodService.close(id));
+    }
+
+    @PostMapping("/periods/{id}/reopen")
+    public ResponseEntity<PeriodRow> reopenPeriod(@PathVariable Long id) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(periodService.reopen(id));
+    }
+
+    @DeleteMapping("/periods/{id}")
+    public ResponseEntity<Void> deletePeriod(@PathVariable Long id) throws BusinessException, ResourceNotFoundException {
+        periodService.delete(id);
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/export")

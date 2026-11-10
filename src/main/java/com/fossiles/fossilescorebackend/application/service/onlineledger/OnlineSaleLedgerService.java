@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleL
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.reconciliation.ReconciliationAccessGuard;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineLedgerPeriodEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleAccountingEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleItemEntity;
@@ -138,6 +139,7 @@ public class OnlineSaleLedgerService {
     private final OnlineSaleItemRepository itemRepository;
     private final OnlineSaleAccountingRepository accountingRepository;
     private final ReconciliationAccessGuard guard;
+    private final OnlineLedgerPeriodService periodService;
 
     @PersistenceContext
     private EntityManager em;
@@ -235,6 +237,9 @@ public class OnlineSaleLedgerService {
                 .canUnlock(canUnlock())
                 .commissionRate(COMMISSION_RATE)
                 .vatRate(VAT_RATE)
+                .periods(from != null && to != null ? periodService.overlapping(from, to) : List.of())
+                .canManagePeriods(periodService.canManage())
+                .canReopenPeriods(periodService.canReopen())
                 .build();
     }
 
@@ -254,11 +259,55 @@ public class OnlineSaleLedgerService {
                 accountingBySale.put(a.getOnlineSaleId(), a);
             }
         }
+        // Periodos cerrados que tocan estas ventas: sus filas se ven bloqueadas aunque no tengan fila contable.
+        LocalDate min = null;
+        LocalDate max = null;
+        for (OnlineSaleEntity s : sales) {
+            LocalDate d = s.getSaleDate();
+            if (d == null) continue;
+            if (min == null || d.isBefore(min)) min = d;
+            if (max == null || d.isAfter(max)) max = d;
+        }
+        List<OnlineLedgerPeriodEntity> closed = periodService.closedBetween(min, max);
         List<LedgerRow> rows = new ArrayList<>(sales.size());
         for (OnlineSaleEntity s : sales) {
-            rows.add(toRow(s, itemsBySale.getOrDefault(s.getId(), List.of()), accountingBySale.get(s.getId())));
+            LedgerRow row = toRow(s, itemsBySale.getOrDefault(s.getId(), List.of()), accountingBySale.get(s.getId()));
+            for (OnlineLedgerPeriodEntity p : closed) {
+                if (p.contains(s.getSaleDate())) {
+                    row.setPeriodClosed(true);
+                    row.setPeriodLabel(p.getLabel());
+                    if (!Boolean.TRUE.equals(row.getLocked())) {
+                        row.setLocked(true);
+                        row.setLockedAt(p.getClosedAt());
+                        row.setLockedByName(p.getClosedByName());
+                    }
+                    break;
+                }
+            }
+            rows.add(row);
         }
         return rows;
+    }
+
+    /** Un periodo de revisión cerrado no admite cambios en sus ventas (ni en las registradas después del cierre). */
+    private void assertNotInClosedPeriod(Collection<OnlineSaleEntity> sales) throws BusinessException {
+        LocalDate min = null;
+        LocalDate max = null;
+        for (OnlineSaleEntity s : sales) {
+            LocalDate d = s.getSaleDate();
+            if (d == null) continue;
+            if (min == null || d.isBefore(min)) min = d;
+            if (max == null || d.isAfter(max)) max = d;
+        }
+        for (OnlineLedgerPeriodEntity p : periodService.closedBetween(min, max)) {
+            long n = sales.stream().filter(s -> p.contains(s.getSaleDate())).count();
+            if (n > 0) {
+                throw new BusinessException((n == 1 ? "La venta es" : n + " de las ventas son")
+                        + " del periodo «" + p.getLabel() + "», que está cerrado"
+                        + (p.getClosedByName() == null ? "" : " por " + p.getClosedByName())
+                        + ". Un administrador puede reabrirlo.");
+            }
+        }
     }
 
     private LedgerRow toRow(OnlineSaleEntity s, List<OnlineSaleItemEntity> items, OnlineSaleAccountingEntity a) {
@@ -487,9 +536,10 @@ public class OnlineSaleLedgerService {
         validateChanges(changes);
         OnlineSaleEntity sale = saleRepository.findById(saleId)
                 .orElseThrow(() -> new ResourceNotFoundException("Venta en línea", saleId));
+        assertNotInClosedPeriod(List.of(sale));
         Long userId = guard.currentUserId();
-        OnlineSaleAccountingEntity saved = upsert(saleId, changes, false, userId);
-        return toRow(sale, itemRepository.findByOnlineSaleIdOrderByIdAsc(saleId), saved);
+        upsert(saleId, changes, false, userId);
+        return toRows(List.of(sale)).get(0);
     }
 
     /** Aplica los mismos campos a varias ventas (por ejemplo, el envío real de todo lo de Guatex). */
@@ -509,6 +559,7 @@ public class OnlineSaleLedgerService {
         if (sales.size() != ids.size()) {
             throw new BusinessException("Alguna de las ventas seleccionadas ya no existe. Actualice la vista.");
         }
+        assertNotInClosedPeriod(sales);
         // Se revisa antes de escribir nada: con una sola línea bloqueada no se aplica el cambio a ninguna.
         long lockedCount = 0;
         for (int i = 0; i < ids.size(); i += BATCH) {
@@ -562,6 +613,10 @@ public class OnlineSaleLedgerService {
         if (sales.size() != ids.size()) {
             throw new BusinessException("Alguna de las ventas seleccionadas ya no existe. Actualice la vista.");
         }
+        if (!lock) {
+            // Dentro de un periodo cerrado no se desbloquea línea por línea: se reabre el periodo.
+            assertNotInClosedPeriod(sales);
+        }
         Long userId = guard.currentUserId();
         String username = guard.currentUsername();
         LocalDateTime now = GuatemalaDateTime.now();
@@ -581,6 +636,7 @@ public class OnlineSaleLedgerService {
             a.setLockedAt(lock ? now : null);
             a.setLockedBy(lock ? userId : null);
             a.setLockedByName(lock ? username : null);
+            if (!lock) a.setLockedPeriodId(null);
             a.setUpdatedBy(userId);
             toSave.add(a);
         }
