@@ -10,7 +10,6 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
-import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LeatherMovementRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderRepository;
@@ -68,7 +67,6 @@ class ProductionAutoPlannerDayPlanTest {
     @Mock private ObjectProvider<ProductionAutoPlannerService> selfProvider;
     @Mock private ProductionTaskLifecycleService productionTaskLifecycleService;
     @Mock private TaskItemMaterialPickRepository taskItemMaterialPickRepository;
-    @Mock private LeatherMovementRepository leatherMovementRepository;
 
     private ProductionAutoPlannerService service;
     private LocalDate day;
@@ -80,7 +78,7 @@ class ProductionAutoPlannerDayPlanTest {
                 productionOrderRepository, productionOrderItemRepository, productRepository, colorRepository,
                 taskItemRepository, taskRepository, taskOrganizerService, leatherRequirementService,
                 productionDeskCountService, smartMaterialRequestService, productionPlanningLock,
-                taskDeskHoursService, selfProvider, productionTaskLifecycleService, taskItemMaterialPickRepository, leatherMovementRepository);
+                taskDeskHoursService, selfProvider, productionTaskLifecycleService, taskItemMaterialPickRepository);
 
         day = DeskSlotFinder.nextWorkday(LocalDate.now().plusDays(30));
 

@@ -14,6 +14,7 @@ import java.util.Optional;
 
 @Repository
 public interface LeatherInventoryRepository extends JpaRepository<LeatherInventoryEntity, Long> {
+
     Optional<LeatherInventoryEntity> findByMaterialId(Long materialId);
 
     /** Bloquea el saldo del cuero mientras se descuenta o se devuelve. */

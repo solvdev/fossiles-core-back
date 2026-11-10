@@ -11,7 +11,6 @@ import java.util.Optional;
 
 @Repository
 public interface ProductionCinchoDayStatusRepository extends JpaRepository<ProductionCinchoDayStatusEntity, Long> {
-    boolean existsByProductionOrderItemId(Long productionOrderItemId);
 
     List<ProductionCinchoDayStatusEntity> findByWorkDate(LocalDate workDate);
 

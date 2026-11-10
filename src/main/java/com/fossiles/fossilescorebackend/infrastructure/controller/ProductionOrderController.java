@@ -67,8 +67,6 @@ public class ProductionOrderController {
     private final ProductionOrderListService productionOrderListService;
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final ProductionOrderItemSyncService productionOrderItemSyncService;
-    /** Solo para saber si la orden ya tiene producción o recepción (no se cambia de tipo ni se elimina). */
-    private final com.fossiles.fossilescorebackend.application.service.ProductionOrderItemUpdateService productionOrderItemUpdateService;
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
     private final CustomerRepository customerRepository;
@@ -429,15 +427,11 @@ public class ProductionOrderController {
     public ResponseEntity<ProductionOrderResponse> update(@PathVariable Long id, 
             @Valid @RequestBody ProductionOrderRequest request)
             throws ResourceNotFoundException, BusinessException {
-        ProductionOrderEntity entity = productionOrderRepository.findByIdForUpdate(id)
+        ProductionOrderEntity entity = productionOrderRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
 
         String requestedOrderType = request.getOrderType() != null ? request.getOrderType() : entity.getOrderType();
         String effectiveOrderType = normalizeOrderType(requestedOrderType);
-
-        if (!Objects.equals(entity.getOrderType(), effectiveOrderType) && productionOrderItemUpdateService.hasUsedItems(id)) {
-            throw new BusinessException("No se puede cambiar el tipo de una orden con producción o recepción asociada.");
-        }
 
         if (!entity.getCode().equals(request.getCode()) 
                 && productionOrderRepository.existsByCode(request.getCode())) {
@@ -582,12 +576,9 @@ public class ProductionOrderController {
 
     @DeleteMapping("/{id}")
     @Transactional(rollbackFor = Exception.class)
-    public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException, BusinessException {
-        ProductionOrderEntity entity = productionOrderRepository.findByIdForUpdate(id)
+    public ResponseEntity<Void> delete(@PathVariable Long id) throws ResourceNotFoundException {
+        ProductionOrderEntity entity = productionOrderRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Production Order", id));
-        if (productionOrderItemUpdateService.hasUsedItems(id)) {
-            throw new BusinessException("No se puede eliminar una orden con producción o recepción asociada.");
-        }
         
         // Eliminar primero los items asociados
         productionOrderItemRepository.deleteByProductionOrderId(id);
@@ -2003,25 +1994,6 @@ public class ProductionOrderController {
 
     private void validateProductionOrderItemRequest(ProductionOrderItemRequest itemRequest, String orderType)
             throws ResourceNotFoundException, BusinessException {
-        if (itemRequest == null || itemRequest.getProductId() == null) throw new BusinessException("Indique el producto de cada ítem.");
-        long sizesQuantity = 0;
-        if (itemRequest.getSizes() != null) {
-            for (var size : itemRequest.getSizes().entrySet()) {
-                if (size.getKey() == null || size.getKey().isBlank() || size.getValue() == null || size.getValue() < 0) {
-                    throw new BusinessException("Las tallas deben tener cantidades no negativas.");
-                }
-                sizesQuantity += size.getValue();
-            }
-        }
-        if (sizesQuantity > Integer.MAX_VALUE || (itemRequest.getQuantity() != null && itemRequest.getQuantity() < 0)
-                || (sizesQuantity == 0 && (itemRequest.getQuantity() == null || itemRequest.getQuantity() <= 0))) {
-            throw new BusinessException("El ítem debe tener una cantidad positiva válida.");
-        }
-        if (sizesQuantity > 0 && itemRequest.getQuantity() != null && itemRequest.getQuantity() > 0
-                && sizesQuantity != itemRequest.getQuantity()) throw new BusinessException("La suma de tallas debe coincidir con la cantidad del ítem.");
-        if ((itemRequest.getUnitPrice() != null && itemRequest.getUnitPrice().signum() < 0)
-                || (itemRequest.getUnitPrices() != null && itemRequest.getUnitPrices().values().stream()
-                .anyMatch(price -> price == null || price.signum() < 0))) throw new BusinessException("Los precios deben ser no negativos.");
         if (itemRequest.getProductId() != null && !productRepository.existsById(itemRequest.getProductId())) {
             throw new ResourceNotFoundException("Product", itemRequest.getProductId());
         }

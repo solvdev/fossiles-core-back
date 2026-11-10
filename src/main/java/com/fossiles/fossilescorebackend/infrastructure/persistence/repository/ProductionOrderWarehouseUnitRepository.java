@@ -11,7 +11,6 @@ import java.util.List;
 
 @Repository
 public interface ProductionOrderWarehouseUnitRepository extends JpaRepository<ProductionOrderWarehouseUnitEntity, Long> {
-    boolean existsByProductionOrderItemId(Long productionOrderItemId);
     List<ProductionOrderWarehouseUnitEntity> findByProductionOrderIdOrderByProductionOrderItemIdAscSizeKeyAscUnitSeqAsc(
             Long productionOrderId);
 

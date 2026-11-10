@@ -111,7 +111,7 @@ public class LeatherInventoryService {
 
     // ─── Recepción (ENTRADA) ─────────────────────────────────────────
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional
     public LeatherMovementResponse createReception(LeatherMovementRequest req) throws BusinessException, ResourceNotFoundException {
         validateReception(req);
 
@@ -119,7 +119,7 @@ public class LeatherInventoryService {
                 .orElseThrow(() -> new ResourceNotFoundException("Material no encontrado: " + req.getMaterialId()));
 
         // Obtener o crear inventario
-        LeatherInventoryEntity inventory = inventoryRepository.findByMaterialIdForUpdate(req.getMaterialId())
+        LeatherInventoryEntity inventory = inventoryRepository.findByMaterialId(req.getMaterialId())
                 .orElseGet(() -> {
                     LeatherInventoryEntity newInv = new LeatherInventoryEntity();
                     newInv.setMaterialId(req.getMaterialId());
@@ -250,8 +250,6 @@ public class LeatherInventoryService {
         }
         taskLeatherDeliveryService.assertCanCancel(original);
 
-        taskLeatherDeliveryService.assertCanCancel(original);
-
         LeatherInventoryEntity inventory = inventoryRepository.findByMaterialIdForUpdate(original.getMaterialId())
                 .orElseThrow(() -> new BusinessException("No se encontró inventario para este material."));
 
@@ -276,7 +274,6 @@ public class LeatherInventoryService {
         // Crear movimiento de anulación (reversa)
         LeatherMovementEntity reversal = LeatherMovementEntity.builder()
                 .movementType("ANULADO")
-                .taskItemId(original.getTaskItemId())
                 .materialId(original.getMaterialId())
                 .quantity(original.getQuantity())
                 .unitCost(original.getUnitCost())

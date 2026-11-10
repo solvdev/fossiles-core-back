@@ -41,7 +41,6 @@ public class ProductionTaskGenerationService {
     private final SystemConfigRepository systemConfigRepository;
     private final ColorRepository colorRepository;
     private final TaskCodeGenerator taskCodeGenerator;
-    private final LeatherMovementRepository leatherMovementRepository;
     private final TaskLeatherDeliveryService taskLeatherDeliveryService;
 
     @Transactional
