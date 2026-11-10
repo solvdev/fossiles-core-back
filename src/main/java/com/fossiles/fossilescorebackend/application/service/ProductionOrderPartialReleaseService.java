@@ -289,6 +289,56 @@ public class ProductionOrderPartialReleaseService {
         return result;
     }
 
+    /**
+     * La orden ya tiene un envío vigente salido de una liberación parcial. En ese caso «Generar envío» desde la
+     * orden no puede volver a mandar la orden completa: solo lo que falta.
+     */
+    @Transactional(readOnly = true)
+    public boolean hasActivePartialShipment(Long productionOrderId) {
+        if (productionOrderId == null) {
+            return false;
+        }
+        return shipmentRepository.findByProductionOrderId(productionOrderId).stream()
+                .filter(s -> s.getPartialReleaseId() != null)
+                .anyMatch(s -> !isVoidShipmentStatus(s.getStatus())
+                        && !"DRAFT".equalsIgnoreCase(String.valueOf(s.getStatus()).trim()));
+    }
+
+    /**
+     * Envío con lo que falta de la orden: crea el siguiente parcial con todo el pendiente (pedido − ya enviado −
+     * cajas armadas) y genera su envío por la misma ruta que un parcial hecho a mano.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ProductShipmentResponse generateRemainderShipment(Long productionOrderId, OpcShipmentGenerateRequest request)
+            throws ResourceNotFoundException, BusinessException {
+        ProductionOrderEntity order = loadOrderForPartialReleases(productionOrderId);
+        List<PartialReleaseLineRequest> lines = new ArrayList<>();
+        for (PartialReleaseLineResponse row : availabilityRowsForOrder(productionOrderId)) {
+            Map<String, Integer> pendingSizes = row.getPendingSizes();
+            if (pendingSizes != null && !pendingSizes.isEmpty()) {
+                lines.add(PartialReleaseLineRequest.builder()
+                        .productionOrderItemId(row.getProductionOrderItemId())
+                        .sizes(new LinkedHashMap<>(pendingSizes))
+                        .build());
+            } else if ((row.getOrderedSizes() == null || row.getOrderedSizes().isEmpty())
+                    && row.getPendingTotal() != null && row.getPendingTotal() > 0) {
+                lines.add(PartialReleaseLineRequest.builder()
+                        .productionOrderItemId(row.getProductionOrderItemId())
+                        .quantity(row.getPendingTotal())
+                        .build());
+            }
+        }
+        if (lines.isEmpty()) {
+            throw new BusinessException("La orden " + order.getCode()
+                    + " ya no tiene nada pendiente de enviar: todo salió en los parciales anteriores.");
+        }
+        PartialReleaseResponse release = createDraft(productionOrderId, PartialReleaseUpsertRequest.builder()
+                .status("CONFIRMED")
+                .lines(lines)
+                .build());
+        return generateShipment(release.getId(), request);
+    }
+
     public PartialReleaseResponse getRelease(Long productionOrderId, Long releaseId)
             throws ResourceNotFoundException, BusinessException {
         loadOrderForPartialReleases(productionOrderId);
