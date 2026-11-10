@@ -81,6 +81,21 @@ public class OnlineSaleAccountingEntity {
     @Builder.Default
     private Boolean reviewed = false;
 
+    /** Línea bloqueada: ya se revisó y no admite más cambios desde el libro hasta que un administrador la desbloquee. */
+    @Column(name = "locked", nullable = false)
+    @Builder.Default
+    private Boolean locked = false;
+
+    @Column(name = "locked_at")
+    private LocalDateTime lockedAt;
+
+    @Column(name = "locked_by")
+    private Long lockedBy;
+
+    /** Nombre de usuario de quien bloqueó, guardado al bloquear para mostrarlo sin consultar usuarios. */
+    @Column(name = "locked_by_name", length = 150)
+    private String lockedByName;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
@@ -95,11 +110,13 @@ public class OnlineSaleAccountingEntity {
         createdAt = GuatemalaDateTime.now();
         updatedAt = createdAt;
         if (reviewed == null) reviewed = false;
+        if (locked == null) locked = false;
     }
 
     @PreUpdate
     protected void onUpdate() {
         updatedAt = GuatemalaDateTime.now();
         if (reviewed == null) reviewed = false;
+        if (locked == null) locked = false;
     }
 }
