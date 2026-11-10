@@ -85,6 +85,8 @@ public class OnlineSaleLedgerService {
                 OnlineSaleAccountingEntity::setLiquidationDate, "Fecha de liquidación"));
         FIELDS.put("accountingNote", text(OnlineSaleAccountingEntity::getAccountingNote,
                 OnlineSaleAccountingEntity::setAccountingNote, 1000, "Observación"));
+        FIELDS.put("accountingAuthorization", text(OnlineSaleAccountingEntity::getPaymentAuthorization,
+                OnlineSaleAccountingEntity::setPaymentAuthorization, 200, "Autorización"));
         FIELDS.put("paymentForm", text(OnlineSaleAccountingEntity::getPaymentForm,
                 OnlineSaleAccountingEntity::setPaymentForm, 100, "Forma de pago"));
         FIELDS.put("depositSlipNumber", text(OnlineSaleAccountingEntity::getDepositSlipNumber,
@@ -178,6 +180,8 @@ public class OnlineSaleLedgerService {
             jpql.append(" AND (LOWER(s.customerName) LIKE :q OR s.phone LIKE :q OR s.phone2 LIKE :q")
                     .append(" OR LOWER(s.shipmentNumber) LIKE :q OR LOWER(s.guideNumber) LIKE :q")
                     .append(" OR LOWER(s.paymentAuthorization) LIKE :q OR LOWER(s.address) LIKE :q")
+                    .append(" OR EXISTS (SELECT 1 FROM OnlineSaleAccountingEntity ac WHERE ac.onlineSaleId = s.id")
+                    .append(" AND LOWER(ac.paymentAuthorization) LIKE :q)")
                     .append(" OR LOWER(s.productName) LIKE :q OR s.saleNumber = :exact")
                     .append(" OR EXISTS (SELECT 1 FROM OnlineSaleItemEntity i WHERE i.onlineSaleId = s.id")
                     .append(" AND LOWER(i.productName) LIKE :q))");
@@ -299,6 +303,7 @@ public class OnlineSaleLedgerService {
             row.realShippingCost(a.getRealShippingCost())
                     .carrierCommission(a.getCarrierCommission())
                     .accountingNote(a.getAccountingNote())
+                    .accountingAuthorization(a.getPaymentAuthorization())
                     .sentDate(a.getSentDate())
                     .receivedDate(a.getReceivedDate())
                     .paymentForm(a.getPaymentForm())
