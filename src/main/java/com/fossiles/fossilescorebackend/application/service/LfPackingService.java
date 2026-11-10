@@ -120,7 +120,9 @@ public class LfPackingService {
         Map<Long, List<LfPackingBoxEntity>> boxesByOrder = boxRepository
                 .findByProductionOrderIdInOrderByProductionOrderIdAscBoxNoAsc(ids).stream()
                 .collect(Collectors.groupingBy(LfPackingBoxEntity::getProductionOrderId));
-        Map<Long, List<ProductShipmentEntity>> shipmentsByOrder = shipmentRepository.findByProductionOrderIdIn(ids).stream()
+        List<ProductShipmentEntity> pageShipments = shipmentRepository.findByProductionOrderIdIn(ids);
+        Set<Long> historical = partialReleaseService.unsentHistoricalShipmentIds(pageShipments);
+        Map<Long, List<ProductShipmentEntity>> shipmentsByOrder = pageShipments.stream()
                 .collect(Collectors.groupingBy(ProductShipmentEntity::getProductionOrderId));
 
         List<OrderSummary> out = new ArrayList<>();
@@ -131,7 +133,7 @@ public class LfPackingService {
                     availability,
                     receivedByOrder.getOrDefault(po.getId(), 0),
                     boxesByOrder.getOrDefault(po.getId(), List.of()),
-                    visibleShipments(shipmentsByOrder.getOrDefault(po.getId(), List.of()))));
+                    visibleShipments(shipmentsByOrder.getOrDefault(po.getId(), List.of()), historical)));
         }
         return out;
     }
@@ -488,7 +490,8 @@ public class LfPackingService {
                 : boxLineRepository.findByBoxIdIn(boxEntities.stream().map(LfPackingBoxEntity::getId).collect(Collectors.toList()))
                         .stream().collect(Collectors.groupingBy(LfPackingBoxLineEntity::getBoxId));
         List<ProductShipmentEntity> allShipments = shipmentRepository.findByProductionOrderId(po.getId());
-        List<ProductShipmentEntity> shipments = visibleShipments(allShipments);
+        List<ProductShipmentEntity> shipments = visibleShipments(
+                allShipments, partialReleaseService.unsentHistoricalShipmentIds(allShipments));
         Map<Long, String> shipmentNumbers = allShipments.stream()
                 .collect(Collectors.toMap(ProductShipmentEntity::getId,
                         s -> s.getShipmentNumber() == null ? "" : s.getShipmentNumber(), (a, b) -> a));
@@ -715,8 +718,10 @@ public class LfPackingService {
     }
 
     /** Envíos reales de la orden: sin anulados ni los «ENVIO HISTORICO» del respaldo de cartera. */
-    private static List<ProductShipmentEntity> visibleShipments(Collection<ProductShipmentEntity> shipments) {
+    private static List<ProductShipmentEntity> visibleShipments(
+            Collection<ProductShipmentEntity> shipments, Set<Long> unsentHistoricalIds) {
         return shipments.stream()
+                .filter(s -> !unsentHistoricalIds.contains(s.getId()))
                 .filter(s -> {
                     String st = s.getStatus() == null ? "" : s.getStatus().trim().toUpperCase(Locale.ROOT);
                     return !"CANCELLED".equals(st) && !"VOID".equals(st) && !"VOIDED".equals(st) && !"DRAFT".equals(st);
