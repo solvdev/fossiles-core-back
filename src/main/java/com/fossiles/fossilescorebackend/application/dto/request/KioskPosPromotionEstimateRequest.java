@@ -19,6 +19,8 @@ public class KioskPosPromotionEstimateRequest {
     private Long kioskLocationId;
     private Long promotionId;
     private BigDecimal manualDiscountPercent;
+    /** Método de pago elegido en el cobro (null = aún no): para reglas que dependen del pago. */
+    private String paymentMethod;
 
     @Valid
     private List<ItemRequest> items;
@@ -41,5 +43,9 @@ public class KioskPosPromotionEstimateRequest {
 
         /** Complemento extra autorizado POR PIEZA: suma al total pero no entra a descuentos. */
         private BigDecimal extraAmount;
+        /** Precio editado en el carrito (solo para estimar; la venta vuelve a validar el permiso). */
+        private BigDecimal unitPrice;
+        /** true/null con unitPrice = precio final sin descuento; false = el editado es la base. */
+        private Boolean priceFinal;
     }
 }

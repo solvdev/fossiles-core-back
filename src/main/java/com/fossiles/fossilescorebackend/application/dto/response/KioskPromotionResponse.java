@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.dto.response;
 
+import com.fossiles.fossilescorebackend.application.service.promotion.PromotionRuleConfig;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -7,6 +8,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Data
@@ -27,4 +29,11 @@ public class KioskPromotionResponse {
     private LocalDate endDate;
     private Boolean active;
     private List<KioskPromotionTierResponse> tiers;
+    private PromotionRuleConfig ruleConfig;
+    /** DRAFT (borrador, solo simulador) o APPROVED (vigente en el POS). */
+    private String status;
+    private LocalDateTime approvedAt;
+    private Long approvedBy;
+    private String approvedByName;
+    private LocalDateTime updatedAt;
 }

@@ -148,6 +148,9 @@ public class KioskPosSaleResponse {
         /** Complemento extra cobrado POR PIEZA (ya incluido en unitPrice). Null = sin complemento. */
         private BigDecimal extraAmount;
         private String extraDescription;
+        /** Descuento de promoción que llevó la línea (promos RULES); null = repartido en la venta. */
+        private BigDecimal discountAmount;
+        private String discountNote;
         private Long extraRequestId;
     }
 }

@@ -22,6 +22,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRest
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPosSaleRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskSaleVoidRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.KioskPromotionSimulateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashExpenseResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCashSessionDailySummaryResponse;
@@ -34,6 +35,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskExchangeSl
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPendingDepositSummaryResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosContextResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskPromotionSimulateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosManagerDashboardResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskPosPromotionEstimateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskDisbursementReportRowResponse;
@@ -199,6 +201,28 @@ public class KioskPosController {
             @Valid @RequestBody KioskPosPromotionEstimateRequest request
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(kioskPosService.estimatePromotionDiscount(request));
+    }
+
+    /** Simulador: calcula una promoción (guardada, borrador o sin guardar) sin vender nada. */
+    @PostMapping("/promotions/simulate")
+    public ResponseEntity<KioskPromotionSimulateResponse> simulatePromotion(
+            @RequestBody KioskPromotionSimulateRequest request
+    ) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.simulatePromotion(request));
+    }
+
+    /** Aprueba la promoción: desde ahora el POS la usa (si está activa y en fechas). */
+    @PostMapping("/promotions/{id}/approve")
+    public ResponseEntity<KioskPromotionResponse> approvePromotion(@PathVariable Long id)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.approvePromotion(id));
+    }
+
+    /** Vuelve la promoción a borrador: el POS deja de usarla, el simulador sigue disponible. */
+    @PostMapping("/promotions/{id}/draft")
+    public ResponseEntity<KioskPromotionResponse> returnPromotionToDraft(@PathVariable Long id)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(kioskPosService.returnPromotionToDraft(id));
     }
 
     @PostMapping("/promotions")
