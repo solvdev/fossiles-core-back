@@ -688,7 +688,10 @@ public class ProductionAutoPlannerService {
         for (TaskEntity task : sameDay) {
             double hours = taskDeskHoursService.baseHours(task, extra);
             if (task.getDesk() != null) {
-                loads.merge(task.getDesk(), hours, Double::sum);
+                // Mesa fuera de 1..N = mesa especial (maquila): no ocupa cupo de la planta.
+                if (task.getDesk() <= numDesks) {
+                    loads.merge(task.getDesk(), hours, Double::sum);
+                }
             } else if (hours > 0 && !cinchoTasks.contains(task.getId())) {
                 // Las de cinchos sin mesa van a la mesa de cinchos, no al cupo de centro.
                 withoutDesk.add(hours);
