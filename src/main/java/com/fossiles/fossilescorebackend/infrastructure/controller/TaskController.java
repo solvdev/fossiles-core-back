@@ -591,11 +591,14 @@ public class TaskController {
 
         int maxConfiguredDesks = getNumDesks();
         int activeDesks = desksCount == null ? maxConfiguredDesks : Math.max(1, Math.min(desksCount, maxConfiguredDesks));
+        // Lo que está en la mesa de maquila se mandó a mano y ahí se queda.
+        Set<Integer> specialDesks = productionDeskCountService.activeSpecialDeskNumbers();
 
         List<TaskEntity> pendientes = taskRepository.findByScheduledDate(date).stream()
                 .filter(t -> !"CANCELLED".equals(t.getStatus()))
                 .filter(t -> !"COMPLETED".equals(t.getStatus()))
                 .filter(t -> "PENDING".equals(t.getStatus()))
+                .filter(t -> t.getDesk() == null || !specialDesks.contains(t.getDesk()))
                 .collect(Collectors.toList());
 
         // Compuerta del troquelado, igual que en plan-window y en el relleno de mesa
@@ -783,10 +786,13 @@ public class TaskController {
         int days = horizonDays == null ? 5 : Math.max(1, horizonDays);
 
         List<TaskEntity> pool = taskRepository.findPendingAndInProgressOrdered();
+        // Lo que está en la mesa de maquila se mandó a mano y ahí se queda.
+        Set<Integer> specialDesks = productionDeskCountService.activeSpecialDeskNumbers();
 
         // Distribuir mesas: incluir TODAS las PENDING, sin filtrar por scheduledDate (pasado/hoy/futuro/null).
         List<TaskEntity> elegibles = pool.stream()
                 .filter(t -> "PENDING".equals(t.getStatus()))
+                .filter(t -> t.getDesk() == null || !specialDesks.contains(t.getDesk()))
                 .filter(t -> productionOrderId == null || Objects.equals(t.getProductionOrderId(), productionOrderId))
                 .collect(Collectors.toList());
 

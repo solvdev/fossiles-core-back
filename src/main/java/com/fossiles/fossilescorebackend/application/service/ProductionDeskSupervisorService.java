@@ -32,6 +32,15 @@ public class ProductionDeskSupervisorService {
                     .supervisorName(resolveSupervisorNameForDesk(d, effectiveDate))
                     .build());
         }
+        // Mesas especiales (maquila): también tienen encargado, después de las de planta.
+        for (Integer d : productionDeskCountService.activeSpecialDeskNumbers()) {
+            if (d > numDesks) {
+                list.add(DeskSupervisorAssignmentResponse.builder()
+                        .desk(d)
+                        .supervisorName(resolveSupervisorNameForDesk(d, effectiveDate))
+                        .build());
+            }
+        }
         return DeskSupervisorDayResponse.builder()
                 .effectiveDate(effectiveDate)
                 .numDesks(numDesks)
@@ -50,13 +59,14 @@ public class ProductionDeskSupervisorService {
             body = List.of();
         }
 
+        Set<Integer> specialDesks = productionDeskCountService.activeSpecialDeskNumbers();
         Set<Integer> seen = new HashSet<>();
         for (DeskSupervisorAssignmentRequest row : body) {
             if (row == null || row.getDesk() == null) {
                 throw new BusinessException("Cada fila debe incluir el número de mesa.");
             }
             int desk = row.getDesk();
-            if (desk < 1 || desk > numDesks) {
+            if ((desk < 1 || desk > numDesks) && !specialDesks.contains(desk)) {
                 throw new BusinessException("Mesa fuera de rango: " + desk + " (mesas activas: 1.." + numDesks + ").");
             }
             if (!seen.add(desk)) {
