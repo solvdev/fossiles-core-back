@@ -57,6 +57,20 @@ public class KioskPromotionEntity {
     @Column(name = "combo_pay_qty")
     private Integer comboPayQty;
 
+    /** Regla dinámica (JSON de PromotionRuleConfig) para discount_type = RULES. */
+    @Column(name = "rule_config", columnDefinition = "TEXT")
+    private String ruleConfig;
+
+    /** DRAFT = borrador (solo simulador), APPROVED = vigente en el POS. null = APPROVED (promos viejas). */
+    @Column(name = "status", length = 20)
+    private String status;
+
+    @Column(name = "approved_at")
+    private LocalDateTime approvedAt;
+
+    @Column(name = "approved_by")
+    private Long approvedBy;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

@@ -2013,6 +2013,16 @@ public class KioskExchangeService {
         BigDecimal lineSubtotal = item.getLineTotal() != null
                 ? item.getLineTotal()
                 : safeAmount(item.getUnitPrice()).multiply(qty);
+        // Promoción dinámica (RULES): cada línea guarda su propio descuento (p.ej. la cara 15%, la barata 30%).
+        List<KioskSaleItemEntity> saleItems = allItems != null && !allItems.isEmpty()
+                ? allItems
+                : (sale != null && sale.getItems() != null ? List.copyOf(sale.getItems()) : List.of());
+        boolean perLineDiscount = item.getDiscountAmount() != null
+                || saleItems.stream().anyMatch(row -> row != null && row.getDiscountAmount() != null);
+        if (perLineDiscount) {
+            BigDecimal linePaid = lineSubtotal.subtract(safeAmount(item.getDiscountAmount())).max(BigDecimal.ZERO);
+            return linePaid.divide(qty, 2, RoundingMode.HALF_UP);
+        }
         BigDecimal discount = sale != null && sale.getDiscountAmount() != null
                 ? sale.getDiscountAmount()
                 : BigDecimal.ZERO;
