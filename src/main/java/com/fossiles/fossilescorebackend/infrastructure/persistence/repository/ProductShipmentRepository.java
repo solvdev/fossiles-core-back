@@ -44,6 +44,23 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
         """)
     List<ProductShipmentEntity> findKioskReceiptShipmentsByLocationId(@Param("locationId") Long locationId);
 
+    /**
+     * Todos los envíos de un kiosko (cualquier estado) cuya fecha de envío (o de creación si aún no salió)
+     * cae en [from, to). Más recientes primero. Para la pestaña «Envíos» de Kioscos (ver / imprimir).
+     */
+    @Query("""
+        SELECT s FROM ProductShipmentEntity s
+        WHERE s.locationId = :locationId
+          AND COALESCE(s.sentAt, s.createdAt) >= :from
+          AND COALESCE(s.sentAt, s.createdAt) < :to
+        ORDER BY COALESCE(s.sentAt, s.createdAt) DESC, s.id DESC
+        """)
+    List<ProductShipmentEntity> findByLocationIdAndShipmentDateRange(
+            @Param("locationId") Long locationId,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to,
+            Pageable pageable);
+
     List<ProductShipmentEntity> findByStatusIgnoreCaseAndLocationIdIn(String status, Collection<Long> locationIds);
 
     /** Entregados al kiosko con al menos una línea por recibir (quedan unidades en tránsito). */
