@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderI
 import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.WarehouseWorkspaceResponse;
+import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.InventoryLocationTypeEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
@@ -42,6 +43,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -90,8 +92,12 @@ class CinchoOplSizeDataTest {
         cafe = colors.save(ColorEntity.builder().name("CAFE").build());
         locationTypes.save(InventoryLocationTypeEntity.builder()
                 .code("BODEGA_PT").name("Bodega PT").isActive(true).build());
+        locationTypes.save(InventoryLocationTypeEntity.builder()
+                .code("BODEGA_DEV").name("Bodega Devoluciones").isActive(true).build());
         locations.save(LocationEntity.builder()
                 .code("BODEGA_PT").name("Bodega Producto Terminado").categoria("BODEGA_PT").build());
+        locations.save(LocationEntity.builder()
+                .code("BODEGA_DEV").name("Bodega Devoluciones").categoria("BODEGA_DEV").build());
     }
 
     @Test
@@ -199,6 +205,169 @@ class CinchoOplSizeDataTest {
     }
 
     @Test
+    void oplCreationNormalizesThirtyTwoXlAndKeepsUnusualSize() throws Exception {
+        ProductEntity cincho = products.save(ProductEntity.builder()
+                .code("CIN-OPL-95").name("Cincho especial").cinchoType("CASUAL").requiresMaterials(false).build());
+        OnlineSaleEntity sale = paidSale("V-OPL-95", "Cliente 95");
+        saleLine(sale, cincho, negro, " 32 ", 1);
+        saleLine(sale, cincho, negro, "xl", 1);
+        saleLine(sale, cincho, negro, "95", 1);
+
+        oplService.createOplFromSales(List.of(sale.getId()));
+
+        ProductionOrderItemEntity merged = items.findAll().stream()
+                .filter(line -> cincho.getId().equals(line.getProductId()))
+                .findFirst().orElseThrow();
+        assertThat(merged.getQuantity()).isEqualTo(3);
+        assertThat(objectMapper.readValue(merged.getSizesData(), new TypeReference<Map<String, Integer>>() {}))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("32", 1, "XL", 1, "95", 1));
+    }
+
+    @Test
+    void oplCreationWithBlankBeltSizeOmitsSizesData() throws Exception {
+        ProductEntity cincho = products.save(ProductEntity.builder()
+                .code("CIN-OPL-BL").name("Cincho blanco").cinchoType("CASUAL").requiresMaterials(false).build());
+        OnlineSaleEntity blankSale = paidSale("V-OPL-BL", "Cliente blank");
+        saleLine(blankSale, cincho, negro, "  ", 2);
+
+        oplService.createOplFromSales(List.of(blankSale.getId()));
+
+        ProductionOrderItemEntity blankItem = items.findAll().stream()
+                .filter(line -> cincho.getId().equals(line.getProductId())
+                        && blankSale.getId().equals(line.getOnlineSaleId()))
+                .findFirst().orElseThrow();
+        assertThat(blankItem.getQuantity()).isEqualTo(2);
+        assertThat(blankItem.getSizesData()).isNull();
+        assertThat(blankItem.getObservations()).doesNotContain("Talla:");
+
+        OnlineSaleEntity mixedSale = paidSale("V-OPL-BL2", "Cliente mixto");
+        saleLine(mixedSale, cincho, cafe, "32", 1);
+        saleLine(mixedSale, cincho, cafe, "", 1);
+
+        oplService.createOplFromSales(List.of(mixedSale.getId()));
+
+        ProductionOrderItemEntity mixedItem = items.findAll().stream()
+                .filter(line -> cincho.getId().equals(line.getProductId())
+                        && mixedSale.getId().equals(line.getOnlineSaleId()))
+                .findFirst().orElseThrow();
+        assertThat(mixedItem.getQuantity()).isEqualTo(2);
+        assertThat(mixedItem.getSizesData()).isNull();
+    }
+
+    @Test
+    void produceLineItemsWritesMergedSizesData() throws Exception {
+        ProductEntity cincho = products.save(ProductEntity.builder()
+                .code("CIN-OPL-PR").name("Cincho produce").cinchoType("CASUAL").requiresMaterials(false).build());
+        OnlineSaleEntity sale = paidSale("V-OPL-PR", "Cliente produce");
+        OnlineSaleItemEntity size32 = saleLine(sale, cincho, negro, " 32 ", 1);
+        OnlineSaleItemEntity sizeXl = saleLine(sale, cincho, negro, "xl", 2);
+
+        oplService.resolveMixedSale(sale.getId(), List.of(
+                new OnlineSaleProductionOrderService.ItemResolution(size32.getId(), "PRODUCE"),
+                new OnlineSaleProductionOrderService.ItemResolution(sizeXl.getId(), "PRODUCE")));
+
+        ProductionOrderItemEntity merged = items.findAll().stream()
+                .filter(line -> cincho.getId().equals(line.getProductId()))
+                .findFirst().orElseThrow();
+        assertThat(merged.getQuantity()).isEqualTo(3);
+        assertThat(merged.getOnlineSaleItemId()).isNull();
+        assertThat(objectMapper.readValue(merged.getSizesData(), new TypeReference<Map<String, Integer>>() {}))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("32", 1, "XL", 2));
+    }
+
+    @Test
+    void receiptWithoutOnlineSaleItemIdFallsBackToUniqueProductColorSize() throws Exception {
+        ProductEntity cincho = products.save(ProductEntity.builder()
+                .code("FOSS-CIN-FB").name("Cincho fallback").cinchoType("CASUAL").requiresMaterials(false).build());
+        OnlineSaleEntity sale = sales.save(OnlineSaleEntity.builder()
+                .saleNumber("V-OPL-FB")
+                .customerName("Cliente fallback")
+                .status("EN_PRODUCCION")
+                .paymentMethod("TARJETA_PAGADO")
+                .saleDate(LocalDate.now())
+                .inProductionOrder(true)
+                .build());
+        saleLine(sale, cincho, negro, " 32 ", 1);
+        ProductionOrderEntity order = orders.save(ProductionOrderEntity.builder()
+                .code("OPL-FB-1")
+                .orderType("VENTA_EN_LINEA")
+                .status("IN_PROGRESS")
+                .customerName(sale.getCustomerName())
+                .startDate(LocalDate.now())
+                .build());
+        ProductionOrderItemEntity item = items.save(ProductionOrderItemEntity.builder()
+                .productionOrderId(order.getId())
+                .onlineSaleId(sale.getId())
+                .onlineSaleItemId(null)
+                .productId(cincho.getId())
+                .colorId(negro.getId())
+                .quantity(1)
+                .warehouseReceivedQty(0)
+                .build());
+
+        WarehouseWorkspaceResponse workspace = warehouseUnitService.getWorkspace(order.getId());
+        warehouseUnitService.updateUnitsReceipt(order.getId(), WarehouseUnitReceiptRequest.builder()
+                .units(workspace.getUnits().stream()
+                        .map(unit -> WarehouseUnitReceiptRequest.UnitUpdate.builder()
+                                .unitId(unit.getId())
+                                .receiptStatus("RECEIVED")
+                                .build())
+                        .toList())
+                .build());
+
+        assertThat(units.findByProductionOrderItemIdOrderBySizeKeyAscUnitSeqAsc(item.getId()))
+                .extracting(ProductionOrderWarehouseUnitEntity::getSizeKey)
+                .containsExactly("32");
+    }
+
+    @Test
+    void receiptWithoutOnlineSaleItemIdDoesNotPickFirstOfTwoSizes() throws Exception {
+        ProductEntity cincho = products.save(ProductEntity.builder()
+                .code("FOSS-CIN-AM").name("Cincho ambiguo").cinchoType("CASUAL").requiresMaterials(false).build());
+        OnlineSaleEntity sale = sales.save(OnlineSaleEntity.builder()
+                .saleNumber("V-OPL-AM")
+                .customerName("Cliente ambiguo")
+                .status("EN_PRODUCCION")
+                .paymentMethod("TARJETA_PAGADO")
+                .saleDate(LocalDate.now())
+                .inProductionOrder(true)
+                .build());
+        saleLine(sale, cincho, negro, "32", 1);
+        saleLine(sale, cincho, negro, "36", 1);
+        ProductionOrderEntity order = orders.save(ProductionOrderEntity.builder()
+                .code("OPL-AM-1")
+                .orderType("VENTA_EN_LINEA")
+                .status("IN_PROGRESS")
+                .customerName(sale.getCustomerName())
+                .startDate(LocalDate.now())
+                .build());
+        ProductionOrderItemEntity item = items.save(ProductionOrderItemEntity.builder()
+                .productionOrderId(order.getId())
+                .onlineSaleId(sale.getId())
+                .onlineSaleItemId(null)
+                .productId(cincho.getId())
+                .colorId(negro.getId())
+                .quantity(1)
+                .warehouseReceivedQty(0)
+                .build());
+
+        WarehouseWorkspaceResponse workspace = warehouseUnitService.getWorkspace(order.getId());
+        assertThatThrownBy(() -> warehouseUnitService.updateUnitsReceipt(order.getId(), WarehouseUnitReceiptRequest.builder()
+                .units(workspace.getUnits().stream()
+                        .map(unit -> WarehouseUnitReceiptRequest.UnitUpdate.builder()
+                                .unitId(unit.getId())
+                                .receiptStatus("RECEIVED")
+                                .build())
+                        .toList())
+                .build()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("sin talla");
+        assertThat(units.findByProductionOrderItemIdOrderBySizeKeyAscUnitSeqAsc(item.getId()))
+                .extracting(ProductionOrderWarehouseUnitEntity::getSizeKey)
+                .allMatch(size -> size == null || size.isBlank());
+    }
+
+    @Test
     void normalOrderRejectsBeltSizesThatDoNotMatchQuantity() throws Exception {
         ProductEntity cincho = products.save(ProductEntity.builder()
                 .code("CIN-VAL-01").name("Cincho validacion").cinchoType("CASUAL").requiresMaterials(false).build());
@@ -244,6 +413,17 @@ class CinchoOplSizeDataTest {
                 .findFirst().orElseThrow();
         assertThat(nonBelt.getSizesData()).isEqualTo("{\"s\":1}");
         assertThat(nonBelt.getQuantity()).isEqualTo(5);
+    }
+
+    private OnlineSaleEntity paidSale(String saleNumber, String customerName) {
+        return sales.save(OnlineSaleEntity.builder()
+                .saleNumber(saleNumber)
+                .customerName(customerName)
+                .status("PENDIENTE")
+                .paymentMethod("TARJETA_PAGADO")
+                .saleDate(LocalDate.now())
+                .inProductionOrder(false)
+                .build());
     }
 
     private OnlineSaleItemEntity saleLine(
