@@ -12,5 +12,7 @@ public interface TaxInvoiceAttemptRepository extends JpaRepository<TaxInvoiceAtt
 
     Optional<TaxInvoiceAttemptEntity> findTopByTaxInvoiceIdOrderByAttemptNumberDesc(Long taxInvoiceId);
 
+    Optional<TaxInvoiceAttemptEntity> findTopByTaxInvoiceIdAndActionOrderByAttemptNumberDesc(Long taxInvoiceId, String action);
+
     int countByTaxInvoiceId(Long taxInvoiceId);
 }

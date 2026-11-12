@@ -109,6 +109,20 @@ public class TaxInvoiceAttemptService {
         return attemptRepository.save(attempt);
     }
 
+    /**
+     * Número de control interno que tenía la factura cuando se anuló ante el SAT por última vez
+     * (bitácora VOID), o null si no hay registro.
+     */
+    @Transactional(readOnly = true)
+    public String findLastVoidedInternalNumber(Long taxInvoiceId) {
+        if (taxInvoiceId == null) {
+            return null;
+        }
+        return attemptRepository.findTopByTaxInvoiceIdAndActionOrderByAttemptNumberDesc(taxInvoiceId, "VOID")
+                .map(TaxInvoiceAttemptEntity::getInternalNumber)
+                .orElse(null);
+    }
+
     @Transactional(readOnly = true)
     public List<TaxInvoiceAttemptResponse> listByInvoiceId(Long taxInvoiceId) {
         return attemptRepository.findByTaxInvoiceIdOrderByAttemptNumberDesc(taxInvoiceId).stream()
