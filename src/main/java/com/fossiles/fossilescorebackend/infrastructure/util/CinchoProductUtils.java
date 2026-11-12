@@ -63,6 +63,14 @@ public final class CinchoProductUtils {
         return nameIndicatesCincho(product.getName());
     }
 
+    /**
+     * El desglose por talla ({@code sizes_data}) aplica a cinchos de inventario
+     * y a líneas de mesa cinchos. Los empaques SUM quedan fuera. No incluye pulseras.
+     */
+    public static boolean tracksSizeBreakdown(ProductEntity product) {
+        return isFossCinchoProduct(product) || isCinchoLineForProduction(product);
+    }
+
     /** Línea de mesa cinchos para producción: cincho (arriba) o pulsera por nombre. */
     public static boolean isMesaCinchosLineForProduction(ProductEntity product) {
         if (product == null) {

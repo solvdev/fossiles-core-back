@@ -7,6 +7,8 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoSizeKeys;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +34,7 @@ public class OnlineSaleProductionOrderService {
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final OnlineSaleRepository onlineSaleRepository;
     private final OnlineSaleItemRepository onlineSaleItemRepository;
+    private final ProductRepository productRepository;
     private final OnlineSaleService saleService;
     private final OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
 
@@ -728,31 +731,62 @@ public class OnlineSaleProductionOrderService {
                 .anyMatch(i -> ACTION_PRODUCE.equals(normalizeFulfillmentRoute(i.getFulfillmentRoute())));
     }
 
-    private ProductionOrderItemEntity findPoItemForSaleLine(
+    /**
+     * Una línea con {@code onlineSaleItemId} usa ese ítem. Si varias líneas del mismo
+     * producto y color quedaron en un solo ítem, se reparte lo ya recibido entre ellas.
+     */
+    private ProductionOrderItemEntity matchProduceLine(
             List<ProductionOrderItemEntity> pool,
-            Set<Long> consumedPoItemIds,
+            Map<Long, Integer> remainingReceived,
             Long onlineSaleId,
-            OnlineSaleItemEntity si
-    ) {
-        ProductionOrderItemEntity byLine = pool.stream()
-                .filter(p -> !consumedPoItemIds.contains(p.getId()))
-                .filter(p -> Objects.equals(p.getOnlineSaleId(), onlineSaleId))
-                .filter(p -> si.getId() != null && Objects.equals(si.getId(), p.getOnlineSaleItemId()))
-                .findFirst().orElse(null);
-        if (byLine != null) {
-            return byLine;
+            OnlineSaleItemEntity si,
+            int need) {
+        ProductionOrderItemEntity linked = null;
+        for (ProductionOrderItemEntity item : pool) {
+            if (item.getId() == null || !Objects.equals(item.getOnlineSaleId(), onlineSaleId)) {
+                continue;
+            }
+            if (si.getId() != null && Objects.equals(si.getId(), item.getOnlineSaleItemId())) {
+                linked = item;
+                break;
+            }
         }
-        return pool.stream()
-                .filter(p -> !consumedPoItemIds.contains(p.getId()))
-                .filter(p -> Objects.equals(p.getOnlineSaleId(), onlineSaleId))
-                .filter(p -> Objects.equals(p.getProductId(), si.getProductId())
-                        && Objects.equals(p.getColorId(), si.getColorId()))
-                .findFirst().orElse(null);
+        if (linked != null) {
+            int left = remainingReceived.getOrDefault(linked.getId(), 0);
+            return left >= need ? linked : null;
+        }
+        ProductionOrderItemEntity fallback = null;
+        for (ProductionOrderItemEntity item : pool) {
+            if (item.getId() == null || !Objects.equals(item.getOnlineSaleId(), onlineSaleId)) {
+                continue;
+            }
+            if (!Objects.equals(item.getProductId(), si.getProductId())
+                    || !Objects.equals(item.getColorId(), si.getColorId())) {
+                continue;
+            }
+            if (remainingReceived.getOrDefault(item.getId(), 0) < need) {
+                continue;
+            }
+            if (item.getOnlineSaleItemId() == null) {
+                return item;
+            }
+            if (fallback == null) {
+                fallback = item;
+            }
+        }
+        return fallback;
     }
 
     private boolean produceMarkedLinesFullyReceived(Long poId, Long onlineSaleId, List<OnlineSaleItemEntity> items) {
         List<ProductionOrderItemEntity> pool = productionOrderItemRepository.findByProductionOrderId(poId);
-        Set<Long> consumed = new HashSet<>();
+        Map<Long, Integer> remaining = new HashMap<>();
+        for (ProductionOrderItemEntity item : pool) {
+            if (item.getId() == null) {
+                continue;
+            }
+            int got = item.getWarehouseReceivedQty() != null ? item.getWarehouseReceivedQty() : 0;
+            remaining.put(item.getId(), got);
+        }
         for (OnlineSaleItemEntity si : items) {
             if (!ACTION_PRODUCE.equals(normalizeFulfillmentRoute(si.getFulfillmentRoute()))) {
                 continue;
@@ -761,15 +795,11 @@ public class OnlineSaleProductionOrderService {
                 continue;
             }
             int need = si.getQuantity() != null ? si.getQuantity() : 1;
-            ProductionOrderItemEntity p = findPoItemForSaleLine(pool, consumed, onlineSaleId, si);
-            if (p == null) {
+            ProductionOrderItemEntity match = matchProduceLine(pool, remaining, onlineSaleId, si, need);
+            if (match == null) {
                 return false;
             }
-            consumed.add(p.getId());
-            int got = p.getWarehouseReceivedQty() != null ? p.getWarehouseReceivedQty() : 0;
-            if (got < need) {
-                return false;
-            }
+            remaining.put(match.getId(), remaining.get(match.getId()) - need);
         }
         return true;
     }
@@ -1163,21 +1193,7 @@ public class OnlineSaleProductionOrderService {
                 .schedulingPriority(ProductionOrderPlanPriority.OPL)
                 .build();
         ProductionOrderEntity savedPO = productionOrderRepository.save(po);
-
-        for (OnlineSaleItemEntity si : produceItems) {
-            if (si.getProductId() == null) continue;
-            ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                    .productionOrderId(savedPO.getId())
-                    .onlineSaleId(sale.getId())
-                    .onlineSaleItemId(si.getId())
-                    .productId(si.getProductId())
-                    .colorId(si.getColorId())
-                    .quantity(si.getQuantity() != null ? si.getQuantity() : 1)
-                    .warehouseReceivedQty(0)
-                    .observations(buildOplItemObservations(sale, si.getSize()))
-                    .build();
-            productionOrderItemRepository.save(item);
-        }
+        saveOplLines(savedPO.getId(), sale, sourceLinesOf(produceItems));
 
         saleService.linkToProductionOrder(List.of(sale.getId()), savedPO.getId());
         productionAutoPlannerService.planQuietly(savedPO.getId());
@@ -1275,31 +1291,117 @@ public class OnlineSaleProductionOrderService {
                 .findByOnlineSaleIdOrderByIdAsc(sale.getId());
 
         if (saleItems != null && !saleItems.isEmpty()) {
-            for (OnlineSaleItemEntity si : saleItems) {
-                ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                        .productionOrderId(productionOrderId)
-                        .onlineSaleId(sale.getId())
-                        .onlineSaleItemId(si.getId())
-                        .productId(si.getProductId())
-                        .colorId(si.getColorId())
-                        .quantity(si.getQuantity() != null ? si.getQuantity() : 1)
-                        .warehouseReceivedQty(0)
-                        .observations(buildOplItemObservations(sale, si.getSize()))
-                        .build();
-                productionOrderItemRepository.save(item);
-            }
-        } else {
-            ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                    .productionOrderId(productionOrderId)
-                    .onlineSaleId(sale.getId())
-                    .productId(sale.getProductId())
-                    .colorId(sale.getColorId())
-                    .quantity(sale.getQuantity() != null ? sale.getQuantity() : 1)
-                    .warehouseReceivedQty(0)
-                    .observations(buildOplItemObservations(sale, sale.getSize()))
-                    .build();
-            productionOrderItemRepository.save(item);
+            saveOplLines(productionOrderId, sale, sourceLinesOf(saleItems));
+            return;
         }
+        if (sale.getProductId() == null) {
+            return;
+        }
+        saveOplLines(productionOrderId, sale, List.of(new OplSourceLine(
+                sale.getProductId(),
+                sale.getColorId(),
+                sale.getSize(),
+                sale.getQuantity() != null ? sale.getQuantity() : 1,
+                null)));
+    }
+
+    private record OplSourceLine(
+            Long productId, Long colorId, String size, int quantity, Long onlineSaleItemId) {}
+
+    private List<OplSourceLine> sourceLinesOf(List<OnlineSaleItemEntity> saleItems) {
+        List<OplSourceLine> lines = new ArrayList<>();
+        if (saleItems == null) {
+            return lines;
+        }
+        for (OnlineSaleItemEntity si : saleItems) {
+            if (si == null || si.getProductId() == null) {
+                continue;
+            }
+            lines.add(new OplSourceLine(
+                    si.getProductId(),
+                    si.getColorId(),
+                    si.getSize(),
+                    si.getQuantity() != null ? si.getQuantity() : 1,
+                    si.getId()));
+        }
+        return lines;
+    }
+
+    /**
+     * Una línea de venta sigue siendo un ítem, salvo los cinchos del mismo producto y color:
+     * esos se juntan y {@code sizes_data} suma la cantidad de cada talla.
+     */
+    private void saveOplLines(Long productionOrderId, OnlineSaleEntity sale, List<OplSourceLine> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return;
+        }
+        Map<Long, ProductEntity> products = new HashMap<>();
+        for (ProductEntity product : productRepository.findAllById(lines.stream()
+                .map(OplSourceLine::productId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet()))) {
+            if (product.getId() != null) {
+                products.put(product.getId(), product);
+            }
+        }
+        Set<String> emittedBeltKeys = new HashSet<>();
+        for (OplSourceLine line : lines) {
+            ProductEntity product = products.get(line.productId());
+            if (!CinchoProductUtils.tracksSizeBreakdown(product)) {
+                saveOplItem(productionOrderId, sale, line.productId(), line.colorId(), line.quantity(),
+                        line.onlineSaleItemId(), null, buildOplItemObservations(sale, line.size()));
+                continue;
+            }
+            String key = line.productId() + ":" + line.colorId();
+            if (!emittedBeltKeys.add(key)) {
+                continue;
+            }
+            List<OplSourceLine> group = new ArrayList<>();
+            for (OplSourceLine candidate : lines) {
+                if (line.productId().equals(candidate.productId())
+                        && Objects.equals(line.colorId(), candidate.colorId())
+                        && CinchoProductUtils.tracksSizeBreakdown(products.get(candidate.productId()))) {
+                    group.add(candidate);
+                }
+            }
+            int quantity = 0;
+            Map<String, Integer> sizes = new LinkedHashMap<>();
+            for (OplSourceLine part : group) {
+                quantity += part.quantity();
+                CinchoSizeKeys.add(sizes, part.size(), part.quantity());
+            }
+            String sizesData = CinchoSizeKeys.sum(sizes) == quantity ? CinchoSizeKeys.toJson(sizes) : null;
+            Long onlineSaleItemId = group.size() == 1 ? group.get(0).onlineSaleItemId() : null;
+            String observations = group.size() == 1
+                    ? buildOplItemObservations(sale, group.get(0).size())
+                    : truncate(group.stream()
+                            .map(part -> buildOplItemObservations(sale, part.size()))
+                            .collect(Collectors.joining(" | ")), 500);
+            saveOplItem(productionOrderId, sale, line.productId(), line.colorId(), quantity,
+                    onlineSaleItemId, sizesData, observations);
+        }
+    }
+
+    private void saveOplItem(
+            Long productionOrderId,
+            OnlineSaleEntity sale,
+            Long productId,
+            Long colorId,
+            int quantity,
+            Long onlineSaleItemId,
+            String sizesData,
+            String observations) {
+        productionOrderItemRepository.save(ProductionOrderItemEntity.builder()
+                .productionOrderId(productionOrderId)
+                .onlineSaleId(sale.getId())
+                .onlineSaleItemId(onlineSaleItemId)
+                .productId(productId)
+                .colorId(colorId)
+                .quantity(quantity)
+                .warehouseReceivedQty(0)
+                .sizesData(sizesData)
+                .observations(observations)
+                .build());
     }
 
     /** Stub de OPL + observaciones reales de la(s) venta(s) online (máx. 1000). */
