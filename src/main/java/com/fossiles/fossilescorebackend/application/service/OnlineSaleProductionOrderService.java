@@ -6,6 +6,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -85,7 +86,29 @@ public class OnlineSaleProductionOrderService {
             boolean canFulfillFromInventory,
             String inventorySource,
             boolean leatherOkForOpl,
-            java.util.List<String> leatherSummary
+            java.util.List<String> leatherSummary,
+            java.util.List<FulfillmentLine> lines
+    ) {}
+
+    /**
+     * Detalle por línea de la vista previa «Despacho o producción»: talla pedida y stock de esa talla en
+     * Devoluciones y Bodega PT. {@code issue}: SIN_TALLA, TALLA_SIN_STOCK o STOCK_INSUFICIENTE (null si cubre).
+     * {@code competes}: la misma talla se pide también en otra venta de la lista y el stock no alcanza para todas.
+     */
+    public record FulfillmentLine(
+            Long saleItemId,
+            String productCode,
+            String productName,
+            String colorName,
+            String size,
+            int quantity,
+            int quantityInSale,
+            BigDecimal stockDevoluciones,
+            BigDecimal stockBodegaPt,
+            BigDecimal stockTotal,
+            boolean covered,
+            String issue,
+            boolean competes
     ) {}
 
     public record SaleItemStock(
@@ -242,6 +265,16 @@ public class OnlineSaleProductionOrderService {
                 .collect(Collectors.toList());
         boolean bodegaPtFound = !sourceWarehouses.isEmpty();
 
+        // Misma talla pedida en varias ventas de la lista: si el stock no alcanza para todas, se avisa.
+        Map<String, Integer> demandAllSales = new HashMap<>();
+        for (OnlineSaleEntity sale : sales) {
+            for (OnlineSaleItemEntity item : itemsOrLegacy(sale)) {
+                if (item.getProductId() == null) continue;
+                demandAllSales.merge(lineKey(item.getProductId(), item.getColorId(), item.getSize()),
+                        item.getQuantity() != null ? item.getQuantity() : 1, Integer::sum);
+            }
+        }
+
         List<FulfillmentPreviewRow> rows = sales.stream()
                 .map(sale -> {
                     InventorySourceDecision decision = resolveInventorySourceDecision(sale, bodegaDevoluciones, bodegaPT);
@@ -256,7 +289,8 @@ public class OnlineSaleProductionOrderService {
                             decision.canFulfill,
                             decision.sourceLabel,
                             leather.satisfied(),
-                            leather.messages()
+                            leather.messages(),
+                            buildPreviewLines(sale, bodegaDevoluciones, bodegaPT, demandAllSales)
                     );
                 })
                 .toList();
@@ -264,6 +298,76 @@ public class OnlineSaleProductionOrderService {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("bodegaPtFound", bodegaPtFound);
         out.put("rows", rows);
+        return out;
+    }
+
+    /** Líneas de la venta; si no tiene detalle, la línea legada de la cabecera como una sola línea. */
+    private List<OnlineSaleItemEntity> itemsOrLegacy(OnlineSaleEntity sale) {
+        List<OnlineSaleItemEntity> items = onlineSaleItemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId());
+        if (items != null && !items.isEmpty()) {
+            return items;
+        }
+        if (sale.getProductId() == null) {
+            return List.of();
+        }
+        OnlineSaleItemEntity legacy = new OnlineSaleItemEntity();
+        legacy.setProductId(sale.getProductId());
+        legacy.setProductCode(sale.getProductCode());
+        legacy.setProductName(sale.getProductName());
+        legacy.setColorId(sale.getColorId());
+        legacy.setColorName(sale.getColorName());
+        legacy.setSize(sale.getSize());
+        legacy.setQuantity(sale.getQuantity() != null ? sale.getQuantity() : 1);
+        return List.of(legacy);
+    }
+
+    /** Producto + color + talla: el stock se consume por esa combinación, así que la demanda se suma por ella. */
+    private static String lineKey(Long productId, Long colorId, String size) {
+        return productId + "|" + colorId + "|" + ProductInventorySizesJson.normalizeKey(size);
+    }
+
+    private List<FulfillmentLine> buildPreviewLines(
+            OnlineSaleEntity sale,
+            LocationEntity bodegaDevoluciones,
+            LocationEntity bodegaPT,
+            Map<String, Integer> demandAllSales
+    ) {
+        List<OnlineSaleItemEntity> items = itemsOrLegacy(sale);
+        Map<String, Integer> demandInSale = new HashMap<>();
+        for (OnlineSaleItemEntity item : items) {
+            if (item.getProductId() == null) continue;
+            demandInSale.merge(lineKey(item.getProductId(), item.getColorId(), item.getSize()),
+                    item.getQuantity() != null ? item.getQuantity() : 1, Integer::sum);
+        }
+        List<FulfillmentLine> out = new ArrayList<>();
+        for (OnlineSaleItemEntity item : items) {
+            int qty = item.getQuantity() != null ? item.getQuantity() : 1;
+            String key = lineKey(item.getProductId(), item.getColorId(), item.getSize());
+            BigDecimal dev = bodegaDevoluciones != null
+                    ? getStock(item.getProductId(), bodegaDevoluciones.getId(), item.getColorId(), item.getSize())
+                    : BigDecimal.ZERO;
+            BigDecimal pt = bodegaPT != null
+                    ? getStock(item.getProductId(), bodegaPT.getId(), item.getColorId(), item.getSize())
+                    : BigDecimal.ZERO;
+            BigDecimal total = dev.add(pt);
+            int inSale = demandInSale.getOrDefault(key, qty);
+            boolean covered = total.compareTo(BigDecimal.valueOf(inSale)) >= 0;
+            String issue = null;
+            if (!covered) {
+                boolean sizeBlank = item.getSize() == null || item.getSize().isBlank();
+                if (sizeBlank && total.signum() == 0 && productInventoryService.tracksStockBySize(item.getProductId())) {
+                    issue = "SIN_TALLA";
+                } else if (total.signum() == 0) {
+                    issue = "TALLA_SIN_STOCK";
+                } else {
+                    issue = "STOCK_INSUFICIENTE";
+                }
+            }
+            int all = demandAllSales.getOrDefault(key, inSale);
+            boolean competes = covered && all > inSale && total.compareTo(BigDecimal.valueOf(all)) < 0;
+            out.add(new FulfillmentLine(item.getId(), item.getProductCode(), item.getProductName(),
+                    item.getColorName(), item.getSize(), qty, inSale, dev, pt, total, covered, issue, competes));
+        }
         return out;
     }
 
@@ -282,11 +386,17 @@ public class OnlineSaleProductionOrderService {
         int total = stocks.size();
         if (total == 0) return new InventorySourceDecision(false, false, false, "SIN_STOCK");
 
+        // La misma pieza (producto+color+talla) en varias líneas se suma: 2 líneas de 1 con 1 en bodega no alcanzan.
+        Map<String, Integer> demandByKey = new HashMap<>();
+        for (SaleItemStock s : stocks) {
+            demandByKey.merge(lineKey(s.productId(), s.colorId(), s.size()), s.quantity(), Integer::sum);
+        }
         int fulfillable = 0;
         boolean usesDev = false;
         boolean usesPt = false;
         for (SaleItemStock s : stocks) {
-            BigDecimal needed = BigDecimal.valueOf(s.quantity());
+            BigDecimal needed = BigDecimal.valueOf(
+                    demandByKey.getOrDefault(lineKey(s.productId(), s.colorId(), s.size()), s.quantity()));
             if (s.stockTotal().compareTo(needed) >= 0) {
                 fulfillable++;
                 BigDecimal fromDev = s.stockDevoluciones().min(needed);
@@ -546,11 +656,19 @@ public class OnlineSaleProductionOrderService {
                 .findByOnlineSaleIdOrderByIdAsc(sale.getId());
 
         if (items != null && !items.isEmpty()) {
+            // Se suma por producto+color+talla: dos líneas de la misma pieza no pueden salir de una sola unidad.
+            Map<String, Integer> demandByKey = new LinkedHashMap<>();
+            Map<String, OnlineSaleItemEntity> sample = new HashMap<>();
             for (OnlineSaleItemEntity item : items) {
                 if (item.getProductId() == null) continue;
-                int needed = item.getQuantity() != null ? item.getQuantity() : 1;
+                String key = lineKey(item.getProductId(), item.getColorId(), item.getSize());
+                demandByKey.merge(key, item.getQuantity() != null ? item.getQuantity() : 1, Integer::sum);
+                sample.putIfAbsent(key, item);
+            }
+            for (Map.Entry<String, Integer> e : demandByKey.entrySet()) {
+                OnlineSaleItemEntity item = sample.get(e.getKey());
                 BigDecimal stock = getStockAcrossWarehouses(item.getProductId(), item.getColorId(), sourceWarehouses, item.getSize());
-                if (stock.compareTo(BigDecimal.valueOf(needed)) < 0) {
+                if (stock.compareTo(BigDecimal.valueOf(e.getValue())) < 0) {
                     return false;
                 }
             }
