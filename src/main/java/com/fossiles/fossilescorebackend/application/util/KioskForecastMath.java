@@ -52,8 +52,8 @@ public final class KioskForecastMath {
     /**
      * Cierre proyectado del mes de {@code today}.
      * <ul>
-     *   <li>mtd = ventas de los días completos del mes (hasta el cierre de ayer); hoy aún no termina: sus ventas
-     *   parciales no cuentan y se proyecta como un día completo con lo esperado.</li>
+     *   <li>mtd = ventas de los días completos del mes (antes de hoy); hoy cuenta como día por proyectar
+     *   (se toma el mayor entre lo vendido hasta ahora y lo esperado).</li>
      *   <li>Esperado de un día = promedio de ese día de la semana en las últimas 8 semanas (los ceros cuentan: un
      *   kiosco que no abre los domingos tiene esperado 0 los domingos).</li>
      *   <li>Rango (80 %) = ± 1.28 × desviación de los residuos × √(días por proyectar), sin bajar de lo ya vendido.</li>
@@ -73,7 +73,8 @@ public final class KioskForecastMath {
         for (LocalDate d = monthStart; d.isBefore(today); d = d.plusDays(1)) {
             mtd += value(daily, d);
         }
-        double actualToDate = mtd; // al cierre de ayer
+        double todayActual = value(daily, today);
+        double actualToDate = mtd + todayActual;
 
         LocalDate windowStart = today.minusDays(WINDOW_DAYS);
         if (firstOperationalDate != null && firstOperationalDate.isAfter(windowStart)) {
@@ -139,7 +140,7 @@ public final class KioskForecastMath {
             }
         }
 
-        double projected = mtd + expectedByDow[today.getDayOfWeek().getValue()];
+        double projected = mtd + Math.max(todayActual, expectedByDow[today.getDayOfWeek().getValue()]);
         for (LocalDate d = today.plusDays(1); !d.isAfter(ym.atEndOfMonth()); d = d.plusDays(1)) {
             projected += expectedByDow[d.getDayOfWeek().getValue()];
         }

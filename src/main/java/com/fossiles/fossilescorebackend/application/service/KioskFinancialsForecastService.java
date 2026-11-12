@@ -143,7 +143,7 @@ public class KioskFinancialsForecastService {
                 .sitesProjected(projectedCount).sitesWithoutProjection(withoutProjection)
                 .build();
         return KioskFinancialsForecastResponse.MonthEnd.builder()
-                .asOf(today.minusDays(1)).year(ym.getYear()).month(ym.getMonthValue()) // datos al cierre de ayer
+                .asOf(today).year(ym.getYear()).month(ym.getMonthValue())
                 .daysElapsed(today.getDayOfMonth() - 1).daysRemaining(ym.lengthOfMonth() - today.getDayOfMonth() + 1)
                 .daysInMonth(ym.lengthOfMonth()).breakEvenMode(beMode).sites(out).totals(totals).build();
     }
@@ -345,7 +345,7 @@ public class KioskFinancialsForecastService {
             idx.add(BigDecimal.valueOf(v).setScale(4, RoundingMode.HALF_UP));
         }
         return KioskFinancialsForecastResponse.NextYear.builder()
-                .asOf(yesterday).baseYear(baseYear).targetYear(target)
+                .asOf(today).baseYear(baseYear).targetYear(target)
                 .growthMode(overrideFactor != null ? "OVERRIDE" : "SITE_OR_COMPANY")
                 .companyGrowthFactor(company == null ? null : BigDecimal.valueOf(company.factor()).setScale(4, RoundingMode.HALF_UP))
                 .overrideGrowthPct(growthPct)

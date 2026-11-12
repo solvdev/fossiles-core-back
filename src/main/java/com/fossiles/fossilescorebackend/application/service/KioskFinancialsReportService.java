@@ -315,13 +315,6 @@ public class KioskFinancialsReportService {
     @Transactional(readOnly = true)
     public KioskFinancialsDailyMatrixResponse getDailyMatrix(Integer year, Integer month, String siteIdsCsv)
             throws BusinessException {
-        return getDailyMatrix(year, month, siteIdsCsv, GuatemalaDateTime.today());
-    }
-
-    /** Variante con fecha "hoy" explicita (pruebas). Hoy aun no cierra: sus ventas parciales no se muestran. */
-    KioskFinancialsDailyMatrixResponse getDailyMatrix(Integer year, Integer month, String siteIdsCsv, LocalDate today)
-            throws BusinessException {
-        LocalDate lastClosed = today.minusDays(1);
         guard.assertCanView();
         int y = requireYear(year);
         int m = requireMonth(month);
@@ -348,7 +341,7 @@ public class KioskFinancialsReportService {
             BigDecimal dayTotal = BigDecimal.ZERO;
             for (KioskSiteEntity s : included) {
                 SiteSales ss = sales.get(s.getId());
-                BigDecimal v = ss == null || d.isAfter(lastClosed) ? null : ss.daily().get(d);
+                BigDecimal v = ss == null ? null : ss.daily().get(d);
                 values.put(s.getId(), KioskPnlCalculator.round2(v));
                 if (v != null) {
                     dayTotal = dayTotal.add(v);
@@ -383,13 +376,9 @@ public class KioskFinancialsReportService {
         return compare(year, baseYear, fromMonth, toMonth, mode, siteIdsCsv, GuatemalaDateTime.today());
     }
 
-    /**
-     * Variante con fecha "hoy" explicita (pruebas). Los datos llegan hasta el cierre del dia anterior: el dia en curso
-     * aun no termina, asi que sus ventas parciales no entran (ni en el actual ni en el recorte del anio base).
-     */
+    /** Variante con fecha "hoy" explicita (pruebas). */
     KioskFinancialsCompareResponse compare(Integer year, Integer baseYear, Integer fromMonth, Integer toMonth,
-                                           String mode, String siteIdsCsv, LocalDate today) throws BusinessException {
-        LocalDate asOf = today.minusDays(1); // ultimo dia cerrado
+                                           String mode, String siteIdsCsv, LocalDate asOf) throws BusinessException {
         guard.assertCanView();
         int y = requireYear(year);
         int by = requireYear(baseYear);
@@ -444,9 +433,6 @@ public class KioskFinancialsReportService {
                 periodFrom = rangeStart;
                 periodTo = rangeEnd;
             }
-            // Ventas del periodo actual: nunca despues del ultimo dia cerrado (en "meses completos" el mes en curso
-            // se queda en ayer, pero sus costos siguen siendo los del mes entero).
-            LocalDate salesTo = periodTo.isAfter(asOf) ? asOf : periodTo;
             boolean validPeriod = !periodFrom.isAfter(periodTo);
             SiteSales ss = sales.get(site.getId());
             SiteSales bs = baseSales.get(site.getId());
@@ -470,9 +456,7 @@ public class KioskFinancialsReportService {
                     LocalDate baseSliceFrom = samePeriod ? alignToBaseYear(sliceFrom, by) : bym.atDay(1);
                     LocalDate baseSliceTo = samePeriod ? alignToBaseYear(sliceTo, by) : bym.atEndOfMonth();
 
-                    LocalDate salesSliceTo = sliceTo.isAfter(salesTo) ? salesTo : sliceTo;
-                    BigDecimal cur = ss == null || sliceFrom.isAfter(salesSliceTo)
-                            ? BigDecimal.ZERO : ss.totalBetween(sliceFrom, salesSliceTo);
+                    BigDecimal cur = ss == null ? BigDecimal.ZERO : ss.totalBetween(sliceFrom, sliceTo);
                     BigDecimal base = bs == null || baseSliceFrom.isAfter(baseSliceTo)
                             ? BigDecimal.ZERO : bs.totalBetween(baseSliceFrom, baseSliceTo);
                     if (cur.signum() == 0 && base.signum() == 0) {
@@ -579,8 +563,7 @@ public class KioskFinancialsReportService {
      * Variante con fecha "hoy" explicita (pruebas).
      */
     KioskFinancialsCompareResponse compareCustom(LocalDate from, LocalDate to, LocalDate baseFrom, LocalDate baseTo,
-                                                 String siteIdsCsv, LocalDate today) throws BusinessException {
-        LocalDate asOf = today.minusDays(1); // ultimo dia cerrado: hoy aun no termina
+                                                 String siteIdsCsv, LocalDate asOf) throws BusinessException {
         guard.assertCanView();
         requireCustomRange("actual", from, to, asOf);
         requireCustomRange("de comparación", baseFrom, baseTo, asOf);
@@ -717,8 +700,8 @@ public class KioskFinancialsReportService {
             throw new BusinessException("En el periodo " + label + " la fecha inicial no puede ser posterior a la final.");
         }
         if (to.isAfter(asOf)) {
-            throw new BusinessException("El periodo " + label + " no puede terminar después de ayer ("
-                    + asOf + "): el día de hoy aún no cierra y los días futuros no tienen ventas.");
+            throw new BusinessException("El periodo " + label + " no puede terminar después de hoy ("
+                    + asOf + "): los días futuros aún no tienen ventas.");
         }
         if (ChronoUnit.DAYS.between(from, to) + 1 > CUSTOM_MAX_DAYS) {
             throw new BusinessException("El periodo " + label + " no puede pasar de " + CUSTOM_MAX_DAYS + " días.");
