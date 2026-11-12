@@ -84,6 +84,15 @@ public class ProductInventoryService {
         return q != null ? q : BigDecimal.ZERO;
     }
 
+    /** True si el producto lleva su stock desglosado por talla (cinchos): sin talla no se encuentra stock. */
+    @Transactional(readOnly = true)
+    public boolean tracksStockBySize(Long productId) {
+        if (productId == null) {
+            return false;
+        }
+        return CinchoProductUtils.isFossCinchoProduct(productRepository.findById(productId).orElse(null));
+    }
+
     /**
      * De qué bodega se descuenta primero una salida. Las piezas hechas a pedido (OPL, OPCK, OPI, OPC)
      * entran a Bodega PT al recibirse, así que su salida debe salir de PT; si se descontara
