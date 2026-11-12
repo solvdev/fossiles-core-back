@@ -23,7 +23,10 @@ public class KioskPromotionResponse {
     private BigDecimal discountValue;
     private Integer comboBuyQty;
     private Integer comboPayQty;
+    /** Kiosco único (solo si la promoción es de un solo kiosco; compatibilidad). */
     private Long kioskLocationId;
+    /** Kioscos donde aplica; vacío = todos. */
+    private List<Long> kioskLocationIds;
     private String audienceCategory;
     private LocalDate startDate;
     private LocalDate endDate;

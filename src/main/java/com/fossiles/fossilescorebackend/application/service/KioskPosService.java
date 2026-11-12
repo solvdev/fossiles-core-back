@@ -2110,13 +2110,13 @@ public class KioskPosService {
         return promotions.stream()
                 .filter(p -> !onlyActive || isPromotionActiveOnDate(p, today))
                 .filter(p -> manageView
-                        || p.getKioskLocationId() == null
-                        || (kioskLocationId != null && Objects.equals(p.getKioskLocationId(), kioskLocationId)))
+                        || p.effectiveKioskIds().isEmpty()
+                        || (kioskLocationId != null && p.appliesToKiosk(kioskLocationId)))
                 .filter(p -> manageView
                         || admin
                         || scopedKioskIds == null
-                        || p.getKioskLocationId() == null
-                        || scopedKioskIds.contains(p.getKioskLocationId()))
+                        || p.effectiveKioskIds().isEmpty()
+                        || p.effectiveKioskIds().stream().anyMatch(scopedKioskIds::contains))
                 .map(this::toPromotionResponse)
                 .collect(Collectors.toList());
     }
@@ -2742,7 +2742,7 @@ public class KioskPosService {
                 entity.getDiscountValue() != null ? entity.getDiscountValue().stripTrailingZeros().toPlainString() : "",
                 String.valueOf(entity.getComboBuyQty()),
                 String.valueOf(entity.getComboPayQty()),
-                String.valueOf(entity.getKioskLocationId()),
+                entity.effectiveKioskIds().stream().sorted().map(String::valueOf).collect(Collectors.joining(",")),
                 String.valueOf(entity.getAudienceCategory()),
                 String.valueOf(entity.getStartDate()),
                 String.valueOf(entity.getEndDate()),
@@ -2865,9 +2865,9 @@ public class KioskPosService {
         if (entrecuerosKiosk) {
             reasons.add("Los kioscos Entrecueros no usan promociones.");
         }
-        if (promotion.getKioskLocationId() != null && !Objects.equals(promotion.getKioskLocationId(), kioskId)) {
+        if (!promotion.appliesToKiosk(kioskId)) {
             reasons.add(kioskId == null
-                    ? "Es solo para un kiosco: elige ese kiosco en el simulador."
+                    ? "Es solo para algunos kioscos: elige uno de ellos en el simulador."
                     : "No aplica a este kiosco.");
         }
         if (promotion.getStartDate() != null && date.isBefore(promotion.getStartDate())) {
@@ -3021,8 +3021,7 @@ public class KioskPosService {
     private List<KioskPromotionEntity> loadActivePromotions(Long kioskId, LocalDate saleDate) {
         return kioskPromotionRepository.findByActiveTrueOrderByNameAsc().stream()
                 .filter(promotion -> isPromotionActiveOnDate(promotion, saleDate))
-                .filter(promotion -> promotion.getKioskLocationId() == null
-                        || Objects.equals(promotion.getKioskLocationId(), kioskId))
+                .filter(promotion -> promotion.appliesToKiosk(kioskId))
                 .collect(Collectors.toList());
     }
 
@@ -3776,14 +3775,13 @@ public class KioskPosService {
             discountValue = BigDecimal.ZERO;
         }
         boolean rules = RULES_TYPE.equals(discountType);
-        return KioskPromotionEntity.builder()
+        KioskPromotionEntity built = KioskPromotionEntity.builder()
                 .name(safeTrim(request.getName()))
                 .description(safeTrim(request.getDescription()))
                 .discountType(discountType)
                 .discountValue(discountValue)
                 .comboBuyQty(request.getComboBuyQty())
                 .comboPayQty(request.getComboPayQty())
-                .kioskLocationId(request.getKioskLocationId())
                 .audienceCategory("TIERED_PERCENT".equals(discountType) || rules
                         ? null
                         : ProductAudienceCategory.normalizePromotionAudience(request.getAudienceCategory()))
@@ -3796,6 +3794,16 @@ public class KioskPosService {
                 .createdBy(userId)
                 .updatedBy(userId)
                 .build();
+        built.assignKiosks(requestedKioskIds(request));
+        return built;
+    }
+
+    /** Kioscos pedidos: la lista nueva, o el kiosco único viejo si no viene lista. Vacío = todos. */
+    private static List<Long> requestedKioskIds(KioskPromotionRequest request) {
+        if (request.getKioskLocationIds() != null && !request.getKioskLocationIds().isEmpty()) {
+            return request.getKioskLocationIds().stream().filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        }
+        return request.getKioskLocationId() != null ? List.of(request.getKioskLocationId()) : List.of();
     }
 
     private void applyPromotionRequest(KioskPromotionEntity entity, KioskPromotionRequest request, Long userId) {
@@ -3810,7 +3818,7 @@ public class KioskPosService {
         entity.setRuleConfig(rules ? PromotionRuleEngine.toJson(request.getRuleConfig()) : null);
         entity.setComboBuyQty(request.getComboBuyQty());
         entity.setComboPayQty(request.getComboPayQty());
-        entity.setKioskLocationId(request.getKioskLocationId());
+        entity.assignKiosks(requestedKioskIds(request));
         entity.setAudienceCategory("TIERED_PERCENT".equals(discountType) || rules
                 ? null
                 : ProductAudienceCategory.normalizePromotionAudience(request.getAudienceCategory()));
@@ -4328,7 +4336,8 @@ public class KioskPosService {
                 .discountValue(entity.getDiscountValue())
                 .comboBuyQty(entity.getComboBuyQty())
                 .comboPayQty(entity.getComboPayQty())
-                .kioskLocationId(entity.getKioskLocationId())
+                .kioskLocationId(entity.effectiveKioskIds().size() == 1 ? entity.effectiveKioskIds().iterator().next() : null)
+                .kioskLocationIds(new ArrayList<>(entity.effectiveKioskIds()))
                 .audienceCategory(ProductAudienceCategory.normalizePromotionAudience(entity.getAudienceCategory()))
                 .startDate(entity.getStartDate())
                 .endDate(entity.getEndDate())
@@ -4375,7 +4384,7 @@ public class KioskPosService {
         if (!isPromotionApproved(promotion)) {
             throw new BusinessException("La promoción está en borrador: apruébala antes de usarla en el POS.");
         }
-        if (promotion.getKioskLocationId() != null && !Objects.equals(promotion.getKioskLocationId(), kioskId)) {
+        if (!promotion.appliesToKiosk(kioskId)) {
             throw new BusinessException("La promoción no aplica a este kiosko.");
         }
         LocalDate startDate = promotion.getStartDate();

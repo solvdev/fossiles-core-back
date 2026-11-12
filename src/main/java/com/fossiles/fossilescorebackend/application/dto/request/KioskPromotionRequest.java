@@ -21,7 +21,10 @@ public class KioskPromotionRequest {
     private BigDecimal discountValue;
     private Integer comboBuyQty;
     private Integer comboPayQty;
+    /** Kiosco único (formato viejo); se usa solo si no viene {@link #kioskLocationIds}. */
     private Long kioskLocationId;
+    /** Kioscos donde aplica; null o vacío = todos. */
+    private List<Long> kioskLocationIds;
     /** DAMA o CABALLERO; vacío = todas las líneas */
     private String audienceCategory;
     private LocalDate startDate;
