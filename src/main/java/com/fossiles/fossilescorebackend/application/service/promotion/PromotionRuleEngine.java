@@ -299,6 +299,16 @@ public final class PromotionRuleEngine {
                 ? limits.getMaxApplications()
                 : null;
 
+        // Pocas piezas: todavía no hay posiciones, todas llevan el % del resto (1 pieza = 15%).
+        if (action.getPositionsMinQty() != null && units.size() < action.getPositionsMinQty()) {
+            if (remainder.signum() > 0) {
+                for (Unit unit : units) {
+                    add(discounts, notes, positionByIndex.get(unit.line()), percentOf(unit.price(), remainder), pct(remainder));
+                }
+            }
+            return;
+        }
+
         int group = 0;
         for (int start = 0; start < units.size(); start += groupSize) {
             int end = Math.min(start + groupSize, units.size());
@@ -548,6 +558,9 @@ public final class PromotionRuleEngine {
                     if (!anyPositive) {
                         errors.add("Al menos una posición debe tener descuento.");
                     }
+                }
+                if (action.getPositionsMinQty() != null && (action.getPositionsMinQty() < 0 || action.getPositionsMinQty() > 50)) {
+                    errors.add("«Posiciones desde» debe estar entre 0 y 50 piezas.");
                 }
                 if (action.getRemainderPercent() != null
                         && (action.getRemainderPercent().signum() < 0 || action.getRemainderPercent().compareTo(HUNDRED) > 0)) {
