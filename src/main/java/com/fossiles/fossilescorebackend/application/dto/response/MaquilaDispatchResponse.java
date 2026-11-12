@@ -18,6 +18,10 @@ public class MaquilaDispatchResponse {
     private String deskName;
     private int totalQuantity;
     private double totalHours;
+    /** Se entregó el cuero al enviar. */
+    private boolean leatherDelivered;
+    /** ft² que salieron del kardex por receta (0 si el interruptor de cuero por producto está apagado). */
+    private double leatherFt2;
     private List<Created> created;
 
     @Data
@@ -30,5 +34,6 @@ public class MaquilaDispatchResponse {
         private String productionOrderCode;
         private int quantity;
         private double hours;
+        private double leatherFt2;
     }
 }
