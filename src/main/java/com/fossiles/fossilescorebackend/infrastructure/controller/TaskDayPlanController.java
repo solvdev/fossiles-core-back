@@ -1,6 +1,9 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.DayPlanRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.MaquilaDispatchRequest;
+import com.fossiles.fossilescorebackend.application.dto.response.MaquilaDispatchResponse;
+import com.fossiles.fossilescorebackend.application.service.MaquilaDispatchService;
 import com.fossiles.fossilescorebackend.application.dto.response.DayPlanConfirmResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.DayPlanOrderItemsResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.DayPlanOrderSummaryResponse;
@@ -37,6 +40,7 @@ public class TaskDayPlanController {
 
     private final DayPlanService dayPlanService;
     private final DayPlanOrderQueryService orderQueryService;
+    private final MaquilaDispatchService maquilaDispatchService;
 
     /** Solo lectura: mide las tareas borrador y propone día y mesa orientativa. No guarda nada. */
     @PostMapping("/preview")
@@ -50,6 +54,16 @@ public class TaskDayPlanController {
     public ResponseEntity<DayPlanConfirmResponse> confirm(@RequestBody DayPlanRequest request)
             throws BusinessException {
         return ResponseEntity.ok(dayPlanService.confirm(request));
+    }
+
+    /**
+     * «Enviar a maquila»: lo elegido va directo a la mesa de maquila del día, una tarea por OP,
+     * sin tope de horas ni de productos y sin pasar por la propuesta.
+     */
+    @PostMapping("/maquila")
+    public ResponseEntity<MaquilaDispatchResponse> sendToMaquila(@RequestBody MaquilaDispatchRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(maquilaDispatchService.send(request));
     }
 
     /** Paso 1: OPs con restante, solo resumen (sin ítems), en el orden del planificador. */
