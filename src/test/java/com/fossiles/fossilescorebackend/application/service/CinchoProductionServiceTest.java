@@ -162,6 +162,24 @@ class CinchoProductionServiceTest {
     }
 
     @Test
+    @DisplayName("un envío interno (OPI) con un cincho sale en la pantalla de cinchos, como OPI y en Ventas")
+    void opiConCinchoSaleEnCinchos() throws Exception {
+        ProductionOrderEntity opi = order("OPI-1", "INTERNA", "PENDING", dia, dia);
+        item(opi, cincho, 1, null);
+        item(order("OPI-2", "INTERNA", "PENDING", dia, dia), billetera, 2, null); // sin cinchos: no sale
+
+        CinchoProductionResponse.Listing todas = service.list(null, "ALL", null);
+        CinchoProductionResponse.Listing ventas = service.list(null, "SALES", null);
+        CinchoProductionResponse.Day day = service.day(dia);
+
+        assertThat(todas.getOrders()).extracting(CinchoProductionResponse.Order::getCode).containsExactly("OPI-1");
+        assertThat(todas.getOrders().get(0).getFamily()).isEqualTo("OPI");
+        assertThat(ventas.getOrders()).extracting(CinchoProductionResponse.Order::getCode).containsExactly("OPI-1");
+        assertThat(service.list(null, "OPC", null).getOrders()).isEmpty();
+        assertThat(day.getOrders()).extracting(CinchoProductionResponse.Order::getCode).containsExactly("OPI-1");
+    }
+
+    @Test
     void ordenDeTallas() {
         assertThat(List.of("XL", "10", "S", "M", "8", "Única").stream().sorted(CinchoProductionService::compareSizes).toList())
                 .containsExactly("8", "10", "S", "M", "XL", "Única");

@@ -47,7 +47,7 @@ import java.util.stream.Collectors;
  * <p>Todo en lote: las órdenes con una consulta, sus productos, colores, consolidadas y estados
  * con una cada uno. Las líneas se eligen con la misma regla que enruta producción
  * ({@link CinchoProductUtils#isMesaCinchosLineForProduction}): en una OP de cinchos van todas;
- * en una venta (OPL/OPCK), solo los cinchos y pulseras.
+ * en una venta o envío interno (OPL/OPCK/OPI), solo los cinchos y pulseras.
  */
 @Service
 @RequiredArgsConstructor
@@ -55,7 +55,8 @@ import java.util.stream.Collectors;
 public class CinchoProductionService {
 
     static final List<String> OPC_TYPES = List.of("CINCHOS", "CINCHOS_FOSSILES", "CINCHOS_MARCAS");
-    static final List<String> SALE_TYPES = List.of("VENTA_EN_LINEA", "CLIENTE_KIOSKO");
+    /** Ventas y envíos internos (OPI) con cinchos: salen de la OP regular pero se fabrican en la mesa cinchos. */
+    static final List<String> SALE_TYPES = List.of("VENTA_EN_LINEA", "CLIENTE_KIOSKO", "INTERNA");
     /** Mismos estados que el cuadro del Tablero tomaba del listado completo. */
     static final List<String> DAY_STATUSES = List.of("PENDING", "IN_PROGRESS", "DRAFT");
     static final List<String> ACTIVE_STATUSES = List.of("PENDING", "IN_PROGRESS", "IN_QA", "DRAFT");
@@ -156,7 +157,7 @@ public class CinchoProductionService {
 
     /**
      * @param scope  ACTIVE (por omisión) | PENDING | IN_PROGRESS | COMPLETED | CANCELLED
-     * @param source ALL (por omisión) | OPC (órdenes de cinchos) | SALES (cinchos de ventas OPL/OPCK)
+     * @param source ALL (por omisión) | OPC (órdenes de cinchos) | SALES (cinchos de ventas y envíos internos OPL/OPCK/OPI)
      * @param search código, cliente, vendedor, consolidada, producto o color; todas las palabras
      */
     public CinchoProductionResponse.Listing list(String scope, String source, String search) throws BusinessException {
@@ -390,6 +391,7 @@ public class CinchoProductionService {
         return switch (upper(orderType)) {
             case "VENTA_EN_LINEA" -> "OPL";
             case "CLIENTE_KIOSKO" -> "OPCK";
+            case "INTERNA" -> "OPI";
             case "CINCHOS_FOSSILES" -> "OPCF";
             case "CINCHOS_MARCAS" -> "OPCM";
             default -> "OPC";
