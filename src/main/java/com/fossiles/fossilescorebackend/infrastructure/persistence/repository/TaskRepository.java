@@ -34,6 +34,24 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     List<Long> findNonCancelledItemIds(@Param("itemIds") Collection<Long> itemIds);
     List<TaskEntity> findByDesk(Integer desk);
 
+    /**
+     * Historial de mesas: tareas con mesa (la actual o la {@code worked_desk} que queda al completar)
+     * cuya fecha programada, de inicio o de cierre cae en la ventana. El día exacto de cada una lo
+     * decide el servicio; aquí solo se acota para no leer toda la tabla.
+     */
+    @Query("""
+            SELECT t FROM TaskEntity t
+            WHERE (t.status IS NULL OR t.status <> 'CANCELLED')
+              AND (t.desk IS NOT NULL OR t.workedDesk IS NOT NULL)
+              AND ((t.scheduledDate BETWEEN :from AND :to)
+                   OR (t.completedAt >= :fromTs AND t.completedAt < :toExclTs)
+                   OR (t.startedAt >= :fromTs AND t.startedAt < :toExclTs))
+            ORDER BY t.id
+            """)
+    List<TaskEntity> findDeskHistoryCandidates(@Param("from") LocalDate from, @Param("to") LocalDate to,
+                                               @Param("fromTs") LocalDateTime fromTs,
+                                               @Param("toExclTs") LocalDateTime toExclTs);
+
     /** Tareas de una mesa en ciertos estados (p. ej. abiertas en la mesa de maquila). */
     long countByDeskAndStatusIn(Integer desk, Collection<String> statuses);
 
