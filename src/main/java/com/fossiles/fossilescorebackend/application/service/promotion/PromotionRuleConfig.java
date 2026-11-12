@@ -128,6 +128,11 @@ public class PromotionRuleConfig {
         private BigDecimal remainderPercent;
         /** POSITION: qué hacer con el último grupo incompleto: POSITIONS (usa las posiciones) o REMAINDER. */
         private String incompleteGroup;
+        /**
+         * POSITION: las posiciones solo aplican desde N piezas en total; con menos, todas llevan remainderPercent.
+         * Ej. Black Friday: 1 pieza 15%; desde 2, la más barata 30% y el resto 15%.
+         */
+        private Integer positionsMinQty;
 
         @Builder.Default
         private List<QtyTier> qtyTiers = new ArrayList<>();

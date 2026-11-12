@@ -75,6 +75,53 @@ class PromotionRuleEngineTest {
         assertMoney("165.00", result.discount());
     }
 
+    /** Guía Black Friday: 1 pieza 15%; desde 2, la más barata 30% y el resto 15%. */
+    private static PromotionRuleConfig blackFridayGuia() {
+        PromotionRuleConfig config = position("ASC", 0, null, 15.0, 30);
+        config.getConditions().setMinQty(null);
+        config.getAction().setPositionsMinQty(2);
+        return config;
+    }
+
+    @Test
+    void guiaBlackFriday_unArticulo15() {
+        PromotionRuleEngine.Result result = PromotionRuleEngine.evaluate(blackFridayGuia(), lines(500), FRIDAY);
+
+        assertTrue(result.applies());
+        assertMoney("75.00", result.discount()); // paga Q425
+        assertEquals("15%", result.lineNotes().get(0));
+    }
+
+    @Test
+    void guiaBlackFriday_dosArticulos() {
+        PromotionRuleEngine.Result result = PromotionRuleEngine.evaluate(blackFridayGuia(), lines(500, 300), FRIDAY);
+
+        assertMoney("75.00", result.lineDiscounts().get(0));
+        assertMoney("90.00", result.lineDiscounts().get(1));
+        assertMoney("165.00", result.discount()); // paga Q635
+    }
+
+    @Test
+    void guiaBlackFriday_tresArticulos() {
+        PromotionRuleEngine.Result result = PromotionRuleEngine.evaluate(blackFridayGuia(), lines(500, 300, 200), FRIDAY);
+
+        assertMoney("75.00", result.lineDiscounts().get(0));
+        assertMoney("45.00", result.lineDiscounts().get(1));
+        assertMoney("60.00", result.lineDiscounts().get(2));
+        assertMoney("180.00", result.discount()); // paga Q820 (la guía dice Q805 por error de suma)
+    }
+
+    @Test
+    void guiaBlackFriday_cuatroArticulos_el30VaAlDe200() {
+        PromotionRuleEngine.Result result = PromotionRuleEngine.evaluate(blackFridayGuia(), lines(500, 300, 200, 350), FRIDAY);
+
+        assertMoney("75.00", result.lineDiscounts().get(0));
+        assertMoney("45.00", result.lineDiscounts().get(1));
+        assertMoney("60.00", result.lineDiscounts().get(2));
+        assertMoney("52.50", result.lineDiscounts().get(3));
+        assertMoney("232.50", result.discount()); // paga Q1,117.50
+    }
+
     @Test
     void dosPiezas_mismaLineaConCantidad2() {
         PromotionRuleConfig config = position("DESC", 2, "REMAINDER", 15.0, 15, 30);
