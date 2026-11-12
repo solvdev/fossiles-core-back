@@ -8,6 +8,10 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.ProductionPlanningLock;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.TaskItemEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LeatherMovementRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -32,6 +36,10 @@ import java.util.Set;
  * </ul>
  * El restante de cada producto se valida igual que en cualquier tarea (con bloqueo de los ítems),
  * y si algo no alcanza no se crea ninguna.
+ *
+ * <p>Por defecto el cuero sale con el envío: se entrega producto por producto y, con el interruptor
+ * de cuero por producto encendido, se descuenta su receta del kardex. Si falta cuero o receta para
+ * algún producto, no se crea nada.
  */
 @Service
 @RequiredArgsConstructor
@@ -42,6 +50,9 @@ public class MaquilaDispatchService {
     private final TaskOrganizerService taskOrganizerService;
     private final ProductionDeskCountService productionDeskCountService;
     private final ProductionPlanningLock productionPlanningLock;
+    private final TaskLeatherDeliveryService taskLeatherDeliveryService;
+    private final LeatherMovementRepository leatherMovementRepository;
+    private final TaskRepository taskRepository;
 
     @Transactional(rollbackFor = Exception.class)
     public MaquilaDispatchResponse send(MaquilaDispatchRequest request)
@@ -77,6 +88,8 @@ public class MaquilaDispatchService {
         List<MaquilaDispatchResponse.Created> created = new ArrayList<>();
         int totalQty = 0;
         double totalHours = 0.0;
+        double leatherFt2 = 0.0;
+        boolean deliverLeather = request.getDeliverLeather() == null || request.getDeliverLeather();
 
         for (MaquilaDispatchRequest.Order o : orders) {
             List<CreateManualTaskRequest.ManualTaskItemRequest> items = o.getItems() == null ? List.of()
@@ -99,6 +112,8 @@ public class MaquilaDispatchService {
                     taskRequest, TaskOrganizerService.CreateMode.AUTO_CENTRO, true, reserved);
             draft.quantityByItemId().forEach((id, q) -> reserved.merge(id, q, Integer::sum));
             TaskEntity task = taskOrganizerService.persistDraft(draft, request.getDate(), maquila.getDesk());
+            double taskFt2 = deliverLeather ? deliverLeather(task, draft.items()) : 0.0;
+            leatherFt2 += taskFt2;
 
             totalQty += draft.totalQuantity();
             totalHours += draft.totalHours();
@@ -108,6 +123,7 @@ public class MaquilaDispatchService {
                     .productionOrderCode(task.getProductionOrderCode())
                     .quantity(draft.totalQuantity())
                     .hours(Math.round(draft.totalHours() * 100.0) / 100.0)
+                    .leatherFt2(round2(taskFt2))
                     .build());
         }
         if (created.isEmpty()) {
@@ -120,8 +136,37 @@ public class MaquilaDispatchService {
                 .deskName(maquila.getName())
                 .totalQuantity(totalQty)
                 .totalHours(Math.round(totalHours * 100.0) / 100.0)
+                .leatherDelivered(deliverLeather)
+                .leatherFt2(round2(leatherFt2))
                 .created(created)
                 .build();
+    }
+
+    /**
+     * El cuero sale al maquilador al enviar: cada producto pasa por la misma entrega que el clic
+     * «Entregar cuero» ({@link TaskLeatherDeliveryService#deliver}). Con el interruptor de cuero por
+     * producto encendido descuenta la receta del kardex; si a un producto le falta cuero o receta, lanza
+     * y no se crea nada del envío. Devuelve los ft² que salieron.
+     */
+    private double deliverLeather(TaskEntity task, List<TaskItemEntity> items) throws BusinessException {
+        double ft2 = 0.0;
+        for (TaskItemEntity item : items) {
+            taskLeatherDeliveryService.deliver(task, item);
+            ft2 += leatherMovementRepository.findFirstByTaskItemIdAndMovementType(item.getId(), "SALIDA")
+                    .map(m -> m.getQuantity() == null ? 0.0 : m.getQuantity().doubleValue())
+                    .orElse(0.0);
+        }
+        boolean all = items.stream().allMatch(i -> Boolean.TRUE.equals(i.getLeatherDelivered()));
+        if (all) {
+            task.setLeatherDelivered(true);
+            task.setLeatherDeliveredAt(GuatemalaDateTime.now());
+            taskRepository.save(task);
+        }
+        return ft2;
+    }
+
+    private static double round2(double v) {
+        return Math.round(v * 100.0) / 100.0;
     }
 
     private SpecialDeskResponse resolveDesk(Integer desk) throws BusinessException {

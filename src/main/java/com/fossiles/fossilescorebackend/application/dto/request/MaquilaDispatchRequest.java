@@ -26,6 +26,13 @@ public class MaquilaDispatchRequest {
 
     private String observations;
 
+    /**
+     * El cuero sale de nuestra bodega hacia el maquilador: se entrega (y descuenta del kardex por
+     * receta) al enviar. {@code null} = sí. Con {@code false} las tareas siguen el camino normal y el
+     * cuero se entrega después en «Por troquelar».
+     */
+    private Boolean deliverLeather;
+
     private List<Order> orders;
 
     @Data
