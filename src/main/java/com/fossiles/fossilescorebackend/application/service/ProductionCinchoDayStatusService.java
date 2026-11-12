@@ -158,9 +158,10 @@ public class ProductionCinchoDayStatusService {
 
         String orderType = order.getOrderType() == null ? "" : order.getOrderType().trim().toUpperCase(Locale.ROOT);
         boolean opcOrder = isOpcOrderType(orderType);
-        if (!VENTA_EN_LINEA.equals(orderType) && !CLIENTE_KIOSKO.equals(orderType) && !opcOrder) {
+        if (!VENTA_EN_LINEA.equals(orderType) && !CLIENTE_KIOSKO.equals(orderType)
+                && !"INTERNA".equals(orderType) && !opcOrder) {
             throw new BusinessException(
-                    "Solo líneas de órdenes OPL, OPCK u OPC (cinchos) pueden registrarse en mesa cinchos.");
+                    "Solo líneas de órdenes OPL, OPCK, OPI u OPC (cinchos) pueden registrarse en mesa cinchos.");
         }
 
         ProductionOrderItemEntity item = productionOrderItemRepository.findById(productionOrderItemId)
