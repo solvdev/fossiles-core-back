@@ -321,6 +321,7 @@ public class KioskExchangeService {
         ExchangeContext exchange = buildExchangeContext(request, true);
         KioskExchangePreviewResponse preview = exchange.preview();
         assertSameUnitPriceHasNoProductDifference(request, preview);
+        assertCatalogIncreaseIsCharged(exchange, preview);
         LocationEntity kioskForSlip = exchange.access().kiosk();
         String slipNumber = requireAvailablePhysicalSlipNumber(request.getPhysicalSlipNumber(), kioskForSlip);
 
@@ -805,6 +806,38 @@ public class KioskExchangeService {
 
     private static boolean isSameUnitPriceMode(String pricingMode) {
         return "SAME_UNIT_PRICE".equals(pricingMode);
+    }
+
+    /**
+     * Si el precio de catálogo de hoy es mayor a lo pagado y el cambio queda en diferencia 0 (o a favor),
+     * solo quien puede editar precios (administración / Miraflores) puede registrarlo: honrar el precio
+     * anterior es una decisión de ellos. El resto debe cobrar la diferencia con "Con diferencia".
+     */
+    private static void assertCatalogIncreaseIsCharged(
+            ExchangeContext exchange,
+            KioskExchangePreviewResponse preview
+    ) throws BusinessException {
+        if (exchange == null || preview == null || exchange.sale() == null) {
+            return;
+        }
+        BigDecimal threshold = new BigDecimal("0.01");
+        BigDecimal difference = preview.getDifferenceAmount() != null
+                ? preview.getDifferenceAmount()
+                : BigDecimal.ZERO;
+        BigDecimal catalogDifference = preview.getCatalogDifferenceAmount() != null
+                ? preview.getCatalogDifferenceAmount()
+                : BigDecimal.ZERO;
+        if (difference.compareTo(threshold) >= 0 || catalogDifference.compareTo(threshold) < 0) {
+            return;
+        }
+        if (allowsExchangePriceEdit(exchange.access().kiosk(), exchange.access().user())) {
+            return;
+        }
+        throw new BusinessException(
+                "El precio de hoy es mayor a lo que pagó el cliente: la diferencia es de "
+                        + catalogDifference.setScale(2, RoundingMode.HALF_UP)
+                        + ". No se puede registrar el cambio sin diferencia; elige \"Con diferencia\" "
+                        + "y cobra la diferencia con factura.");
     }
 
     private static void assertSameUnitPriceHasNoProductDifference(
