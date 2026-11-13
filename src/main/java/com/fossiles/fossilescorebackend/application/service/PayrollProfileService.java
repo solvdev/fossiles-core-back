@@ -107,6 +107,7 @@ public class PayrollProfileService {
                 .position(employee.getPosition())
                 .departmentId(employee.getDepartmentId())
                 .departmentName(department == null ? null : department.getName())
+                .kiosk(department != null && PayrollRules.isKiosk(department.getName(), department.getCode()))
                 .status(employee.getStatus())
                 .hireDate(employee.getHireDate())
                 .terminationDate(employee.getTerminationDate())
