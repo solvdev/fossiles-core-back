@@ -6,11 +6,13 @@ import com.fossiles.fossilescorebackend.application.dto.response.PayrollPayDayRe
 import com.fossiles.fossilescorebackend.application.dto.response.PayrollRunResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.DepartmentEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.EmployeeChargeApplicationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.EmployeeChargeEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.EmployeeEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.PayrollRunEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.PayrollRunLineEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.DepartmentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.EmployeeChargeApplicationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.EmployeeChargeRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.EmployeeRepository;
@@ -68,6 +70,7 @@ public class PayrollRunService {
     private final PayrollRunRepository runRepository;
     private final PayrollRunLineRepository lineRepository;
     private final EmployeeRepository employeeRepository;
+    private final DepartmentRepository departmentRepository;
     private final EmployeeChargeRepository chargeRepository;
     private final EmployeeChargeApplicationRepository applicationRepository;
     private final PayrollParameterService parameterService;
@@ -733,6 +736,13 @@ public class PayrollRunService {
     }
 
     private PayrollRunResponse toResponse(PayrollRunEntity run, List<PayrollRunLineEntity> lines) {
+        // Departamento de cada línea: Administración y kioscos comparten fechas pero se ven por separado.
+        Map<Long, DepartmentEntity> departments = new HashMap<>();
+        if (lines != null) {
+            departmentRepository.findAllById(lines.stream().map(PayrollRunLineEntity::getDepartmentId)
+                    .filter(Objects::nonNull).collect(Collectors.toSet()))
+                    .forEach(department -> departments.put(department.getId(), department));
+        }
         return PayrollRunResponse.builder()
                 .id(run.getId())
                 .payGroup(run.getPayGroup())
@@ -752,17 +762,19 @@ public class PayrollRunService {
                 .paidAt(run.getPaidAt())
                 .cancelledAt(run.getCancelledAt())
                 .cancellationReason(run.getCancellationReason())
-                .lines(lines == null ? null : lines.stream().map(PayrollRunService::toLineResponse).toList())
+                .lines(lines == null ? null : lines.stream().map(line -> toLineResponse(line, departments.get(line.getDepartmentId()))).toList())
                 .build();
     }
 
-    private static PayrollRunResponse.Line toLineResponse(PayrollRunLineEntity line) {
+    private static PayrollRunResponse.Line toLineResponse(PayrollRunLineEntity line, DepartmentEntity department) {
         return PayrollRunResponse.Line.builder()
                 .id(line.getId())
                 .employeeId(line.getEmployeeId())
                 .employeeName(line.getEmployeeName())
                 .position(line.getPosition())
                 .departmentId(line.getDepartmentId())
+                .departmentName(department == null ? null : department.getName())
+                .kiosk(department != null && PayrollRules.isKiosk(department.getName(), department.getCode()))
                 .employmentType(line.getEmploymentType())
                 .paymentMethod(line.getPaymentMethod())
                 .bankAccount(line.getBankAccount())

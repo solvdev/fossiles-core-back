@@ -53,6 +53,9 @@ public class PayrollRunResponse {
         private String employeeName;
         private String position;
         private Long departmentId;
+        private String departmentName;
+        /** El colaborador es de un kiosco: se ve aparte de Administración aunque cobre en las mismas fechas. */
+        private Boolean kiosk;
         private String employmentType;
         private String paymentMethod;
         private String bankAccount;
