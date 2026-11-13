@@ -71,6 +71,13 @@ public class ProductEntity {
     @Column(name = "discounted_price", precision = 12, scale = 2)
     private BigDecimal discountedPrice;
 
+    /**
+     * Descuento que se da al colaborador que compra este producto (compras de colaborador y envíos tipo planilla).
+     * Vacío: el descuento general del 50 %.
+     */
+    @Column(name = "employee_discount_percent", precision = 5, scale = 2)
+    private BigDecimal employeeDiscountPercent;
+
     @Column(name = "seller_price", precision = 12, scale = 2)
     private BigDecimal sellerPrice;
 

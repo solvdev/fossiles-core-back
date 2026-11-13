@@ -68,6 +68,8 @@ public class InternalShipmentRequestResponse {
         private String size;
         private BigDecimal quantity;
         private BigDecimal catalogPrice;
+        /** Descuento que recibe el colaborador por este producto en una compra de planilla (el propio o el 50 % general). */
+        private BigDecimal employeeDiscountPercent;
         /** Stock disponible hoy (Devoluciones + Bodega PT); solo en solicitudes pendientes. */
         private BigDecimal availableQuantity;
         /** Unidades que faltan para cubrir esta línea; 0 si alcanza. */

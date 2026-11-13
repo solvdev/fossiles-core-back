@@ -940,6 +940,7 @@ public class InternalShipmentRequestService {
                 .size(line.getSize())
                 .quantity(line.getQuantity())
                 .catalogPrice(product != null ? product.getSalePrice() : null)
+                .employeeDiscountPercent(product != null ? EmployeeChargeService.employeeDiscountPercent(product) : null)
                 .availableQuantity(stockRow != null ? stockRow.getAvailableQuantity() : null)
                 .shortageQuantity(stockRow != null ? stockRow.getShortageQuantity() : null)
                 .build();
