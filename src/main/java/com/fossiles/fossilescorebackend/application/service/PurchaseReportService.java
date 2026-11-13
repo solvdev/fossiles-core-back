@@ -280,6 +280,8 @@ public class PurchaseReportService {
         } else {
             entries = accountingEntryRepository.findAll();
         }
+        // Los totales tampoco incluyen la planilla para quien no puede ver salarios.
+        entries = accountingService.visible(entries);
 
         BigDecimal totalDebits = entries.stream()
                 .map(e -> e.getDebitAmount() != null ? e.getDebitAmount() : BigDecimal.ZERO)

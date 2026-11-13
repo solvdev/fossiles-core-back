@@ -9,6 +9,8 @@ import java.util.Optional;
 
 @Repository
 public interface MaterialReceiptRepository extends JpaRepository<MaterialReceiptEntity, Long> {
+    @org.springframework.data.jpa.repository.Query("select r.purchaseOrderId from MaterialReceiptEntity r where r.id = :id")
+    Optional<Long> findOrderIdByReceiptId(@org.springframework.data.repository.query.Param("id") Long id);
     List<MaterialReceiptEntity> findByPurchaseOrderId(Long purchaseOrderId);
     Optional<MaterialReceiptEntity> findById(Long id);
 }

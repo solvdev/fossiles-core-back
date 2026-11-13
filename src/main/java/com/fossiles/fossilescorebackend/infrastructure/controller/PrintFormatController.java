@@ -1,5 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.infrastructure.util.PrintFormatHtml;
+
 import com.fossiles.fossilescorebackend.application.dto.request.PrintFormatRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.PrintFormatResponse;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -109,8 +111,9 @@ public class PrintFormatController {
                 .templatePath(entity.getTemplatePath())
                 .paperSize(entity.getPaperSize())
                 .margins(entity.getMargins())
-                .header(entity.getHeader())
-                .footer(entity.getFooter())
+                .header(PrintFormatHtml.sanitize(entity.getHeader()))
+                .body(PrintFormatHtml.sanitize(entity.getBody()))
+                .footer(PrintFormatHtml.sanitize(entity.getFooter()))
                 .logoPath(entity.getLogoPath())
                 .isDefault(entity.getIsDefault())
                 .description(entity.getDescription())
@@ -128,8 +131,9 @@ public class PrintFormatController {
                 .templatePath(request.getTemplatePath())
                 .paperSize(request.getPaperSize())
                 .margins(request.getMargins())
-                .header(request.getHeader())
-                .footer(request.getFooter())
+                .header(PrintFormatHtml.sanitize(request.getHeader()))
+                .body(PrintFormatHtml.sanitize(request.getBody()))
+                .footer(PrintFormatHtml.sanitize(request.getFooter()))
                 .logoPath(request.getLogoPath())
                 .isDefault(request.getIsDefault() != null ? request.getIsDefault() : false)
                 .description(request.getDescription())
@@ -142,8 +146,9 @@ public class PrintFormatController {
         if (request.getTemplatePath() != null) entity.setTemplatePath(request.getTemplatePath());
         if (request.getPaperSize() != null) entity.setPaperSize(request.getPaperSize());
         if (request.getMargins() != null) entity.setMargins(request.getMargins());
-        if (request.getHeader() != null) entity.setHeader(request.getHeader());
-        if (request.getFooter() != null) entity.setFooter(request.getFooter());
+        if (request.getHeader() != null) entity.setHeader(PrintFormatHtml.sanitize(request.getHeader()));
+        if (request.getBody() != null) entity.setBody(PrintFormatHtml.sanitize(request.getBody()));
+        if (request.getFooter() != null) entity.setFooter(PrintFormatHtml.sanitize(request.getFooter()));
         if (request.getLogoPath() != null) entity.setLogoPath(request.getLogoPath());
         if (request.getIsDefault() != null) entity.setIsDefault(request.getIsDefault());
         if (request.getDescription() != null) entity.setDescription(request.getDescription());

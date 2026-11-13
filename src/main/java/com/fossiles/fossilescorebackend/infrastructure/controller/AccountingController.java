@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.response.AccountingEntryResponse;
 import com.fossiles.fossilescorebackend.application.service.AccountingService;
+import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -52,38 +53,9 @@ public class AccountingController {
             @RequestParam(required = false) String documentType,
             @RequestParam(required = false) String accountCode,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime startDate,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime endDate) {
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime endDate) throws BusinessException {
         
-        List<AccountingEntryResponse> entries;
-        
-        // Aplicar filtros combinados
-        if (documentType != null && !documentType.isEmpty() && accountCode != null && !accountCode.isEmpty()) {
-            // Filtrar por tipo de documento y cuenta
-            entries = accountingService.getEntriesByDocumentType(documentType).stream()
-                    .filter(e -> e.getAccountCode().equals(accountCode))
-                    .toList();
-        } else if (documentType != null && !documentType.isEmpty() && startDate != null && endDate != null) {
-            // Filtrar por tipo de documento y rango de fechas
-            entries = accountingService.getEntriesByDateRange(startDate, endDate).stream()
-                    .filter(e -> e.getDocumentType().equals(documentType))
-                    .toList();
-        } else if (accountCode != null && !accountCode.isEmpty() && startDate != null && endDate != null) {
-            // Filtrar por cuenta y rango de fechas
-            entries = accountingService.getEntriesByDateRange(startDate, endDate).stream()
-                    .filter(e -> e.getAccountCode().equals(accountCode))
-                    .toList();
-        } else if (documentType != null && !documentType.isEmpty()) {
-            entries = accountingService.getEntriesByDocumentType(documentType);
-        } else if (accountCode != null && !accountCode.isEmpty()) {
-            entries = accountingService.getEntriesByAccount(accountCode);
-        } else if (startDate != null && endDate != null) {
-            entries = accountingService.getEntriesByDateRange(startDate, endDate);
-        } else {
-            // Si no hay filtros, retornar todos los asientos (últimos 1000 para performance)
-            entries = accountingService.getAllEntries().stream()
-                    .limit(1000)
-                    .toList();
-        }
+        List<AccountingEntryResponse> entries = accountingService.searchEntries(documentType, accountCode, startDate, endDate);
         
         return ResponseEntity.ok(entries);
     }

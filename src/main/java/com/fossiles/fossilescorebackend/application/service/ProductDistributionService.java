@@ -131,6 +131,7 @@ public class ProductDistributionService {
     private final ProductionOrderPartialReleaseRepository partialReleaseRepository;
     private final CustomerAccountService customerAccountService;
     private final ObjectMapper objectMapper;
+    private final EmployeeChargeService employeeChargeService;
 
     // ========== DISTRIBUTION ==========
 
@@ -1778,9 +1779,15 @@ public class ProductDistributionService {
 
         if (sentStatus && dispatchInventory) {
             reverseSentShipmentDispatchInventory(shipment);
-            assertDispatchStockAvailable(normalized.stream()
-                    .filter(line -> !skipsWarehouseForLine(shipment, line.getProductId()))
-                    .collect(Collectors.toList()), resolveDispatchSource(shipment));
+            try {
+                assertDispatchStockAvailable(normalized.stream()
+                        .filter(line -> !skipsWarehouseForLine(shipment, line.getProductId()))
+                        .collect(Collectors.toList()), resolveDispatchSource(shipment));
+            } catch (BusinessException ex) {
+                // La devolución a PT ya se escribió: sin rollback quedaría stock que no existe con el envío aún SENT.
+                org.springframework.transaction.interceptor.TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+                throw ex;
+            }
         }
 
         // La cantidad sugerida por la reposición se conserva al editar líneas (sirve para medir los ajustes).
@@ -2024,6 +2031,7 @@ public class ProductDistributionService {
             throw new BusinessException(
                     "Solo se puede regresar a bodega un envío en tránsito (SENT). Estado actual: " + currentStatus);
         }
+        employeeChargeService.assertShipmentCanBeReverted(shipmentId);
         // Lo que ya no salió no se cobra: se anula el cargo del despacho (o se rechaza si ya tiene pagos).
         customerAccountService.voidEntriesForShipment(shipmentId,
                 "Despacho revertido del envío " + shipment.getShipmentNumber());
@@ -2071,6 +2079,8 @@ public class ProductDistributionService {
                     "Solo se puede anular un envío en borrador, confirmado o en tránsito (antes de recibir en kiosko). Estado actual: "
                             + currentStatus);
         }
+        // Una compra de colaborador ya descontada o cobrada no se anula; si no, su cargo se anula junto con el envío.
+        Optional<EmployeeChargeEntity> purchaseCharge = employeeChargeService.lockCancellableChargeForShipment(shipmentId);
         // Un envío anulado no se cobra: se anula el cargo del despacho (o se rechaza si ya tiene pagos).
         customerAccountService.voidEntriesForShipment(shipmentId,
                 "Envío anulado " + shipment.getShipmentNumber());
@@ -2108,6 +2118,7 @@ public class ProductDistributionService {
             });
         }
         rotateVendorNumberAfterCancellingShipment(saved);
+        purchaseCharge.ifPresent(employeeChargeService::cancelChargeOfCancelledShipment);
         return toShipmentResponse(saved);
     }
 

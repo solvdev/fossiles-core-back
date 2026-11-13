@@ -18,8 +18,12 @@ public class MaterialReceiptItemRequest {
     private Long materialId;
 
     @NotNull(message = "Quantity received is required")
+    @jakarta.validation.constraints.DecimalMin("0")
+    @jakarta.validation.constraints.Digits(integer = 9, fraction = 3)
     private BigDecimal quantityReceived;
 
+    @jakarta.validation.constraints.DecimalMin("0")
+    @jakarta.validation.constraints.Digits(integer = 10, fraction = 2)
     private BigDecimal unitPriceReceived; // Si no se envía, se usa el precio de la orden
     
     private Long supplierId; // Proveedor asignado para este item (opcional)

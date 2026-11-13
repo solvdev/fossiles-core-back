@@ -22,7 +22,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
-@Transactional
+@Transactional(rollbackFor = Exception.class)
 public class PurchaseService {
 
     private final MaterialRequestRepository materialRequestRepository;
@@ -35,7 +35,7 @@ public class PurchaseService {
     private final SupplierRepository supplierRepository;
     private final DocumentSeriesRepository documentSeriesRepository;
     private final AccountingService accountingService;
-    private final InventoryService inventoryService;
+    private final MaterialReceiptService materialReceiptService;
     private final SecurityUtil securityUtil;
     private final UserRepository userRepository;
 
@@ -336,6 +336,8 @@ public class PurchaseService {
                                 .collect(Collectors.joining(","))
                         : null)
                 .observations(request.getObservations())
+                // Recepciones, ajustes y anulación toman el centro de costo de la compra.
+                .costCenterId(request.getCostCenterId())
                 .createdBy(currentUserId)
                 .updatedBy(currentUserId)
                 .build();
@@ -401,15 +403,8 @@ public class PurchaseService {
             }
         }
 
-        // Generar asientos contables automáticamente
-        try {
-            Long costCenterId = request.getCostCenterId(); // Opcional, puede ser null
-            accountingService.generatePurchaseOrderEntries(saved.getId(), orderCode, total, costCenterId);
-        } catch (Exception e) {
-            // Log error pero no fallar la creación de la orden
-            System.err.println("Error al generar asientos contables: " + e.getMessage());
-            e.printStackTrace();
-        }
+        // La compra y sus asientos se guardan en la misma transacción.
+        accountingService.generatePurchaseOrderEntries(saved.getId(), orderCode, total, request.getCostCenterId());
 
         return toPurchaseOrderResponse(saved);
     }
@@ -430,7 +425,7 @@ public class PurchaseService {
     }
 
     public PurchaseOrderResponse cancelPurchaseOrder(Long id) throws BusinessException, ResourceNotFoundException {
-        PurchaseOrderEntity entity = purchaseOrderRepository.findById(id)
+        PurchaseOrderEntity entity = purchaseOrderRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Purchase Order", id));
 
         if (!"CREADA".equals(entity.getStatus())) {
@@ -442,15 +437,7 @@ public class PurchaseService {
         entity.setUpdatedBy(currentUserId);
         PurchaseOrderEntity saved = purchaseOrderRepository.save(entity);
 
-        // Generar asientos contables de cancelación (reversión)
-        try {
-            Long costCenterId = null; // Se puede obtener de la solicitud si está disponible
-            accountingService.generatePurchaseOrderCancellationEntries(saved.getId(), entity.getCode(), entity.getTotal(), costCenterId);
-        } catch (Exception e) {
-            // Log error pero no fallar la cancelación
-            System.err.println("Error al generar asientos contables de cancelación: " + e.getMessage());
-            e.printStackTrace();
-        }
+        accountingService.generatePurchaseOrderCancellationEntries(saved.getId(), entity.getCode(), entity.getTotal(), entity.getCostCenterId());
 
         return toPurchaseOrderResponse(saved);
     }
@@ -459,513 +446,19 @@ public class PurchaseService {
     // ========== MATERIAL RECEIPT ==========
 
     public MaterialReceiptResponse createMaterialReceipt(MaterialReceiptRequest request) throws BusinessException, ResourceNotFoundException {
-        // Validar orden de compra
-        PurchaseOrderEntity purchaseOrder = purchaseOrderRepository.findById(request.getPurchaseOrderId())
-                .orElseThrow(() -> new ResourceNotFoundException("Purchase Order", request.getPurchaseOrderId()));
-
-        if (!"CREADA".equals(purchaseOrder.getStatus()) && !"PARCIALMENTE_RECIBIDA".equals(purchaseOrder.getStatus())) {
-            throw new BusinessException("Solo se pueden recibir órdenes de compra con estado CREADA o PARCIALMENTE_RECIBIDA");
-        }
-
-        // Obtener usuario actual
-        Long currentUserId = securityUtil.getCurrentUserId();
-
-        // Guardar solo las observaciones del usuario (sin mezclar con JSON de items)
-        // Los items se procesan directamente en el código, no necesitan guardarse en observations
-        String userObservations = request.getObservations();
-        if (userObservations != null && userObservations.trim().isEmpty()) {
-            userObservations = null;
-        }
-
-        // Crear recepción
-        MaterialReceiptEntity receipt = MaterialReceiptEntity.builder()
-                .purchaseOrderId(request.getPurchaseOrderId())
-                .receiptDate(request.getReceiptDate() != null ? request.getReceiptDate() : LocalDate.now())
-                .observations(userObservations) // Solo observaciones del usuario, sin JSON
-                .createdBy(currentUserId)
-                .updatedBy(currentUserId)
-                .build();
-
-        MaterialReceiptEntity saved = materialReceiptRepository.save(receipt);
-
-        // Obtener items de la orden para copiar supplierId
-        List<PurchaseOrderItemEntity> orderItemsForSupplier = purchaseOrderItemRepository.findByPurchaseOrderId(purchaseOrder.getId());
-        java.util.Map<Long, Long> materialToSupplierMap = new java.util.HashMap<>();
-        for (PurchaseOrderItemEntity orderItem : orderItemsForSupplier) {
-            if (orderItem.getSupplierId() != null) {
-                materialToSupplierMap.put(orderItem.getMaterialId(), orderItem.getSupplierId());
-            }
-        }
-
-        // Guardar items de recepción en tabla separada (NO en observations)
-        if (request.getItems() != null && !request.getItems().isEmpty()) {
-            for (MaterialReceiptItemRequest receivedItem : request.getItems()) {
-                // Usar supplierId del request, o si no está, usar el de la orden como fallback
-                Long supplierId = receivedItem.getSupplierId();
-                if (supplierId == null) {
-                    supplierId = materialToSupplierMap.get(receivedItem.getMaterialId());
-                }
-                
-                // Usar receiptDate del item, o si no está, usar la fecha general de la recepción
-                LocalDate receiptDate = receivedItem.getReceiptDate();
-                if (receiptDate == null) {
-                    receiptDate = request.getReceiptDate() != null ? request.getReceiptDate() : LocalDate.now();
-                }
-                
-                MaterialReceiptItemEntity receiptItem = MaterialReceiptItemEntity.builder()
-                        .materialReceiptId(saved.getId())
-                        .materialId(receivedItem.getMaterialId())
-                        .quantityReceived(receivedItem.getQuantityReceived())
-                        .unitPriceReceived(receivedItem.getUnitPriceReceived())
-                        .supplierId(supplierId)
-                        .receiptDate(receiptDate)
-                        .createdBy(currentUserId)
-                        .updatedBy(currentUserId)
-                        .build();
-                materialReceiptItemRepository.save(receiptItem);
-            }
-        }
-
-        // Obtener items de la orden
-        List<PurchaseOrderItemEntity> orderItems = purchaseOrderItemRepository.findByPurchaseOrderId(purchaseOrder.getId());
-        
-        // Crear mapa de items recibidos si se proporcionaron
-        java.util.Map<Long, MaterialReceiptItemRequest> receivedItemsMap = new java.util.HashMap<>();
-        if (request.getItems() != null && !request.getItems().isEmpty()) {
-            for (MaterialReceiptItemRequest receivedItem : request.getItems()) {
-                receivedItemsMap.put(receivedItem.getMaterialId(), receivedItem);
-            }
-        }
-
-        BigDecimal totalReceived = BigDecimal.ZERO;
-        boolean allItemsComplete = true;
-        boolean hasPartialReceipt = false;
-
-        // Procesar cada item de la orden
-        for (PurchaseOrderItemEntity orderItem : orderItems) {
-            MaterialEntity material = materialRepository.findById(orderItem.getMaterialId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Material", orderItem.getMaterialId()));
-
-            // Determinar cantidad y precio recibidos
-            BigDecimal quantityReceived;
-            BigDecimal unitPriceReceived;
-            
-            MaterialReceiptItemRequest receivedItem = receivedItemsMap.get(orderItem.getMaterialId());
-            if (receivedItem != null) {
-                // Usar cantidades y precios recibidos
-                quantityReceived = receivedItem.getQuantityReceived();
-                unitPriceReceived = receivedItem.getUnitPriceReceived() != null 
-                    ? receivedItem.getUnitPriceReceived() 
-                    : orderItem.getUnitPrice();
-            } else {
-                // Si no se especifica en la recepción, no se recibió nada (0)
-                // Esto permite recepciones parciales donde algunos items no se reciben
-                quantityReceived = BigDecimal.ZERO;
-                unitPriceReceived = orderItem.getUnitPrice();
-            }
-
-            // Si la cantidad recibida es 0 o negativa, saltar este item (no se recibió)
-            // Esto permite recepciones parciales donde algunos items no se reciben
-            if (quantityReceived.compareTo(BigDecimal.ZERO) <= 0) {
-                // Marcar como recepción parcial si no se recibió este item
-                if (quantityReceived.compareTo(BigDecimal.ZERO) == 0) {
-                    hasPartialReceipt = true;
-                    allItemsComplete = false;
-                }
-                // Continuar con el siguiente item sin procesar este
-                continue;
-            }
-
-            // IMPORTANTE: quantityReceived viene en unidades de compra (como se ingresó en el frontend)
-            // Necesitamos convertir a unidades de manufactura para actualizar el inventario
-            // orderItem.getQuantity() también está en unidades de compra, así que la comparación es correcta
-            int quantityComparison = quantityReceived.compareTo(orderItem.getQuantity());
-            if (quantityComparison < 0) {
-                hasPartialReceipt = true;
-                allItemsComplete = false;
-            } else if (quantityComparison > 0) {
-                // Exceso permitido, pero se registra la variación
-                // No marcamos como parcial, pero sí registramos la variación
-            }
-
-            // Convertir cantidad recibida de unidades de compra a unidades de manufactura
-            BigDecimal quantityReceivedInManufacturing = quantityReceived;
-            if (material.getPurchaseQuantity() != null && material.getPurchaseQuantity().compareTo(BigDecimal.ZERO) > 0) {
-                // Si hay purchaseQuantity, convertir: cantidad_manufactura = cantidad_compra * purchaseQuantity
-                quantityReceivedInManufacturing = quantityReceived.multiply(material.getPurchaseQuantity());
-            }
-            // Si no hay purchaseQuantity, asumimos que las unidades son las mismas (1:1)
-
-            // Obtener stock actual antes de la recepción para calcular costo promedio
-            // El stock está en unidades de manufactura
-            BigDecimal currentStock = material.getQuantity() != null ? material.getQuantity() : BigDecimal.ZERO;
-            // El unitCost es el costo por unidad de manufactura
-            BigDecimal currentUnitCost = material.getUnitCost() != null ? material.getUnitCost() : BigDecimal.ZERO;
-            
-            // unitPriceReceived viene en precio por unidad de compra, necesitamos convertirlo a precio por unidad de manufactura
-            BigDecimal unitPriceReceivedInManufacturing = unitPriceReceived;
-            if (material.getPurchaseQuantity() != null && material.getPurchaseQuantity().compareTo(BigDecimal.ZERO) > 0) {
-                // Precio por unidad de manufactura = precio por unidad de compra / purchaseQuantity
-                unitPriceReceivedInManufacturing = unitPriceReceived.divide(material.getPurchaseQuantity(), 4, java.math.RoundingMode.HALF_UP);
-            }
-            
-            // Calcular costo promedio ponderado (en unidades de manufactura)
-            BigDecimal newUnitCost = calculateWeightedAverageCost(
-                currentStock,
-                currentUnitCost,
-                quantityReceivedInManufacturing, // Cantidad recibida en unidades de manufactura
-                unitPriceReceivedInManufacturing // Precio por unidad de manufactura
-            );
-
-            // Incrementar inventario de materiales (usar cantidad en unidades de manufactura)
-            inventoryService.incrementMaterialInventory(
-                    orderItem.getMaterialId(),
-                    quantityReceivedInManufacturing, // Usar cantidad convertida a unidades de manufactura
-                    unitPriceReceivedInManufacturing, // Usar precio convertido a unidades de manufactura
-                    "MATERIAL_RECEIPT",
-                    saved.getId(),
-                    purchaseOrder.getCode(),
-                    "Recepción de materiales - Orden: " + purchaseOrder.getCode() + 
-                    (quantityComparison != 0 ? " (Variación: " + 
-                        (quantityComparison > 0 ? "+" : "") + 
-                        quantityReceived.subtract(orderItem.getQuantity()) + ")" : "")
-            );
-
-            // Actualizar costo unitario (por unidad de manufactura)
-            material.setUnitCost(newUnitCost);
-            
-            // Actualizar precio de compra (en unidades de compra)
-            // El purchasePrice es el precio por unidad de compra, que es lo que recibimos del frontend
-            material.setPurchasePrice(unitPriceReceived);
-            
-            materialRepository.save(material);
-
-            // Calcular total recibido (en unidades de compra para el total)
-            totalReceived = totalReceived.add(quantityReceived.multiply(unitPriceReceived));
-        }
-
-        // Determinar nuevo estado de la orden
-        String newStatus;
-        if (allItemsComplete && !hasPartialReceipt) {
-            newStatus = "RECIBIDA";
-        } else {
-            newStatus = "PARCIALMENTE_RECIBIDA";
-        }
-
-        currentUserId = securityUtil.getCurrentUserId();
-        purchaseOrder.setStatus(newStatus);
-        purchaseOrder.setUpdatedBy(currentUserId);
-        purchaseOrderRepository.save(purchaseOrder);
-
-        // Generar asientos contables de recepción
-        try {
-            Long costCenterId = null;
-            accountingService.generateMaterialReceiptEntries(
-                    saved.getId(),
-                    purchaseOrder.getId(),
-                    purchaseOrder.getCode(),
-                    totalReceived,
-                    purchaseOrder.getTotal(),
-                    costCenterId
-            );
-        } catch (Exception e) {
-            System.err.println("Error al generar asientos contables de recepción: " + e.getMessage());
-        }
-
-        return toMaterialReceiptResponse(saved);
+        return toMaterialReceiptResponse(materialReceiptService.create(request));
     }
 
-    /**
-     * Calcula el costo promedio ponderado
-     * Fórmula: (StockActual × CostoActual + CantidadRecibida × PrecioRecibido) / (StockActual + CantidadRecibida)
-     */
-    private BigDecimal calculateWeightedAverageCost(
-            BigDecimal currentStock,
-            BigDecimal currentCost,
-            BigDecimal quantityReceived,
-            BigDecimal priceReceived) {
-        
-        if (currentStock.compareTo(BigDecimal.ZERO) == 0) {
-            // Si no hay stock, el nuevo costo es el precio recibido
-            return priceReceived;
-        }
+    public MaterialReceiptResponse updateMaterialReceipt(Long id, MaterialReceiptRequest request) throws BusinessException, ResourceNotFoundException {
+        return toMaterialReceiptResponse(materialReceiptService.update(id, request));
+    }
 
-        // Calcular valor total del stock actual
-        BigDecimal currentValue = currentStock.multiply(currentCost);
-        
-        // Calcular valor de lo recibido
-        BigDecimal receivedValue = quantityReceived.multiply(priceReceived);
-        
-        // Calcular nuevo stock total
-        BigDecimal newStock = currentStock.add(quantityReceived);
-        
-        // Calcular nuevo costo promedio
-        BigDecimal totalValue = currentValue.add(receivedValue);
-        BigDecimal newAverageCost = totalValue.divide(newStock, 4, java.math.RoundingMode.HALF_UP);
-        
-        return newAverageCost;
+    public MaterialReceiptResponse cancelMaterialReceipt(Long id, String reason) throws BusinessException, ResourceNotFoundException {
+        return toMaterialReceiptResponse(materialReceiptService.cancel(id, reason));
     }
 
     public List<MaterialReceiptResponse> getMaterialReceipts() {
-        return materialReceiptRepository.findAll().stream()
-                .map(this::toMaterialReceiptResponse)
-                .collect(Collectors.toList());
-    }
-
-    public MaterialReceiptResponse updateMaterialReceipt(Long receiptId, MaterialReceiptRequest request) throws BusinessException, ResourceNotFoundException {
-        // Buscar recepción existente
-        MaterialReceiptEntity existingReceipt = materialReceiptRepository.findById(receiptId)
-                .orElseThrow(() -> new ResourceNotFoundException("Material Receipt", receiptId));
-
-        // Validar orden de compra
-        PurchaseOrderEntity purchaseOrder = purchaseOrderRepository.findById(existingReceipt.getPurchaseOrderId())
-                .orElseThrow(() -> new ResourceNotFoundException("Purchase Order", existingReceipt.getPurchaseOrderId()));
-
-        if (!"PARCIALMENTE_RECIBIDA".equals(purchaseOrder.getStatus()) && !"CREADA".equals(purchaseOrder.getStatus())) {
-            throw new BusinessException("Solo se pueden actualizar recepciones de órdenes con estado CREADA o PARCIALMENTE_RECIBIDA");
-        }
-
-        // Obtener usuario actual
-        Long currentUserId = securityUtil.getCurrentUserId();
-
-        // Actualizar observaciones si se proporcionan
-        if (request.getObservations() != null) {
-            String userObservations = request.getObservations().trim();
-            existingReceipt.setObservations(userObservations.isEmpty() ? null : userObservations);
-        }
-
-        // Actualizar fecha de recepción si se proporciona
-        if (request.getReceiptDate() != null) {
-            existingReceipt.setReceiptDate(request.getReceiptDate());
-        }
-
-        existingReceipt.setUpdatedBy(currentUserId);
-        MaterialReceiptEntity saved = materialReceiptRepository.save(existingReceipt);
-
-        // Obtener items ya recibidos
-        List<MaterialReceiptItemEntity> existingReceiptItems = materialReceiptItemRepository.findByMaterialReceiptId(receiptId);
-        java.util.Map<Long, MaterialReceiptItemEntity> existingItemsMap = new java.util.HashMap<>();
-        for (MaterialReceiptItemEntity existingItem : existingReceiptItems) {
-            existingItemsMap.put(existingItem.getMaterialId(), existingItem);
-        }
-
-        // Obtener items de la orden para copiar supplierId
-        List<PurchaseOrderItemEntity> orderItemsForSupplier = purchaseOrderItemRepository.findByPurchaseOrderId(purchaseOrder.getId());
-        java.util.Map<Long, Long> materialToSupplierMap = new java.util.HashMap<>();
-        for (PurchaseOrderItemEntity orderItem : orderItemsForSupplier) {
-            if (orderItem.getSupplierId() != null) {
-                materialToSupplierMap.put(orderItem.getMaterialId(), orderItem.getSupplierId());
-            }
-        }
-
-        // Procesar items nuevos o actualizados
-        if (request.getItems() != null && !request.getItems().isEmpty()) {
-            for (MaterialReceiptItemRequest receivedItem : request.getItems()) {
-                MaterialReceiptItemEntity existingItem = existingItemsMap.get(receivedItem.getMaterialId());
-                
-                if (existingItem != null) {
-                    // Actualizar item existente
-                    BigDecimal oldQuantity = existingItem.getQuantityReceived();
-                    BigDecimal newQuantity = receivedItem.getQuantityReceived();
-                    BigDecimal quantityDifference = newQuantity.subtract(oldQuantity);
-                    
-                    // Actualizar valores
-                    existingItem.setQuantityReceived(newQuantity);
-                    if (receivedItem.getUnitPriceReceived() != null) {
-                        existingItem.setUnitPriceReceived(receivedItem.getUnitPriceReceived());
-                    }
-                    if (receivedItem.getReceiptDate() != null) {
-                        existingItem.setReceiptDate(receivedItem.getReceiptDate());
-                    }
-                    if (receivedItem.getSupplierId() != null) {
-                        existingItem.setSupplierId(receivedItem.getSupplierId());
-                    } else if (existingItem.getSupplierId() == null) {
-                        existingItem.setSupplierId(materialToSupplierMap.get(receivedItem.getMaterialId()));
-                    }
-                    existingItem.setUpdatedBy(currentUserId);
-                    materialReceiptItemRepository.save(existingItem);
-
-                    // Actualizar inventario solo con la diferencia
-                    if (quantityDifference.compareTo(BigDecimal.ZERO) != 0) {
-                        MaterialEntity material = materialRepository.findById(receivedItem.getMaterialId())
-                                .orElseThrow(() -> new ResourceNotFoundException("Material", receivedItem.getMaterialId()));
-                        
-                        BigDecimal unitPriceReceived = receivedItem.getUnitPriceReceived() != null 
-                            ? receivedItem.getUnitPriceReceived() 
-                            : existingItem.getUnitPriceReceived();
-                        
-                        // Convertir diferencia de unidades de compra a unidades de manufactura
-                        BigDecimal quantityDifferenceInManufacturing = quantityDifference;
-                        if (material.getPurchaseQuantity() != null && material.getPurchaseQuantity().compareTo(BigDecimal.ZERO) > 0) {
-                            quantityDifferenceInManufacturing = quantityDifference.multiply(material.getPurchaseQuantity());
-                        }
-                        
-                        // Convertir precio de unidades de compra a unidades de manufactura
-                        BigDecimal unitPriceReceivedInManufacturing = unitPriceReceived;
-                        if (material.getPurchaseQuantity() != null && material.getPurchaseQuantity().compareTo(BigDecimal.ZERO) > 0) {
-                            unitPriceReceivedInManufacturing = unitPriceReceived.divide(material.getPurchaseQuantity(), 4, java.math.RoundingMode.HALF_UP);
-                        }
-                        
-                        // Obtener stock actual
-                        BigDecimal currentStock = material.getQuantity() != null ? material.getQuantity() : BigDecimal.ZERO;
-                        BigDecimal currentUnitCost = material.getUnitCost() != null ? material.getUnitCost() : BigDecimal.ZERO;
-                        
-                        // Calcular nuevo costo promedio ponderado
-                        BigDecimal newUnitCost = calculateWeightedAverageCost(
-                            currentStock,
-                            currentUnitCost,
-                            quantityDifferenceInManufacturing, // Diferencia en unidades de manufactura
-                            unitPriceReceivedInManufacturing
-                        );
-                        
-                        // Actualizar inventario solo con la diferencia
-                        if (quantityDifference.compareTo(BigDecimal.ZERO) > 0) {
-                            inventoryService.incrementMaterialInventory(
-                                    receivedItem.getMaterialId(),
-                                    quantityDifferenceInManufacturing, // Usar cantidad convertida
-                                    unitPriceReceivedInManufacturing, // Usar precio convertido
-                                    "MATERIAL_RECEIPT_UPDATE",
-                                    saved.getId(),
-                                    purchaseOrder.getCode(),
-                                    "Actualización de recepción - Orden: " + purchaseOrder.getCode()
-                            );
-                        } else {
-                            // Si la diferencia es negativa, decrementar inventario
-                            BigDecimal unitCost = material.getUnitCost() != null ? material.getUnitCost() : BigDecimal.ZERO;
-                            
-                            inventoryService.decrementMaterialInventory(
-                                    receivedItem.getMaterialId(),
-                                    quantityDifferenceInManufacturing.abs(), // Usar cantidad convertida
-                                    unitCost,
-                                    "MATERIAL_RECEIPT_UPDATE",
-                                    saved.getId(),
-                                    purchaseOrder.getCode(),
-                                    "Actualización de recepción - Orden: " + purchaseOrder.getCode()
-                            );
-                        }
-                        
-                        // Actualizar costo unitario
-                        material.setUnitCost(newUnitCost);
-                        // Actualizar precio de compra (en unidades de compra)
-                        material.setPurchasePrice(unitPriceReceived);
-                        materialRepository.save(material);
-                    }
-                } else {
-                    // Nuevo item - agregar
-                    Long supplierId = receivedItem.getSupplierId();
-                    if (supplierId == null) {
-                        supplierId = materialToSupplierMap.get(receivedItem.getMaterialId());
-                    }
-                    
-                    LocalDate receiptDate = receivedItem.getReceiptDate();
-                    if (receiptDate == null) {
-                        receiptDate = request.getReceiptDate() != null ? request.getReceiptDate() : LocalDate.now();
-                    }
-                    
-                    MaterialReceiptItemEntity receiptItem = MaterialReceiptItemEntity.builder()
-                            .materialReceiptId(saved.getId())
-                            .materialId(receivedItem.getMaterialId())
-                            .quantityReceived(receivedItem.getQuantityReceived())
-                            .unitPriceReceived(receivedItem.getUnitPriceReceived())
-                            .supplierId(supplierId)
-                            .receiptDate(receiptDate)
-                            .createdBy(currentUserId)
-                            .updatedBy(currentUserId)
-                            .build();
-                    materialReceiptItemRepository.save(receiptItem);
-
-                    // Actualizar inventario para el nuevo item
-                    if (receivedItem.getQuantityReceived().compareTo(BigDecimal.ZERO) > 0) {
-                        MaterialEntity material = materialRepository.findById(receivedItem.getMaterialId())
-                                .orElseThrow(() -> new ResourceNotFoundException("Material", receivedItem.getMaterialId()));
-                        
-                        BigDecimal unitPriceReceived = receivedItem.getUnitPriceReceived() != null 
-                            ? receivedItem.getUnitPriceReceived() 
-                            : BigDecimal.ZERO;
-                        
-                        // Convertir cantidad de unidades de compra a unidades de manufactura
-                        BigDecimal quantityReceivedInManufacturing = receivedItem.getQuantityReceived();
-                        if (material.getPurchaseQuantity() != null && material.getPurchaseQuantity().compareTo(BigDecimal.ZERO) > 0) {
-                            quantityReceivedInManufacturing = receivedItem.getQuantityReceived().multiply(material.getPurchaseQuantity());
-                        }
-                        
-                        // Convertir precio de unidades de compra a unidades de manufactura
-                        BigDecimal unitPriceReceivedInManufacturing = unitPriceReceived;
-                        if (material.getPurchaseQuantity() != null && material.getPurchaseQuantity().compareTo(BigDecimal.ZERO) > 0) {
-                            unitPriceReceivedInManufacturing = unitPriceReceived.divide(material.getPurchaseQuantity(), 4, java.math.RoundingMode.HALF_UP);
-                        }
-                        
-                        // Obtener stock actual
-                        BigDecimal currentStock = material.getQuantity() != null ? material.getQuantity() : BigDecimal.ZERO;
-                        BigDecimal currentUnitCost = material.getUnitCost() != null ? material.getUnitCost() : BigDecimal.ZERO;
-                        
-                        // Calcular nuevo costo promedio ponderado
-                        BigDecimal newUnitCost = calculateWeightedAverageCost(
-                            currentStock,
-                            currentUnitCost,
-                            quantityReceivedInManufacturing, // Cantidad en unidades de manufactura
-                            unitPriceReceivedInManufacturing // Precio en unidades de manufactura
-                        );
-                        
-                        inventoryService.incrementMaterialInventory(
-                                receivedItem.getMaterialId(),
-                                quantityReceivedInManufacturing, // Usar cantidad convertida
-                                unitPriceReceivedInManufacturing, // Usar precio convertido
-                                "MATERIAL_RECEIPT_UPDATE",
-                                saved.getId(),
-                                purchaseOrder.getCode(),
-                                "Actualización de recepción - Orden: " + purchaseOrder.getCode()
-                        );
-                        
-                        // Actualizar costo unitario
-                        material.setUnitCost(newUnitCost);
-                        // Actualizar precio de compra (en unidades de compra)
-                        material.setPurchasePrice(unitPriceReceived);
-                        materialRepository.save(material);
-                    }
-                }
-            }
-        }
-
-        // Recalcular estado de la orden basado en todos los items recibidos
-        List<PurchaseOrderItemEntity> orderItems = purchaseOrderItemRepository.findByPurchaseOrderId(purchaseOrder.getId());
-        List<MaterialReceiptItemEntity> allReceiptItems = materialReceiptItemRepository.findByMaterialReceiptId(receiptId);
-        java.util.Map<Long, BigDecimal> totalReceivedByMaterial = new java.util.HashMap<>();
-        
-        for (MaterialReceiptItemEntity receiptItem : allReceiptItems) {
-            BigDecimal currentTotal = totalReceivedByMaterial.getOrDefault(receiptItem.getMaterialId(), BigDecimal.ZERO);
-            totalReceivedByMaterial.put(receiptItem.getMaterialId(), currentTotal.add(receiptItem.getQuantityReceived()));
-        }
-
-        boolean allItemsComplete = true;
-        boolean hasPartialReceipt = false;
-
-        for (PurchaseOrderItemEntity orderItem : orderItems) {
-            BigDecimal totalReceived = totalReceivedByMaterial.getOrDefault(orderItem.getMaterialId(), BigDecimal.ZERO);
-            int comparison = totalReceived.compareTo(orderItem.getQuantity());
-            
-            if (comparison < 0) {
-                hasPartialReceipt = true;
-                allItemsComplete = false;
-            } else if (totalReceived.compareTo(BigDecimal.ZERO) == 0) {
-                hasPartialReceipt = true;
-                allItemsComplete = false;
-            }
-        }
-
-        // Determinar nuevo estado de la orden
-        String newStatus;
-        if (allItemsComplete && !hasPartialReceipt) {
-            newStatus = "RECIBIDA";
-        } else {
-            newStatus = "PARCIALMENTE_RECIBIDA";
-        }
-
-        purchaseOrder.setStatus(newStatus);
-        purchaseOrder.setUpdatedBy(currentUserId);
-        purchaseOrderRepository.save(purchaseOrder);
-
-        return toMaterialReceiptResponse(saved);
+        return materialReceiptRepository.findAll().stream().map(this::toMaterialReceiptResponse).toList();
     }
 
     // ========== HELPER METHODS ==========
@@ -1084,6 +577,7 @@ public class PurchaseService {
                 .referenceRequests(entity.getReferenceRequests())
                 .materialRequestIds(materialRequestIds)
                 .observations(entity.getObservations())
+                .costCenterId(entity.getCostCenterId())
                 .items(items.stream().map(this::toPurchaseOrderItemResponse).collect(Collectors.toList()))
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
@@ -1113,6 +607,20 @@ public class PurchaseService {
                 .build();
     }
 
+    private List<PurchaseOrderItemEntity> groupReceiptOrderMaterials(List<PurchaseOrderItemEntity> rows) {
+        var grouped = rows.stream().collect(Collectors.groupingBy(PurchaseOrderItemEntity::getMaterialId,
+                java.util.LinkedHashMap::new, Collectors.toList()));
+        return grouped.values().stream().map(lines -> {
+            BigDecimal quantity = lines.stream().map(PurchaseOrderItemEntity::getQuantity).reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal value = lines.stream().map(line -> line.getQuantity().multiply(
+                    line.getUnitPrice() == null ? BigDecimal.ZERO : line.getUnitPrice())).reduce(BigDecimal.ZERO, BigDecimal::add);
+            Long supplierId = lines.stream().map(PurchaseOrderItemEntity::getSupplierId).distinct().count() == 1 ? lines.getFirst().getSupplierId() : null;
+            return PurchaseOrderItemEntity.builder().materialId(lines.getFirst().getMaterialId()).quantity(quantity)
+                    .unitPrice(quantity.signum() > 0 ? value.divide(quantity, 2, java.math.RoundingMode.HALF_UP) : BigDecimal.ZERO)
+                    .supplierId(supplierId).build();
+        }).toList();
+    }
+
     private MaterialReceiptResponse toMaterialReceiptResponse(MaterialReceiptEntity entity) {
         PurchaseOrderEntity purchaseOrder = purchaseOrderRepository.findById(entity.getPurchaseOrderId()).orElse(null);
         
@@ -1130,6 +638,7 @@ public class PurchaseService {
                     .purchaseOrderId(entity.getPurchaseOrderId())
                     .receiptDate(entity.getReceiptDate())
                     .observations(entity.getObservations())
+                    .status(entity.getStatus()).cancellationReason(entity.getCancellationReason())
                     .createdAt(entity.getCreatedAt())
                     .createdBy(entity.getCreatedBy())
                     .createdByName(createdByUser != null ? createdByUser.getUsername() : null)
@@ -1140,7 +649,7 @@ public class PurchaseService {
         }
         
         // Obtener información del proveedor
-        SupplierEntity supplier = supplierRepository.findById(purchaseOrder.getSupplierId()).orElse(null);
+        SupplierEntity supplier = purchaseOrder.getSupplierId() == null ? null : supplierRepository.findById(purchaseOrder.getSupplierId()).orElse(null);
         
         // Obtener items de la orden
         List<PurchaseOrderItemEntity> orderItems = purchaseOrderItemRepository.findByPurchaseOrderId(purchaseOrder.getId());
@@ -1183,7 +692,7 @@ public class PurchaseService {
         }
         
         // Construir items de recepción con variaciones reales
-        List<MaterialReceiptItemResponse> receiptItemsr = orderItems.stream()
+        List<MaterialReceiptItemResponse> receiptItemsr = groupReceiptOrderMaterials(orderItems).stream()
                 .map(orderItem -> {
                     MaterialEntity material = materialRepository.findById(orderItem.getMaterialId()).orElse(null);
 
@@ -1191,7 +700,7 @@ public class PurchaseService {
                     MaterialReceiptItemRequest receivedItem = receivedItemsMap.get(orderItem.getMaterialId());
                     BigDecimal quantityReceived = receivedItem != null
                         ? receivedItem.getQuantityReceived()
-                        : orderItem.getQuantity();
+                        : BigDecimal.ZERO;
                     BigDecimal unitPriceReceived = receivedItem != null && receivedItem.getUnitPriceReceived() != null
                         ? receivedItem.getUnitPriceReceived()
                         : orderItem.getUnitPrice();
@@ -1252,7 +761,8 @@ public class PurchaseService {
                 .purchaseOrderId(entity.getPurchaseOrderId())
                 .purchaseOrderCode(purchaseOrder.getCode())
                 .receiptDate(entity.getReceiptDate())
-                .observations(cleanObservations) // Observaciones limpias, sin JSON
+                .observations(cleanObservations)
+                .status(entity.getStatus()).cancellationReason(entity.getCancellationReason())
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
                 .createdByName(createdByUser != null ? createdByUser.getUsername() : null)

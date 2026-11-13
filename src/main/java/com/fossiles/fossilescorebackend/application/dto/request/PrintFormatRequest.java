@@ -31,6 +31,8 @@ public class PrintFormatRequest {
 
     private String header;
 
+    private String body;
+
     private String footer;
 
     @Size(max = 500, message = "Logo path must not exceed 500 characters")
