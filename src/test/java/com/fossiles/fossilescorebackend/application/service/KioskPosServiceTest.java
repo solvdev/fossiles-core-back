@@ -2439,6 +2439,25 @@ class KioskPosServiceTest {
         return new BigDecimal(matcher.group(1));
     }
 
+    @Test
+    void getPromotions_resolves_user_assigned_kiosk_when_kioskLocationId_not_provided() throws Exception {
+        when(securityUtil.getCurrentUserId()).thenReturn(encargada.getId());
+
+        KioskPromotionEntity scopedPromo = promotionRepository.save(KioskPromotionEntity.builder()
+                .name("BLACK FRIDAY RULES")
+                .discountType("PERCENT")
+                .discountValue(new BigDecimal("15"))
+                .kioskLocationId(kioskA.getId())
+                .active(true)
+                .build());
+
+        var promotions = kioskPosService.getPromotions(true, null);
+
+        assertThat(promotions.stream()
+                .anyMatch(p -> "BLACK FRIDAY RULES".equals(p.getName())))
+                .isTrue();
+    }
+
     private record FelLine(BigDecimal quantity, BigDecimal unit, BigDecimal discount, BigDecimal total,
                            boolean bundleAdjusted) {
     }
