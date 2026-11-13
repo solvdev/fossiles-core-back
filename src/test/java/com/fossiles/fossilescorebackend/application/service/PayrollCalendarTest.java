@@ -11,15 +11,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PayrollCalendarTest {
 
     @Test
-    void plantPaysOnFifthAndTwentiethForTheQuincenaBefore() {
+    void plantCutsOffTheSameDayItPaysOffsetFromAdministration() {
         assertThat(PayrollCalendar.scheduledDates("PLANTA", YearMonth.of(2026, 11)))
                 .containsExactly(LocalDate.of(2026, 11, 5), LocalDate.of(2026, 11, 20));
         var twentieth = PayrollCalendar.payDay("PLANTA", LocalDate.of(2026, 11, 20));
-        assertThat(twentieth.periodStart()).isEqualTo(LocalDate.of(2026, 11, 1));
-        assertThat(twentieth.periodEnd()).isEqualTo(LocalDate.of(2026, 11, 15));
+        assertThat(twentieth.periodStart()).isEqualTo(LocalDate.of(2026, 11, 6));
+        assertThat(twentieth.periodEnd()).isEqualTo(LocalDate.of(2026, 11, 20));
         var fifth = PayrollCalendar.payDay("PLANTA", LocalDate.of(2027, 1, 5));
-        assertThat(fifth.periodStart()).isEqualTo(LocalDate.of(2026, 12, 16));
-        assertThat(fifth.periodEnd()).isEqualTo(LocalDate.of(2026, 12, 31));
+        assertThat(fifth.periodStart()).isEqualTo(LocalDate.of(2026, 12, 21));
+        assertThat(fifth.periodEnd()).isEqualTo(LocalDate.of(2027, 1, 5));
         assertThat(fifth.payDate()).isEqualTo(LocalDate.of(2027, 1, 5));
     }
 

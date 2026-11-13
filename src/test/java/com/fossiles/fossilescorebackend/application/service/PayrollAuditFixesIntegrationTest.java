@@ -108,8 +108,12 @@ class PayrollAuditFixesIntegrationTest {
                 "Ya cobraron este período en otra planilla por un cambio de grupo y no entran: 1",
                 "Entran de otro grupo porque su planilla de este período ya se aprobó sin ellos: 1");
 
+        // Planta (6 al 20) y Administración (16 al fin de mes) tienen quincenas desfasadas: quien cambió de grupo y ya
+        // está en la planilla de planta de esas fechas no entra otra vez, y el aviso lo dice para resolverlo a mano.
         PayrollRunResponse office31 = runs.create(request("ADMINISTRACION", ADMIN_31_OCT));
-        assertThat(office31.getLines()).extracting(PayrollRunResponse.Line::getEmployeeId).containsExactly(elena.getId());
+        assertThat(office31.getLines()).isEmpty();
+        assertThat(office31.getWarnings())
+                .contains("Ya cobraron este período en otra planilla por un cambio de grupo y no entran: 1");
     }
 
     @Test

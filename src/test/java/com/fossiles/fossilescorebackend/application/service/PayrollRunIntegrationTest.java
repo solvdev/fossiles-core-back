@@ -93,8 +93,9 @@ class PayrollRunIntegrationTest {
         PayrollRunResponse run = runs.create(request("PLANTA", PLANT_20_OCT));
 
         assertThat(run.getPayDate()).isEqualTo(LocalDate.of(2026, 10, 19));
-        assertThat(run.getPeriodStart()).isEqualTo(LocalDate.of(2026, 10, 1));
-        assertThat(run.getPeriodEnd()).isEqualTo(LocalDate.of(2026, 10, 15));
+        // Planta corta el mismo día que paga: el pago del 20 cubre del 6 al 20.
+        assertThat(run.getPeriodStart()).isEqualTo(LocalDate.of(2026, 10, 6));
+        assertThat(run.getPeriodEnd()).isEqualTo(LocalDate.of(2026, 10, 20));
         assertThat(run.getLines()).extracting(PayrollRunResponse.Line::getEmployeeId)
                 .containsExactly(operator.getId(), contractor.getId());
         PayrollRunResponse.Line ana = run.getLines().get(0);

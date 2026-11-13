@@ -44,6 +44,7 @@ class PayrollEdgeCasesIntegrationTest {
     static final LocalDate PLANT_5_NOV = LocalDate.of(2026, 11, 5);
 
     @Autowired PayrollRunService runs;
+    @Autowired com.fossiles.fossilescorebackend.infrastructure.persistence.repository.PayrollRunRepository runRepository;
     @Autowired PayrollParameterService parameterService;
     @Autowired EmployeeChargeService chargeService;
     @Autowired PayrollAutoDraftJob autoDraft;
@@ -84,13 +85,13 @@ class PayrollEdgeCasesIntegrationTest {
         EmployeeEntity leftBefore = employee("Salio antes", "3000", "PLANTA", "PLANILLA", "CHEQUE", production);
         leftBefore.setTerminationDate(LocalDate.of(2026, 9, 30));
         EmployeeEntity leftDuring = employee("Salio durante", "3000", "PLANTA", "PLANILLA", "CHEQUE", production);
-        leftDuring.setTerminationDate(LocalDate.of(2026, 10, 10));
+        leftDuring.setTerminationDate(LocalDate.of(2026, 10, 15));
         leftDuring.setStatus("inactive");
         EmployeeEntity noSalary = employee("Sin salario", "0", "PLANTA", "PLANILLA", "CHEQUE", production);
         EmployeeEntity notYet = employee("Entra despues", "3000", "PLANTA", "PLANILLA", "CHEQUE", production);
-        notYet.setHireDate(LocalDate.of(2026, 10, 16));
+        notYet.setHireDate(LocalDate.of(2026, 10, 21));
         EmployeeEntity newContractor = employee("Servicios nuevo", "3000", "PLANTA", "SERVICIOS", "EFECTIVO", production);
-        newContractor.setHireDate(LocalDate.of(2026, 10, 6));
+        newContractor.setHireDate(LocalDate.of(2026, 10, 11));
         employees.saveAll(List.of(inactive, leftBefore, leftDuring, noSalary, notYet, newContractor));
 
         PayrollRunResponse run = runs.create(request("PLANTA", PLANT_20_OCT));
@@ -109,6 +110,24 @@ class PayrollEdgeCasesIntegrationTest {
         assertThat(contractor.getIgssEmployer()).isEqualByComparingTo("0");
         assertThat(contractor.getNetPay()).isEqualByComparingTo("1000.00");
         assertThat(run.getWarnings()).contains("Activos del grupo sin salario en la ficha, que no entran en la planilla: 1");
+    }
+
+    @Test
+    void aDraftPreparedWithAnOldPeriodIsStaleAndTakesTheCalendarPeriodWhenRecalculated() throws Exception {
+        PayrollRunResponse draft = runs.create(request("PLANTA", PLANT_20_OCT));
+        assertThat(draft.getStale()).isFalse();
+
+        // Un borrador preparado cuando Planta usaba la quincena de administración (1 al 15).
+        var entity = runRepository.findById(draft.getId()).orElseThrow();
+        entity.setPeriodStart(LocalDate.of(2026, 10, 1));
+        entity.setPeriodEnd(LocalDate.of(2026, 10, 15));
+        runRepository.save(entity);
+        assertThat(runs.get(draft.getId()).getStale()).isTrue();
+
+        PayrollRunResponse recalculated = runs.recalculate(draft.getId());
+        assertThat(recalculated.getPeriodStart()).isEqualTo(LocalDate.of(2026, 10, 6));
+        assertThat(recalculated.getPeriodEnd()).isEqualTo(LocalDate.of(2026, 10, 20));
+        assertThat(recalculated.getStale()).isFalse();
     }
 
     @Test
