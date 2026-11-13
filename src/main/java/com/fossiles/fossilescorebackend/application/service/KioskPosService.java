@@ -2107,11 +2107,23 @@ public class KioskPosService {
 
         final Set<Long> scopedKioskIds = allowedKioskIds;
         boolean manageView = !onlyActive && admin;
+        
+        Long effectiveKioskId = kioskLocationId;
+        if (effectiveKioskId == null && !manageView) {
+            List<LocationEntity> availableKiosks = admin 
+                ? resolveAvailableKiosks(user, true)
+                : resolveAvailableKiosks(user, false);
+            if (!availableKiosks.isEmpty()) {
+                effectiveKioskId = availableKiosks.get(0).getId();
+            }
+        }
+        final Long finalEffectiveKioskId = effectiveKioskId;
+        
         return promotions.stream()
                 .filter(p -> !onlyActive || isPromotionActiveOnDate(p, today))
                 .filter(p -> manageView
                         || p.effectiveKioskIds().isEmpty()
-                        || (kioskLocationId != null && p.appliesToKiosk(kioskLocationId)))
+                        || (finalEffectiveKioskId != null && p.appliesToKiosk(finalEffectiveKioskId)))
                 .filter(p -> manageView
                         || admin
                         || scopedKioskIds == null
