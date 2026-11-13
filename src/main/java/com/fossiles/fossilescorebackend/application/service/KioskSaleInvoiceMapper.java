@@ -57,6 +57,7 @@ public class KioskSaleInvoiceMapper {
                     .quantity(qty)
                     .unitPrice(unitPrice)
                     .lineTotal(lineTotal)
+                    .lineDiscount(line.getDiscountAmount())
                     .bundlePriced(bundlePricedLine(productCode, qty, unitPrice, lineTotal))
                     .editedUnitPrice(editedBelowCatalog(
                             product, line, unitPrice, qty, lineTotal, sale.getDiscountAmount()))

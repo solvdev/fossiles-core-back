@@ -327,6 +327,58 @@ class FelFactXmlBuilderTest {
     }
 
     @Test
+    void resolveFelLineTotals_usesPerLineDiscountOfPromotion() {
+        // Black Friday: la de Q395 al 15 % (335.75) y la más barata al 30 %. Sin prorrateo.
+        List<TaxInvoiceDocument.Line> lines = List.of(
+                TaxInvoiceDocument.Line.builder()
+                        .productCode("B-46")
+                        .lineTotal(new BigDecimal("395.00"))
+                        .lineDiscount(new BigDecimal("59.25"))
+                        .build(),
+                TaxInvoiceDocument.Line.builder()
+                        .productCode("B-7")
+                        .lineTotal(new BigDecimal("175.00"))
+                        .lineDiscount(new BigDecimal("52.50"))
+                        .build()
+        );
+
+        List<BigDecimal> totals = FelFactXmlBuilder.resolveFelLineTotals(
+                lines,
+                new BigDecimal("570.00"),
+                new BigDecimal("458.25"),
+                new BigDecimal("111.75"));
+
+        assertThat(totals).containsExactly(
+                new BigDecimal("335.75"),
+                new BigDecimal("122.50")
+        );
+    }
+
+    @Test
+    void resolveFelLineTotals_proratesWhenLineDiscountsDoNotMatchDocument() {
+        List<TaxInvoiceDocument.Line> lines = List.of(
+                TaxInvoiceDocument.Line.builder()
+                        .productCode("B-46")
+                        .lineTotal(new BigDecimal("395.00"))
+                        .lineDiscount(new BigDecimal("10.00"))
+                        .build(),
+                TaxInvoiceDocument.Line.builder()
+                        .productCode("B-7")
+                        .lineTotal(new BigDecimal("175.00"))
+                        .build()
+        );
+
+        List<BigDecimal> totals = FelFactXmlBuilder.resolveFelLineTotals(
+                lines,
+                new BigDecimal("570.00"),
+                new BigDecimal("458.25"),
+                new BigDecimal("111.75"));
+
+        assertThat(totals.get(0).add(totals.get(1))).isEqualByComparingTo("458.25");
+        assertThat(totals.get(0)).isEqualByComparingTo("317.56");
+    }
+
+    @Test
     void includesInternalControlNumberInAdenda() {
         FelEmissionProperties props = new FelEmissionProperties();
         props.setNitEmisor("123456789");
