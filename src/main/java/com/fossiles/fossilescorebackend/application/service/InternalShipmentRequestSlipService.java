@@ -99,7 +99,8 @@ public class InternalShipmentRequestSlipService {
         }
 
         // Si no está registrada en talonarios previos, verificar que al menos no colisione con otra solicitud
-        if (requestRepository.existsBySlipNumber(normalized)) {
+        // (la solicitud actual ya se guardó con esta boleta, por eso se excluye).
+        if (requestRepository.existsBySlipNumberAndIdNot(normalized, requestId)) {
             throw new BusinessException("La boleta de solicitud " + normalized + " ya fue registrada.");
         }
 

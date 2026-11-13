@@ -10,7 +10,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
-public interface AccountingEntryRepository extends JpaRepository<AccountingEntryEntity, Long> {
+public interface AccountingEntryRepository extends JpaRepository<AccountingEntryEntity, Long>,
+        org.springframework.data.jpa.repository.JpaSpecificationExecutor<AccountingEntryEntity> {
     List<AccountingEntryEntity> findByDocumentTypeAndDocumentId(String documentType, Long documentId);
     
     List<AccountingEntryEntity> findByDocumentType(String documentType);

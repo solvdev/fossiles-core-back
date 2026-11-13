@@ -20,6 +20,15 @@ public class MaterialReceiptController {
 
     private final PurchaseService purchaseService;
 
+    public record CancellationRequest(@jakarta.validation.constraints.NotBlank
+            @jakarta.validation.constraints.Size(max = 1000) String reason) {}
+
+    @PostMapping("/{id}/cancel")
+    public ResponseEntity<MaterialReceiptResponse> cancel(@PathVariable Long id,
+            @Valid @RequestBody CancellationRequest request) throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(purchaseService.cancelMaterialReceipt(id, request.reason()));
+    }
+
     @GetMapping
     public ResponseEntity<List<MaterialReceiptResponse>> getAll() {
         List<MaterialReceiptResponse> receipts = purchaseService.getMaterialReceipts();

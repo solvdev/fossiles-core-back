@@ -34,7 +34,7 @@ public interface InternalShipmentRequestRepository
 
     java.util.List<InternalShipmentRequestEntity> findByProductShipmentIdIn(java.util.Collection<Long> productShipmentIds);
 
-    boolean existsBySlipNumber(String slipNumber);
+    boolean existsBySlipNumberAndIdNot(String slipNumber, Long id);
 
     @Query("SELECT r.slipNumber FROM InternalShipmentRequestEntity r WHERE r.slipNumber IS NOT NULL")
     java.util.List<String> findAllSlipNumbers();
