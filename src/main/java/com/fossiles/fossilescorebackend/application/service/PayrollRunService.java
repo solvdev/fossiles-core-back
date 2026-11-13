@@ -8,11 +8,13 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.DepartmentEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.EmployeeChargeApplicationEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.PayrollIncidentEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.EmployeeChargeEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.EmployeeEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.PayrollRunEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.PayrollRunLineEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.DepartmentRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.PayrollIncidentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.EmployeeChargeApplicationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.EmployeeChargeRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.EmployeeRepository;
@@ -71,6 +73,7 @@ public class PayrollRunService {
     private final PayrollRunLineRepository lineRepository;
     private final EmployeeRepository employeeRepository;
     private final DepartmentRepository departmentRepository;
+    private final PayrollIncidentRepository incidentRepository;
     private final EmployeeChargeRepository chargeRepository;
     private final EmployeeChargeApplicationRepository applicationRepository;
     private final PayrollParameterService parameterService;
@@ -348,6 +351,7 @@ public class PayrollRunService {
         Map<Long, List<EmployeeChargeEntity>> chargesByEmployee = deductible.stream()
                 .collect(Collectors.groupingBy(EmployeeChargeEntity::getEmployeeId));
 
+        Map<Long, PayrollIncidentPay.Summary> summaries = incidentSummaries(run, employees, parameters);
         List<PayrollRunLineEntity> lines = new ArrayList<>();
         BigDecimal gross = BigDecimal.ZERO;
         BigDecimal deductions = BigDecimal.ZERO;
@@ -366,11 +370,13 @@ public class PayrollRunService {
                 available.add(free);
                 pending = pending.add(free);
             }
+            PayrollIncidentPay.Summary summary = summaries.getOrDefault(employee.getId(), PayrollIncidentPay.Summary.EMPTY);
             PayrollCalculator.Result result = PayrollCalculator.calculate(new PayrollCalculator.Input(
                     employee.getEmploymentType(), employee.getSalary(), employee.getBonification(),
                     employee.getHireDate(), employee.getTerminationDate(),
                     run.getPeriodStart(), run.getPeriodEnd(), pending,
-                    employee.getIgssEnabled(), employee.getIrtraEnabled()), parameters);
+                    employee.getIgssEnabled(), employee.getIrtraEnabled(),
+                    summary.extraPay(), summary.absenceDays()), parameters);
             if (result.daysPaid().signum() == 0) {
                 continue;
             }
@@ -398,6 +404,9 @@ public class PayrollRunService {
                     .igssEmployer(result.igssEmployer())
                     .irtra(result.irtra())
                     .intecap(result.intecap())
+                    .extraPay(result.extraPay())
+                    .absenceDays(summary.absenceDays())
+                    .vacationDays(summary.vacationDays())
                     .build());
             // El descuento se reparte del cargo más antiguo al más reciente.
             BigDecimal remaining = result.opiDiscount();
@@ -422,7 +431,7 @@ public class PayrollRunService {
         run.setTotalDeductions(deductions);
         run.setTotalNet(net);
         run.setCalculatedAt(GuatemalaDateTime.now());
-        run.setCalculationHash(fingerprint(run, employees, deductible, reserved, parameters));
+        run.setCalculationHash(fingerprint(run, employees, deductible, reserved, parameters, summaries));
         runRepository.save(run);
         return lines;
     }
@@ -486,11 +495,38 @@ public class PayrollRunService {
         List<EmployeeChargeEntity> deductible = employees.isEmpty() ? List.of()
                 : chargeRepository.findDeductible(employees.stream().map(EmployeeEntity::getId).toList(), run.getPayDate());
         Map<Long, BigDecimal> reserved = reservedByOtherDrafts(deductible, run.getId());
-        return !run.getCalculationHash().equals(fingerprint(run, employees, deductible, reserved, parameters));
+        return !run.getCalculationHash().equals(fingerprint(run, employees, deductible, reserved, parameters,
+                incidentSummaries(run, employees, parameters)));
+    }
+
+    /** Lo que las novedades de cada persona suman o restan en el período de la planilla. */
+    private Map<Long, PayrollIncidentPay.Summary> incidentSummaries(PayrollRunEntity run, List<EmployeeEntity> employees,
+                                                                  PayrollParameters parameters) {
+        Map<Long, PayrollIncidentPay.Summary> summaries = new HashMap<>();
+        if (employees.isEmpty()) {
+            return summaries;
+        }
+        Map<Long, List<PayrollIncidentEntity>> byEmployee = incidentRepository.findActiveOverlapping(
+                        employees.stream().map(EmployeeEntity::getId).toList(), run.getPeriodStart(), run.getPeriodEnd()).stream()
+                .collect(Collectors.groupingBy(PayrollIncidentEntity::getEmployeeId));
+        for (EmployeeEntity employee : employees) {
+            PayrollIncidentPay.Summary summary = PayrollIncidentPay.summarize(employee.getSalary(),
+                    byEmployee.get(employee.getId()), run.getPeriodStart(), run.getPeriodEnd(), parameters);
+            if (!summary.isEmpty()) {
+                summaries.put(employee.getId(), summary);
+            }
+        }
+        return summaries;
     }
 
     static String fingerprint(PayrollRunEntity run, List<EmployeeEntity> employees, List<EmployeeChargeEntity> charges,
                               Map<Long, BigDecimal> reserved, PayrollParameters parameters) {
+        return fingerprint(run, employees, charges, reserved, parameters, Map.of());
+    }
+
+    static String fingerprint(PayrollRunEntity run, List<EmployeeEntity> employees, List<EmployeeChargeEntity> charges,
+                              Map<Long, BigDecimal> reserved, PayrollParameters parameters,
+                              Map<Long, PayrollIncidentPay.Summary> incidents) {
         StringBuilder text = new StringBuilder()
                 .append(run.getPayGroup()).append('|').append(run.getPeriodStart()).append('|')
                 .append(run.getPeriodEnd()).append('|').append(run.getPayDate()).append('\n')
@@ -504,7 +540,9 @@ public class PayrollRunService {
                 .append('|').append(e.getDepartmentId()).append('|').append(e.getCostCenterId())
                 // Solo se suman cuando están apagados, para que las planillas en borrador de antes no queden desactualizadas.
                 .append(Boolean.FALSE.equals(e.getIgssEnabled()) ? "|sinIGSS" : "")
-                .append(Boolean.FALSE.equals(e.getIrtraEnabled()) ? "|sinIRTRA" : "").append('\n'));
+                .append(Boolean.FALSE.equals(e.getIrtraEnabled()) ? "|sinIRTRA" : "")
+                // Las novedades solo cuentan cuando las hay, para que las planillas de antes no queden desactualizadas.
+                .append(incidents.containsKey(e.getId()) ? "|novedades=" + incidents.get(e.getId()) : "").append('\n'));
         // Lo reservado por otros borradores también cuenta: si otro borrador se anula, este puede descontar más.
         charges.stream().sorted(Comparator.comparing(EmployeeChargeEntity::getId)).forEach(c -> text
                 .append(c.getId()).append('|').append(plain(c.getBalance())).append('|').append(c.getSettlementMethod())
@@ -808,6 +846,9 @@ public class PayrollRunService {
                 .igssEmployer(line.getIgssEmployer())
                 .irtra(line.getIrtra())
                 .intecap(line.getIntecap())
+                .extraPay(line.getExtraPay())
+                .absenceDays(line.getAbsenceDays())
+                .vacationDays(line.getVacationDays())
                 .chequeNumber(line.getChequeNumber())
                 .build();
     }

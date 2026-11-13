@@ -35,6 +35,7 @@ public class PayrollProfileService {
 
     private final EmployeeRepository employeeRepository;
     private final DepartmentRepository departmentRepository;
+    private final com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository locationRepository;
     private final EmployeeSalaryHistoryRepository salaryHistoryRepository;
     private final PayrollAccessGuard accessGuard;
 
@@ -88,6 +89,14 @@ public class PayrollProfileService {
         if (request.getIrtraEnabled() != null) {
             employee.setIrtraEnabled(request.getIrtraEnabled());
         }
+        if (Boolean.TRUE.equals(request.getClearKioskLocation())) {
+            employee.setKioskLocationId(null);
+        } else if (request.getKioskLocationId() != null) {
+            if (!locationRepository.existsById(request.getKioskLocationId())) {
+                throw new BusinessException("El kiosco indicado no existe.");
+            }
+            employee.setKioskLocationId(request.getKioskLocationId());
+        }
         employee.setUpdatedBy(accessGuard.currentUserId());
         EmployeeEntity saved = employeeRepository.save(employee);
         if (salaryChanged) {
@@ -128,6 +137,7 @@ public class PayrollProfileService {
                 .igssAffiliation(employee.getIgssAffiliation())
                 .igssEnabled(!Boolean.FALSE.equals(employee.getIgssEnabled()))
                 .irtraEnabled(!Boolean.FALSE.equals(employee.getIrtraEnabled()))
+                .kioskLocationId(employee.getKioskLocationId())
                 .warnings(warnings(employee, department, departmentGroup))
                 .build();
     }

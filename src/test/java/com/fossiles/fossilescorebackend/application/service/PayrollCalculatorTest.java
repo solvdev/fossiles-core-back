@@ -107,6 +107,31 @@ class PayrollCalculatorTest {
         assertThat(empty).isEqualTo(legacy);
     }
 
+    @Test
+    void extraPayAddsToTheGrossAndToTheIgssBase() {
+        var plain = calcFlags("PLANILLA", "4000", true, true);
+        var withExtra = PayrollCalculator.calculate(new PayrollCalculator.Input("PLANILLA", bd("4000"), null, null, null,
+                FIRST_HALF_START, FIRST_HALF_END, bd("0"), true, true, bd("200"), bd("0")), PARAMS);
+        assertThat(withExtra.extraPay()).isEqualByComparingTo("200.00");
+        assertThat(withExtra.gross()).isEqualByComparingTo(plain.gross().add(bd("200")));
+        // 2,200 × 4.83 % = 106.26 de IGSS laboral, contra 96.60 sin extras.
+        assertThat(withExtra.igssEmployee()).isEqualByComparingTo("106.26");
+        assertThat(withExtra.netPay()).isEqualByComparingTo(plain.netPay().add(bd("200")).subtract(bd("9.66")));
+    }
+
+    @Test
+    void unpaidAbsenceDaysComeOffTheDaysPaidAndEverythingProportional() {
+        var r = PayrollCalculator.calculate(new PayrollCalculator.Input("PLANILLA", bd("4000"), null, null, null,
+                FIRST_HALF_START, FIRST_HALF_END, bd("0"), true, true, bd("0"), bd("3")), PARAMS);
+        assertThat(r.daysPaid()).isEqualByComparingTo("12.00");
+        assertThat(r.baseSalary()).isEqualByComparingTo("1600.00");
+        assertThat(r.bonification()).isEqualByComparingTo("100.00");
+        var all = PayrollCalculator.calculate(new PayrollCalculator.Input("PLANILLA", bd("4000"), null, null, null,
+                FIRST_HALF_START, FIRST_HALF_END, bd("0"), true, true, bd("0"), bd("20")), PARAMS);
+        assertThat(all.daysPaid()).isEqualByComparingTo("0");
+        assertThat(all.netPay()).isEqualByComparingTo("0");
+    }
+
     private static PayrollCalculator.Result calcFlags(String type, String salary, boolean igss, boolean irtra) {
         return PayrollCalculator.calculate(new PayrollCalculator.Input(type, bd(salary), null, null, null,
                 FIRST_HALF_START, FIRST_HALF_END, bd("0"), igss, irtra), PARAMS);

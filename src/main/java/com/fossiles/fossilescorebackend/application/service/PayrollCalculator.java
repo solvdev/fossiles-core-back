@@ -21,10 +21,22 @@ public final class PayrollCalculator {
      * {@code igssEnabled} e {@code irtraEnabled} son los interruptores de la ficha: sin IGSS no se descuenta ni se paga
      * IGSS; sin IRTRA no se paga IRTRA ni INTECAP. Vacío cuenta como que sí.
      */
+    /**
+     * {@code extraPay} es lo que ganó en horas extra y feriados trabajados (ya calculado con el valor de la hora); suma a
+     * la base del IGSS. {@code unpaidAbsenceDays} son los días de ausencia sin goce, que restan días pagados.
+     */
     public record Input(String employmentType, BigDecimal monthlySalary, BigDecimal monthlyBonification,
                         LocalDate hireDate, LocalDate terminationDate,
                         LocalDate periodStart, LocalDate periodEnd, BigDecimal pendingOpi,
-                        Boolean igssEnabled, Boolean irtraEnabled) {
+                        Boolean igssEnabled, Boolean irtraEnabled, BigDecimal extraPay, BigDecimal unpaidAbsenceDays) {
+        public Input(String employmentType, BigDecimal monthlySalary, BigDecimal monthlyBonification,
+                     LocalDate hireDate, LocalDate terminationDate,
+                     LocalDate periodStart, LocalDate periodEnd, BigDecimal pendingOpi,
+                     Boolean igssEnabled, Boolean irtraEnabled) {
+            this(employmentType, monthlySalary, monthlyBonification, hireDate, terminationDate,
+                    periodStart, periodEnd, pendingOpi, igssEnabled, irtraEnabled, BigDecimal.ZERO, BigDecimal.ZERO);
+        }
+
         public Input(String employmentType, BigDecimal monthlySalary, BigDecimal monthlyBonification,
                      LocalDate hireDate, LocalDate terminationDate,
                      LocalDate periodStart, LocalDate periodEnd, BigDecimal pendingOpi) {
@@ -35,10 +47,11 @@ public final class PayrollCalculator {
 
     public record Result(BigDecimal daysPaid, BigDecimal baseSalary, BigDecimal bonification,
                          BigDecimal igssEmployee, BigDecimal isr, BigDecimal opiDiscount, BigDecimal otherDeductions,
-                         BigDecimal netPay, BigDecimal igssEmployer, BigDecimal irtra, BigDecimal intecap) {
+                         BigDecimal netPay, BigDecimal igssEmployer, BigDecimal irtra, BigDecimal intecap,
+                         BigDecimal extraPay) {
 
         public BigDecimal gross() {
-            return baseSalary.add(bonification);
+            return baseSalary.add(bonification).add(extraPay);
         }
 
         public BigDecimal deductions() {
@@ -51,6 +64,11 @@ public final class PayrollCalculator {
     public static Result calculate(Input input, PayrollParameters parameters) {
         BigDecimal monthlySalary = orZero(input.monthlySalary());
         BigDecimal daysPaid = daysPaid(input.periodStart(), input.periodEnd(), input.hireDate(), input.terminationDate());
+        BigDecimal absence = orZero(input.unpaidAbsenceDays());
+        if (absence.signum() > 0) {
+            daysPaid = daysPaid.subtract(absence).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal extraPay = orZero(input.extraPay()).setScale(2, RoundingMode.HALF_UP);
         BigDecimal base = prorate(monthlySalary, daysPaid);
         boolean planilla = !PayrollRules.EMPLOYMENT_SERVICIOS.equals(input.employmentType());
 
@@ -61,7 +79,7 @@ public final class PayrollCalculator {
             BigDecimal monthlyBonification = input.monthlyBonification() != null
                     ? input.monthlyBonification() : parameters.defaultMonthlyBonification();
             bonification = prorate(monthlyBonification, daysPaid);
-            PayrollIgssCalculator.Contributions all = PayrollIgssCalculator.contributions(base, parameters);
+            PayrollIgssCalculator.Contributions all = PayrollIgssCalculator.contributions(base.add(extraPay), parameters);
             BigDecimal none = BigDecimal.ZERO.setScale(2);
             boolean igssOn = !Boolean.FALSE.equals(input.igssEnabled());
             boolean irtraOn = !Boolean.FALSE.equals(input.irtraEnabled());
@@ -72,7 +90,7 @@ public final class PayrollCalculator {
         }
 
         BigDecimal otherDeductions = BigDecimal.ZERO.setScale(2);
-        BigDecimal beforeOpi = base.add(bonification).subtract(igss.employee()).subtract(isr).subtract(otherDeductions);
+        BigDecimal beforeOpi = base.add(bonification).add(extraPay).subtract(igss.employee()).subtract(isr).subtract(otherDeductions);
         if (beforeOpi.signum() < 0) {
             beforeOpi = BigDecimal.ZERO.setScale(2);
         }
@@ -81,7 +99,7 @@ public final class PayrollCalculator {
         BigDecimal net = beforeOpi.subtract(opi);
 
         return new Result(daysPaid, base, bonification, igss.employee(), isr, opi, otherDeductions, net,
-                igss.employer(), igss.irtra(), igss.intecap());
+                igss.employer(), igss.irtra(), igss.intecap(), extraPay);
     }
 
     /** 15 si trabajó todo el período; si entró o salió dentro de él, la proporción de días calendario trabajados. */

@@ -39,6 +39,7 @@ public class Employee {
     private Long departmentId;
     private Long costCenterId;
     private Long operationalUnitId;
+    private Long kioskLocationId;
     private String status;
     private LocalDateTime createdAt;
     private Long createdBy;

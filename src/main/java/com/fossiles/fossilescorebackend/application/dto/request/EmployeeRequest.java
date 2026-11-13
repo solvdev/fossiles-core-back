@@ -73,6 +73,10 @@ public class EmployeeRequest {
     private Boolean igssEnabled;
     private Boolean irtraEnabled;
 
+    /** Kiosco donde trabaja (locations.id). Vacío en una edición conserva el valor; {@code clearKioskLocation} lo quita. */
+    private Long kioskLocationId;
+    private Boolean clearKioskLocation;
+
     private LocalDate terminationDate;
 
     /** En una edición, un campo vacío conserva el valor; estos indicadores lo borran a propósito. */

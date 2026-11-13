@@ -118,6 +118,10 @@ public class EmployeeEntity {
     @Column(name = "operational_unit_id")
     private Long operationalUnitId;
 
+    /** Kiosco (locations.id) donde trabaja: define qué supervisora ve sus novedades. */
+    @Column(name = "kiosk_location_id")
+    private Long kioskLocationId;
+
     @Column(length = 20)
     private String status;
 

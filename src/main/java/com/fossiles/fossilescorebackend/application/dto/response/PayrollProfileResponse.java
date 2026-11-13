@@ -37,5 +37,6 @@ public class PayrollProfileResponse {
     private String igssAffiliation;
     private Boolean igssEnabled;
     private Boolean irtraEnabled;
+    private Long kioskLocationId;
     private List<String> warnings;
 }
