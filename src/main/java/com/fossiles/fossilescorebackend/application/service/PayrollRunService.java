@@ -84,7 +84,8 @@ public class PayrollRunService {
      * Quiénes entran en una planilla: los de su grupo que no cobraron ya el período en otra planilla, y los de otro
      * grupo cuya planilla del mismo período ya se aprobó sin ellos (cambiaron de grupo a mitad de quincena).
      */
-    private record Eligibility(List<EmployeeEntity> payable, long paidElsewhere, long fromOtherGroup) {}
+    private record Eligibility(List<EmployeeEntity> payable, long paidElsewhere, long fromOtherGroup,
+                               List<EmployeeEntity> everyone) {}
 
     @Transactional(readOnly = true)
     public List<PayrollRunResponse> list() {
@@ -112,9 +113,19 @@ public class PayrollRunService {
         LocalDate from = GuatemalaDateTime.today().minusMonths(1).withDayOfMonth(1);
         int perGroup = Math.max(1, Math.min(count, 24));
         List<PayrollPayDayResponse> result = new ArrayList<>();
+        // Una sola consulta con las planillas de todas las fechas, en vez de una por fecha.
+        Map<String, List<PayrollCalendar.PayDay>> calendar = new LinkedHashMap<>();
+        Set<LocalDate> dates = new HashSet<>();
         for (String group : groups) {
-            for (PayrollCalendar.PayDay day : PayrollCalendar.upcoming(group, from, perGroup)) {
-                PayrollRunEntity run = runRepository.findActive(group, day.scheduledDate()).orElse(null);
+            List<PayrollCalendar.PayDay> days = PayrollCalendar.upcoming(group, from, perGroup);
+            calendar.put(group, days);
+            days.forEach(day -> dates.add(day.scheduledDate()));
+        }
+        Map<String, PayrollRunEntity> existing = new HashMap<>();
+        runRepository.findActiveIn(groups, dates).forEach(run -> existing.put(run.getPayGroup() + "|" + run.getScheduledDate(), run));
+        for (String group : groups) {
+            for (PayrollCalendar.PayDay day : calendar.get(group)) {
+                PayrollRunEntity run = existing.get(group + "|" + day.scheduledDate());
                 result.add(PayrollPayDayResponse.builder()
                         .payGroup(group)
                         .scheduledDate(day.scheduledDate())
@@ -444,7 +455,8 @@ public class PayrollRunService {
         List<EmployeeEntity> payable = new ArrayList<>();
         long skipped = 0;
         long fromOtherGroup = 0;
-        for (EmployeeEntity employee : employeeRepository.findAll()) {
+        List<EmployeeEntity> everyone = employeeRepository.findAll();
+        for (EmployeeEntity employee : everyone) {
             if (!isPayable(employee, run.getPeriodStart(), run.getPeriodEnd())) {
                 continue;
             }
@@ -464,7 +476,7 @@ public class PayrollRunService {
             payable.add(employee);
         }
         payable.sort(Comparator.comparing(EmployeeChargeService::fullName));
-        return new Eligibility(payable, skipped, fromOtherGroup);
+        return new Eligibility(payable, skipped, fromOtherGroup, everyone);
     }
 
     /** Un borrador toma el período que hoy marca el calendario de su grupo (por si la regla cambió después de prepararlo). */
@@ -478,6 +490,11 @@ public class PayrollRunService {
 
     /** Vuelve a leer lo que entra al cálculo y lo compara con la huella guardada al calcular. */
     private boolean isStale(PayrollRunEntity run) {
+        return isStale(run, null);
+    }
+
+    /** {@code known} es la elegibilidad ya leída para esta planilla, si la hay: así no se vuelve a leer a todo el personal. */
+    private boolean isStale(PayrollRunEntity run, Eligibility known) {
         if (run.getCalculationHash() == null) {
             return true;
         }
@@ -491,7 +508,7 @@ public class PayrollRunService {
         } catch (BusinessException ex) {
             return true;
         }
-        List<EmployeeEntity> employees = eligibility(run).payable();
+        List<EmployeeEntity> employees = (known != null ? known : eligibility(run)).payable();
         List<EmployeeChargeEntity> deductible = employees.isEmpty() ? List.of()
                 : chargeRepository.findDeductible(employees.stream().map(EmployeeEntity::getId).toList(), run.getPayDate());
         Map<Long, BigDecimal> reserved = reservedByOtherDrafts(deductible, run.getId());
@@ -559,11 +576,7 @@ public class PayrollRunService {
     }
 
     private Map<Long, BigDecimal> reservedByOtherDrafts(List<EmployeeChargeEntity> charges, Long runId) {
-        Map<Long, BigDecimal> reserved = new HashMap<>();
-        for (EmployeeChargeEntity charge : charges) {
-            reserved.put(charge.getId(), applicationRepository.reservedByOtherDrafts(charge.getId(), runId));
-        }
-        return reserved;
+        return applicationRepository.reservedMap(charges.stream().map(EmployeeChargeEntity::getId).toList(), runId);
     }
 
     /** Los cargos se bloquean por id; el descuento sigue del más antiguo al más reciente. */
@@ -598,9 +611,9 @@ public class PayrollRunService {
     }
 
     /** Lo que conviene revisar en la ficha antes de aprobar o pagar. */
-    private List<String> warnings(PayrollRunEntity run, List<PayrollRunLineEntity> lines) {
+    private List<String> warnings(PayrollRunEntity run, List<PayrollRunLineEntity> lines, Eligibility known) {
         List<String> warnings = new ArrayList<>();
-        long withoutSalary = employeeRepository.findAll().stream()
+        long withoutSalary = (known != null ? known.everyone() : employeeRepository.findAll()).stream()
                 .filter(e -> run.getPayGroup().equals(e.getPayGroup()) && "active".equalsIgnoreCase(e.getStatus()))
                 .filter(e -> e.getSalary() == null || e.getSalary().signum() <= 0)
                 .count();
@@ -608,7 +621,7 @@ public class PayrollRunService {
             warnings.add("Activos del grupo sin salario en la ficha, que no entran en la planilla: " + withoutSalary);
         }
         if (STATUS_DRAFT.equals(run.getStatus())) {
-            Eligibility eligibility = eligibility(run);
+            Eligibility eligibility = known != null ? known : eligibility(run);
             if (eligibility.paidElsewhere() > 0) {
                 warnings.add("Ya cobraron este período en otra planilla por un cambio de grupo y no entran: " + eligibility.paidElsewhere());
             }
@@ -779,11 +792,13 @@ public class PayrollRunService {
 
     private PayrollRunResponse toDetail(PayrollRunEntity run, List<PayrollRunLineEntity> lines) {
         PayrollRunResponse response = toResponse(run, lines);
+        // En borrador la elegibilidad se lee una sola vez para los avisos y para saber si está desactualizada.
+        Eligibility eligibility = STATUS_DRAFT.equals(run.getStatus()) ? eligibility(run) : null;
         if (STATUS_DRAFT.equals(run.getStatus()) || STATUS_APPROVED.equals(run.getStatus())) {
-            response.setWarnings(warnings(run, lines));
+            response.setWarnings(warnings(run, lines, eligibility));
         }
         if (STATUS_DRAFT.equals(run.getStatus())) {
-            response.setStale(isStale(run));
+            response.setStale(isStale(run, eligibility));
         }
         if (STATUS_APPROVED.equals(run.getStatus())) {
             response.setSuggestedFirstChequeNumber(suggestNextCheque(run.getId()));

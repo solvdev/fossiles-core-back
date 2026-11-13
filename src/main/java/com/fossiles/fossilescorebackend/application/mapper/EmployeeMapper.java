@@ -20,6 +20,18 @@ public class EmployeeMapper {
 
     // Entity to Domain
     public Employee toDomain(EmployeeEntity entity) {
+        return toDomain(entity, () -> userOf(entity));
+    }
+
+    /**
+     * Para listados: el usuario llega ya resuelto (id, nombre, correo) y no se lee de la entidad, porque cargar sus
+     * roles, departamento y centro de costo costaría varias consultas por fila.
+     */
+    public Employee toDomainWithUser(EmployeeEntity entity, User user) {
+        return toDomain(entity, () -> user);
+    }
+
+    private Employee toDomain(EmployeeEntity entity, java.util.function.Supplier<User> userSupplier) {
         if (entity == null) return null;
         
         return Employee.builder()
@@ -54,10 +66,14 @@ public class EmployeeMapper {
             .createdBy(entity.getCreatedBy())
             .updatedAt(entity.getUpdatedAt())
             .updatedBy(entity.getUpdatedBy())
-            .user(entity.getUsers() != null && !entity.getUsers().isEmpty() 
-                ? userMapper.toDomain(entity.getUsers().iterator().next()) 
-                : null)
+            .user(userSupplier.get())
             .build();
+    }
+
+    private User userOf(EmployeeEntity entity) {
+        return entity.getUsers() != null && !entity.getUsers().isEmpty()
+                ? userMapper.toDomain(entity.getUsers().iterator().next())
+                : null;
     }
 
     // Domain to Entity

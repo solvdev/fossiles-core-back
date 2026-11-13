@@ -28,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -137,7 +138,15 @@ public class EmployeeService {
     @Transactional(readOnly = true)
     public List<EmployeeResponse> getAllEmployees() {
         boolean salaries = payrollAccessGuard.canViewSalaries();
+        // Un listado no carga la entidad del usuario: arrastra roles y departamento y haría varias consultas por fila.
+        Map<Long, com.fossiles.fossilescorebackend.domain.model.User> usersByEmployee = new java.util.HashMap<>();
+        for (Object[] row : employeeRepository.findUserSummaries()) {
+            usersByEmployee.putIfAbsent(((Number) row[0]).longValue(), com.fossiles.fossilescorebackend.domain.model.User.builder()
+                .id(((Number) row[1]).longValue()).username((String) row[2]).email((String) row[3])
+                .firstName((String) row[4]).lastName((String) row[5]).status((String) row[6]).build());
+        }
         return employeeRepository.findAll().stream()
+            .map(entity -> employeeMapper.toDomainWithUser(entity, usersByEmployee.get(entity.getId())))
             .map(employeeMapper::toResponse)
             .map(response -> withSalaryAccess(response, salaries))
             .collect(Collectors.toList());
