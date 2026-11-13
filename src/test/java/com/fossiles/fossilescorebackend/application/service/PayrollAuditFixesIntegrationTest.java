@@ -203,6 +203,9 @@ class PayrollAuditFixesIntegrationTest {
                 EmployeeRequest.builder().paymentMethod("efectivo").build()))
                 .isInstanceOf(BusinessException.class).hasMessageContaining("la forma de pago");
         assertThatThrownBy(() -> employeeService.updateEmployee(operator.getId(),
+                EmployeeRequest.builder().igssEnabled(false).build()))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("el IGSS");
+        assertThatThrownBy(() -> employeeService.updateEmployee(operator.getId(),
                 EmployeeRequest.builder().terminationDate(LocalDate.of(2026, 10, 31)).build()))
                 .isInstanceOf(BusinessException.class).hasMessageContaining("fecha de baja");
 

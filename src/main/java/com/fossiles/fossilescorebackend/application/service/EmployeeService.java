@@ -339,11 +339,13 @@ public class EmployeeService {
                 && !Objects.equals(request.getPaymentMethod(), PayrollRules.canonicalPaymentMethod(current.getPaymentMethod())))
             || (request.getEmploymentType() != null && !request.getEmploymentType().equals(current.getEmploymentType()))
             || (request.getPayGroup() != null && !request.getPayGroup().equals(current.getPayGroup()))
+            || (request.getIgssEnabled() != null && !request.getIgssEnabled().equals(current.getIgssEnabled()))
+            || (request.getIrtraEnabled() != null && !request.getIrtraEnabled().equals(current.getIrtraEnabled()))
             || (request.getTerminationDate() != null && !request.getTerminationDate().equals(current.getTerminationDate()))
             || (Boolean.TRUE.equals(request.getClearTerminationDate()) && current.getTerminationDate() != null);
         if (changesPayment) {
             throw new BusinessException("Solo administración y Contabilidad pueden cambiar la cuenta, la forma de pago, la vinculación,"
-                + " el grupo de pago o la fecha de baja.");
+                + " el grupo de pago, el IGSS, el IRTRA o la fecha de baja.");
         }
     }
 
