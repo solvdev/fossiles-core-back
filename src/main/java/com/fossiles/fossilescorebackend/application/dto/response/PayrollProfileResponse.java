@@ -20,6 +20,8 @@ public class PayrollProfileResponse {
     private String position;
     private Long departmentId;
     private String departmentName;
+    /** Trabaja en un kiosco: Administración y kioscos cobran en las mismas fechas pero se ven por separado. */
+    private Boolean kiosk;
     private String status;
     private LocalDate hireDate;
     private LocalDate terminationDate;

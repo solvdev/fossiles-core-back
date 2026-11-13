@@ -12,8 +12,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Fechas de pago por grupo. PLANTA cobra el 5 (segunda quincena del mes anterior) y el 20 (primera quincena);
- * ADMINISTRACION, el 15 (primera quincena) y el último día del mes (segunda quincena).
+ * Fechas de pago por grupo. PLANTA cobra el 5 (del 21 del mes anterior al 5) y el 20 (del 6 al 20): su quincena
+ * corta el mismo día que paga, desfasada de la de administración. ADMINISTRACION cobra el 15 (del 1 al 15) y el
+ * último día del mes (del 16 al fin de mes), que también es la quincena de los kioscos.
  * Si la fecha cae en fin de semana o feriado se paga el día hábil anterior.
  */
 public final class PayrollCalendar {
@@ -55,12 +56,11 @@ public final class PayrollCalendar {
         LocalDate end;
         if (PayrollRules.GROUP_PLANTA.equals(payGroup)) {
             if (scheduledDate.getDayOfMonth() == 5) {
-                YearMonth previous = month.minusMonths(1);
-                start = previous.atDay(16);
-                end = previous.atEndOfMonth();
+                start = month.minusMonths(1).atDay(21);
+                end = month.atDay(5);
             } else {
-                start = month.atDay(1);
-                end = month.atDay(15);
+                start = month.atDay(6);
+                end = month.atDay(20);
             }
         } else if (scheduledDate.getDayOfMonth() == 15) {
             start = month.atDay(1);
