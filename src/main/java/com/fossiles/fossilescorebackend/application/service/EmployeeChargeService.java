@@ -247,7 +247,9 @@ public class EmployeeChargeService {
         Map<Long, EmployeeEntity> employees = employeeRepository.findAllById(
                         charges.stream().map(EmployeeChargeEntity::getEmployeeId).collect(Collectors.toSet())).stream()
                 .collect(Collectors.toMap(EmployeeEntity::getId, Function.identity()));
-        return charges.stream().map(c -> toResponse(c, employees.get(c.getEmployeeId()))).toList();
+        Map<Long, BigDecimal> reserved = applicationRepository.reservedMap(
+                charges.stream().map(EmployeeChargeEntity::getId).toList(), -1L);
+        return charges.stream().map(c -> toResponse(c, employees.get(c.getEmployeeId()), reserved.get(c.getId()))).toList();
     }
 
     /** Contabilidad decide cómo se liquida el cargo. La planta siempre se descuenta en planilla. */
@@ -378,6 +380,10 @@ public class EmployeeChargeService {
     }
 
     private EmployeeChargeResponse toResponse(EmployeeChargeEntity charge, EmployeeEntity employee) {
+        return toResponse(charge, employee, applicationRepository.reservedByOtherDrafts(charge.getId(), -1L));
+    }
+
+    private EmployeeChargeResponse toResponse(EmployeeChargeEntity charge, EmployeeEntity employee, BigDecimal reserved) {
         return EmployeeChargeResponse.builder()
                 .id(charge.getId())
                 .employeeId(charge.getEmployeeId())
@@ -392,7 +398,7 @@ public class EmployeeChargeService {
                 .status(charge.getStatus())
                 .chargedOn(charge.getChargedOn())
                 .decidedAt(charge.getDecidedAt())
-                .reservedInDrafts(applicationRepository.reservedByOtherDrafts(charge.getId(), -1L))
+                .reservedInDrafts(reserved)
                 .concept(charge.getConcept())
                 .reason(charge.getReason())
                 .reference(charge.getReference())
