@@ -1433,7 +1433,9 @@ public class TaxInvoiceService {
         if (seriesCode != null && !seriesCode.isBlank()) {
             document.setLocationInternalSeriesCode(seriesCode);
         }
-        if (!needsInternalNumberAssignment(invoice.getInternalNumber(), seriesCode)) {
+        boolean renumberAfterVoid = seriesCode != null && !seriesCode.isBlank()
+                && needsNewInternalNumberAfterVoid(invoice);
+        if (!renumberAfterVoid && !needsInternalNumberAssignment(invoice.getInternalNumber(), seriesCode)) {
             document.setInternalNumber(invoice.getInternalNumber());
             return;
         }
@@ -1446,6 +1448,25 @@ public class TaxInvoiceService {
         String internalNumber = generateInternalNumber(invoice.getId(), seriesCode);
         invoice.setInternalNumber(internalNumber);
         document.setInternalNumber(internalNumber);
+    }
+
+    /**
+     * Una factura anulada ante el SAT y re-emitida es un DTE nuevo: debe tomar el siguiente
+     * correlativo de la serie, no repetir el número del documento anulado. Como la re-emisión
+     * reutiliza la misma fila tax_invoice, se compara el número actual con el que quedó en la
+     * bitácora VOID: si es el mismo, aún no se ha renumerado (y así los reintentos tras un fallo
+     * no consumen correlativos de más).
+     */
+    private boolean needsNewInternalNumberAfterVoid(TaxInvoiceEntity invoice) {
+        if (!requiresNewFelTransactionAfterVoid(invoice)) {
+            return false;
+        }
+        String current = trimToNull(invoice.getInternalNumber());
+        if (current == null) {
+            return false;
+        }
+        String voided = trimToNull(taxInvoiceAttemptService.findLastVoidedInternalNumber(invoice.getId()));
+        return voided != null && voided.equalsIgnoreCase(current);
     }
 
     private String resolveDocumentType(String requested) throws BusinessException {

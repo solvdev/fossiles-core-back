@@ -43,15 +43,15 @@ class KioskForecastMathTest {
     }
 
     @Test
-    void todayCountsAtLeastWhatWasAlreadySold() {
+    void todaysPartialSalesAreIgnoredBecauseTheDayHasNotClosed() {
         LocalDate today = LocalDate.of(2026, 9, 16);
         Map<LocalDate, BigDecimal> daily = weeklyPattern(LocalDate.of(2026, 6, 1), today.minusDays(1));
-        daily.put(today, new BigDecimal("500")); // hoy ya lleva más de lo esperado (100)
+        daily.put(today, new BigDecimal("500")); // ventas parciales de hoy: no cuentan
 
         KioskForecastMath.MonthEnd r = KioskForecastMath.monthEnd(daily, today, null);
 
-        assertThat(r.actualToDate()).isCloseTo(1800.0, within(0.001));
-        assertThat(r.projected()).isCloseTo(2600.0 + 400.0, within(0.001));
+        assertThat(r.actualToDate()).isCloseTo(1300.0, within(0.001)); // al cierre de ayer
+        assertThat(r.projected()).isCloseTo(2600.0, within(0.001));    // hoy se proyecta completo con lo esperado
     }
 
     @Test

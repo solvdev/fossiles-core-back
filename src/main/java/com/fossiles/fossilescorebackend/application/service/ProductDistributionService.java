@@ -36,6 +36,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoSizeKeys;
 import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
@@ -4728,6 +4729,33 @@ public class ProductDistributionService {
         return toShipmentResponses(pending);
     }
 
+    /** Tope de envíos por consulta de la pestaña «Envíos» de un kiosko. */
+    private static final int KIOSK_SHIPMENTS_MAX = 500;
+    /** Ventana por defecto cuando no se indica rango: últimos 90 días. */
+    private static final int KIOSK_SHIPMENTS_DEFAULT_DAYS = 90;
+
+    /**
+     * Todos los envíos de un kiosko (cualquier estado) en un rango de fechas, para consultarlos o imprimirlos.
+     * Admin ve cualquier kiosko; encargada solo los suyos. Sin {@code from}/{@code to}: últimos 90 días.
+     */
+    public List<ProductShipmentResponse> getShipmentsByKiosk(Long kioskLocationId, LocalDate from, LocalDate to)
+            throws BusinessException {
+        if (kioskLocationId == null) {
+            throw new BusinessException("Indica el kiosko para consultar sus envíos.");
+        }
+        assertMayAccessKioskLocation(kioskLocationId, resolveReceiptLocationScope());
+        LocalDate end = to != null ? to : LocalDate.now();
+        LocalDate start = from != null ? from : end.minusDays(KIOSK_SHIPMENTS_DEFAULT_DAYS);
+        if (start.isAfter(end)) {
+            throw new BusinessException("La fecha inicial no puede ser posterior a la final.");
+        }
+        return toShipmentResponses(shipmentRepository.findByLocationIdAndShipmentDateRange(
+                kioskLocationId,
+                start.atStartOfDay(),
+                end.plusDays(1).atStartOfDay(),
+                org.springframework.data.domain.PageRequest.of(0, KIOSK_SHIPMENTS_MAX)));
+    }
+
     public long countShipmentsInTransit(Long kioskLocationId) throws BusinessException {
         Set<Long> scopedLocationIds = resolveReceiptLocationScope();
         if (kioskLocationId != null) {
@@ -5212,7 +5240,7 @@ public class ProductDistributionService {
     }
 
     private String normalizeSize(String size) {
-        return size == null ? "" : size.trim().toUpperCase();
+        return CinchoSizeKeys.normalize(size);
     }
 
     private void assertShipmentDetailsHaveCinchoSize(Long shipmentId) throws BusinessException {

@@ -728,7 +728,10 @@ public class DayPlanService {
                     ? taskDeskHoursService.baseHours(t, dd.extraByTaskId())
                     : taskDeskHoursService.remainingDeskHours(t, asOf, dd.extraByTaskId());
             if (t.getDesk() != null) {
-                loads.merge(t.getDesk(), hours, Double::sum);
+                // Mesa fuera de 1..N = mesa especial (maquila): no ocupa cupo de la planta.
+                if (t.getDesk() <= dd.numDesks()) {
+                    loads.merge(t.getDesk(), hours, Double::sum);
+                }
             } else if (hours > 0 && !dd.cinchoOnlyTaskIds().contains(t.getId())) {
                 withoutDesk.add(hours);
             }

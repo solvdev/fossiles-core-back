@@ -125,6 +125,10 @@ public class KioskSaleEntity {
     @Column(name = "promotion_name", length = 180)
     private String promotionName;
 
+    /** Regla (JSON) de la promoción RULES tal como estaba al vender. */
+    @Column(name = "promotion_rule_snapshot", columnDefinition = "TEXT")
+    private String promotionRuleSnapshot;
+
     @Column(name = "notes", length = 1500)
     private String notes;
 

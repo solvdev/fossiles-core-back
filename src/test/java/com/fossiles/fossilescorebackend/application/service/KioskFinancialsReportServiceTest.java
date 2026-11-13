@@ -165,7 +165,7 @@ class KioskFinancialsReportServiceTest {
     }
 
     @Test
-    void compareSamePeriodIsCappedByTodayAndGoLive() throws Exception {
+    void compareSamePeriodIsCappedByYesterdayAndGoLive() throws Exception {
         LocalDate goLive = LocalDate.parse("2026-07-21");
         lenient().when(resolver.goLiveEffective(any())).thenReturn(Map.of(1L, goLive));
         lenient().when(resolver.resolve(any(), eq(LocalDate.of(2026, 1, 1)), eq(LocalDate.of(2026, 12, 31)), any()))
@@ -174,7 +174,7 @@ class KioskFinancialsReportServiceTest {
                 .thenReturn(Map.of(1L, sales(1, goLive, false, true,
                         "2025-07-20", "500.00", "2025-07-21", "60.00", "2025-09-30", "10.00", "2025-10-01", "700.00")));
 
-        KioskFinancialsCompareResponse r = service.compare(2026, 2025, 1, 12, "SAME_PERIOD", "1", LocalDate.of(2026, 9, 30));
+        KioskFinancialsCompareResponse r = service.compare(2026, 2025, 1, 12, "SAME_PERIOD", "1", LocalDate.of(2026, 10, 1));
 
         KioskFinancialsCompareResponse.SiteCompare s = r.getSites().get(0);
         assertThat(s.getPeriodFrom()).isEqualTo(LocalDate.of(2026, 7, 21));
@@ -185,6 +185,29 @@ class KioskFinancialsReportServiceTest {
         assertThat(s.getBaseSales()).isEqualByComparingTo("70.00");
         assertThat(r.getAsOf()).isEqualTo(LocalDate.of(2026, 9, 30));
         assertThat(r.getMode()).isEqualTo("SAME_PERIOD");
+    }
+
+    @Test
+    void compareLeavesOutSalesOfTodayBecauseTheDayHasNotClosed() throws Exception {
+        LocalDate goLive = LocalDate.parse("2026-07-21");
+        lenient().when(resolver.goLiveEffective(any())).thenReturn(Map.of(1L, goLive));
+        lenient().when(resolver.resolve(any(), eq(LocalDate.of(2026, 10, 1)), eq(LocalDate.of(2026, 10, 31)), any()))
+                .thenReturn(Map.of(1L, sales(1, goLive, true, false,
+                        "2026-10-05", "100.00", "2026-10-06", "30.00", "2026-10-07", "9999.00")));
+        lenient().when(resolver.resolve(any(), eq(LocalDate.of(2025, 10, 1)), eq(LocalDate.of(2025, 10, 31)), any()))
+                .thenReturn(Map.of(1L, sales(1, goLive, false, true, "2025-10-05", "60.00", "2025-10-07", "500.00")));
+        LocalDate today = LocalDate.of(2026, 10, 7);
+
+        KioskFinancialsCompareResponse same = service.compare(2026, 2025, 10, 10, "SAME_PERIOD", "1", today);
+        assertThat(same.getAsOf()).isEqualTo(LocalDate.of(2026, 10, 6));
+        assertThat(same.getSites().get(0).getPeriodTo()).isEqualTo(LocalDate.of(2026, 10, 6));
+        assertThat(same.getSites().get(0).getBasePeriodTo()).isEqualTo(LocalDate.of(2025, 10, 6));
+        assertThat(same.getSites().get(0).getSales()).isEqualByComparingTo("130.00");
+        assertThat(same.getSites().get(0).getBaseSales()).isEqualByComparingTo("60.00");
+
+        KioskFinancialsCompareResponse full = service.compare(2026, 2025, 10, 10, "FULL_MONTH", "1", today);
+        assertThat(full.getSites().get(0).getSales()).isEqualByComparingTo("130.00");   // sin las ventas parciales de hoy
+        assertThat(full.getSites().get(0).getBaseSales()).isEqualByComparingTo("560.00"); // el anio base va completo
     }
 
     @Test
@@ -291,8 +314,10 @@ class KioskFinancialsReportServiceTest {
                 .isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.compareCustom(a, a.minusDays(1), b, b, null, today))
                 .isInstanceOf(BusinessException.class).hasMessageContaining("inicial");
+        assertThatThrownBy(() -> service.compareCustom(a, today, b, b, null, today)) // hoy aun no cierra
+                .isInstanceOf(BusinessException.class).hasMessageContaining("después de ayer");
         assertThatThrownBy(() -> service.compareCustom(a, today.plusDays(1), b, b, null, today))
-                .isInstanceOf(BusinessException.class).hasMessageContaining("después de hoy");
+                .isInstanceOf(BusinessException.class).hasMessageContaining("después de ayer");
         assertThatThrownBy(() -> service.compareCustom(a, a, b, b.plusDays(366), null, today))
                 .isInstanceOf(BusinessException.class).hasMessageContaining("366");
     }
@@ -523,6 +548,18 @@ class KioskFinancialsReportServiceTest {
         assertThat(d3.getCumulative()).isEqualByComparingTo("150.50");
         assertThat(r.getSiteTotals().get(1L)).isEqualByComparingTo("100.00");
         assertThat(r.getGrandTotal()).isEqualByComparingTo("150.50");
+    }
+
+    @Test
+    void dailyMatrixHidesTodaysPartialSales() throws Exception {
+        lenient().when(resolver.resolve(any(), eq(LocalDate.of(2026, 10, 1)), eq(LocalDate.of(2026, 10, 31)), any()))
+                .thenReturn(Map.of(1L, sales(1, null, true, false, "2026-10-05", "100.00", "2026-10-06", "30.00")));
+
+        KioskFinancialsDailyMatrixResponse r = service.getDailyMatrix(2026, 10, "1", LocalDate.of(2026, 10, 6));
+
+        assertThat(r.getDays().get(4).getValues().get(1L)).isEqualByComparingTo("100.00");
+        assertThat(r.getDays().get(5).getValues().get(1L)).isNull(); // 6-oct = hoy, aun no cierra
+        assertThat(r.getGrandTotal()).isEqualByComparingTo("100.00");
     }
 
     @Test

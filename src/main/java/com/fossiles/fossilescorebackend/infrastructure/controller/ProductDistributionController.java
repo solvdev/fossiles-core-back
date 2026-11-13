@@ -337,6 +337,20 @@ public class ProductDistributionController {
         return ResponseEntity.ok(distributionService.getShipmentsPendingReceipt(kioskLocationId));
     }
 
+    /** Todos los envíos de un kiosko (cualquier estado) en un rango de fechas; por defecto últimos 90 días. */
+    @GetMapping("/shipments/by-kiosk")
+    public ResponseEntity<List<ProductShipmentResponse>> getShipmentsByKiosk(
+            @RequestParam Long kioskLocationId,
+            @RequestParam(required = false)
+            @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE)
+            java.time.LocalDate from,
+            @RequestParam(required = false)
+            @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE)
+            java.time.LocalDate to
+    ) throws BusinessException {
+        return ResponseEntity.ok(distributionService.getShipmentsByKiosk(kioskLocationId, from, to));
+    }
+
     @GetMapping("/shipments/in-transit/count")
     public ResponseEntity<Map<String, Long>> countShipmentsInTransit(
             @RequestParam(required = false) Long kioskLocationId

@@ -6,6 +6,8 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderI
 import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderItemRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductionOrderRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseUnitReceiptRequest;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoSizeKeys;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
@@ -368,15 +370,15 @@ public class ProductionOrderController {
         if (isInternaOpi) {
             entity.setStatus("DRAFT");
         }
+        if (request.getItems() != null) {
+            for (ProductionOrderItemRequest itemRequest : request.getItems()) {
+                validateProductionOrderItemRequest(itemRequest, effectiveOrderType);
+            }
+        }
         ProductionOrderEntity saved = productionOrderRepository.save(entity);
 
         // Guardar items
         if (request.getItems() != null && !request.getItems().isEmpty()) {
-            // Validar items antes de procesarlos
-            for (ProductionOrderItemRequest itemRequest : request.getItems()) {
-                validateProductionOrderItemRequest(itemRequest, effectiveOrderType);
-            }
-
             final Long savedProductionOrderId = saved.getId();
             List<ProductionOrderItemEntity> items = new ArrayList<>();
             for (ProductionOrderItemRequest itemRequest : request.getItems()) {
@@ -387,8 +389,7 @@ public class ProductionOrderController {
                         .brandName(normalizeItemBrandNameForStorage(effectiveOrderType, itemRequest.getBrandName()))
                         .quantity(itemRequest.getQuantity())
                         .warehouseReceivedQty(0)
-                        .sizesData(itemRequest.getSizes() != null ?
-                                convertSizesToJson(itemRequest.getSizes()) : null)
+                        .sizesData(sizesDataFor(itemRequest))
                         .observations(itemRequest.getObservations())
                         .unitPrice(itemRequest.getUnitPrice())
                         .unitPricesJson(convertUnitPricesToJson(itemRequest.getUnitPrices()))
@@ -443,6 +444,12 @@ public class ProductionOrderController {
             throw new BusinessException("Invalid order type. Must be one of: CINCHOS, CINCHOS_FOSSILES, CINCHOS_MARCAS, MARCAS(OPV), NORMAL, DISTRIBUTION, VENTA_EN_LINEA, CLIENTE_KIOSKO, INTERNA(OPI)");
         }
 
+        if (request.getItems() != null) {
+            for (ProductionOrderItemRequest itemRequest : request.getItems()) {
+                validateProductionOrderItemRequest(itemRequest, effectiveOrderType);
+            }
+        }
+
         updateEntity(entity, request);
         entity.setOrderType(effectiveOrderType);
         applyDefaultSchedulingPriority(entity, effectiveOrderType);
@@ -450,9 +457,6 @@ public class ProductionOrderController {
         ProductionOrderEntity updated = productionOrderRepository.save(entity);
 
         if (request.getItems() != null) {
-            for (ProductionOrderItemRequest itemRequest : request.getItems()) {
-                validateProductionOrderItemRequest(itemRequest, effectiveOrderType);
-            }
             productionOrderItemSyncService.sync(updated.getId(), effectiveOrderType, request.getItems());
         }
 
@@ -1994,12 +1998,15 @@ public class ProductionOrderController {
 
     private void validateProductionOrderItemRequest(ProductionOrderItemRequest itemRequest, String orderType)
             throws ResourceNotFoundException, BusinessException {
-        if (itemRequest.getProductId() != null && !productRepository.existsById(itemRequest.getProductId())) {
-            throw new ResourceNotFoundException("Product", itemRequest.getProductId());
+        ProductEntity product = null;
+        if (itemRequest.getProductId() != null) {
+            product = productRepository.findById(itemRequest.getProductId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Product", itemRequest.getProductId()));
         }
         if (itemRequest.getColorId() != null && !colorRepository.existsById(itemRequest.getColorId())) {
             throw new ResourceNotFoundException("Color", itemRequest.getColorId());
         }
+        assertBeltSizesMatchQuantity(product, itemRequest);
         if ("MARCAS".equals(orderType)) {
             String normalizedBrand = normalizeItemBrandName(itemRequest.getBrandName());
             if (normalizedBrand == null) {
@@ -2054,6 +2061,38 @@ public class ProductionOrderController {
         }
         String seller = String.valueOf(order.getSellerName() == null ? "" : order.getSellerName()).trim().toUpperCase();
         return seller.contains("LUIS FELIPE");
+    }
+
+    private void assertBeltSizesMatchQuantity(ProductEntity product, ProductionOrderItemRequest itemRequest)
+            throws BusinessException {
+        if (!CinchoProductUtils.tracksSizeBreakdown(product)
+                || itemRequest.getSizes() == null
+                || itemRequest.getSizes().isEmpty()) {
+            return;
+        }
+        int sum = CinchoSizeKeys.sum(CinchoSizeKeys.aggregate(itemRequest.getSizes()));
+        int quantity = itemRequest.getQuantity() != null ? itemRequest.getQuantity() : 0;
+        if (sum == quantity) {
+            return;
+        }
+        String code = product.getCode() != null && !product.getCode().isBlank()
+                ? product.getCode()
+                : String.valueOf(product.getId());
+        throw new BusinessException(
+                "La suma de tallas (" + sum + ") no coincide con la cantidad (" + quantity + ") para " + code);
+    }
+
+    private String sizesDataFor(ProductionOrderItemRequest itemRequest) {
+        if (itemRequest.getSizes() == null) {
+            return null;
+        }
+        ProductEntity product = itemRequest.getProductId() == null
+                ? null
+                : productRepository.findById(itemRequest.getProductId()).orElse(null);
+        if (CinchoProductUtils.tracksSizeBreakdown(product)) {
+            return CinchoSizeKeys.toJson(CinchoSizeKeys.aggregate(itemRequest.getSizes()));
+        }
+        return convertSizesToJson(itemRequest.getSizes());
     }
 
     private String convertSizesToJson(Map<String, Integer> sizes) {

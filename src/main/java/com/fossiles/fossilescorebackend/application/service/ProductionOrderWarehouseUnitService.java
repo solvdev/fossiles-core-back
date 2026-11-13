@@ -10,6 +10,7 @@ import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundEx
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoSizeKeys;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
@@ -766,7 +767,8 @@ public class ProductionOrderWarehouseUnitService {
     }
 
     /**
-     * Talla efectiva para ingreso a inventario: pieza → talla única del ítem OP → talla de la línea de venta online.
+     * Talla efectiva para ingreso a inventario: pieza, talla única del ítem, la línea de venta
+     * enlazada y, al final, producto + color de la venta.
      */
     private String resolveReceiptSizeKey(
             ProductionOrderItemEntity item,
@@ -785,6 +787,11 @@ public class ProductionOrderWarehouseUnitService {
                 .collect(Collectors.toList());
         if (sizes.size() == 1) {
             return sizes.get(0);
+        }
+
+        String fromLinkedLine = sizeFromLinkedSaleLine(item);
+        if (!fromLinkedLine.isEmpty()) {
+            return fromLinkedLine;
         }
 
         if (item.getOnlineSaleId() != null) {
@@ -825,6 +832,17 @@ public class ProductionOrderWarehouseUnitService {
             return "";
         }
         return "";
+    }
+
+    /** Talla de la línea de venta enlazada. Distingue dos tallas del mismo cincho y color. */
+    private String sizeFromLinkedSaleLine(ProductionOrderItemEntity item) {
+        if (item == null || item.getOnlineSaleItemId() == null) {
+            return "";
+        }
+        return onlineSaleItemRepository.findById(item.getOnlineSaleItemId())
+                .map(OnlineSaleItemEntity::getSize)
+                .map(this::normalizeUnitSizeKey)
+                .orElse("");
     }
 
     private void syncItemReceivedQty(ProductionOrderItemEntity item) {
@@ -989,14 +1007,9 @@ public class ProductionOrderWarehouseUnitService {
         return available;
     }
 
-    /**
-     * Alineado con {@link ProductDistributionService#normalizeSize}: trim + mayúsculas.
-     */
+    /** Misma clave que {@link ProductDistributionService#normalizeSize} y {@link CinchoSizeKeys#normalize}. */
     private String normalizeUnitSizeKey(String size) {
-        if (size == null || size.isBlank()) {
-            return "";
-        }
-        return size.trim().toUpperCase(Locale.ROOT);
+        return CinchoSizeKeys.normalize(size);
     }
 
     /**

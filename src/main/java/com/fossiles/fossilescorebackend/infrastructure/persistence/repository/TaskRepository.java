@@ -33,6 +33,28 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
             """)
     List<Long> findNonCancelledItemIds(@Param("itemIds") Collection<Long> itemIds);
     List<TaskEntity> findByDesk(Integer desk);
+
+    /**
+     * Historial de mesas: tareas con mesa (la actual o la {@code worked_desk} que queda al completar)
+     * cuya fecha programada, de inicio o de cierre cae en la ventana. El día exacto de cada una lo
+     * decide el servicio; aquí solo se acota para no leer toda la tabla.
+     */
+    @Query("""
+            SELECT t FROM TaskEntity t
+            WHERE (t.status IS NULL OR t.status <> 'CANCELLED')
+              AND (t.desk IS NOT NULL OR t.workedDesk IS NOT NULL)
+              AND ((t.scheduledDate BETWEEN :from AND :to)
+                   OR (t.completedAt >= :fromTs AND t.completedAt < :toExclTs)
+                   OR (t.startedAt >= :fromTs AND t.startedAt < :toExclTs))
+            ORDER BY t.id
+            """)
+    List<TaskEntity> findDeskHistoryCandidates(@Param("from") LocalDate from, @Param("to") LocalDate to,
+                                               @Param("fromTs") LocalDateTime fromTs,
+                                               @Param("toExclTs") LocalDateTime toExclTs);
+
+    /** Tareas de una mesa en ciertos estados (p. ej. abiertas en la mesa de maquila). */
+    long countByDeskAndStatusIn(Integer desk, Collection<String> statuses);
+
     @Query("SELECT t FROM TaskEntity t WHERE t.scheduledDate = :scheduledDate ORDER BY COALESCE(t.priority, 9999), t.deliveryDate, t.desk, t.id")
     List<TaskEntity> findByScheduledDate(@Param("scheduledDate") LocalDate scheduledDate);
     List<TaskEntity> findByStatus(String status);
@@ -273,6 +295,8 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
     /**
      * Cuando se reduce la cantidad de mesas activas desde una fecha efectiva, se limpian las tareas
      * que quedaron en mesas fuera de rango para que vuelvan a \"Sin asignar\" (desk = null).
+     * Las mesas especiales (maquila) en {@code keepDesks} no se tocan: su número está fuera
+     * del rango de planta a propósito. La lista no puede ir vacía (usar {@code -1}).
      *
      * @return cantidad de tareas actualizadas
      */
@@ -284,9 +308,11 @@ public interface TaskRepository extends JpaRepository<TaskEntity, Long> {
             WHERE t.scheduledDate >= :effectiveDate
             AND t.desk IS NOT NULL
             AND t.desk > :maxDesk
+            AND t.desk NOT IN :keepDesks
             AND t.status IN ('PENDING', 'IN_PROGRESS')
             """)
-    int clearDeskOutOfRangeFromDate(@Param("effectiveDate") LocalDate effectiveDate, @Param("maxDesk") int maxDesk);
+    int clearDeskOutOfRangeFromDate(@Param("effectiveDate") LocalDate effectiveDate, @Param("maxDesk") int maxDesk,
+                                    @Param("keepDesks") Collection<Integer> keepDesks);
 
     @Query("""
             SELECT DISTINCT t FROM TaskEntity t

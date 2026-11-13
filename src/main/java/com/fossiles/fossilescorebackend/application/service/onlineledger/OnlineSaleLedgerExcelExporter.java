@@ -100,16 +100,20 @@ public final class OnlineSaleLedgerExcelExporter {
             money(x, 13, row.getCarrierCommission(), st.money(tone));
             text(x, 14, carrierLabel(row.getCarrier()), st.text(tone));
             date(x, 15, row.getSaleDate(), st.date(tone));
-            text(x, 16, row.getSocialNetwork(), st.text(tone));
+            text(x, 16, socialLabel(row.getSocialNetwork()), st.text(tone));
             text(x, 17, row.getEmail(), st.text(tone));
             text(x, 18, row.getSalesperson(), st.text(tone));
             text(x, 19, row.getGuideNumber(), st.text(tone));
             text(x, 20, row.getShipmentNumber(), st.text(tone));
-            text(x, 21, row.getPaymentAuthorization(), st.text(tone));
+            text(x, 21, clean(row.getAccountingAuthorization()).isEmpty() ? row.getPaymentAuthorization() : row.getAccountingAuthorization(), st.text(tone));
             text(x, 22, statusLabel(row.getStatus()), st.text(tone));
             text(x, 23, row.getAccountingNote(), st.text(tone));
             Cell net = x.createCell(24);
-            net.setCellFormula("K" + excelRow + "-L" + excelRow);
+            if (row.getAccountingNet() != null) {
+                net.setCellValue(row.getAccountingNet().doubleValue()); // «Sin envío» corregido a mano en el libro
+            } else {
+                net.setCellFormula("K" + excelRow + "-L" + excelRow);
+            }
             net.setCellStyle(st.money(tone));
             money(x, 25, row.getShortageAmount(), st.money(tone));
             text(x, 26, row.getShortageNote(), st.text(tone));
@@ -405,6 +409,20 @@ public final class OnlineSaleLedgerExcelExporter {
         String c = clean(carrier).toUpperCase(Locale.ROOT);
         if (c.startsWith("FORZA")) return "FORZA";
         return c.replace('_', ' ');
+    }
+
+    /** Red social con su nombre (WHATSAPP → WhatsApp). */
+    static String socialLabel(String social) {
+        String s = clean(social).toUpperCase(Locale.ROOT);
+        return switch (s) {
+            case "" -> "";
+            case "WHATSAPP" -> "WhatsApp";
+            case "FACEBOOK" -> "Facebook";
+            case "INSTAGRAM" -> "Instagram";
+            case "TIKTOK" -> "TikTok";
+            case "WEB", "PAGINA_WEB" -> "Página web";
+            default -> s.charAt(0) + s.substring(1).toLowerCase(Locale.ROOT).replace('_', ' ');
+        };
     }
 
     static String statusLabel(String status) {

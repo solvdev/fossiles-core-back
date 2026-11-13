@@ -6,6 +6,9 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductInventorySizesJson;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoSizeKeys;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderPlanPriority;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +34,7 @@ public class OnlineSaleProductionOrderService {
     private final ProductionOrderItemRepository productionOrderItemRepository;
     private final OnlineSaleRepository onlineSaleRepository;
     private final OnlineSaleItemRepository onlineSaleItemRepository;
+    private final ProductRepository productRepository;
     private final OnlineSaleService saleService;
     private final OnlineSaleShipmentNumberService onlineSaleShipmentNumberService;
 
@@ -85,7 +89,29 @@ public class OnlineSaleProductionOrderService {
             boolean canFulfillFromInventory,
             String inventorySource,
             boolean leatherOkForOpl,
-            java.util.List<String> leatherSummary
+            java.util.List<String> leatherSummary,
+            java.util.List<FulfillmentLine> lines
+    ) {}
+
+    /**
+     * Detalle por línea de la vista previa «Despacho o producción»: talla pedida y stock de esa talla en
+     * Devoluciones y Bodega PT. {@code issue}: SIN_TALLA, TALLA_SIN_STOCK o STOCK_INSUFICIENTE (null si cubre).
+     * {@code competes}: la misma talla se pide también en otra venta de la lista y el stock no alcanza para todas.
+     */
+    public record FulfillmentLine(
+            Long saleItemId,
+            String productCode,
+            String productName,
+            String colorName,
+            String size,
+            int quantity,
+            int quantityInSale,
+            BigDecimal stockDevoluciones,
+            BigDecimal stockBodegaPt,
+            BigDecimal stockTotal,
+            boolean covered,
+            String issue,
+            boolean competes
     ) {}
 
     public record SaleItemStock(
@@ -242,6 +268,16 @@ public class OnlineSaleProductionOrderService {
                 .collect(Collectors.toList());
         boolean bodegaPtFound = !sourceWarehouses.isEmpty();
 
+        // Misma talla pedida en varias ventas de la lista: si el stock no alcanza para todas, se avisa.
+        Map<String, Integer> demandAllSales = new HashMap<>();
+        for (OnlineSaleEntity sale : sales) {
+            for (OnlineSaleItemEntity item : itemsOrLegacy(sale)) {
+                if (item.getProductId() == null) continue;
+                demandAllSales.merge(lineKey(item.getProductId(), item.getColorId(), item.getSize()),
+                        item.getQuantity() != null ? item.getQuantity() : 1, Integer::sum);
+            }
+        }
+
         List<FulfillmentPreviewRow> rows = sales.stream()
                 .map(sale -> {
                     InventorySourceDecision decision = resolveInventorySourceDecision(sale, bodegaDevoluciones, bodegaPT);
@@ -256,7 +292,8 @@ public class OnlineSaleProductionOrderService {
                             decision.canFulfill,
                             decision.sourceLabel,
                             leather.satisfied(),
-                            leather.messages()
+                            leather.messages(),
+                            buildPreviewLines(sale, bodegaDevoluciones, bodegaPT, demandAllSales)
                     );
                 })
                 .toList();
@@ -264,6 +301,76 @@ public class OnlineSaleProductionOrderService {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("bodegaPtFound", bodegaPtFound);
         out.put("rows", rows);
+        return out;
+    }
+
+    /** Líneas de la venta; si no tiene detalle, la línea legada de la cabecera como una sola línea. */
+    private List<OnlineSaleItemEntity> itemsOrLegacy(OnlineSaleEntity sale) {
+        List<OnlineSaleItemEntity> items = onlineSaleItemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId());
+        if (items != null && !items.isEmpty()) {
+            return items;
+        }
+        if (sale.getProductId() == null) {
+            return List.of();
+        }
+        OnlineSaleItemEntity legacy = new OnlineSaleItemEntity();
+        legacy.setProductId(sale.getProductId());
+        legacy.setProductCode(sale.getProductCode());
+        legacy.setProductName(sale.getProductName());
+        legacy.setColorId(sale.getColorId());
+        legacy.setColorName(sale.getColorName());
+        legacy.setSize(sale.getSize());
+        legacy.setQuantity(sale.getQuantity() != null ? sale.getQuantity() : 1);
+        return List.of(legacy);
+    }
+
+    /** Producto + color + talla: el stock se consume por esa combinación, así que la demanda se suma por ella. */
+    private static String lineKey(Long productId, Long colorId, String size) {
+        return productId + "|" + colorId + "|" + ProductInventorySizesJson.normalizeKey(size);
+    }
+
+    private List<FulfillmentLine> buildPreviewLines(
+            OnlineSaleEntity sale,
+            LocationEntity bodegaDevoluciones,
+            LocationEntity bodegaPT,
+            Map<String, Integer> demandAllSales
+    ) {
+        List<OnlineSaleItemEntity> items = itemsOrLegacy(sale);
+        Map<String, Integer> demandInSale = new HashMap<>();
+        for (OnlineSaleItemEntity item : items) {
+            if (item.getProductId() == null) continue;
+            demandInSale.merge(lineKey(item.getProductId(), item.getColorId(), item.getSize()),
+                    item.getQuantity() != null ? item.getQuantity() : 1, Integer::sum);
+        }
+        List<FulfillmentLine> out = new ArrayList<>();
+        for (OnlineSaleItemEntity item : items) {
+            int qty = item.getQuantity() != null ? item.getQuantity() : 1;
+            String key = lineKey(item.getProductId(), item.getColorId(), item.getSize());
+            BigDecimal dev = bodegaDevoluciones != null
+                    ? getStock(item.getProductId(), bodegaDevoluciones.getId(), item.getColorId(), item.getSize())
+                    : BigDecimal.ZERO;
+            BigDecimal pt = bodegaPT != null
+                    ? getStock(item.getProductId(), bodegaPT.getId(), item.getColorId(), item.getSize())
+                    : BigDecimal.ZERO;
+            BigDecimal total = dev.add(pt);
+            int inSale = demandInSale.getOrDefault(key, qty);
+            boolean covered = total.compareTo(BigDecimal.valueOf(inSale)) >= 0;
+            String issue = null;
+            if (!covered) {
+                boolean sizeBlank = item.getSize() == null || item.getSize().isBlank();
+                if (sizeBlank && total.signum() == 0 && productInventoryService.tracksStockBySize(item.getProductId())) {
+                    issue = "SIN_TALLA";
+                } else if (total.signum() == 0) {
+                    issue = "TALLA_SIN_STOCK";
+                } else {
+                    issue = "STOCK_INSUFICIENTE";
+                }
+            }
+            int all = demandAllSales.getOrDefault(key, inSale);
+            boolean competes = covered && all > inSale && total.compareTo(BigDecimal.valueOf(all)) < 0;
+            out.add(new FulfillmentLine(item.getId(), item.getProductCode(), item.getProductName(),
+                    item.getColorName(), item.getSize(), qty, inSale, dev, pt, total, covered, issue, competes));
+        }
         return out;
     }
 
@@ -282,11 +389,17 @@ public class OnlineSaleProductionOrderService {
         int total = stocks.size();
         if (total == 0) return new InventorySourceDecision(false, false, false, "SIN_STOCK");
 
+        // La misma pieza (producto+color+talla) en varias líneas se suma: 2 líneas de 1 con 1 en bodega no alcanzan.
+        Map<String, Integer> demandByKey = new HashMap<>();
+        for (SaleItemStock s : stocks) {
+            demandByKey.merge(lineKey(s.productId(), s.colorId(), s.size()), s.quantity(), Integer::sum);
+        }
         int fulfillable = 0;
         boolean usesDev = false;
         boolean usesPt = false;
         for (SaleItemStock s : stocks) {
-            BigDecimal needed = BigDecimal.valueOf(s.quantity());
+            BigDecimal needed = BigDecimal.valueOf(
+                    demandByKey.getOrDefault(lineKey(s.productId(), s.colorId(), s.size()), s.quantity()));
             if (s.stockTotal().compareTo(needed) >= 0) {
                 fulfillable++;
                 BigDecimal fromDev = s.stockDevoluciones().min(needed);
@@ -546,11 +659,19 @@ public class OnlineSaleProductionOrderService {
                 .findByOnlineSaleIdOrderByIdAsc(sale.getId());
 
         if (items != null && !items.isEmpty()) {
+            // Se suma por producto+color+talla: dos líneas de la misma pieza no pueden salir de una sola unidad.
+            Map<String, Integer> demandByKey = new LinkedHashMap<>();
+            Map<String, OnlineSaleItemEntity> sample = new HashMap<>();
             for (OnlineSaleItemEntity item : items) {
                 if (item.getProductId() == null) continue;
-                int needed = item.getQuantity() != null ? item.getQuantity() : 1;
+                String key = lineKey(item.getProductId(), item.getColorId(), item.getSize());
+                demandByKey.merge(key, item.getQuantity() != null ? item.getQuantity() : 1, Integer::sum);
+                sample.putIfAbsent(key, item);
+            }
+            for (Map.Entry<String, Integer> e : demandByKey.entrySet()) {
+                OnlineSaleItemEntity item = sample.get(e.getKey());
                 BigDecimal stock = getStockAcrossWarehouses(item.getProductId(), item.getColorId(), sourceWarehouses, item.getSize());
-                if (stock.compareTo(BigDecimal.valueOf(needed)) < 0) {
+                if (stock.compareTo(BigDecimal.valueOf(e.getValue())) < 0) {
                     return false;
                 }
             }
@@ -610,31 +731,62 @@ public class OnlineSaleProductionOrderService {
                 .anyMatch(i -> ACTION_PRODUCE.equals(normalizeFulfillmentRoute(i.getFulfillmentRoute())));
     }
 
-    private ProductionOrderItemEntity findPoItemForSaleLine(
+    /**
+     * Una línea con {@code onlineSaleItemId} usa ese ítem. Si varias líneas del mismo
+     * producto y color quedaron en un solo ítem, se reparte lo ya recibido entre ellas.
+     */
+    private ProductionOrderItemEntity matchProduceLine(
             List<ProductionOrderItemEntity> pool,
-            Set<Long> consumedPoItemIds,
+            Map<Long, Integer> remainingReceived,
             Long onlineSaleId,
-            OnlineSaleItemEntity si
-    ) {
-        ProductionOrderItemEntity byLine = pool.stream()
-                .filter(p -> !consumedPoItemIds.contains(p.getId()))
-                .filter(p -> Objects.equals(p.getOnlineSaleId(), onlineSaleId))
-                .filter(p -> si.getId() != null && Objects.equals(si.getId(), p.getOnlineSaleItemId()))
-                .findFirst().orElse(null);
-        if (byLine != null) {
-            return byLine;
+            OnlineSaleItemEntity si,
+            int need) {
+        ProductionOrderItemEntity linked = null;
+        for (ProductionOrderItemEntity item : pool) {
+            if (item.getId() == null || !Objects.equals(item.getOnlineSaleId(), onlineSaleId)) {
+                continue;
+            }
+            if (si.getId() != null && Objects.equals(si.getId(), item.getOnlineSaleItemId())) {
+                linked = item;
+                break;
+            }
         }
-        return pool.stream()
-                .filter(p -> !consumedPoItemIds.contains(p.getId()))
-                .filter(p -> Objects.equals(p.getOnlineSaleId(), onlineSaleId))
-                .filter(p -> Objects.equals(p.getProductId(), si.getProductId())
-                        && Objects.equals(p.getColorId(), si.getColorId()))
-                .findFirst().orElse(null);
+        if (linked != null) {
+            int left = remainingReceived.getOrDefault(linked.getId(), 0);
+            return left >= need ? linked : null;
+        }
+        ProductionOrderItemEntity fallback = null;
+        for (ProductionOrderItemEntity item : pool) {
+            if (item.getId() == null || !Objects.equals(item.getOnlineSaleId(), onlineSaleId)) {
+                continue;
+            }
+            if (!Objects.equals(item.getProductId(), si.getProductId())
+                    || !Objects.equals(item.getColorId(), si.getColorId())) {
+                continue;
+            }
+            if (remainingReceived.getOrDefault(item.getId(), 0) < need) {
+                continue;
+            }
+            if (item.getOnlineSaleItemId() == null) {
+                return item;
+            }
+            if (fallback == null) {
+                fallback = item;
+            }
+        }
+        return fallback;
     }
 
     private boolean produceMarkedLinesFullyReceived(Long poId, Long onlineSaleId, List<OnlineSaleItemEntity> items) {
         List<ProductionOrderItemEntity> pool = productionOrderItemRepository.findByProductionOrderId(poId);
-        Set<Long> consumed = new HashSet<>();
+        Map<Long, Integer> remaining = new HashMap<>();
+        for (ProductionOrderItemEntity item : pool) {
+            if (item.getId() == null) {
+                continue;
+            }
+            int got = item.getWarehouseReceivedQty() != null ? item.getWarehouseReceivedQty() : 0;
+            remaining.put(item.getId(), got);
+        }
         for (OnlineSaleItemEntity si : items) {
             if (!ACTION_PRODUCE.equals(normalizeFulfillmentRoute(si.getFulfillmentRoute()))) {
                 continue;
@@ -643,15 +795,11 @@ public class OnlineSaleProductionOrderService {
                 continue;
             }
             int need = si.getQuantity() != null ? si.getQuantity() : 1;
-            ProductionOrderItemEntity p = findPoItemForSaleLine(pool, consumed, onlineSaleId, si);
-            if (p == null) {
+            ProductionOrderItemEntity match = matchProduceLine(pool, remaining, onlineSaleId, si, need);
+            if (match == null) {
                 return false;
             }
-            consumed.add(p.getId());
-            int got = p.getWarehouseReceivedQty() != null ? p.getWarehouseReceivedQty() : 0;
-            if (got < need) {
-                return false;
-            }
+            remaining.put(match.getId(), remaining.get(match.getId()) - need);
         }
         return true;
     }
@@ -1045,21 +1193,7 @@ public class OnlineSaleProductionOrderService {
                 .schedulingPriority(ProductionOrderPlanPriority.OPL)
                 .build();
         ProductionOrderEntity savedPO = productionOrderRepository.save(po);
-
-        for (OnlineSaleItemEntity si : produceItems) {
-            if (si.getProductId() == null) continue;
-            ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                    .productionOrderId(savedPO.getId())
-                    .onlineSaleId(sale.getId())
-                    .onlineSaleItemId(si.getId())
-                    .productId(si.getProductId())
-                    .colorId(si.getColorId())
-                    .quantity(si.getQuantity() != null ? si.getQuantity() : 1)
-                    .warehouseReceivedQty(0)
-                    .observations(buildOplItemObservations(sale, si.getSize()))
-                    .build();
-            productionOrderItemRepository.save(item);
-        }
+        saveOplLines(savedPO.getId(), sale, sourceLinesOf(produceItems));
 
         saleService.linkToProductionOrder(List.of(sale.getId()), savedPO.getId());
         productionAutoPlannerService.planQuietly(savedPO.getId());
@@ -1157,31 +1291,117 @@ public class OnlineSaleProductionOrderService {
                 .findByOnlineSaleIdOrderByIdAsc(sale.getId());
 
         if (saleItems != null && !saleItems.isEmpty()) {
-            for (OnlineSaleItemEntity si : saleItems) {
-                ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                        .productionOrderId(productionOrderId)
-                        .onlineSaleId(sale.getId())
-                        .onlineSaleItemId(si.getId())
-                        .productId(si.getProductId())
-                        .colorId(si.getColorId())
-                        .quantity(si.getQuantity() != null ? si.getQuantity() : 1)
-                        .warehouseReceivedQty(0)
-                        .observations(buildOplItemObservations(sale, si.getSize()))
-                        .build();
-                productionOrderItemRepository.save(item);
-            }
-        } else {
-            ProductionOrderItemEntity item = ProductionOrderItemEntity.builder()
-                    .productionOrderId(productionOrderId)
-                    .onlineSaleId(sale.getId())
-                    .productId(sale.getProductId())
-                    .colorId(sale.getColorId())
-                    .quantity(sale.getQuantity() != null ? sale.getQuantity() : 1)
-                    .warehouseReceivedQty(0)
-                    .observations(buildOplItemObservations(sale, sale.getSize()))
-                    .build();
-            productionOrderItemRepository.save(item);
+            saveOplLines(productionOrderId, sale, sourceLinesOf(saleItems));
+            return;
         }
+        if (sale.getProductId() == null) {
+            return;
+        }
+        saveOplLines(productionOrderId, sale, List.of(new OplSourceLine(
+                sale.getProductId(),
+                sale.getColorId(),
+                sale.getSize(),
+                sale.getQuantity() != null ? sale.getQuantity() : 1,
+                null)));
+    }
+
+    private record OplSourceLine(
+            Long productId, Long colorId, String size, int quantity, Long onlineSaleItemId) {}
+
+    private List<OplSourceLine> sourceLinesOf(List<OnlineSaleItemEntity> saleItems) {
+        List<OplSourceLine> lines = new ArrayList<>();
+        if (saleItems == null) {
+            return lines;
+        }
+        for (OnlineSaleItemEntity si : saleItems) {
+            if (si == null || si.getProductId() == null) {
+                continue;
+            }
+            lines.add(new OplSourceLine(
+                    si.getProductId(),
+                    si.getColorId(),
+                    si.getSize(),
+                    si.getQuantity() != null ? si.getQuantity() : 1,
+                    si.getId()));
+        }
+        return lines;
+    }
+
+    /**
+     * Una línea de venta sigue siendo un ítem, salvo los cinchos del mismo producto y color:
+     * esos se juntan y {@code sizes_data} suma la cantidad de cada talla.
+     */
+    private void saveOplLines(Long productionOrderId, OnlineSaleEntity sale, List<OplSourceLine> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return;
+        }
+        Map<Long, ProductEntity> products = new HashMap<>();
+        for (ProductEntity product : productRepository.findAllById(lines.stream()
+                .map(OplSourceLine::productId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet()))) {
+            if (product.getId() != null) {
+                products.put(product.getId(), product);
+            }
+        }
+        Set<String> emittedBeltKeys = new HashSet<>();
+        for (OplSourceLine line : lines) {
+            ProductEntity product = products.get(line.productId());
+            if (!CinchoProductUtils.tracksSizeBreakdown(product)) {
+                saveOplItem(productionOrderId, sale, line.productId(), line.colorId(), line.quantity(),
+                        line.onlineSaleItemId(), null, buildOplItemObservations(sale, line.size()));
+                continue;
+            }
+            String key = line.productId() + ":" + line.colorId();
+            if (!emittedBeltKeys.add(key)) {
+                continue;
+            }
+            List<OplSourceLine> group = new ArrayList<>();
+            for (OplSourceLine candidate : lines) {
+                if (line.productId().equals(candidate.productId())
+                        && Objects.equals(line.colorId(), candidate.colorId())
+                        && CinchoProductUtils.tracksSizeBreakdown(products.get(candidate.productId()))) {
+                    group.add(candidate);
+                }
+            }
+            int quantity = 0;
+            Map<String, Integer> sizes = new LinkedHashMap<>();
+            for (OplSourceLine part : group) {
+                quantity += part.quantity();
+                CinchoSizeKeys.add(sizes, part.size(), part.quantity());
+            }
+            String sizesData = CinchoSizeKeys.sum(sizes) == quantity ? CinchoSizeKeys.toJson(sizes) : null;
+            Long onlineSaleItemId = group.size() == 1 ? group.get(0).onlineSaleItemId() : null;
+            String observations = group.size() == 1
+                    ? buildOplItemObservations(sale, group.get(0).size())
+                    : truncate(group.stream()
+                            .map(part -> buildOplItemObservations(sale, part.size()))
+                            .collect(Collectors.joining(" | ")), 500);
+            saveOplItem(productionOrderId, sale, line.productId(), line.colorId(), quantity,
+                    onlineSaleItemId, sizesData, observations);
+        }
+    }
+
+    private void saveOplItem(
+            Long productionOrderId,
+            OnlineSaleEntity sale,
+            Long productId,
+            Long colorId,
+            int quantity,
+            Long onlineSaleItemId,
+            String sizesData,
+            String observations) {
+        productionOrderItemRepository.save(ProductionOrderItemEntity.builder()
+                .productionOrderId(productionOrderId)
+                .onlineSaleId(sale.getId())
+                .onlineSaleItemId(onlineSaleItemId)
+                .productId(productId)
+                .colorId(colorId)
+                .quantity(quantity)
+                .warehouseReceivedQty(0)
+                .sizesData(sizesData)
+                .observations(observations)
+                .build());
     }
 
     /** Stub de OPL + observaciones reales de la(s) venta(s) online (máx. 1000). */

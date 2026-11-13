@@ -63,6 +63,14 @@ public class KioskSaleItemEntity {
     @Column(name = "extra_description", length = 300)
     private String extraDescription;
 
+    /** Descuento de promoción que llevó esta línea (promos RULES). null = se reparte proporcional como antes. */
+    @Column(name = "discount_amount", precision = 12, scale = 2)
+    private BigDecimal discountAmount;
+
+    /** Cómo se ganó el descuento, p.ej. "Pos. 2 · 30%". */
+    @Column(name = "discount_note", length = 200)
+    private String discountNote;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

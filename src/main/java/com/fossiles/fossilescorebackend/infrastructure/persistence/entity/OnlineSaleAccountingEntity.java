@@ -42,6 +42,10 @@ public class OnlineSaleAccountingEntity {
     @Column(name = "accounting_note", length = 1000)
     private String accountingNote;
 
+    /** Autorización de pago anotada por Contabilidad (números y texto). Vacío = la de la venta. */
+    @Column(name = "payment_authorization", length = 200)
+    private String paymentAuthorization;
+
     /** Fecha en que se envió. Vacío = fecha de despacho del sistema. */
     @Column(name = "sent_date")
     private LocalDate sentDate;
@@ -77,6 +81,42 @@ public class OnlineSaleAccountingEntity {
     @Column(name = "shortage_note", length = 500)
     private String shortageNote;
 
+    // ── Correcciones a datos de la venta (desde «Total con envío»). Vacío = rige el dato de la venta. ──
+
+    @Column(name = "total_amount", precision = 12, scale = 2)
+    private BigDecimal totalAmount;
+
+    @Column(name = "shipping_cost", precision = 12, scale = 2)
+    private BigDecimal shippingCost;
+
+    /** Sin envío. Vacío = total − envío. */
+    @Column(name = "net_amount", precision = 12, scale = 2)
+    private BigDecimal netAmount;
+
+    @Column(name = "carrier", length = 50)
+    private String carrier;
+
+    @Column(name = "sale_date")
+    private LocalDate saleDate;
+
+    @Column(name = "social_network", length = 50)
+    private String socialNetwork;
+
+    @Column(name = "email", length = 200)
+    private String email;
+
+    @Column(name = "salesperson", length = 150)
+    private String salesperson;
+
+    @Column(name = "guide_number", length = 100)
+    private String guideNumber;
+
+    @Column(name = "shipment_number", length = 100)
+    private String shipmentNumber;
+
+    @Column(name = "status", length = 30)
+    private String status;
+
     @Column(name = "reviewed", nullable = false)
     @Builder.Default
     private Boolean reviewed = false;
@@ -95,6 +135,10 @@ public class OnlineSaleAccountingEntity {
     /** Nombre de usuario de quien bloqueó, guardado al bloquear para mostrarlo sin consultar usuarios. */
     @Column(name = "locked_by_name", length = 150)
     private String lockedByName;
+
+    /** Periodo de revisión cuyo cierre bloqueó la línea; al reabrir el periodo se desbloquean solo estas. */
+    @Column(name = "locked_period_id")
+    private Long lockedPeriodId;
 
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
