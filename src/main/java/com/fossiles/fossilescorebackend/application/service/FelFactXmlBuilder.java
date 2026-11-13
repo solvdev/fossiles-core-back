@@ -643,6 +643,11 @@ public class FelFactXmlBuilder {
             return new ArrayList<>(rawTotals);
         }
 
+        List<BigDecimal> byLine = resolveByLineDiscount(lines, rawTotals, eligibleIndexes, discount);
+        if (byLine != null) {
+            return byLine;
+        }
+
         BigDecimal discountApplied = discount.min(eligibleSum).setScale(2, RoundingMode.HALF_UP);
         BigDecimal eligibleNet = eligibleSum.subtract(discountApplied).max(BigDecimal.ZERO)
                 .setScale(2, RoundingMode.HALF_UP);
@@ -665,6 +670,49 @@ public class FelFactXmlBuilder {
                 allocated = allocated.add(net);
             }
             result.set(idx, net);
+        }
+        return result;
+    }
+
+    /**
+     * Promociones por pieza (ej. la más barata 30 % y el resto 15 %): cada línea lleva su propio
+     * descuento. Solo aplica si los descuentos de las líneas suman el descuento del documento
+     * (±0.05); si no, se prorratea. Una diferencia de centavos se carga a la línea con más descuento.
+     */
+    private static List<BigDecimal> resolveByLineDiscount(
+            List<TaxInvoiceDocument.Line> lines,
+            List<BigDecimal> rawTotals,
+            List<Integer> eligibleIndexes,
+            BigDecimal documentDiscount
+    ) {
+        BigDecimal tolerance = new BigDecimal("0.05");
+        BigDecimal sum = BigDecimal.ZERO;
+        int biggest = -1;
+        for (int i = 0; i < lines.size(); i++) {
+            BigDecimal d = lines.get(i).getLineDiscount();
+            if (d == null || d.signum() <= 0) {
+                continue;
+            }
+            if (!eligibleIndexes.contains(i) || d.compareTo(rawTotals.get(i)) > 0) {
+                return null;
+            }
+            sum = sum.add(d);
+            if (biggest < 0 || d.compareTo(lines.get(biggest).getLineDiscount()) > 0) {
+                biggest = i;
+            }
+        }
+        if (biggest < 0 || sum.subtract(documentDiscount).abs().compareTo(tolerance) > 0) {
+            return null;
+        }
+        BigDecimal diff = documentDiscount.subtract(sum);
+        List<BigDecimal> result = new ArrayList<>(rawTotals);
+        for (int i = 0; i < lines.size(); i++) {
+            BigDecimal d = lines.get(i).getLineDiscount();
+            if (d == null || d.signum() <= 0) {
+                continue;
+            }
+            BigDecimal applied = i == biggest ? d.add(diff) : d;
+            result.set(i, rawTotals.get(i).subtract(applied).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP));
         }
         return result;
     }

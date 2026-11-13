@@ -83,5 +83,11 @@ public class TaxInvoiceDocument {
          * El XML usa ese unitario y el descuento de la línea. Las líneas de lista no lo marcan.
          */
         private boolean editedUnitPrice;
+
+        /**
+         * Descuento de la promoción sobre esta línea (kiosk_sale_item.discount_amount). Null en ventas
+         * sin promoción dinámica: el descuento del documento se prorratea entre las líneas.
+         */
+        private BigDecimal lineDiscount;
     }
 }
