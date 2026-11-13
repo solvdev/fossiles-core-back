@@ -21,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -94,6 +95,33 @@ class ProductionOrderItemSyncServiceTest {
         assertThat(saved.getObservations()).isEqualTo("nota");
         assertThat(saved.getUnitPrice()).isEqualByComparingTo("12.50");
         assertThat(saved.getUnitPricesJson()).isNull();
+        verify(itemRepository, never()).deleteAll(any());
+    }
+
+    @Test
+    void aggregatesBeltSizesOnUpdate() throws Exception {
+        ProductionOrderItemEntity line = line(10L, 9L, 4L, null, 0);
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        when(productRepository.findById(9L)).thenReturn(Optional.of(ProductEntity.builder()
+                .id(9L).code("CIN-SYNC").name("Cincho").cinchoType("CASUAL").build()));
+
+        Map<String, Integer> sizes = new LinkedHashMap<>();
+        sizes.put(" 32 ", 1);
+        sizes.put("32", 1);
+        sizes.put("xl", 1);
+        sizes.put("95", 1);
+        ProductionOrderItemRequest request = ProductionOrderItemRequest.builder()
+                .id(10L)
+                .productId(9L)
+                .colorId(4L)
+                .quantity(4)
+                .sizes(sizes)
+                .build();
+
+        service.sync(ORDER_ID, "NORMAL", List.of(request));
+
+        ProductionOrderItemEntity saved = single(savedItems());
+        assertThat(saved.getSizesData()).isEqualTo("{\"32\":2,\"XL\":1,\"95\":1}");
         verify(itemRepository, never()).deleteAll(any());
     }
 

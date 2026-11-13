@@ -7,6 +7,8 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorE
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductionOrderItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoSizeKeys;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductionOrderWarehouseUnitRepository;
@@ -26,6 +28,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -421,7 +424,7 @@ public class ProductionOrderItemSyncService {
                 .brandName(storedBrand(orderType, request.getBrandName()))
                 .quantity(request.getQuantity())
                 .warehouseReceivedQty(0)
-                .sizesData(sizesJson(request.getSizes()))
+                .sizesData(sizesJson(request))
                 .observations(request.getObservations())
                 .unitPrice(request.getUnitPrice())
                 .unitPricesJson(unitPricesJson(request.getUnitPrices()))
@@ -433,17 +436,31 @@ public class ProductionOrderItemSyncService {
         line.setColorId(request.getColorId());
         line.setBrandName(storedBrand(orderType, request.getBrandName()));
         line.setQuantity(request.getQuantity());
-        line.setSizesData(sizesJson(request.getSizes()));
+        line.setSizesData(sizesJson(request));
         line.setObservations(request.getObservations());
         line.setUnitPrice(request.getUnitPrice());
         line.setUnitPricesJson(unitPricesJson(request.getUnitPrices()));
     }
 
-    private String sizesJson(Map<String, Integer> sizes) {
-        if (sizes == null) {
+    private String sizesJson(ProductionOrderItemRequest request) {
+        if (request == null || request.getSizes() == null) {
             return null;
         }
-        return writeJson(sizes);
+        if (CinchoProductUtils.tracksSizeBreakdown(findProduct(request.getProductId()))) {
+            return CinchoSizeKeys.toJson(CinchoSizeKeys.aggregate(request.getSizes()));
+        }
+        return writeJson(request.getSizes());
+    }
+
+    private ProductEntity findProduct(Long productId) {
+        if (productId == null) {
+            return null;
+        }
+        Optional<ProductEntity> found = productRepository.findById(productId);
+        if (found == null || found.isEmpty()) {
+            return null;
+        }
+        return found.get();
     }
 
     private String unitPricesJson(Map<String, BigDecimal> unitPrices) {

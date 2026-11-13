@@ -36,6 +36,7 @@ import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.*;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.CinchoProductUtils;
+import com.fossiles.fossilescorebackend.infrastructure.util.CinchoSizeKeys;
 import com.fossiles.fossilescorebackend.application.util.KioscoInventoryInitRules;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemPricing;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
@@ -5228,7 +5229,7 @@ public class ProductDistributionService {
     }
 
     private String normalizeSize(String size) {
-        return size == null ? "" : size.trim().toUpperCase();
+        return CinchoSizeKeys.normalize(size);
     }
 
     private void assertShipmentDetailsHaveCinchoSize(Long shipmentId) throws BusinessException {
