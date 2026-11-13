@@ -334,6 +334,7 @@ public class PayrollRunService {
 
     /** Rehace las líneas de un borrador con la ficha, los parámetros y los cargos vigentes. */
     private List<PayrollRunLineEntity> calculate(PayrollRunEntity run) throws BusinessException {
+        refreshPeriod(run);
         List<PayrollRunLineEntity> previous = lineRepository.findByRunIdOrderByEmployeeNameAscIdAsc(run.getId());
         if (!previous.isEmpty()) {
             applicationRepository.deleteByRunLineIdIn(previous.stream().map(PayrollRunLineEntity::getId).toList());
@@ -456,9 +457,22 @@ public class PayrollRunService {
         return new Eligibility(payable, skipped, fromOtherGroup);
     }
 
+    /** Un borrador toma el período que hoy marca el calendario de su grupo (por si la regla cambió después de prepararlo). */
+    private void refreshPeriod(PayrollRunEntity run) {
+        PayrollCalendar.PayDay day = PayrollCalendar.payDay(run.getPayGroup(), run.getScheduledDate());
+        if (!day.periodStart().equals(run.getPeriodStart()) || !day.periodEnd().equals(run.getPeriodEnd())) {
+            run.setPeriodStart(day.periodStart());
+            run.setPeriodEnd(day.periodEnd());
+        }
+    }
+
     /** Vuelve a leer lo que entra al cálculo y lo compara con la huella guardada al calcular. */
     private boolean isStale(PayrollRunEntity run) {
         if (run.getCalculationHash() == null) {
+            return true;
+        }
+        PayrollCalendar.PayDay calendarDay = PayrollCalendar.payDay(run.getPayGroup(), run.getScheduledDate());
+        if (!calendarDay.periodStart().equals(run.getPeriodStart()) || !calendarDay.periodEnd().equals(run.getPeriodEnd())) {
             return true;
         }
         PayrollParameters parameters;
