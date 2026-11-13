@@ -24,6 +24,7 @@ public class PayrollAccessGuard {
     public static final String PERM_RUNS_APPROVE = "PLANILLA.CORRIDAS.APROBAR";
     public static final String PERM_CHARGES_VIEW = "PLANILLA.CARGOS.VER";
     public static final String PERM_CHARGES_EDIT = "PLANILLA.CARGOS.EDITAR";
+    public static final String PERM_CHARGES_CREATE = "PLANILLA.CARGOS.CREAR";
     private static final java.util.Set<String> FULL_ACCESS = java.util.Set.of("ADMIN_FULL_ACCESS", "SUPER_ADMIN");
 
     private final SecurityUtil securityUtil;
@@ -48,6 +49,10 @@ public class PayrollAccessGuard {
 
     public void assertCanEditCharges() {
         require("No tiene permiso para decidir cómo se liquidan los cargos a colaboradores.", PERM_CHARGES_EDIT);
+    }
+
+    public void assertCanCreateCharges() {
+        require("No tiene permiso para registrar cargos a colaboradores.", PERM_CHARGES_CREATE);
     }
 
     /** Salarios y bonificaciones: solo administradores y quien trabaja la planilla (Contabilidad). */

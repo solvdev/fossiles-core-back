@@ -355,6 +355,10 @@ public class PayrollRunService {
             for (EmployeeChargeEntity charge : charges) {
                 BigDecimal free = charge.getBalance().subtract(reserved.get(charge.getId()));
                 free = free.signum() > 0 ? free : BigDecimal.ZERO;
+                // Con cuota por quincena la planilla descuenta como máximo la cuota; el resto espera a la siguiente.
+                if (charge.getInstallmentAmount() != null) {
+                    free = free.min(charge.getInstallmentAmount());
+                }
                 available.add(free);
                 pending = pending.add(free);
             }
@@ -484,7 +488,9 @@ public class PayrollRunService {
         charges.stream().sorted(Comparator.comparing(EmployeeChargeEntity::getId)).forEach(c -> text
                 .append(c.getId()).append('|').append(plain(c.getBalance())).append('|').append(c.getSettlementMethod())
                 .append('|').append(c.getStatus()).append('|').append(c.getChargedOn())
-                .append('|').append(plain(reserved.get(c.getId()))).append('\n'));
+                .append('|').append(plain(reserved.get(c.getId())))
+                // Solo los cargos con cuota la suman: así las planillas en borrador de antes no quedan desactualizadas.
+                .append(c.getInstallmentAmount() == null ? "" : "|cuota=" + plain(c.getInstallmentAmount())).append('\n'));
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(text.toString().getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest);

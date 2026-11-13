@@ -31,6 +31,14 @@ public class EmployeeChargeResponse {
     private LocalDateTime decidedAt;
     /** Monto reservado por planillas en borrador que todavía no rebajan el saldo. */
     private BigDecimal reservedInDrafts;
+    /** Solo en cargos manuales. */
+    private String concept;
+    private String reason;
+    private String reference;
+    private Boolean employeeAuthorized;
+    private String authorizationNote;
+    /** Tope por pago de planilla; null: lo que alcance. */
+    private BigDecimal installmentAmount;
     /** Sigue activo y sin fecha de baja; si ya salió, un cargo de planta también se puede saldar por transferencia o en efectivo. */
     private Boolean employeeActive;
 }
