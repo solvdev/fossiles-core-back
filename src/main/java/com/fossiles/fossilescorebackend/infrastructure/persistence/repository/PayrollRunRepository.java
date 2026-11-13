@@ -20,6 +20,11 @@ public interface PayrollRunRepository extends JpaRepository<PayrollRunEntity, Lo
     @Query("SELECT r FROM PayrollRunEntity r WHERE r.payGroup = :group AND r.scheduledDate = :date AND r.status <> 'ANULADA'")
     Optional<PayrollRunEntity> findActive(@Param("group") String group, @Param("date") LocalDate date);
 
+    /** Las planillas no anuladas de varios grupos y fechas, para no buscar una por una. */
+    @Query("SELECT r FROM PayrollRunEntity r WHERE r.payGroup IN :groups AND r.scheduledDate IN :dates AND r.status <> 'ANULADA'")
+    List<PayrollRunEntity> findActiveIn(@Param("groups") java.util.Collection<String> groups,
+                                       @Param("dates") java.util.Collection<LocalDate> dates);
+
     List<PayrollRunEntity> findAllByOrderByScheduledDateDescIdDesc();
 
     /** Incluye las anuladas: el borrador automático no debe volver a crear una planilla que alguien anuló. */

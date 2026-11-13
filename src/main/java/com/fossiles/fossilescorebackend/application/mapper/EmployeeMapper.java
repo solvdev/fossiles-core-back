@@ -20,6 +20,18 @@ public class EmployeeMapper {
 
     // Entity to Domain
     public Employee toDomain(EmployeeEntity entity) {
+        return toDomain(entity, () -> userOf(entity));
+    }
+
+    /**
+     * Para listados: el usuario llega ya resuelto (id, nombre, correo) y no se lee de la entidad, porque cargar sus
+     * roles, departamento y centro de costo costaría varias consultas por fila.
+     */
+    public Employee toDomainWithUser(EmployeeEntity entity, User user) {
+        return toDomain(entity, () -> user);
+    }
+
+    private Employee toDomain(EmployeeEntity entity, java.util.function.Supplier<User> userSupplier) {
         if (entity == null) return null;
         
         return Employee.builder()
@@ -42,6 +54,9 @@ public class EmployeeMapper {
             .payGroup(entity.getPayGroup())
             .nit(entity.getNit())
             .igssAffiliation(entity.getIgssAffiliation())
+            .igssEnabled(entity.getIgssEnabled())
+            .irtraEnabled(entity.getIrtraEnabled())
+            .kioskLocationId(entity.getKioskLocationId())
             .terminationDate(entity.getTerminationDate())
             .departmentId(entity.getDepartmentId())
             .costCenterId(entity.getCostCenterId())
@@ -51,10 +66,14 @@ public class EmployeeMapper {
             .createdBy(entity.getCreatedBy())
             .updatedAt(entity.getUpdatedAt())
             .updatedBy(entity.getUpdatedBy())
-            .user(entity.getUsers() != null && !entity.getUsers().isEmpty() 
-                ? userMapper.toDomain(entity.getUsers().iterator().next()) 
-                : null)
+            .user(userSupplier.get())
             .build();
+    }
+
+    private User userOf(EmployeeEntity entity) {
+        return entity.getUsers() != null && !entity.getUsers().isEmpty()
+                ? userMapper.toDomain(entity.getUsers().iterator().next())
+                : null;
     }
 
     // Domain to Entity
@@ -81,6 +100,9 @@ public class EmployeeMapper {
             .payGroup(domain.getPayGroup() != null ? domain.getPayGroup() : "ADMINISTRACION")
             .nit(domain.getNit())
             .igssAffiliation(domain.getIgssAffiliation())
+            .igssEnabled(domain.getIgssEnabled() != null ? domain.getIgssEnabled() : Boolean.TRUE)
+            .irtraEnabled(domain.getIrtraEnabled() != null ? domain.getIrtraEnabled() : Boolean.TRUE)
+            .kioskLocationId(domain.getKioskLocationId())
             .terminationDate(domain.getTerminationDate())
             .departmentId(domain.getDepartmentId())
             .costCenterId(domain.getCostCenterId())
@@ -121,6 +143,9 @@ public class EmployeeMapper {
             .payGroup(request.getPayGroup())
             .nit(request.getNit())
             .igssAffiliation(request.getIgssAffiliation())
+            .igssEnabled(request.getIgssEnabled())
+            .irtraEnabled(request.getIrtraEnabled())
+            .kioskLocationId(request.getKioskLocationId())
             .terminationDate(request.getTerminationDate())
             .departmentId(request.getDepartmentId())
             .costCenterId(request.getCostCenterId())
@@ -163,6 +188,9 @@ public class EmployeeMapper {
             .payGroup(domain.getPayGroup())
             .nit(domain.getNit())
             .igssAffiliation(domain.getIgssAffiliation())
+            .igssEnabled(domain.getIgssEnabled())
+            .irtraEnabled(domain.getIrtraEnabled())
+            .kioskLocationId(domain.getKioskLocationId())
             .terminationDate(domain.getTerminationDate())
             .departmentId(domain.getDepartmentId())
             .costCenterId(domain.getCostCenterId())

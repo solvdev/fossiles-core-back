@@ -65,8 +65,15 @@ public class PayrollParameterService {
     public PayrollParameterResponse addVersion(PayrollParameterRequest request) throws BusinessException {
         accessGuard.assertCanApproveRuns();
         String code = PayrollRules.normalize(request.getCode());
-        if (code == null || !PayrollParameters.REQUIRED_CODES.contains(code)) {
+        if (code == null || !PayrollParameters.isKnownCode(code)) {
             throw new BusinessException("Código de parámetro desconocido: " + request.getCode());
+        }
+        if (code.endsWith("_FACTOR") && request.getValue().signum() <= 0) {
+            throw new BusinessException("El recargo debe ser mayor que cero (1.5 paga una vez y media).");
+        }
+        if (PayrollParameters.JORNADA_HORAS.equals(code)
+                && (request.getValue().signum() <= 0 || request.getValue().compareTo(BigDecimal.valueOf(24)) > 0)) {
+            throw new BusinessException("La jornada debe estar entre 1 y 24 horas.");
         }
         if (code.endsWith("_PCT") && request.getValue().compareTo(BigDecimal.valueOf(100)) > 0) {
             throw new BusinessException("Un porcentaje no puede pasar de 100.");

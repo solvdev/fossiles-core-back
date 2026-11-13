@@ -74,6 +74,69 @@ class PayrollCalculatorTest {
         assertThat(r.gross().subtract(r.deductions())).isEqualByComparingTo(r.netPay());
     }
 
+    @Test
+    void withoutIgssThereIsNoEmployeeOrEmployerIgssAndIsrDoesNotDeductIt() {
+        var withIgss = calcFlags("PLANILLA", "12000", true, true);
+        var withoutIgss = calcFlags("PLANILLA", "12000", false, true);
+        assertThat(withoutIgss.igssEmployee()).isEqualByComparingTo("0");
+        assertThat(withoutIgss.igssEmployer()).isEqualByComparingTo("0");
+        // IRTRA e INTECAP siguen: son otro interruptor.
+        assertThat(withoutIgss.irtra()).isEqualByComparingTo("60.00");
+        assertThat(withoutIgss.intecap()).isEqualByComparingTo("60.00");
+        // Sin IGSS que deducir, la base del ISR es mayor y la retención también.
+        assertThat(withoutIgss.isr()).isGreaterThan(withIgss.isr());
+        assertThat(withoutIgss.netPay()).isEqualByComparingTo(
+                withoutIgss.baseSalary().add(withoutIgss.bonification()).subtract(withoutIgss.isr()));
+    }
+
+    @Test
+    void withoutIrtraOnlyIrtraAndIntecapDisappear() {
+        var r = calcFlags("PLANILLA", "4000", true, false);
+        assertThat(r.igssEmployee()).isEqualByComparingTo("96.60");
+        assertThat(r.igssEmployer()).isEqualByComparingTo("213.40");
+        assertThat(r.irtra()).isEqualByComparingTo("0");
+        assertThat(r.intecap()).isEqualByComparingTo("0");
+        assertThat(r.netPay()).isEqualByComparingTo("2028.40");
+    }
+
+    @Test
+    void anEmptySwitchCountsAsYesSoOldCallersKeepTheirNumbers() {
+        var legacy = calc("PLANILLA", "4000", null, null, null, FIRST_HALF_START, FIRST_HALF_END, "0");
+        var empty = PayrollCalculator.calculate(new PayrollCalculator.Input("PLANILLA", bd("4000"), null, null, null,
+                FIRST_HALF_START, FIRST_HALF_END, bd("0"), null, null), PARAMS);
+        assertThat(empty).isEqualTo(legacy);
+    }
+
+    @Test
+    void extraPayAddsToTheGrossAndToTheIgssBase() {
+        var plain = calcFlags("PLANILLA", "4000", true, true);
+        var withExtra = PayrollCalculator.calculate(new PayrollCalculator.Input("PLANILLA", bd("4000"), null, null, null,
+                FIRST_HALF_START, FIRST_HALF_END, bd("0"), true, true, bd("200"), bd("0")), PARAMS);
+        assertThat(withExtra.extraPay()).isEqualByComparingTo("200.00");
+        assertThat(withExtra.gross()).isEqualByComparingTo(plain.gross().add(bd("200")));
+        // 2,200 × 4.83 % = 106.26 de IGSS laboral, contra 96.60 sin extras.
+        assertThat(withExtra.igssEmployee()).isEqualByComparingTo("106.26");
+        assertThat(withExtra.netPay()).isEqualByComparingTo(plain.netPay().add(bd("200")).subtract(bd("9.66")));
+    }
+
+    @Test
+    void unpaidAbsenceDaysComeOffTheDaysPaidAndEverythingProportional() {
+        var r = PayrollCalculator.calculate(new PayrollCalculator.Input("PLANILLA", bd("4000"), null, null, null,
+                FIRST_HALF_START, FIRST_HALF_END, bd("0"), true, true, bd("0"), bd("3")), PARAMS);
+        assertThat(r.daysPaid()).isEqualByComparingTo("12.00");
+        assertThat(r.baseSalary()).isEqualByComparingTo("1600.00");
+        assertThat(r.bonification()).isEqualByComparingTo("100.00");
+        var all = PayrollCalculator.calculate(new PayrollCalculator.Input("PLANILLA", bd("4000"), null, null, null,
+                FIRST_HALF_START, FIRST_HALF_END, bd("0"), true, true, bd("0"), bd("20")), PARAMS);
+        assertThat(all.daysPaid()).isEqualByComparingTo("0");
+        assertThat(all.netPay()).isEqualByComparingTo("0");
+    }
+
+    private static PayrollCalculator.Result calcFlags(String type, String salary, boolean igss, boolean irtra) {
+        return PayrollCalculator.calculate(new PayrollCalculator.Input(type, bd(salary), null, null, null,
+                FIRST_HALF_START, FIRST_HALF_END, bd("0"), igss, irtra), PARAMS);
+    }
+
     private static PayrollCalculator.Result calc(String type, String salary, String bonification, LocalDate hire,
                                                  LocalDate termination, LocalDate start, LocalDate end, String opi) {
         return PayrollCalculator.calculate(new PayrollCalculator.Input(type, bd(salary),

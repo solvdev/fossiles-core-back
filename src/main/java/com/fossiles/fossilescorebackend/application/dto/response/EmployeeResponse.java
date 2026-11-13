@@ -33,6 +33,9 @@ public class EmployeeResponse {
     private String payGroup;
     private String nit;
     private String igssAffiliation;
+    private Boolean igssEnabled;
+    private Boolean irtraEnabled;
+    private Long kioskLocationId;
     private LocalDate terminationDate;
     private Long departmentId;
     private Long costCenterId;

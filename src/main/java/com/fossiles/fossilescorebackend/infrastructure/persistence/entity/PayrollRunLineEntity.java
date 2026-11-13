@@ -82,4 +82,18 @@ public class PayrollRunLineEntity {
 
     @Column(name = "cheque_number", length = 30)
     private String chequeNumber;
+
+    /** Lo pagado por horas extra y feriados trabajados. */
+    @Column(name = "extra_pay", nullable = false, precision = 12, scale = 2)
+    @Builder.Default
+    private BigDecimal extraPay = BigDecimal.ZERO;
+
+    /** Días de ausencia sin goce que restaron días pagados. */
+    @Column(name = "absence_days", nullable = false, precision = 5, scale = 2)
+    @Builder.Default
+    private BigDecimal absenceDays = BigDecimal.ZERO;
+
+    @Column(name = "vacation_days", nullable = false, precision = 5, scale = 2)
+    @Builder.Default
+    private BigDecimal vacationDays = BigDecimal.ZERO;
 }

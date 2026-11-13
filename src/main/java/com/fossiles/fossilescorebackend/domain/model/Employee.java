@@ -33,10 +33,13 @@ public class Employee {
     private String payGroup;
     private String nit;
     private String igssAffiliation;
+    private Boolean igssEnabled;
+    private Boolean irtraEnabled;
     private LocalDate terminationDate;
     private Long departmentId;
     private Long costCenterId;
     private Long operationalUnitId;
+    private Long kioskLocationId;
     private String status;
     private LocalDateTime createdAt;
     private Long createdBy;
