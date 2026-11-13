@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.EmployeeChargeCreateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.EmployeeChargeSettlementRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.PayrollAnnulRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.PayrollChequeAssignRequest;
@@ -132,6 +133,12 @@ public class PayrollController {
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long employeeId) {
         return ResponseEntity.ok(chargeService.list(status, employeeId));
+    }
+
+    @PostMapping("/charges")
+    public ResponseEntity<EmployeeChargeResponse> createCharge(@Valid @RequestBody EmployeeChargeCreateRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(chargeService.createManual(request));
     }
 
     @PostMapping("/charges/{id}/settlement")

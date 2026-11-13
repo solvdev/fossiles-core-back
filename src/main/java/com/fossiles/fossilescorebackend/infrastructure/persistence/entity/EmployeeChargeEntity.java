@@ -51,6 +51,28 @@ public class EmployeeChargeEntity {
     @Column(name = "charged_on", nullable = false)
     private LocalDate chargedOn;
 
+    /** Solo en cargos manuales: DESCUADRE_INVENTARIO, FALTANTE_CAJA, DANO u OTRO. */
+    @Column(length = 30)
+    private String concept;
+
+    @Column(length = 500)
+    private String reason;
+
+    @Column(length = 100)
+    private String reference;
+
+    /** El colaborador aceptó el descuento; Contabilidad guarda la constancia aparte. */
+    @Column(name = "employee_authorized", nullable = false)
+    @Builder.Default
+    private Boolean employeeAuthorized = false;
+
+    @Column(name = "authorization_note", length = 200)
+    private String authorizationNote;
+
+    /** Tope que la planilla descuenta de este cargo en cada pago; vacío: lo que alcance. */
+    @Column(name = "installment_amount", precision = 12, scale = 2)
+    private BigDecimal installmentAmount;
+
     @Column(name = "decided_by")
     private Long decidedBy;
 

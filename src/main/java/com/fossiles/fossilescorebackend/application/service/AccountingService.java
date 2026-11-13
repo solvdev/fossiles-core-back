@@ -285,6 +285,7 @@ public class AccountingService {
         OTHER_DEDUCTIONS_PAYABLE("accounting.payroll.other_deductions.account", "2.1.3.03", "Otras deducciones por pagar"),
         EMPLOYEE_RECEIVABLE("accounting.payroll.employee_receivable.account", "1.1.2.05", "Cuentas por cobrar a colaboradores"),
         EMPLOYEE_SALES("accounting.payroll.employee_sales.account", "4.1.1.03", "Ventas a colaboradores"),
+        EMPLOYEE_RECOVERY("accounting.payroll.employee_recovery.account", "4.2.1.03", "Recuperación de faltantes y daños a cargo de colaboradores"),
         BANK("accounting.payroll.bank.account", "1.1.1.02", "Bancos"),
         CASH("accounting.payroll.cash.account", "1.1.1.01", "Caja");
 
@@ -382,6 +383,15 @@ public class AccountingService {
     public void postEmployeeCharge(Long chargeId, BigDecimal amount, String reference, Long costCenterId) {
         postEmployeeChargePair(EMPLOYEE_CHARGE_DOCUMENT_TYPE, chargeId, PayrollAccount.EMPLOYEE_RECEIVABLE, null,
                 PayrollAccount.EMPLOYEE_SALES, costCenterId, amount, "Compra de colaborador " + reference, reference, true);
+    }
+
+    /**
+     * Cargo manual (descuadre, faltante de caja, daño): queda por cobrar contra la recuperación del faltante, que lleva
+     * el centro de costo del colaborador. No duplica la partida si ya existe.
+     */
+    public void postManualEmployeeCharge(Long chargeId, BigDecimal amount, String reference, Long costCenterId) {
+        postEmployeeChargePair(EMPLOYEE_CHARGE_DOCUMENT_TYPE, chargeId, PayrollAccount.EMPLOYEE_RECEIVABLE, null,
+                PayrollAccount.EMPLOYEE_RECOVERY, costCenterId, amount, "Cargo a colaborador " + reference, reference, true);
     }
 
     /**

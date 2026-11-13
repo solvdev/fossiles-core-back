@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.EmployeeChargeCreateRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.EmployeeChargeResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -23,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -44,6 +46,13 @@ public class EmployeeChargeService {
     public static final String SETTLEMENT_DEDUCTION = "DESCUENTO";
     public static final String SETTLEMENT_TRANSFER = "TRANSFERENCIA";
     public static final String SETTLEMENT_CASH = "EFECTIVO";
+    public static final String SOURCE_MANUAL = "MANUAL";
+    /** Conceptos de un cargo manual y cómo se muestran. */
+    public static final Map<String, String> MANUAL_CONCEPTS = Map.of(
+            "DESCUADRE_INVENTARIO", "Descuadre de inventario",
+            "FALTANTE_CAJA", "Faltante de caja",
+            "DANO", "Daño de producto o equipo",
+            "OTRO", "Otro cargo");
     private static final Set<String> SETTLEMENT_METHODS = Set.of(SETTLEMENT_DEDUCTION, SETTLEMENT_TRANSFER, SETTLEMENT_CASH);
 
     private final EmployeeChargeRepository chargeRepository;
@@ -100,6 +109,73 @@ public class EmployeeChargeService {
                 .build());
         accountingService.postEmployeeCharge(charge.getId(), amount, reference, employee.getCostCenterId());
         return charge;
+    }
+
+    /**
+     * Cargo manual de Contabilidad: descuadre, faltante de caja, daño u otro. Exige el motivo y que el colaborador haya
+     * aceptado el descuento. Planta se descuenta en planilla; en los demás grupos Contabilidad decide después cómo se
+     * cobra. Con cuota, la planilla descuenta como máximo esa cantidad en cada pago.
+     */
+    @Transactional
+    public EmployeeChargeResponse createManual(EmployeeChargeCreateRequest request)
+            throws BusinessException, ResourceNotFoundException {
+        accessGuard.assertCanCreateCharges();
+        String concept = PayrollRules.normalize(request.getConcept());
+        String conceptLabel = concept == null ? null : MANUAL_CONCEPTS.get(concept);
+        if (conceptLabel == null) {
+            throw new BusinessException("Concepto inválido. Use DESCUADRE_INVENTARIO, FALTANTE_CAJA, DANO u OTRO.");
+        }
+        if (!Boolean.TRUE.equals(request.getEmployeeAuthorized())) {
+            throw new BusinessException("Sin la aceptación del colaborador no se registra el cargo: confirme que la dio y anote dónde está la constancia.");
+        }
+        String reason = request.getReason() == null ? "" : request.getReason().trim();
+        if (reason.isEmpty()) {
+            throw new BusinessException("Escriba el motivo del cargo.");
+        }
+        BigDecimal amount = request.getAmount() == null ? BigDecimal.ZERO : request.getAmount().setScale(2, RoundingMode.HALF_UP);
+        if (amount.signum() <= 0) {
+            throw new BusinessException("El monto debe ser mayor que cero.");
+        }
+        BigDecimal installment = request.getInstallmentAmount() == null ? null
+                : request.getInstallmentAmount().setScale(2, RoundingMode.HALF_UP);
+        if (installment != null && installment.signum() <= 0) {
+            throw new BusinessException("La cuota debe ser mayor que cero.");
+        }
+        if (installment != null && installment.compareTo(amount) > 0) {
+            throw new BusinessException("La cuota no puede ser mayor que el monto del cargo.");
+        }
+        LocalDate today = GuatemalaDateTime.today();
+        LocalDate chargedOn = request.getChargedOn() == null ? today : request.getChargedOn();
+        if (chargedOn.isAfter(today)) {
+            throw new BusinessException("La fecha del cargo no puede ser futura.");
+        }
+        EmployeeEntity employee = employeeRepository.findById(request.getEmployeeId())
+                .orElseThrow(() -> new ResourceNotFoundException("Employee", request.getEmployeeId()));
+        String description = (conceptLabel + ": " + reason);
+        EmployeeChargeEntity charge = chargeRepository.save(EmployeeChargeEntity.builder()
+                .employeeId(employee.getId())
+                .sourceType(SOURCE_MANUAL)
+                .sourceId(null)
+                .description(description.length() > 300 ? description.substring(0, 300) : description)
+                .amount(amount)
+                .balance(amount)
+                .settlementMethod(stillInPlant(employee) ? SETTLEMENT_DEDUCTION : null)
+                .chargedOn(chargedOn)
+                .concept(concept)
+                .reason(reason)
+                .reference(blankToNull(request.getReference()))
+                .employeeAuthorized(true)
+                .authorizationNote(blankToNull(request.getAuthorizationNote()))
+                .installmentAmount(installment)
+                .createdBy(accessGuard.currentUserId())
+                .build());
+        accountingService.postManualEmployeeCharge(charge.getId(), amount, conceptLabel + " #" + charge.getId(),
+                employee.getCostCenterId());
+        return toResponse(charge, employee);
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     BigDecimal internalShipmentAmount(InternalShipmentRequestEntity request) throws BusinessException {
@@ -299,6 +375,12 @@ public class EmployeeChargeService {
                 .chargedOn(charge.getChargedOn())
                 .decidedAt(charge.getDecidedAt())
                 .reservedInDrafts(applicationRepository.reservedByOtherDrafts(charge.getId(), -1L))
+                .concept(charge.getConcept())
+                .reason(charge.getReason())
+                .reference(charge.getReference())
+                .employeeAuthorized(charge.getEmployeeAuthorized())
+                .authorizationNote(charge.getAuthorizationNote())
+                .installmentAmount(charge.getInstallmentAmount())
                 .employeeActive(employee != null && employee.getTerminationDate() == null
                         && "active".equalsIgnoreCase(employee.getStatus()))
                 .build();
