@@ -178,9 +178,25 @@ public class EmployeeChargeService {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
+    /**
+     * Descuento que recibe el colaborador por este producto: el propio del producto o, si no tiene, el general del 50 %.
+     * Es lo que se le muestra en la solicitud y en el envío, y lo que se le cobra.
+     */
+    public static BigDecimal employeeDiscountPercent(ProductEntity product) {
+        BigDecimal own = product == null ? null : product.getEmployeeDiscountPercent();
+        if (own != null) {
+            return own;
+        }
+        try {
+            // resolveInternalDiscount devuelve el porcentaje del precio que paga el colaborador (50 % de descuento = paga 50 %).
+            return BigDecimal.valueOf(100).subtract(
+                    ProductDistributionService.resolveInternalDiscount("PLANILLA", null, null).discountPercent());
+        } catch (BusinessException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+
     BigDecimal internalShipmentAmount(InternalShipmentRequestEntity request) throws BusinessException {
-        BigDecimal pricePercent = ProductDistributionService
-                .resolveInternalDiscount("PLANILLA", null, null).discountPercent();
         Set<Long> productIds = request.getLines().stream()
                 .map(InternalShipmentRequestLineEntity::getProductId)
                 .filter(Objects::nonNull)
@@ -198,9 +214,11 @@ public class EmployeeChargeService {
                 throw new BusinessException("El producto " + label.trim()
                         + " no tiene precio de venta; asígnelo antes de autorizar la compra del colaborador.");
             }
-            total = total.add(product.getSalePrice().multiply(line.getQuantity()));
+            // Cada producto lleva su descuento; se redondea una sola vez, al final.
+            BigDecimal pricePercent = BigDecimal.valueOf(100).subtract(employeeDiscountPercent(product));
+            total = total.add(product.getSalePrice().multiply(line.getQuantity()).multiply(pricePercent));
         }
-        return total.multiply(pricePercent).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+        return total.divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
     }
 
     /**

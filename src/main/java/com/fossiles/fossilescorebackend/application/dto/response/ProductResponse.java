@@ -30,6 +30,8 @@ public class ProductResponse {
     private BigDecimal salePrice;
     private BigDecimal discountedPrice;
     private BigDecimal sellerPrice;
+    /** Descuento propio para colaboradores; null: se usa el 50 % general. */
+    private BigDecimal employeeDiscountPercent;
     private String status;
     private String imageUrl;
     private BigDecimal leatherConsumption;

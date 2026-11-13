@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.request.BulkPriceUpdateRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ProductEmployeeDiscountRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -227,6 +228,38 @@ public class ProductController {
         return ResponseEntity.ok(message);
     }
 
+    /**
+     * Descuento de colaborador por producto. Un item sin porcentaje devuelve ese producto al descuento general (50 %).
+     * Va aparte de la ficha del producto para que guardar la ficha no borre estos valores.
+     */
+    @PutMapping("/employee-discounts")
+    public ResponseEntity<String> setEmployeeDiscounts(@Valid @RequestBody ProductEmployeeDiscountRequest request)
+            throws BusinessException {
+        java.util.Map<Long, ProductEntity> byId = productRepository.findAllById(
+                request.getItems().stream().map(ProductEmployeeDiscountRequest.Item::getProductId).collect(Collectors.toSet()))
+                .stream().collect(Collectors.toMap(ProductEntity::getId, p -> p));
+        int updated = 0;
+        for (ProductEmployeeDiscountRequest.Item item : request.getItems()) {
+            ProductEntity product = byId.get(item.getProductId());
+            if (product == null) {
+                throw new BusinessException("El producto #" + item.getProductId() + " no existe.");
+            }
+            BigDecimal percent = item.getDiscountPercent() == null ? null
+                    : item.getDiscountPercent().setScale(2, RoundingMode.HALF_UP);
+            if (percent != null && (percent.signum() < 0 || percent.compareTo(BigDecimal.valueOf(100)) > 0)) {
+                throw new BusinessException("El descuento de " + product.getCode() + " debe estar entre 0 y 100.");
+            }
+            boolean same = percent == null ? product.getEmployeeDiscountPercent() == null
+                    : product.getEmployeeDiscountPercent() != null && product.getEmployeeDiscountPercent().compareTo(percent) == 0;
+            if (!same) {
+                product.setEmployeeDiscountPercent(percent);
+                productRepository.save(product);
+                updated++;
+            }
+        }
+        return ResponseEntity.ok(String.format("Se actualizó el descuento de colaborador de %d producto%s.", updated, updated == 1 ? "" : "s"));
+    }
+
     private ProductResponse toResponse(ProductEntity entity) {
         return ProductResponse.builder()
                 .id(entity.getId())
@@ -246,6 +279,7 @@ public class ProductController {
                 .salePrice(entity.getSalePrice())
                 .discountedPrice(entity.getDiscountedPrice())
                 .sellerPrice(entity.getSellerPrice())
+                .employeeDiscountPercent(entity.getEmployeeDiscountPercent())
                 .imageUrl(entity.getImageUrl())
                 .leatherConsumption(entity.getLeatherConsumption())
                 .requiresMaterials(entity.getRequiresMaterials())
