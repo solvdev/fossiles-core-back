@@ -131,6 +131,27 @@ class PayrollEdgeCasesIntegrationTest {
     }
 
     @Test
+    void switchingOffIgssOrIrtraMarksTheDraftStaleAndRecalculatesWithoutThem() throws Exception {
+        PayrollRunResponse draft = runs.create(request("PLANTA", PLANT_20_OCT));
+        PayrollRunResponse.Line before = line(draft, operator);
+        assertThat(before.getIgssEmployee()).isPositive();
+        assertThat(before.getIrtra()).isPositive();
+        assertThat(draft.getStale()).isFalse();
+
+        operator.setIgssEnabled(false);
+        operator.setIrtraEnabled(false);
+        employees.save(operator);
+        assertThat(runs.get(draft.getId()).getStale()).isTrue();
+
+        PayrollRunResponse.Line after = line(runs.recalculate(draft.getId()), operator);
+        assertThat(after.getIgssEmployee()).isEqualByComparingTo("0");
+        assertThat(after.getIgssEmployer()).isEqualByComparingTo("0");
+        assertThat(after.getIrtra()).isEqualByComparingTo("0");
+        assertThat(after.getIntecap()).isEqualByComparingTo("0");
+        assertThat(after.getNetPay()).isGreaterThan(before.getNetPay());
+    }
+
+    @Test
     void twoDraftsOfTheSameGroupNeverDeductTheSameChargeTwice() throws Exception {
         EmployeeChargeEntity purchase = charge(operator, "300", "DESCUENTO");
         PayrollRunResponse october = runs.create(request("PLANTA", PLANT_20_OCT));

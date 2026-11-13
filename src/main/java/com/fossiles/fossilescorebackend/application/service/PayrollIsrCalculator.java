@@ -4,7 +4,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 
 /**
- * ISR de asalariados: renta anual proyectada (salario mensual × 12) menos la deducción personal y el IGSS laboral.
+ * ISR de asalariados: renta anual proyectada (salario mensual × 12) menos la deducción personal y el IGSS laboral
+ * (este último solo si el colaborador lo paga: quien no goza IGSS no tiene ese descuento).
  * Aguinaldo, bono 14 y bonificación incentivo están exentos y no entran. La retención de cada quincena es 1/24 del
  * impuesto anual, proporcional a los días pagados.
  */
@@ -18,8 +19,14 @@ public final class PayrollIsrCalculator {
     private PayrollIsrCalculator() {}
 
     public static BigDecimal annualTaxableIncome(BigDecimal monthlySalary, PayrollParameters parameters) {
+        return annualTaxableIncome(monthlySalary, parameters, true);
+    }
+
+    public static BigDecimal annualTaxableIncome(BigDecimal monthlySalary, PayrollParameters parameters, boolean paysIgss) {
         BigDecimal annualSalary = monthlySalary.multiply(TWELVE);
-        BigDecimal annualIgss = annualSalary.multiply(parameters.igssEmployeePct()).divide(HUNDRED, 2, RoundingMode.HALF_UP);
+        BigDecimal annualIgss = paysIgss
+                ? annualSalary.multiply(parameters.igssEmployeePct()).divide(HUNDRED, 2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
         BigDecimal taxable = annualSalary.subtract(parameters.isrPersonalDeduction()).subtract(annualIgss);
         return taxable.signum() > 0 ? taxable : BigDecimal.ZERO;
     }
@@ -38,7 +45,12 @@ public final class PayrollIsrCalculator {
     }
 
     public static BigDecimal perPayPeriod(BigDecimal monthlySalary, BigDecimal daysPaid, PayrollParameters parameters) {
-        BigDecimal annual = annualTax(annualTaxableIncome(monthlySalary, parameters), parameters);
+        return perPayPeriod(monthlySalary, daysPaid, parameters, true);
+    }
+
+    public static BigDecimal perPayPeriod(BigDecimal monthlySalary, BigDecimal daysPaid, PayrollParameters parameters,
+                                          boolean paysIgss) {
+        BigDecimal annual = annualTax(annualTaxableIncome(monthlySalary, parameters, paysIgss), parameters);
         if (annual.signum() == 0 || daysPaid.signum() == 0) {
             return BigDecimal.ZERO.setScale(2);
         }

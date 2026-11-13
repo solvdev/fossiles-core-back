@@ -31,4 +31,7 @@ public class PayrollProfileRequest {
     private String nit;
     @Size(max = 30)
     private String igssAffiliation;
+    /** Goza IGSS / lleva IRTRA e INTECAP. Vacío: se conserva lo que tenía la ficha. */
+    private Boolean igssEnabled;
+    private Boolean irtraEnabled;
 }

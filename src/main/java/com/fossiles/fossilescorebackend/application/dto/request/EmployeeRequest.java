@@ -69,6 +69,10 @@ public class EmployeeRequest {
     @Size(max = 30, message = "IGSS affiliation must not exceed 30 characters")
     private String igssAffiliation;
 
+    /** Vacío en una edición: conserva el valor. Al crear, el predeterminado es que sí. */
+    private Boolean igssEnabled;
+    private Boolean irtraEnabled;
+
     private LocalDate terminationDate;
 
     /** En una edición, un campo vacío conserva el valor; estos indicadores lo borran a propósito. */

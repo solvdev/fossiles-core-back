@@ -369,7 +369,8 @@ public class PayrollRunService {
             PayrollCalculator.Result result = PayrollCalculator.calculate(new PayrollCalculator.Input(
                     employee.getEmploymentType(), employee.getSalary(), employee.getBonification(),
                     employee.getHireDate(), employee.getTerminationDate(),
-                    run.getPeriodStart(), run.getPeriodEnd(), pending), parameters);
+                    run.getPeriodStart(), run.getPeriodEnd(), pending,
+                    employee.getIgssEnabled(), employee.getIrtraEnabled()), parameters);
             if (result.daysPaid().signum() == 0) {
                 continue;
             }
@@ -500,7 +501,10 @@ public class PayrollRunService {
                 .append('|').append(e.getBankAccount()).append('|').append(e.getHireDate())
                 .append('|').append(e.getTerminationDate()).append('|').append(e.getStatus())
                 .append('|').append(e.getPosition()).append('|').append(EmployeeChargeService.fullName(e))
-                .append('|').append(e.getDepartmentId()).append('|').append(e.getCostCenterId()).append('\n'));
+                .append('|').append(e.getDepartmentId()).append('|').append(e.getCostCenterId())
+                // Solo se suman cuando están apagados, para que las planillas en borrador de antes no queden desactualizadas.
+                .append(Boolean.FALSE.equals(e.getIgssEnabled()) ? "|sinIGSS" : "")
+                .append(Boolean.FALSE.equals(e.getIrtraEnabled()) ? "|sinIRTRA" : "").append('\n'));
         // Lo reservado por otros borradores también cuenta: si otro borrador se anula, este puede descontar más.
         charges.stream().sorted(Comparator.comparing(EmployeeChargeEntity::getId)).forEach(c -> text
                 .append(c.getId()).append('|').append(plain(c.getBalance())).append('|').append(c.getSettlementMethod())

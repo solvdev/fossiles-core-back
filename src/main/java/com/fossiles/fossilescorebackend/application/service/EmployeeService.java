@@ -266,6 +266,12 @@ public class EmployeeService {
         if (request.getNit() != null) {
             existingEntity.setNit(blankToNull(request.getNit()));
         }
+        if (request.getIgssEnabled() != null) {
+            existingEntity.setIgssEnabled(request.getIgssEnabled());
+        }
+        if (request.getIrtraEnabled() != null) {
+            existingEntity.setIrtraEnabled(request.getIrtraEnabled());
+        }
         if (request.getIgssAffiliation() != null) {
             existingEntity.setIgssAffiliation(blankToNull(request.getIgssAffiliation()));
         }

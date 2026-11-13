@@ -96,6 +96,16 @@ public class EmployeeEntity {
     @Column(name = "igss_affiliation", length = 30)
     private String igssAffiliation;
 
+    /** Goza IGSS: cuota laboral que se le descuenta y cuota patronal. Sin esto la planilla no calcula ninguna. */
+    @Column(name = "igss_enabled", nullable = false)
+    @Builder.Default
+    private Boolean igssEnabled = true;
+
+    /** Lleva IRTRA e INTECAP (cuota patronal). Se marca por persona: no todos los colaboradores los tienen. */
+    @Column(name = "irtra_enabled", nullable = false)
+    @Builder.Default
+    private Boolean irtraEnabled = true;
+
     @Column(name = "termination_date")
     private LocalDate terminationDate;
 

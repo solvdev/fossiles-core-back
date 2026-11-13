@@ -17,9 +17,21 @@ public final class PayrollCalculator {
     private static final BigDecimal FULL_PERIOD_DAYS = BigDecimal.valueOf(15);
     private static final BigDecimal COMMERCIAL_MONTH_DAYS = BigDecimal.valueOf(30);
 
+    /**
+     * {@code igssEnabled} e {@code irtraEnabled} son los interruptores de la ficha: sin IGSS no se descuenta ni se paga
+     * IGSS; sin IRTRA no se paga IRTRA ni INTECAP. Vacío cuenta como que sí.
+     */
     public record Input(String employmentType, BigDecimal monthlySalary, BigDecimal monthlyBonification,
                         LocalDate hireDate, LocalDate terminationDate,
-                        LocalDate periodStart, LocalDate periodEnd, BigDecimal pendingOpi) {}
+                        LocalDate periodStart, LocalDate periodEnd, BigDecimal pendingOpi,
+                        Boolean igssEnabled, Boolean irtraEnabled) {
+        public Input(String employmentType, BigDecimal monthlySalary, BigDecimal monthlyBonification,
+                     LocalDate hireDate, LocalDate terminationDate,
+                     LocalDate periodStart, LocalDate periodEnd, BigDecimal pendingOpi) {
+            this(employmentType, monthlySalary, monthlyBonification, hireDate, terminationDate,
+                    periodStart, periodEnd, pendingOpi, Boolean.TRUE, Boolean.TRUE);
+        }
+    }
 
     public record Result(BigDecimal daysPaid, BigDecimal baseSalary, BigDecimal bonification,
                          BigDecimal igssEmployee, BigDecimal isr, BigDecimal opiDiscount, BigDecimal otherDeductions,
@@ -49,8 +61,14 @@ public final class PayrollCalculator {
             BigDecimal monthlyBonification = input.monthlyBonification() != null
                     ? input.monthlyBonification() : parameters.defaultMonthlyBonification();
             bonification = prorate(monthlyBonification, daysPaid);
-            igss = PayrollIgssCalculator.contributions(base, parameters);
-            isr = PayrollIsrCalculator.perPayPeriod(monthlySalary, daysPaid, parameters);
+            PayrollIgssCalculator.Contributions all = PayrollIgssCalculator.contributions(base, parameters);
+            BigDecimal none = BigDecimal.ZERO.setScale(2);
+            boolean igssOn = !Boolean.FALSE.equals(input.igssEnabled());
+            boolean irtraOn = !Boolean.FALSE.equals(input.irtraEnabled());
+            igss = new PayrollIgssCalculator.Contributions(
+                    igssOn ? all.employee() : none, igssOn ? all.employer() : none,
+                    irtraOn ? all.irtra() : none, irtraOn ? all.intecap() : none);
+            isr = PayrollIsrCalculator.perPayPeriod(monthlySalary, daysPaid, parameters, igssOn);
         }
 
         BigDecimal otherDeductions = BigDecimal.ZERO.setScale(2);

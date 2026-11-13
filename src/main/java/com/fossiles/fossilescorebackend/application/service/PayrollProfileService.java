@@ -82,6 +82,12 @@ public class PayrollProfileService {
         employee.setTerminationDate(request.getTerminationDate());
         employee.setNit(blankToNull(request.getNit()));
         employee.setIgssAffiliation(blankToNull(request.getIgssAffiliation()));
+        if (request.getIgssEnabled() != null) {
+            employee.setIgssEnabled(request.getIgssEnabled());
+        }
+        if (request.getIrtraEnabled() != null) {
+            employee.setIrtraEnabled(request.getIrtraEnabled());
+        }
         employee.setUpdatedBy(accessGuard.currentUserId());
         EmployeeEntity saved = employeeRepository.save(employee);
         if (salaryChanged) {
@@ -120,6 +126,8 @@ public class PayrollProfileService {
                 .bonification(employee.getBonification())
                 .nit(employee.getNit())
                 .igssAffiliation(employee.getIgssAffiliation())
+                .igssEnabled(!Boolean.FALSE.equals(employee.getIgssEnabled()))
+                .irtraEnabled(!Boolean.FALSE.equals(employee.getIrtraEnabled()))
                 .warnings(warnings(employee, department, departmentGroup))
                 .build();
     }
