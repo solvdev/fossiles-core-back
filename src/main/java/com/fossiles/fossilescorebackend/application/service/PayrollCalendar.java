@@ -72,6 +72,20 @@ public final class PayrollCalendar {
         return new PayDay(payGroup, scheduledDate, previousBusinessDay(scheduledDate), start, end);
     }
 
+    /** El día de pago cuyo período contiene la fecha, o null si el grupo no tiene uno que la cubra. */
+    public static PayDay payDayCovering(String payGroup, LocalDate date) {
+        YearMonth month = YearMonth.from(date);
+        for (int shift = -1; shift <= 2; shift++) {
+            for (LocalDate scheduled : scheduledDates(payGroup, month.plusMonths(shift))) {
+                PayDay day = payDay(payGroup, scheduled);
+                if (!date.isBefore(day.periodStart()) && !date.isAfter(day.periodEnd())) {
+                    return day;
+                }
+            }
+        }
+        return null;
+    }
+
     /** Próximos días de pago del grupo cuya fecha programada es igual o posterior a {@code from}. */
     public static List<PayDay> upcoming(String payGroup, LocalDate from, int count) {
         List<PayDay> result = new ArrayList<>();

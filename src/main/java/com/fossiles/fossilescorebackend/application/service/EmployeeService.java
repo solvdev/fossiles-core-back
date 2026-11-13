@@ -266,6 +266,17 @@ public class EmployeeService {
         if (request.getNit() != null) {
             existingEntity.setNit(blankToNull(request.getNit()));
         }
+        if (request.getIgssEnabled() != null) {
+            existingEntity.setIgssEnabled(request.getIgssEnabled());
+        }
+        if (request.getIrtraEnabled() != null) {
+            existingEntity.setIrtraEnabled(request.getIrtraEnabled());
+        }
+        if (Boolean.TRUE.equals(request.getClearKioskLocation())) {
+            existingEntity.setKioskLocationId(null);
+        } else if (request.getKioskLocationId() != null) {
+            existingEntity.setKioskLocationId(request.getKioskLocationId());
+        }
         if (request.getIgssAffiliation() != null) {
             existingEntity.setIgssAffiliation(blankToNull(request.getIgssAffiliation()));
         }
@@ -333,11 +344,15 @@ public class EmployeeService {
                 && !Objects.equals(request.getPaymentMethod(), PayrollRules.canonicalPaymentMethod(current.getPaymentMethod())))
             || (request.getEmploymentType() != null && !request.getEmploymentType().equals(current.getEmploymentType()))
             || (request.getPayGroup() != null && !request.getPayGroup().equals(current.getPayGroup()))
+            || (request.getKioskLocationId() != null && !request.getKioskLocationId().equals(current.getKioskLocationId()))
+            || Boolean.TRUE.equals(request.getClearKioskLocation())
+            || (request.getIgssEnabled() != null && !request.getIgssEnabled().equals(current.getIgssEnabled()))
+            || (request.getIrtraEnabled() != null && !request.getIrtraEnabled().equals(current.getIrtraEnabled()))
             || (request.getTerminationDate() != null && !request.getTerminationDate().equals(current.getTerminationDate()))
             || (Boolean.TRUE.equals(request.getClearTerminationDate()) && current.getTerminationDate() != null);
         if (changesPayment) {
             throw new BusinessException("Solo administración y Contabilidad pueden cambiar la cuenta, la forma de pago, la vinculación,"
-                + " el grupo de pago o la fecha de baja.");
+                + " el grupo de pago, el IGSS, el IRTRA, el kiosco o la fecha de baja.");
         }
     }
 

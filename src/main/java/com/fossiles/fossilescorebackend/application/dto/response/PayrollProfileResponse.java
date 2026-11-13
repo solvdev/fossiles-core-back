@@ -35,5 +35,8 @@ public class PayrollProfileResponse {
     private BigDecimal bonification;
     private String nit;
     private String igssAffiliation;
+    private Boolean igssEnabled;
+    private Boolean irtraEnabled;
+    private Long kioskLocationId;
     private List<String> warnings;
 }

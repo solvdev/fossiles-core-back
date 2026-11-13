@@ -25,6 +25,9 @@ public class PayrollAccessGuard {
     public static final String PERM_CHARGES_VIEW = "PLANILLA.CARGOS.VER";
     public static final String PERM_CHARGES_EDIT = "PLANILLA.CARGOS.EDITAR";
     public static final String PERM_CHARGES_CREATE = "PLANILLA.CARGOS.CREAR";
+    public static final String PERM_INCIDENTS_PLANT = "PLANILLA.NOVEDADES.PLANTA";
+    public static final String PERM_INCIDENTS_KIOSKS = "PLANILLA.NOVEDADES.KIOSCOS";
+    public static final String PERM_INCIDENTS_ADMIN = "PLANILLA.NOVEDADES.ADMINISTRACION";
     private static final java.util.Set<String> FULL_ACCESS = java.util.Set.of("ADMIN_FULL_ACCESS", "SUPER_ADMIN");
 
     private final SecurityUtil securityUtil;
@@ -53,6 +56,36 @@ public class PayrollAccessGuard {
 
     public void assertCanCreateCharges() {
         require("No tiene permiso para registrar cargos a colaboradores.", PERM_CHARGES_CREATE);
+    }
+
+    /**
+     * Secciones de las que el usuario puede registrar novedades: planta (jefe de producción), kioscos (supervisoras) y
+     * administración sin kioscos (Contabilidad). Un administrador tiene las tres.
+     */
+    public java.util.Set<String> incidentSections() {
+        java.util.Set<String> sections = new java.util.LinkedHashSet<>();
+        if (allowed(PERM_INCIDENTS_PLANT)) sections.add("PLANTA");
+        if (allowed(PERM_INCIDENTS_KIOSKS)) sections.add("KIOSCOS");
+        if (allowed(PERM_INCIDENTS_ADMIN)) sections.add("ADMINISTRACION");
+        return sections;
+    }
+
+    /** Administrador (o acceso total): ve las novedades de todos los kioscos, no solo de los que supervisa. */
+    public boolean isAdministrator() {
+        Long userId = securityUtil.getCurrentUserId();
+        UserEntity user = userId == null ? null : userRepository.findById(userId).orElse(null);
+        if (user == null || user.getRoles() == null) {
+            return false;
+        }
+        for (RoleEntity role : user.getRoles()) {
+            if (role == null) continue;
+            if (normalizeRole(role.getName()).contains("ADMIN")) return true;
+            if (role.getPermissions() != null && role.getPermissions().stream()
+                    .anyMatch(p -> p != null && p.getCode() != null && FULL_ACCESS.contains(p.getCode()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Salarios y bonificaciones: solo administradores y quien trabaja la planilla (Contabilidad). */

@@ -72,5 +72,8 @@ public class PayrollRunResponse {
         private BigDecimal irtra;
         private BigDecimal intecap;
         private String chequeNumber;
+        private BigDecimal extraPay;
+        private BigDecimal absenceDays;
+        private BigDecimal vacationDays;
     }
 }
