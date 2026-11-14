@@ -93,6 +93,8 @@ public class KioscoInventoryCountService {
 
     /** Segundos sin heartbeat antes de considerar desconectado en la sesión en vivo. */
     public static final int PRESENCE_TTL_SECONDS = 90;
+    /** 2 = {@code closing_balances_data} con claves por variante (marca/niño-niña); sin versión = legacy. */
+    static final int CLOSING_BALANCES_VERSION = 2;
 
     private final KioscoPhysicalCountRepository countRepository;
     private final KioscoPhysicalCountItemRepository itemRepository;
@@ -550,6 +552,9 @@ public class KioscoInventoryCountService {
         List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows =
                 mergeKardexRowsByProductColor(rawKardexRows);
         applyPendingReturnSalidasForCount(count, kardexRows, kardexByStockAndSize, stockByKey);
+        // Ini. por variante (marca/niño-niña): un snapshot legacy se adapta para no repetir el total en cada fila.
+        PreviousClosingBalances openingClosing = adaptLegacyClosing(
+                previousClosing, previousCount.orElse(null), kardexRows);
 
         LocalDateTime periodStart = periodFromAt;
         LocalDateTime openingCutoffExclusive = previousCount
@@ -666,7 +671,9 @@ public class KioscoInventoryCountService {
                     .mapToInt(s -> gapEntradasByStockId.getOrDefault(s.getId(), 0))
                     .sum();
             // Primer conteo: Ini.=0. Siguientes: Fin. del conteo anterior (0 si SKU nuevo).
-            int inventarioInicial = resolveOpeningInventarioInicial(productColorKey, previousClosing, 0);
+            String openingKey = ProductBrandNames.countVariantKey(
+                    kardexRow.getProductId(), kardexRow.getColorId(), kardexRow.getHardwareCondition());
+            int inventarioInicial = resolveOpeningInventarioInicial(openingKey, openingClosing, 0);
             // Ent. = periodo (+ hueco entre conteos). En el primer conteo el kardex ya incluye historial previo.
             int entradas = kardexRow.getEntradas() + gapEntradas;
             // Fin. = Ini. + movimientos del periodo (algebraico): +Ent -Vtas +Anul.Vta -Sal (+Compras -Anul.Compras)
@@ -720,7 +727,7 @@ public class KioscoInventoryCountService {
                     .diferencia(computeDiferenciaConteo(total, inventarioFinal))
                     .build();
             Map<String, Integer> openingBalanceBySize = resolveOpeningBalanceBySize(
-                    productColorKey, previousClosing, stocksForRow, openingBalanceByStockAndSize);
+                    openingKey, openingClosing, stocksForRow, openingBalanceByStockAndSize);
             List<KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow> displayRows = isSubcount
                     ? List.of(applyRowObservation(row, generalObservation, null))
                     : expandRowsForDisplay(
@@ -1235,6 +1242,7 @@ public class KioscoInventoryCountService {
         }
         try {
             Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("version", CLOSING_BALANCES_VERSION);
             payload.put("byProductColor", balances.byProductColor);
             payload.put("byProductColorAndSize", balances.byProductColorAndSize);
             return objectMapper.writeValueAsString(payload);
@@ -1276,7 +1284,10 @@ public class KioscoInventoryCountService {
                     byProductColorAndSize.put(String.valueOf(entry.getKey()), sizes);
                 }
             }
-            return new PreviousClosingBalances(byProductColor, byProductColorAndSize);
+            // Sin "version" = snapshot anterior a las claves por variante.
+            boolean legacy = !(payload.get("version") instanceof Number version)
+                    || version.intValue() < CLOSING_BALANCES_VERSION;
+            return new PreviousClosingBalances(byProductColor, byProductColorAndSize, legacy);
         } catch (Exception e) {
             log.warn("closing_balances_data inválido; se recalculará el Fin. del conteo cerrado: {}", e.getMessage());
             return null;
@@ -1312,7 +1323,9 @@ public class KioscoInventoryCountService {
                 if (row == null || row.getProductId() == null) {
                     continue;
                 }
-                String key = row.getProductId() + ":" + (row.getColorId() != null ? row.getColorId() : "");
+                // Por variante (marca/niño-niña): las filas por dimensión no deben sumarse en producto:color.
+                String key = ProductBrandNames.countVariantKey(
+                        row.getProductId(), row.getColorId(), row.getHardwareCondition());
                 int fin = Math.max(0, row.getInventarioFinal());
                 byProductColor.merge(key, fin, Integer::sum);
                 String sizeLabel = row.getSizeLabel();
@@ -1364,16 +1377,94 @@ public class KioscoInventoryCountService {
     }
 
     static final class PreviousClosingBalances {
+        /** Claves por variante: {@code producto:color} o {@code producto:color:marca/niño-niña}. */
         final Map<String, Integer> byProductColor;
         final Map<String, Map<String, Integer>> byProductColorAndSize;
+        /**
+         * Snapshot guardado antes de separar por marca/dimensión: sus claves son {@code producto:color} con
+         * todas las variantes sumadas y no sirve tal cual para filas por marca (ver {@code adaptLegacyClosing}).
+         */
+        final boolean legacy;
 
         PreviousClosingBalances(
                 Map<String, Integer> byProductColor,
                 Map<String, Map<String, Integer>> byProductColorAndSize
         ) {
+            this(byProductColor, byProductColorAndSize, false);
+        }
+
+        PreviousClosingBalances(
+                Map<String, Integer> byProductColor,
+                Map<String, Map<String, Integer>> byProductColorAndSize,
+                boolean legacy
+        ) {
             this.byProductColor = byProductColor != null ? byProductColor : Map.of();
             this.byProductColorAndSize = byProductColorAndSize != null ? byProductColorAndSize : Map.of();
+            this.legacy = legacy;
         }
+    }
+
+    /**
+     * Un snapshot legacy trae el Fin. de todas las marcas/dimensiones sumado por producto:color. Si cada fila
+     * por marca lo heredara, el Ini. se multiplicaría por el número de variantes (conteo 115 Entrecueros).
+     * Producto:color con una sola fila: el valor legacy sirve. Con varias filas: el Fin. por variante se
+     * recalcula desde el reporte del conteo anterior.
+     */
+    private PreviousClosingBalances adaptLegacyClosing(
+            PreviousClosingBalances closing,
+            KioscoPhysicalCountEntity previousCount,
+            List<KioscoKardexReportResponse.KioscoKardexRow> kardexRows
+    ) {
+        if (closing == null || !closing.legacy || previousCount == null) {
+            return closing;
+        }
+        Map<String, Set<String>> variantsByBase = new LinkedHashMap<>();
+        for (KioscoKardexReportResponse.KioscoKardexRow row : kardexRows) {
+            if (!shouldIncludeInPhysicalCount(row)) {
+                continue;
+            }
+            variantsByBase
+                    .computeIfAbsent(itemKey(row.getProductId(), row.getColorId()), k -> new LinkedHashSet<>())
+                    .add(ProductBrandNames.countVariantKey(
+                            row.getProductId(), row.getColorId(), row.getHardwareCondition()));
+        }
+        boolean anyMultiVariant = variantsByBase.values().stream().anyMatch(v -> v.size() > 1);
+        PreviousClosingBalances recomputed = null;
+        if (anyMultiVariant) {
+            try {
+                recomputed = extractClosingBalances(buildReport(previousCount));
+            } catch (BusinessException | ResourceNotFoundException e) {
+                throw new IllegalStateException(
+                        "No se pudo recalcular el Fin. por marca del conteo #" + previousCount.getId()
+                                + " para usarlo como Ini. del siguiente periodo",
+                        e);
+            }
+        }
+        Map<String, Integer> byProductColor = new LinkedHashMap<>();
+        Map<String, Map<String, Integer>> byProductColorAndSize = new LinkedHashMap<>();
+        for (Map.Entry<String, Set<String>> entry : variantsByBase.entrySet()) {
+            String base = entry.getKey();
+            Set<String> variants = entry.getValue();
+            if (variants.size() > 1 && recomputed != null) {
+                for (String variant : variants) {
+                    if (recomputed.byProductColor.containsKey(variant)) {
+                        byProductColor.put(variant, recomputed.byProductColor.get(variant));
+                    }
+                    if (recomputed.byProductColorAndSize.containsKey(variant)) {
+                        byProductColorAndSize.put(variant, recomputed.byProductColorAndSize.get(variant));
+                    }
+                }
+            } else {
+                String only = variants.iterator().next();
+                if (closing.byProductColor.containsKey(base)) {
+                    byProductColor.put(only, closing.byProductColor.get(base));
+                }
+                if (closing.byProductColorAndSize.containsKey(base)) {
+                    byProductColorAndSize.put(only, closing.byProductColorAndSize.get(base));
+                }
+            }
+        }
+        return new PreviousClosingBalances(byProductColor, byProductColorAndSize);
     }
 
     private void applyPendingReturnSalidasForCount(
