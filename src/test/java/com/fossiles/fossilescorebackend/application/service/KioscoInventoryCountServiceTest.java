@@ -1335,6 +1335,50 @@ class KioscoInventoryCountServiceTest {
     }
 
     @Test
+    void extractClosingBalances_separaPorMarcaYNoSumaVariantesEnProductoColor() {
+        var rows = List.of(
+                KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
+                        .productId(productId).colorId(colorId).hardwareCondition("LACOSTE")
+                        .inventarioFinal(7).build(),
+                KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
+                        .productId(productId).colorId(colorId).hardwareCondition("LEVIS")
+                        .inventarioFinal(6).build(),
+                KioscoPhysicalCountReportResponse.KioscoPhysicalCountRow.builder()
+                        .productId(productId + 1).colorId(colorId).hardwareCondition("NUEVO")
+                        .inventarioFinal(4).build());
+        KioscoPhysicalCountReportResponse report = KioscoPhysicalCountReportResponse.builder()
+                .categories(List.of(KioscoPhysicalCountReportResponse.KioscoPhysicalCountCategoryGroup.builder()
+                        .categoryName("Cinchos").rows(rows).build()))
+                .build();
+
+        var closing = KioscoInventoryCountService.extractClosingBalances(report);
+
+        assertThat(closing.byProductColor)
+                .containsEntry(productId + ":" + colorId + ":LACOSTE", 7)
+                .containsEntry(productId + ":" + colorId + ":LEVIS", 6)
+                .containsEntry((productId + 1) + ":" + colorId, 4)
+                .doesNotContainKey(productId + ":" + colorId);
+        assertThat(KioscoInventoryCountService.resolveOpeningInventarioInicial(
+                productId + ":" + colorId + ":LEVIS", closing, 0)).isEqualTo(6);
+        assertThat(closing.legacy).isFalse();
+    }
+
+    @Test
+    void closingBalances_snapshotSinVersionSeMarcaLegacyYElNuevoNo() {
+        var legacy = service.deserializeClosingBalances(
+                "{\"byProductColor\":{\"72:1\":47},\"byProductColorAndSize\":{}}");
+        assertThat(legacy).isNotNull();
+        assertThat(legacy.legacy).isTrue();
+
+        String json = service.serializeClosingBalances(new KioscoInventoryCountService.PreviousClosingBalances(
+                Map.of("72:1:LACOSTE", 7), Map.of()));
+        var current = service.deserializeClosingBalances(json);
+        assertThat(current).isNotNull();
+        assertThat(current.legacy).isFalse();
+        assertThat(current.byProductColor).containsEntry("72:1:LACOSTE", 7);
+    }
+
+    @Test
     void buildReport_periodosContiguosMismoDia_iniHeredaFinCeroDelSnapshot() throws Exception {
         long stockId = 8068L;
         long previousCountId = 100L;
