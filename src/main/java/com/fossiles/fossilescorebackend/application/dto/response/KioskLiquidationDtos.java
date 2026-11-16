@@ -27,27 +27,34 @@ public final class KioskLiquidationDtos {
 
     public record ImportPreview(int totalRows, int matchedRows, int kiosks, LocalDate firstPeriodTo,
                                 LocalDate lastPeriodTo, int withLiquidation, int alreadyImported,
-                                List<UnmatchedKiosk> unmatched, List<DateConflict> conflicts, List<String> warnings) {
+                                List<UnmatchedKiosk> unmatched, List<DateConflict> conflicts, List<String> warnings,
+                                List<String> unmatchedAccountants) {
     }
 
     public record ImportResult(int history, int liquidations, ImportPreview preview) {
     }
 
+    /** Usuario con rol CONTABILIDAD. */
+    public record Person(Long userId, String name) {
+    }
+
     public record LiquidationRow(Long id, Long locationId, String locationName, Long supervisorUserId,
                                  String supervisorName, LocalDate periodFrom, LocalDate periodTo, String accountant,
                                  LocalDate correctionsDue, LocalDate liquidationDate, int liquidationDays,
-                                 Integer areasToFix, String greenNote, String status, String note, String source) {
+                                 Integer areasToFix, String greenNote, String status, String note, String source,
+                                 List<Person> accountants) {
     }
 
     public record LiquidationGroup(Long supervisorUserId, String supervisorName, List<LiquidationRow> rows) {
     }
 
     /** Conteo ya hecho que todavía no tiene fecha de liquidación. */
-    public record PendingCount(Long locationId, String locationName, Long supervisorUserId, LocalDate periodTo) {
+    public record PendingCount(Long locationId, String locationName, Long supervisorUserId, LocalDate periodTo,
+                               String source) {
     }
 
     public record LiquidationWeekResponse(LocalDate weekStart, LocalDate weekEnd, List<LiquidationGroup> groups,
-                                          List<PendingCount> pending, List<String> accountants, boolean canGenerate) {
+                                          List<PendingCount> pending, List<Person> accountants, boolean canGenerate) {
     }
 
     public record LiquidationGenerateResponse(LiquidationWeekResponse week, List<String> warnings) {

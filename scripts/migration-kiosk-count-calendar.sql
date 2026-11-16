@@ -122,3 +122,20 @@ CREATE TABLE IF NOT EXISTS kiosk_liquidation (
     CONSTRAINT chk_kiosk_liquidation_days CHECK (liquidation_days BETWEEN 1 AND 5)
 );
 CREATE INDEX IF NOT EXISTS idx_kiosk_liquidation_date ON kiosk_liquidation (liquidation_date);
+
+-- Quién de contabilidad revisa cada liquidación: usuarios con el rol CONTABILIDAD (puede ser más de uno, como
+-- «Fátima y Roberto» en el Excel). El texto original del Excel queda en kiosk_liquidation.accountant.
+CREATE TABLE IF NOT EXISTS kiosk_liquidation_accountant (
+    liquidation_id  BIGINT NOT NULL REFERENCES kiosk_liquidation (id) ON DELETE CASCADE,
+    user_id         BIGINT NOT NULL REFERENCES users (id),
+    PRIMARY KEY (liquidation_id, user_id)
+);
+
+-- Revisores adicionales: usuarios que no tienen el rol CONTABILIDAD pero también revisan liquidaciones
+-- (Roberto Lique). Aparecen junto a contabilidad al asignar.
+CREATE TABLE IF NOT EXISTS kiosk_liquidation_extra_reviewer (
+    user_id BIGINT PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE
+);
+INSERT INTO kiosk_liquidation_extra_reviewer (user_id)
+SELECT id FROM users WHERE username = 'rob.lique'
+ON CONFLICT (user_id) DO NOTHING;

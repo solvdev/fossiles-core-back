@@ -39,11 +39,18 @@ public class KioskLiquidationController {
                                       List<Long> supervisorUserIds) {
     }
 
-    public record UpdateLiquidationRequest(String status, Integer areasToFix, Boolean clearAreas, String accountant,
+    public record UpdateLiquidationRequest(String status, Integer areasToFix, Boolean clearAreas, List<Long> accountantUserIds,
                                            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate correctionsDue,
                                            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate liquidationDate,
                                            Integer liquidationDays, String greenNote, String note,
                                            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate viewWeek) {
+    }
+
+    public record FixLiquidationRequest(Long locationId,
+                                        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate countDate,
+                                        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate liquidationDate,
+                                        Integer liquidationDays, List<Long> accountantUserIds, String note,
+                                        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate viewWeek) {
     }
 
     @PostMapping("/import/preview")
@@ -69,12 +76,21 @@ public class KioskLiquidationController {
         return ResponseEntity.ok(liquidationService.generateWeek(request.weekStart(), request.supervisorUserIds()));
     }
 
+    /** Fija a mano la fecha de liquidación de un conteo (y lo registra si el sistema no lo tiene). */
+    @PostMapping("/liquidations/manual")
+    public ResponseEntity<LiquidationGenerateResponse> fix(@RequestBody FixLiquidationRequest request)
+            throws BusinessException {
+        return ResponseEntity.ok(liquidationService.fixManually(new KioskLiquidationService.ManualRequest(
+                request.locationId(), request.countDate(), request.liquidationDate(), request.liquidationDays(),
+                request.accountantUserIds(), request.note()), request.viewWeek()));
+    }
+
     @PatchMapping("/liquidations/{id}")
     public ResponseEntity<LiquidationWeekResponse> update(@PathVariable Long id,
                                                           @RequestBody UpdateLiquidationRequest request)
             throws BusinessException {
         return ResponseEntity.ok(liquidationService.update(id, new KioskLiquidationService.UpdateRequest(
-                request.status(), request.areasToFix(), request.clearAreas(), request.accountant(),
+                request.status(), request.areasToFix(), request.clearAreas(), request.accountantUserIds(),
                 request.correctionsDue(), request.liquidationDate(), request.liquidationDays(), request.greenNote(),
                 request.note()), request.viewWeek()));
     }
