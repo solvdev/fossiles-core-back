@@ -80,3 +80,45 @@ WHERE NOT EXISTS (SELECT 1 FROM permission WHERE code = 'CONTABILIDAD.CALENDARIO
 INSERT INTO permission (code, description, module, action)
 SELECT 'CONTABILIDAD.CALENDARIO.GENERAR', 'Generar y mover visitas del calendario de conteo físico', 'CONTABILIDAD', 'GENERAR'
 WHERE NOT EXISTS (SELECT 1 FROM permission WHERE code = 'CONTABILIDAD.CALENDARIO.GENERAR');
+
+-- ───────── Historial de conteos y liquidación semanal (carga del Excel de contabilidad) ─────────
+
+-- Períodos de inventario ya hechos (del–al) que se cargan del Excel «Liquidaciones por semana». El generador
+-- los usa como «último conteo» de cada kiosco junto con los conteos físicos del sistema.
+CREATE TABLE IF NOT EXISTS kiosk_count_history (
+    id                  BIGSERIAL PRIMARY KEY,
+    location_id         BIGINT NOT NULL REFERENCES locations (id),
+    supervisor_user_id  BIGINT REFERENCES users (id),
+    period_from         DATE,
+    period_to           DATE   NOT NULL,                 -- fecha del conteo (el «al» del período)
+    source              VARCHAR(12) NOT NULL DEFAULT 'EXCEL',
+    imported_by         BIGINT,
+    imported_at         TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_kiosk_count_history UNIQUE (location_id, period_to)
+);
+
+-- Liquidación: la revisión de contabilidad de cada conteo (si salió bien el conteo, depósitos, cambios, facturas
+-- verdes), unas 4 semanas después de la visita. Se organiza por semana, un kiosco por día.
+CREATE TABLE IF NOT EXISTS kiosk_liquidation (
+    id                  BIGSERIAL PRIMARY KEY,
+    location_id         BIGINT NOT NULL REFERENCES locations (id),
+    supervisor_user_id  BIGINT NOT NULL REFERENCES users (id),
+    period_from         DATE,
+    period_to           DATE   NOT NULL,                 -- período del inventario que se liquida
+    accountant          VARCHAR(80),                     -- quién de contabilidad lo revisa
+    corrections_due     DATE,                            -- entrega de correcciones
+    liquidation_date    DATE   NOT NULL,                 -- primer día de liquidación
+    liquidation_days    INT    NOT NULL DEFAULT 1,       -- Entrecueros y Celajes: 2 días
+    areas_to_fix        INT,                             -- «facturas verdes»: áreas por corregir (NULL = sin revisar)
+    green_note          VARCHAR(300),                    -- texto original de facturas verdes
+    status              VARCHAR(12) NOT NULL DEFAULT 'PENDING',   -- PENDING | LIQUIDATED
+    note                VARCHAR(500),
+    source              VARCHAR(12) NOT NULL DEFAULT 'GENERATED', -- IMPORT | GENERATED | MANUAL
+    created_by          BIGINT,
+    created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_kiosk_liquidation UNIQUE (location_id, period_to),
+    CONSTRAINT chk_kiosk_liquidation_status CHECK (status IN ('PENDING', 'LIQUIDATED')),
+    CONSTRAINT chk_kiosk_liquidation_days CHECK (liquidation_days BETWEEN 1 AND 5)
+);
+CREATE INDEX IF NOT EXISTS idx_kiosk_liquidation_date ON kiosk_liquidation (liquidation_date);
