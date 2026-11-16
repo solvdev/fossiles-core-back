@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.config;
 
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
+import com.fossiles.fossilescorebackend.application.exception.OtherRentConflictException;
 import com.fossiles.fossilescorebackend.application.exception.LfPackingConflictException;
 import com.fossiles.fossilescorebackend.application.exception.LfPackingForbiddenException;
 import com.fossiles.fossilescorebackend.application.exception.LfPackingUnauthenticatedException;
@@ -103,6 +104,11 @@ public class GlobalExceptionHandler {
         errors.put("status", status.value());
         errors.put("message", message);
         return new ResponseEntity<>(errors, status);
+    }
+
+    @ExceptionHandler(OtherRentConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleOtherRentConflict(OtherRentConflictException ex) {
+        return body(HttpStatus.CONFLICT, ex.getMessage());
     }
 
     @ExceptionHandler(ProductionOrderItemConflictException.class)
