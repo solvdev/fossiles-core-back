@@ -31,6 +31,8 @@ class KioskRentCalculatorTest {
         assertEquals(LocalDate.of(2026, 12, 5), KioskRentCalculator.nextPaymentDate(5, start, end, TODAY));
         assertEquals(LocalDate.of(2026, 11, 16), KioskRentCalculator.nextPaymentDate(16, start, end, TODAY));
         assertEquals(LocalDate.of(2027, 2, 28), KioskRentCalculator.nextPaymentDate(30, start, end, LocalDate.of(2027, 2, 1)));
+        assertEquals(LocalDate.of(2027, 2, 28), KioskRentCalculator.nextPaymentDate(31, start, end, LocalDate.of(2027, 2, 1)));
+        assertEquals(LocalDate.of(2026, 4, 30), KioskRentCalculator.nextPaymentDate(31, start, end, LocalDate.of(2026, 4, 1)));
         assertNull(KioskRentCalculator.nextPaymentDate(null, start, end, TODAY));
     }
 
