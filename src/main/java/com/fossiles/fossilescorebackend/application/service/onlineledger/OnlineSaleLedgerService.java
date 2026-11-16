@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleL
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.reconciliation.ReconciliationAccessGuard;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineLedgerLogEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineLedgerPeriodEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleAccountingEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleEntity;
@@ -124,6 +125,16 @@ public class OnlineSaleLedgerService {
                 OnlineSaleAccountingEntity::setStatus, 30, "Estado", OnlineSaleLedgerService::normalizeStatus));
         FIELDS.put("reviewed", new FieldWriter() {
             @Override
+            public String label() {
+                return "Revisado";
+            }
+
+            @Override
+            public String read(OnlineSaleAccountingEntity a) {
+                return Boolean.TRUE.equals(a.getReviewed()) ? "Sí" : "No";
+            }
+
+            @Override
             public boolean isEmpty(OnlineSaleAccountingEntity a) {
                 return !Boolean.TRUE.equals(a.getReviewed());
             }
@@ -140,6 +151,7 @@ public class OnlineSaleLedgerService {
     private final OnlineSaleAccountingRepository accountingRepository;
     private final ReconciliationAccessGuard guard;
     private final OnlineLedgerPeriodService periodService;
+    private final OnlineLedgerLogService logService;
 
     @PersistenceContext
     private EntityManager em;
@@ -565,7 +577,13 @@ public class OnlineSaleLedgerService {
                 .orElseThrow(() -> new ResourceNotFoundException("Venta en línea", saleId));
         assertInOpenPeriod(List.of(sale));
         Long userId = guard.currentUserId();
-        upsert(saleId, changes, false, userId);
+        List<OnlineLedgerPeriodEntity> periods = periodsOf(List.of(sale));
+        List<OnlineLedgerLogEntity> logged = new ArrayList<>();
+        try {
+            upsert(sale, changes, false, userId, periods, logged);
+        } finally {
+            logService.saveAll(logged);
+        }
         return toRows(List.of(sale)).get(0);
     }
 
@@ -600,8 +618,14 @@ public class OnlineSaleLedgerService {
                     + "Quítelas de la selección.");
         }
         Long userId = guard.currentUserId();
-        for (OnlineSaleEntity sale : sales) {
-            upsert(sale.getId(), request.getChanges(), request.isOnlyEmpty(), userId);
+        List<OnlineLedgerPeriodEntity> periods = periodsOf(sales);
+        List<OnlineLedgerLogEntity> logged = new ArrayList<>();
+        try {
+            for (OnlineSaleEntity sale : sales) {
+                upsert(sale, request.getChanges(), request.isOnlyEmpty(), userId, periods, logged);
+            }
+        } finally {
+            logService.saveAll(logged);
         }
         sales.sort(Comparator.comparing(OnlineSaleEntity::getSaleDate, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(OnlineSaleEntity::getId));
@@ -672,6 +696,21 @@ public class OnlineSaleLedgerService {
         } catch (DataIntegrityViolationException e) {
             throw new BusinessException("Otra persona estaba guardando en esas ventas al mismo tiempo. Intente de nuevo.");
         }
+        if (!toSave.isEmpty()) {
+            Map<Long, OnlineSaleEntity> saleById = new HashMap<>();
+            sales.forEach(s -> saleById.put(s.getId(), s));
+            List<OnlineLedgerPeriodEntity> periods = periodsOf(sales);
+            List<OnlineLedgerLogEntity> logged = new ArrayList<>();
+            for (OnlineSaleAccountingEntity a : toSave) {
+                OnlineSaleEntity sale = saleById.get(a.getOnlineSaleId());
+                OnlineLedgerPeriodEntity period = sale == null ? null : periodOf(periods, sale.getSaleDate());
+                logged.add(logService.draft(period == null ? null : period.getId(), period == null ? null : period.getLabel())
+                        .eventType(lock ? OnlineLedgerLogEntity.LOCK : OnlineLedgerLogEntity.UNLOCK)
+                        .saleId(a.getOnlineSaleId()).saleNumber(sale == null ? null : sale.getSaleNumber())
+                        .detail(lock ? "Bloqueó la línea" : "Desbloqueó la línea").build());
+            }
+            logService.saveAll(logged);
+        }
         sales.sort(Comparator.comparing(OnlineSaleEntity::getSaleDate, Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(OnlineSaleEntity::getId));
         return toRows(sales);
@@ -700,17 +739,37 @@ public class OnlineSaleLedgerService {
      * Crea o actualiza la fila contable. Dos celdas de la misma venta guardadas a la vez pueden intentar crear la
      * fila al mismo tiempo: la restricción única rechaza la segunda y aquí se reintenta sobre la fila ya creada.
      */
-    private OnlineSaleAccountingEntity upsert(Long saleId, Map<String, Object> changes, boolean onlyEmpty, Long userId)
-            throws BusinessException {
+    private OnlineSaleAccountingEntity upsert(OnlineSaleEntity sale, Map<String, Object> changes, boolean onlyEmpty,
+                                              Long userId, List<OnlineLedgerPeriodEntity> periods,
+                                              List<OnlineLedgerLogEntity> logged) throws BusinessException {
         try {
-            return applyAndSave(saleId, changes, onlyEmpty, userId);
+            return applyAndSave(sale, changes, onlyEmpty, userId, periods, logged);
         } catch (DataIntegrityViolationException e) {
-            return applyAndSave(saleId, changes, onlyEmpty, userId);
+            return applyAndSave(sale, changes, onlyEmpty, userId, periods, logged);
         }
     }
 
-    private OnlineSaleAccountingEntity applyAndSave(Long saleId, Map<String, Object> changes, boolean onlyEmpty, Long userId)
-            throws BusinessException {
+    /** Periodos (abiertos o cerrados) que cubren las fechas de estas ventas, para anotar en qué revisión se hizo cada cambio. */
+    private List<OnlineLedgerPeriodEntity> periodsOf(Collection<OnlineSaleEntity> sales) {
+        LocalDate min = null;
+        LocalDate max = null;
+        for (OnlineSaleEntity s : sales) {
+            LocalDate d = s.getSaleDate();
+            if (d == null) continue;
+            if (min == null || d.isBefore(min)) min = d;
+            if (max == null || d.isAfter(max)) max = d;
+        }
+        return periodService.between(min, max);
+    }
+
+    private static OnlineLedgerPeriodEntity periodOf(List<OnlineLedgerPeriodEntity> periods, LocalDate date) {
+        return periods.stream().filter(p -> p.contains(date)).findFirst().orElse(null);
+    }
+
+    private OnlineSaleAccountingEntity applyAndSave(OnlineSaleEntity sale, Map<String, Object> changes, boolean onlyEmpty,
+                                                    Long userId, List<OnlineLedgerPeriodEntity> periods,
+                                                    List<OnlineLedgerLogEntity> logged) throws BusinessException {
+        Long saleId = sale.getId();
         OnlineSaleAccountingEntity a = accountingRepository.findByOnlineSaleId(saleId)
                 .orElseGet(() -> OnlineSaleAccountingEntity.builder().onlineSaleId(saleId).reviewed(false).build());
         if (Boolean.TRUE.equals(a.getLocked())) {
@@ -719,19 +778,36 @@ public class OnlineSaleLedgerService {
                     + " y no se puede modificar. Un administrador puede desbloquearla.");
         }
         boolean touched = false;
+        List<String[]> diffs = new ArrayList<>();
         for (Map.Entry<String, Object> change : changes.entrySet()) {
             FieldWriter writer = FIELDS.get(change.getKey());
             if (onlyEmpty && !writer.isEmpty(a)) {
                 continue;
             }
+            String before = writer.read(a);
             writer.write(a, change.getValue());
             touched = true;
+            String after = writer.read(a);
+            if (!before.equals(after)) {
+                diffs.add(new String[]{change.getKey(), writer.label(), before, after});
+            }
         }
         if (!touched && a.getId() != null) {
             return a;
         }
         a.setUpdatedBy(userId);
-        return accountingRepository.saveAndFlush(a);
+        OnlineSaleAccountingEntity saved = accountingRepository.saveAndFlush(a);
+        if (!diffs.isEmpty()) {
+            OnlineLedgerPeriodEntity period = periodOf(periods, sale.getSaleDate());
+            for (String[] d : diffs) {
+                logged.add(logService.draft(period == null ? null : period.getId(), period == null ? null : period.getLabel())
+                        .eventType(OnlineLedgerLogEntity.EDIT).saleId(saleId).saleNumber(sale.getSaleNumber())
+                        .fieldKey(d[0]).fieldLabel(d[1])
+                        .oldValue(OnlineLedgerLogService.cut(d[2], 1000)).newValue(OnlineLedgerLogService.cut(d[3], 1000))
+                        .build());
+            }
+        }
+        return saved;
     }
 
     // ───────── comisiones ─────────
@@ -830,6 +906,12 @@ public class OnlineSaleLedgerService {
     private interface FieldWriter {
         boolean isEmpty(OnlineSaleAccountingEntity a);
 
+        /** Nombre del campo como lo ve el usuario (para la bitácora). */
+        String label();
+
+        /** Valor actual como texto; vacío si no tiene. */
+        String read(OnlineSaleAccountingEntity a);
+
         /** @throws IllegalArgumentException con el mensaje para el usuario si el valor no sirve. */
         void write(OnlineSaleAccountingEntity a, Object raw);
     }
@@ -838,6 +920,17 @@ public class OnlineSaleLedgerService {
                                      BiConsumer<OnlineSaleAccountingEntity, BigDecimal> setter,
                                      boolean allowNegative, String label) {
         return new FieldWriter() {
+            @Override
+            public String label() {
+                return label;
+            }
+
+            @Override
+            public String read(OnlineSaleAccountingEntity a) {
+                BigDecimal v = getter.apply(a);
+                return v == null ? "" : v.toPlainString();
+            }
+
             @Override
             public boolean isEmpty(OnlineSaleAccountingEntity a) {
                 return getter.apply(a) == null;
@@ -871,6 +964,17 @@ public class OnlineSaleLedgerService {
                                     BiConsumer<OnlineSaleAccountingEntity, LocalDate> setter, String label) {
         return new FieldWriter() {
             @Override
+            public String label() {
+                return label;
+            }
+
+            @Override
+            public String read(OnlineSaleAccountingEntity a) {
+                LocalDate v = getter.apply(a);
+                return v == null ? "" : v.toString();
+            }
+
+            @Override
             public boolean isEmpty(OnlineSaleAccountingEntity a) {
                 return getter.apply(a) == null;
             }
@@ -895,6 +999,17 @@ public class OnlineSaleLedgerService {
                                     BiConsumer<OnlineSaleAccountingEntity, String> setter, int max, String label) {
         return new FieldWriter() {
             @Override
+            public String label() {
+                return label;
+            }
+
+            @Override
+            public String read(OnlineSaleAccountingEntity a) {
+                String v = getter.apply(a);
+                return v == null ? "" : v;
+            }
+
+            @Override
             public boolean isEmpty(OnlineSaleAccountingEntity a) {
                 String current = getter.apply(a);
                 return current == null || current.isBlank();
@@ -916,6 +1031,17 @@ public class OnlineSaleLedgerService {
                                       BiConsumer<OnlineSaleAccountingEntity, String> setter, int max, String label,
                                       Function<String, String> normalizer) {
         return new FieldWriter() {
+            @Override
+            public String label() {
+                return label;
+            }
+
+            @Override
+            public String read(OnlineSaleAccountingEntity a) {
+                String v = getter.apply(a);
+                return v == null ? "" : v;
+            }
+
             @Override
             public boolean isEmpty(OnlineSaleAccountingEntity a) {
                 String current = getter.apply(a);

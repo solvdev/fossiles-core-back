@@ -149,6 +149,81 @@ public final class OnlineSaleLedgerDtos {
         private Integer lockedCount;
     }
 
+    /** Una revisión con su avance y lo que se hizo en ella (listado de revisiones). */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PeriodSummary {
+        private PeriodRow period;
+        /** Ventas con fecha dentro del rango (la fecha original de la venta). */
+        private long sales;
+        private long reviewed;
+        private long locked;
+        /** Cambios de celdas registrados en la bitácora. */
+        private long edits;
+        /** Personas distintas que cambiaron celdas. */
+        private long editors;
+        /** Veces que se reabrió. */
+        private long reopens;
+        private LocalDateTime lastActivityAt;
+    }
+
+    /** Cuántos cambios hizo una persona o se hicieron en un campo. */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class CountItem {
+        private String name;
+        private long count;
+        /** Ventas distintas tocadas (solo por persona). */
+        private Long sales;
+        private LocalDateTime lastAt;
+    }
+
+    /** Detalle de una revisión: resumen y desglose por persona y por campo. */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PeriodDetail {
+        private PeriodSummary summary;
+        private long editedSales;
+        private List<CountItem> byUser;
+        private List<CountItem> byField;
+    }
+
+    /** Una línea de la bitácora. */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class LogEntry {
+        private Long id;
+        private LocalDateTime at;
+        private String userName;
+        /** OPEN, CLOSE, REOPEN, DELETE, EDIT, LOCK o UNLOCK. */
+        private String type;
+        private Long saleId;
+        private String saleNumber;
+        private String fieldLabel;
+        private String oldValue;
+        private String newValue;
+        private String detail;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class LogPage {
+        private List<LogEntry> items;
+        private long total;
+        private int page;
+        private int size;
+    }
+
     @Data
     @NoArgsConstructor
     @AllArgsConstructor

@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleL
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.service.reconciliation.ReconciliationAccessGuard;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineLedgerLogEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineLedgerPeriodEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.OnlineSaleAccountingEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.OnlineLedgerPeriodRepository;
@@ -44,6 +45,7 @@ public class OnlineLedgerPeriodService {
     private final OnlineLedgerPeriodRepository periodRepository;
     private final OnlineSaleAccountingRepository accountingRepository;
     private final ReconciliationAccessGuard guard;
+    private final OnlineLedgerLogService logService;
 
     @PersistenceContext
     private EntityManager em;
@@ -127,7 +129,10 @@ public class OnlineLedgerPeriodService {
                 .openedBy(guard.currentUserId())
                 .openedByName(guard.currentUsername())
                 .build();
-        return toRow(periodRepository.saveAndFlush(p), null);
+        OnlineLedgerPeriodEntity saved = periodRepository.saveAndFlush(p);
+        logService.recordPeriodEvent(saved, OnlineLedgerLogEntity.OPEN, "Abrió la revisión del " + DAY.format(from) + " al " + DAY.format(to)
+                + (saved.getNote() == null ? "" : ". Nota: " + saved.getNote()));
+        return toRow(saved, null);
     }
 
     /** Cierra el periodo: bloquea todas sus ventas. Lo que ya estaba bloqueado a mano se queda como estaba. */
@@ -178,7 +183,11 @@ public class OnlineLedgerPeriodService {
         p.setClosedAt(now);
         p.setClosedBy(userId);
         p.setClosedByName(username);
-        return toRow(periodRepository.saveAndFlush(p), locked);
+        OnlineLedgerPeriodEntity saved = periodRepository.saveAndFlush(p);
+        long[] pr = logService.progress(p.getDateFrom(), p.getDateTo());
+        logService.recordPeriodEvent(saved, OnlineLedgerLogEntity.CLOSE, "Cerró la revisión: " + locked + " líneas bloqueadas; "
+                + pr[0] + " ventas en el periodo, " + pr[1] + " marcadas como revisadas y " + (pr[0] - pr[1]) + " sin marcar");
+        return toRow(saved, locked);
     }
 
     /** Reabre un periodo cerrado (solo administradores): desbloquea lo que bloqueó su cierre. */
@@ -208,7 +217,9 @@ public class OnlineLedgerPeriodService {
         p.setClosedAt(null);
         p.setClosedBy(null);
         p.setClosedByName(null);
-        return toRow(periodRepository.saveAndFlush(p), null);
+        OnlineLedgerPeriodEntity saved = periodRepository.saveAndFlush(p);
+        logService.recordPeriodEvent(saved, OnlineLedgerLogEntity.REOPEN, "Reabrió la revisión: " + rows.size() + " líneas desbloqueadas");
+        return toRow(saved, null);
     }
 
     /** Borra un periodo abierto por error (uno cerrado hay que reabrirlo primero). */
@@ -219,6 +230,7 @@ public class OnlineLedgerPeriodService {
         if (p.isClosed()) {
             throw new BusinessException("Un periodo cerrado no se puede borrar. Un administrador puede reabrirlo.");
         }
+        logService.recordPeriodEvent(p, OnlineLedgerLogEntity.DELETE, "Borró el periodo abierto (no cambió ninguna venta)");
         periodRepository.delete(p);
     }
 
