@@ -42,7 +42,8 @@ public final class KioskLiquidationDtos {
                                  String supervisorName, LocalDate periodFrom, LocalDate periodTo, String accountant,
                                  LocalDate correctionsDue, LocalDate liquidationDate, int liquidationDays,
                                  Integer areasToFix, String greenNote, String status, String note, String source,
-                                 List<Person> accountants) {
+                                 List<Person> accountants, Long countId, String countStatus, String reviewedBy,
+                                 LocalDate reviewedAt, String closedBy, LocalDate closedAt, String countObservations) {
     }
 
     public record LiquidationGroup(Long supervisorUserId, String supervisorName, List<LiquidationRow> rows) {

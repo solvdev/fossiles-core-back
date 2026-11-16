@@ -9,12 +9,12 @@ import java.util.Set;
 /**
  * Pone los conteos pendientes de liquidar en los días de una semana: un kiosco por día (dos días seguidos para los
  * kioscos de visita doble, como Entrecueros y Celajes), del conteo más viejo al más reciente. No liquida un conteo
- * antes de {@code minLeadDays} días después de hecho, porque contabilidad necesita recibir las correcciones.
+ * antes de {@code minLeadDays} día(s) después de hecho: el conteo se manda el día siguiente y ahí empieza la revisión.
  */
 public final class KioskLiquidationPlanner {
 
-    /** La liquidación se hace ~30 días después del conteo (mediana del Excel de 2026); nunca antes de 14. */
-    static final int MIN_LEAD_DAYS = 14;
+    /** Al día siguiente del conteo mandan el reporte y contabilidad empieza a revisar: no se liquida el mismo día. */
+    static final int MIN_LEAD_DAYS = 1;
 
     private KioskLiquidationPlanner() {
     }

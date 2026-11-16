@@ -31,21 +31,24 @@ import java.util.stream.Collectors;
 /**
  * Liquidación semanal de los conteos: la revisión de contabilidad de cada conteo físico (si salió bien el conteo,
  * depósitos, cambios, facturas verdes), unas 4 semanas después de la visita. Se arma por semana, un kiosco por día,
- * como en el Excel «Liquidaciones por semana». Quien revisa es un usuario con el rol CONTABILIDAD (o un revisor
- * adicional de {@code kiosk_liquidation_extra_reviewer}, como Roberto Lique).
+ * como en el Excel «Liquidaciones por semana».
+ * <p>
+ * El estado y quién revisó salen del <b>conteo físico</b> (única fuente): Contado → Revisado → Cerrado. Un conteo cerrado
+ * es una liquidación hecha. Las liquidaciones nacen de las visitas hechas del calendario. Quien revisa es un usuario con
+ * rol CONTABILIDAD, un revisor adicional ({@code kiosk_liquidation_extra_reviewer}) o quien ya revisa/cierra conteos.
  */
 @Service
 @RequiredArgsConstructor
 public class KioskLiquidationService {
 
     private static final int CORRECTIONS_DAYS_AFTER_COUNT = 2;
-    private static final int MIN_DAYS_BETWEEN_COUNTS = 5;
     /** Un conteo que se registra a mano a menos de estos días de uno que ya tiene el sistema es el mismo conteo. */
     private static final int SAME_COUNT_TOLERANCE_DAYS = 3;
 
     /** Usuarios que pueden revisar liquidaciones: rol CONTABILIDAD o revisor adicional. */
     static final String REVIEWER_FILTER = "(UPPER(r.name) = 'CONTABILIDAD' OR EXISTS ("
-            + "SELECT 1 FROM kiosk_liquidation_extra_reviewer x WHERE x.user_id = u.id))";
+            + "SELECT 1 FROM kiosk_liquidation_extra_reviewer x WHERE x.user_id = u.id) OR EXISTS ("
+            + "SELECT 1 FROM kiosco_physical_count pc WHERE pc.reviewed_by = u.id OR pc.closed_by = u.id))";
 
     private final JdbcTemplate jdbc;
     private final KioskCountCalendarAccessGuard guard;
@@ -130,7 +133,7 @@ public class KioskLiquidationService {
                 warnings.add(name + ": la semana ya tiene liquidación todos sus días.");
             } else if (slots.isEmpty()) {
                 warnings.add(name + ": no hay conteos por liquidar que quepan en esa semana"
-                        + (pending.isEmpty() ? " (todo está liquidado o con fecha)." : " (los conteos recientes esperan " + KioskLiquidationPlanner.MIN_LEAD_DAYS + " días)."));
+                        + (pending.isEmpty() ? " (no hay conteos hechos del calendario por liquidar)." : " (un conteo se puede liquidar desde el día siguiente)."));
             } else if (left > 0) {
                 warnings.add(name + ": quedan " + left + " conteo(s) por liquidar para las siguientes semanas.");
             }
@@ -230,6 +233,9 @@ public class KioskLiquidationService {
         if (found.isEmpty()) {
             throw new BusinessException("No se encontró la liquidación.");
         }
+        if (req.status() != null && hasLinkedCount(id)) {
+            throw new BusinessException("El estado lo define el conteo físico: la liquidación queda hecha cuando contabilidad cierra el conteo.");
+        }
         if (req.status() != null) {
             String status = req.status().trim().toUpperCase(Locale.ROOT);
             if (!status.equals("PENDING") && !status.equals("LIQUIDATED")) {
@@ -273,6 +279,12 @@ public class KioskLiquidationService {
         }
         LocalDate view = viewDay != null ? viewDay : ((Date) found.get(0).get("liquidation_date")).toLocalDate();
         return buildWeek(weekStart(view), null);
+    }
+
+    private boolean hasLinkedCount(long liquidationId) {
+        Integer n = jdbc.queryForObject("SELECT COUNT(*) FROM kiosk_liquidation q " + COUNT_LATERAL
+                + "WHERE q.id = ? AND c.id IS NOT NULL", Integer.class, liquidationId);
+        return n != null && n > 0;
     }
 
     // ───────────────────────── quién de contabilidad revisa ─────────────────────────
@@ -361,22 +373,44 @@ public class KioskLiquidationService {
         return new LiquidationWeekResponse(weekStart, weekStart.plusDays(6), groups, pending, loadReviewers(), canGenerate);
     }
 
+    /** Conteo físico de una liquidación: mismo kiosco y misma fecha (o a ≤ 3 días); el más cercano, y no borrador si hay. */
+    private static final String COUNT_LATERAL = "LEFT JOIN LATERAL (SELECT c1.* FROM kiosco_physical_count c1 "
+            + "WHERE c1.location_id = q.location_id AND ABS(c1.period_to - q.period_to) <= " + SAME_COUNT_TOLERANCE_DAYS + " "
+            + "ORDER BY ABS(c1.period_to - q.period_to), CASE WHEN c1.status = 'DRAFT' THEN 1 ELSE 0 END, c1.id DESC LIMIT 1) c ON TRUE "
+            + "LEFT JOIN users ru ON ru.id = c.reviewed_by LEFT JOIN users cu ON cu.id = c.closed_by ";
+
     private List<LiquidationRow> loadRows(LocalDate from, LocalDate to, Long supervisorId) {
         String sql = "SELECT q.id, q.location_id, l.name, q.supervisor_user_id, q.period_from, q.period_to, q.accountant, "
-                + "q.corrections_due, q.liquidation_date, q.liquidation_days, q.areas_to_fix, q.green_note, q.status, q.note, q.source "
-                + "FROM kiosk_liquidation q JOIN locations l ON l.id = q.location_id "
+                + "q.corrections_due, q.liquidation_date, q.liquidation_days, q.areas_to_fix, q.green_note, q.status, q.note, q.source, "
+                + "c.id AS count_id, c.status AS count_status, c.reviewed_at, c.closed_at, c.observations AS count_obs, "
+                + "ru.first_name AS rf, ru.last_name AS rl, ru.username AS ru_user, cu.first_name AS cf, cu.last_name AS cl, cu.username AS cu_user "
+                + "FROM kiosk_liquidation q JOIN locations l ON l.id = q.location_id " + COUNT_LATERAL
                 + "WHERE q.liquidation_date BETWEEN ? AND ? " + (supervisorId == null ? "" : "AND q.supervisor_user_id = ? ")
                 + "ORDER BY q.liquidation_date, q.id";
         Object[] args = supervisorId == null ? new Object[]{Date.valueOf(from), Date.valueOf(to)}
                 : new Object[]{Date.valueOf(from), Date.valueOf(to), supervisorId};
         Map<Long, String> names = loadSupervisorNames();
-        List<LiquidationRow> rows = jdbc.query(sql, (rs, i) -> new LiquidationRow(rs.getLong("id"), rs.getLong("location_id"),
-                displayName(rs.getString("name")), rs.getLong("supervisor_user_id"),
-                names.getOrDefault(rs.getLong("supervisor_user_id"), ""),
-                localDate(rs.getDate("period_from")), rs.getDate("period_to").toLocalDate(), rs.getString("accountant"),
-                localDate(rs.getDate("corrections_due")), rs.getDate("liquidation_date").toLocalDate(),
-                rs.getInt("liquidation_days"), (Integer) rs.getObject("areas_to_fix"), rs.getString("green_note"),
-                rs.getString("status"), rs.getString("note"), rs.getString("source"), List.of()), args);
+        List<LiquidationRow> rows = jdbc.query(sql, (rs, i) -> {
+            String countStatus = rs.getString("count_status");
+            // Con conteo enlazado, el estado lo define el conteo: cerrado = liquidada.
+            String status = countStatus == null ? rs.getString("status") : "CERRADO".equals(countStatus) ? "LIQUIDATED" : "PENDING";
+            java.sql.Timestamp reviewedAt = rs.getTimestamp("reviewed_at");
+            java.sql.Timestamp closedAt = rs.getTimestamp("closed_at");
+            return new LiquidationRow(rs.getLong("id"), rs.getLong("location_id"),
+                    displayName(rs.getString("name")), rs.getLong("supervisor_user_id"),
+                    names.getOrDefault(rs.getLong("supervisor_user_id"), ""),
+                    localDate(rs.getDate("period_from")), rs.getDate("period_to").toLocalDate(), rs.getString("accountant"),
+                    localDate(rs.getDate("corrections_due")), rs.getDate("liquidation_date").toLocalDate(),
+                    rs.getInt("liquidation_days"), (Integer) rs.getObject("areas_to_fix"), rs.getString("green_note"),
+                    status, rs.getString("note"), rs.getString("source"), List.of(),
+                    rs.getObject("count_id") == null ? null : rs.getLong("count_id"), countStatus,
+                    rs.getObject("count_id") == null || rs.getObject("rf") == null && rs.getObject("ru_user") == null ? null
+                            : fullName(rs.getString("rf"), rs.getString("rl"), rs.getString("ru_user")),
+                    reviewedAt == null ? null : reviewedAt.toLocalDateTime().toLocalDate(),
+                    rs.getObject("cf") == null && rs.getObject("cu_user") == null ? null
+                            : fullName(rs.getString("cf"), rs.getString("cl"), rs.getString("cu_user")),
+                    closedAt == null ? null : closedAt.toLocalDateTime().toLocalDate(), rs.getString("count_obs"));
+        }, args);
         if (rows.isEmpty()) {
             return rows;
         }
@@ -393,23 +427,32 @@ public class KioskLiquidationService {
             out.add(new LiquidationRow(r.id(), r.locationId(), r.locationName(), r.supervisorUserId(), r.supervisorName(),
                     r.periodFrom(), r.periodTo(), r.accountant(), r.correctionsDue(), r.liquidationDate(),
                     r.liquidationDays(), r.areasToFix(), r.greenNote(), r.status(), r.note(), r.source(),
-                    people.getOrDefault(r.id(), List.of())));
+                    people.getOrDefault(r.id(), List.of()), r.countId(), r.countStatus(), r.reviewedBy(), r.reviewedAt(),
+                    r.closedBy(), r.closedAt(), r.countObservations()));
         }
         return out;
     }
 
-    /** Conteos hechos (sistema, Excel o registrados a mano) de una supervisora que todavía no tienen fecha de liquidación. */
+    /**
+     * Conteos de una supervisora que todavía no tienen fecha de liquidación. Nacen de las visitas del calendario:
+     * conteos del sistema que corresponden a una visita (SISTEMA), visitas marcadas como hechas que aún no tienen
+     * conteo (CALENDARIO) y conteos registrados a mano (MANUAL). El historial del Excel no genera liquidaciones.
+     */
     private List<PendingCount> loadPending(Long supervisorId) {
         return jdbc.query("SELECT c.location_id, l.name, c.period_to, c.src FROM ("
                         + "SELECT DISTINCT ON (location_id, period_to) location_id, period_to, src FROM ("
-                        + "SELECT location_id, period_to, 'SISTEMA' AS src, 0 AS pr FROM kiosco_physical_count WHERE status <> 'DRAFT' "
-                        + "UNION ALL SELECT location_id, period_to, CASE WHEN source = 'EXCEL' THEN 'EXCEL' ELSE 'MANUAL' END, 1 "
-                        + "FROM kiosk_count_history) u ORDER BY location_id, period_to, pr) c "
+                        + "SELECT pc.location_id, pc.period_to, 'SISTEMA' AS src, 0 AS pr FROM kiosco_physical_count pc "
+                        + "WHERE pc.status <> 'DRAFT' AND EXISTS (SELECT 1 FROM kiosk_count_visit v WHERE v.location_id = pc.location_id "
+                        + "AND v.status <> 'CANCELLED' AND ABS(v.visit_date - pc.period_to) <= " + SAME_COUNT_TOLERANCE_DAYS + ") "
+                        + "UNION ALL SELECT v.location_id, v.visit_date, 'CALENDARIO', 1 FROM kiosk_count_visit v "
+                        + "WHERE v.status = 'DONE' AND v.day_seq = 1 AND NOT EXISTS (SELECT 1 FROM kiosco_physical_count pc "
+                        + "WHERE pc.location_id = v.location_id AND pc.status <> 'DRAFT' AND ABS(pc.period_to - v.visit_date) <= " + SAME_COUNT_TOLERANCE_DAYS + ") "
+                        + "UNION ALL SELECT h.location_id, h.period_to, 'MANUAL', 2 FROM kiosk_count_history h WHERE h.source = 'MANUAL') u "
+                        + "ORDER BY location_id, period_to, pr) c "
                         + "JOIN locations l ON l.id = c.location_id "
                         + "JOIN kiosk_supervisor_assignment a ON a.kiosk_location_id = c.location_id AND a.supervisor_user_id = ? "
-                        + "WHERE NOT EXISTS (SELECT 1 FROM kiosk_liquidation q WHERE q.location_id = c.location_id AND q.period_to = c.period_to) "
-                        + "AND c.period_to > COALESCE((SELECT MAX(q.period_to) FROM kiosk_liquidation q WHERE q.location_id = c.location_id), "
-                        + "DATE '1900-01-01') + " + MIN_DAYS_BETWEEN_COUNTS + " "
+                        + "WHERE NOT EXISTS (SELECT 1 FROM kiosk_liquidation q WHERE q.location_id = c.location_id "
+                        + "AND ABS(q.period_to - c.period_to) <= " + SAME_COUNT_TOLERANCE_DAYS + ") "
                         + "ORDER BY c.period_to",
                 (rs, i) -> new PendingCount(rs.getLong("location_id"), displayName(rs.getString("name")), supervisorId,
                         rs.getDate("period_to").toLocalDate(), rs.getString("src")), supervisorId);
