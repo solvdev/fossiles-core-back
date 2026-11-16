@@ -303,9 +303,7 @@ public class KioskCountCalendarService {
     }
 
     private void assertDayAllowed(LocalDate date, Kiosk kiosk) throws BusinessException {
-        if (!isWeekday(date)) {
-            throw new BusinessException("Las visitas son de lunes a viernes.");
-        }
+        // Fines de semana: el calendario generado es de lunes a viernes, pero a mano se puede mandar a un sábado o domingo.
         Map<LocalDate, String> nonWorking = nonWorkingBetween(date, date);
         if (nonWorking.containsKey(date)) {
             throw new BusinessException("El " + date + " no es día hábil (" + nonWorking.get(date) + ").");
@@ -418,7 +416,7 @@ public class KioskCountCalendarService {
                 "SELECT l.name FROM locations l LEFT JOIN kiosk_site s ON s.location_id = l.id "
                         + "WHERE l.categoria = 'KIOSKO' AND COALESCE(s.status, 'ACTIVE') = 'ACTIVE' "
                         + "AND NOT EXISTS (SELECT 1 FROM kiosk_supervisor_assignment a WHERE a.kiosk_location_id = l.id) "
-                        + "ORDER BY l.name", String.class);
+                        + "AND l.name NOT ILIKE '%DEMOSTRACI%' ORDER BY l.name", String.class);
 
         boolean canGenerate;
         try {
@@ -497,11 +495,13 @@ public class KioskCountCalendarService {
     /** Fin del último conteo físico de cada kiosco (sin contar borradores; si solo hay borradores, el más reciente). */
     private Map<Long, LocalDate> loadLastCounts() {
         Map<Long, LocalDate> result = new HashMap<>();
+        // Conteos del sistema (sin borradores) y del historial cargado del Excel de contabilidad.
         jdbc.query("SELECT location_id, COALESCE(MAX(period_to) FILTER (WHERE status <> 'DRAFT'), MAX(period_to)) AS last_to "
-                + "FROM kiosco_physical_count GROUP BY location_id", rs -> {
+                + "FROM kiosco_physical_count GROUP BY location_id "
+                + "UNION ALL SELECT location_id, MAX(period_to) FROM kiosk_count_history GROUP BY location_id", rs -> {
             Date d = rs.getDate("last_to");
             if (d != null) {
-                result.put(rs.getLong("location_id"), d.toLocalDate());
+                result.merge(rs.getLong("location_id"), d.toLocalDate(), (a, b) -> a.isAfter(b) ? a : b);
             }
         });
         return result;
@@ -509,8 +509,9 @@ public class KioskCountCalendarService {
 
     private Map<Long, List<LocalDate>> loadCountsBetween(LocalDate from, LocalDate to) {
         Map<Long, List<LocalDate>> result = new HashMap<>();
-        jdbc.query("SELECT location_id, period_to FROM kiosco_physical_count "
-                        + "WHERE status <> 'DRAFT' AND period_to BETWEEN ? AND ? ORDER BY period_to",
+        jdbc.query("SELECT location_id, period_to FROM (SELECT location_id, period_to FROM kiosco_physical_count "
+                        + "WHERE status <> 'DRAFT' UNION SELECT location_id, period_to FROM kiosk_count_history) c "
+                        + "WHERE period_to BETWEEN ? AND ? ORDER BY period_to",
                 rs -> {
                     result.computeIfAbsent(rs.getLong("location_id"), id -> new ArrayList<>())
                             .add(rs.getDate("period_to").toLocalDate());
