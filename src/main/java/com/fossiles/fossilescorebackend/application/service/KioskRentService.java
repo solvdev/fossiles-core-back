@@ -157,7 +157,7 @@ public class KioskRentService {
         int paymentsSoon = 0;
         BigDecimal paymentsSoonAmount = BigDecimal.ZERO;
 
-        for (LocationEntity kiosk : locationRepository.findByCategoriaIgnoreCaseOrderByNameAsc(KIOSK_CATEGORY)) {
+        for (LocationEntity kiosk : rentKiosks()) {
             KioskRentEntity r = rents.get(kiosk.getId());
             Rent rent = finance.get(kiosk.getId());
             String landlord = r != null ? r.getLandlordName() : null;
@@ -211,9 +211,20 @@ public class KioskRentService {
         return result;
     }
 
+    /** Kioscos que van en Rentas: los reales. Los que están en piloto POS (pos_test_mode) no se muestran. */
+    private List<LocationEntity> rentKiosks() {
+        return locationRepository.findByCategoriaIgnoreCaseOrderByNameAsc(KIOSK_CATEGORY).stream()
+                .filter(KioskRentService::isRentKiosk)
+                .toList();
+    }
+
+    private static boolean isRentKiosk(LocationEntity location) {
+        return KIOSK_CATEGORY.equalsIgnoreCase(location.getCategoria()) && !Boolean.TRUE.equals(location.getPosTestMode());
+    }
+
     private LocationEntity findKiosk(Long locationId) throws BusinessException {
         LocationEntity location = locationId == null ? null : locationRepository.findById(locationId).orElse(null);
-        if (location == null || !KIOSK_CATEGORY.equalsIgnoreCase(location.getCategoria())) {
+        if (location == null || !isRentKiosk(location)) {
             throw new BusinessException("El kiosco indicado no existe.");
         }
         return location;
@@ -267,7 +278,7 @@ public class KioskRentService {
         Map<Long, KioskRentEntity> rents = new HashMap<>();
         rentRepository.findAll().forEach(r -> rents.put(r.getLocationId(), r));
         Map<Long, Rent> finance = financeRents();
-        List<LocationEntity> kiosks = locationRepository.findByCategoriaIgnoreCaseOrderByNameAsc(KIOSK_CATEGORY);
+        List<LocationEntity> kiosks = rentKiosks();
 
         try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             DataFormat format = wb.createDataFormat();
@@ -397,7 +408,7 @@ public class KioskRentService {
             throw new BusinessException("El archivo supera el tamaño máximo permitido (5 MB).");
         }
         Map<Long, LocationEntity> kiosks = new HashMap<>();
-        locationRepository.findByCategoriaIgnoreCaseOrderByNameAsc(KIOSK_CATEGORY).forEach(k -> kiosks.put(k.getId(), k));
+        rentKiosks().forEach(k -> kiosks.put(k.getId(), k));
         Map<Long, KioskRentEntity> existing = new HashMap<>();
         rentRepository.findAll().forEach(r -> existing.put(r.getLocationId(), r));
 
