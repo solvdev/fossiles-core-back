@@ -5,7 +5,11 @@ import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleL
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerRow;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LockRequest;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.PeriodRequest;
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LogPage;
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.PeriodDetail;
+import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.PeriodSummary;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.PeriodRow;
+import com.fossiles.fossilescorebackend.application.service.onlineledger.OnlineLedgerLogService;
 import com.fossiles.fossilescorebackend.application.service.onlineledger.OnlineLedgerPeriodService;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -34,6 +38,7 @@ public class OnlineSaleLedgerController {
 
     private final OnlineSaleLedgerService service;
     private final OnlineLedgerPeriodService periodService;
+    private final OnlineLedgerLogService logService;
 
     @GetMapping
     public ResponseEntity<LedgerResponse> search(
@@ -90,6 +95,31 @@ public class OnlineSaleLedgerController {
     public ResponseEntity<Void> deletePeriod(@PathVariable Long id) throws BusinessException, ResourceNotFoundException {
         periodService.delete(id);
         return ResponseEntity.noContent().build();
+    }
+
+    // ── Revisiones: listado con avance, detalle y bitácora de lo que se hizo ──
+
+    @GetMapping("/reviews")
+    public ResponseEntity<List<PeriodSummary>> reviews() throws BusinessException {
+        service.assertCanView();
+        return ResponseEntity.ok(logService.summaries());
+    }
+
+    @GetMapping("/reviews/{id}")
+    public ResponseEntity<PeriodDetail> reviewDetail(@PathVariable Long id) throws BusinessException, ResourceNotFoundException {
+        service.assertCanView();
+        return ResponseEntity.ok(logService.detail(id));
+    }
+
+    @GetMapping("/reviews/{id}/log")
+    public ResponseEntity<LogPage> reviewLog(
+            @PathVariable Long id,
+            @RequestParam(required = false) String kind,
+            @RequestParam(required = false) String q,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size) throws BusinessException, ResourceNotFoundException {
+        service.assertCanView();
+        return ResponseEntity.ok(logService.log(id, kind, q, page, size));
     }
 
     @GetMapping("/export")
