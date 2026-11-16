@@ -73,4 +73,21 @@ class KioskLiquidationTest {
         assertEquals("MIRAFLORES 2", KioskCountImportService.normalize("Miraflores 2"));
         assertTrue(KioskCountImportService.normalize(null).isEmpty());
     }
+
+    @Test
+    void reconoceAQuienDeContabilidadRevisaDesdeElExcel() {
+        List<KioskAccountantMatcher.User> users = List.of(
+                new KioskAccountantMatcher.User(65, "Fatima", "Zacarias", "fzacarias"),
+                new KioskAccountantMatcher.User(64, "Gustavo", "Castro", "gcastro"),
+                new KioskAccountantMatcher.User(54, "Roberto", "Lique", "rob.lique"));
+        assertEquals(List.of(64L), KioskAccountantMatcher.match("GUSTAVO", users).userIds());
+        assertEquals(List.of(64L), KioskAccountantMatcher.match("GUSTAVO ", users).userIds());
+        assertEquals(List.of(65L, 54L), KioskAccountantMatcher.match("FATIMA Y ROBERTO", users).userIds());
+        assertEquals(List.of(65L, 64L), KioskAccountantMatcher.match("FATIMA Y GUSTAVO", users).userIds());
+        KioskAccountantMatcher.Result sinUsuario = KioskAccountantMatcher.match("EDUARDO Y ROBERTO", users);
+        assertEquals(List.of(54L), sinUsuario.userIds());
+        assertEquals(List.of("EDUARDO"), sinUsuario.unmatchedNames());
+        assertTrue(KioskAccountantMatcher.match(null, users).userIds().isEmpty());
+        assertTrue(KioskAccountantMatcher.match("TATIANA", users).userIds().isEmpty());
+    }
 }

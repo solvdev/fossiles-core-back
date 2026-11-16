@@ -81,6 +81,7 @@ public class KioskCountImportService {
         LocalDate today = GuatemalaDateTime.today();
         Map<Long, Long> supervisorByLocation = loadSupervisorByLocation();
         Map<String, Long> supervisorByLastName = loadSupervisorLastNames();
+        List<KioskAccountantMatcher.User> accountingUsers = loadAccountingUsers();
         int history = 0;
         int liquidations = 0;
         for (Match m : analysis.matches) {
@@ -99,17 +100,22 @@ public class KioskCountImportService {
             if (!days.isEmpty() && supervisorId != null) {
                 LocalDate first = days.get(0);
                 String status = !first.isAfter(today) ? "LIQUIDATED" : "PENDING";
-                jdbc.update("INSERT INTO kiosk_liquidation (location_id, supervisor_user_id, period_from, period_to, accountant, "
+                Long liquidationId = jdbc.queryForObject("INSERT INTO kiosk_liquidation (location_id, supervisor_user_id, period_from, period_to, accountant, "
                                 + "corrections_due, liquidation_date, liquidation_days, areas_to_fix, green_note, status, source, created_by) "
                                 + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IMPORT', ?) "
                                 + "ON CONFLICT (location_id, period_to) DO UPDATE SET supervisor_user_id = EXCLUDED.supervisor_user_id, "
                                 + "period_from = EXCLUDED.period_from, accountant = EXCLUDED.accountant, "
                                 + "corrections_due = EXCLUDED.corrections_due, liquidation_date = EXCLUDED.liquidation_date, "
                                 + "liquidation_days = EXCLUDED.liquidation_days, areas_to_fix = EXCLUDED.areas_to_fix, "
-                                + "green_note = EXCLUDED.green_note, status = EXCLUDED.status, source = 'IMPORT', updated_at = NOW()",
-                        m.loc.id, supervisorId, sqlDate(r.periodFrom()), Date.valueOf(r.periodTo()), clean(r.accountant(), 80),
+                                + "green_note = EXCLUDED.green_note, status = EXCLUDED.status, source = 'IMPORT', updated_at = NOW() RETURNING id",
+                        Long.class, m.loc.id, supervisorId, sqlDate(r.periodFrom()), Date.valueOf(r.periodTo()), clean(r.accountant(), 80),
                         sqlDate(r.correctionsDue()), Date.valueOf(first), Math.min(5, days.size()),
                         parseAreasToFix(r.greenNote()), clean(r.greenNote(), 300), status, userId);
+                jdbc.update("DELETE FROM kiosk_liquidation_accountant WHERE liquidation_id = ?", liquidationId);
+                for (Long accountantId : KioskAccountantMatcher.match(r.accountant(), accountingUsers).userIds()) {
+                    jdbc.update("INSERT INTO kiosk_liquidation_accountant (liquidation_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                            liquidationId, accountantId);
+                }
                 liquidations++;
             }
         }
@@ -205,10 +211,17 @@ public class KioskCountImportService {
                         .ifPresent(d -> conflicts.add(new DateConflict(m.loc.name, to, d)));
             }
         }
+        List<KioskAccountantMatcher.User> accountingUsers = loadAccountingUsers();
+        Map<String, Integer> unmatchedAccountants = new TreeMap<>();
+        for (Match m : matches) {
+            KioskAccountantMatcher.match(m.row.accountant(), accountingUsers).unmatchedNames()
+                    .forEach(n -> unmatchedAccountants.merge(n, 1, Integer::sum));
+        }
         List<UnmatchedKiosk> unmatchedList = unmatched.entrySet().stream()
                 .map(e -> new UnmatchedKiosk(e.getKey(), e.getValue())).toList();
         ImportPreview preview = new ImportPreview(rows.size(), matches.size(), kiosks.size(), first, last, withLiquidation,
-                already, unmatchedList, conflicts, warnings);
+                already, unmatchedList, conflicts, warnings,
+                unmatchedAccountants.entrySet().stream().map(e -> e.getKey() + " (" + e.getValue() + ")").toList());
         return new Analysis(matches, preview);
     }
 
@@ -263,6 +276,15 @@ public class KioskCountImportService {
             return List.of();
         }
         return r.liquidationDates().stream().filter(d -> d != null).sorted().distinct().toList();
+    }
+
+    /** Usuarios con rol CONTABILIDAD y revisores adicionales (incluye inactivos: el historial puede nombrar a quien ya no trabaja). */
+    private List<KioskAccountantMatcher.User> loadAccountingUsers() {
+        return jdbc.query("SELECT DISTINCT u.id, u.first_name, u.last_name, u.username FROM users u "
+                + "LEFT JOIN user_role ur ON ur.user_id = u.id LEFT JOIN role r ON r.id = ur.role_id "
+                + "WHERE " + KioskLiquidationService.REVIEWER_FILTER + " ORDER BY u.id",
+                (rs, i) -> new KioskAccountantMatcher.User(rs.getLong("id"), rs.getString("first_name"),
+                        rs.getString("last_name"), rs.getString("username")));
     }
 
     private Map<Long, Long> loadSupervisorByLocation() {
