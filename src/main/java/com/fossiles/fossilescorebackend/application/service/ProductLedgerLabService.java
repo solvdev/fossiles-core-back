@@ -70,6 +70,26 @@ public class ProductLedgerLabService {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * Ubicaciones que la pantalla Inventario Productos puede consultar: las de despacho (Devoluciones y
+     * Bodega PT) más la reserva de Luis Felipe cuando ya existe. La reserva es solo de consulta: las
+     * operaciones que cambian movimientos o existencias siguen limitadas a las de despacho.
+     */
+    @Transactional(readOnly = true)
+    public List<ProductLedgerLabLocationResponse> listReadableLocations() throws BusinessException {
+        List<LocationEntity> locations = new ArrayList<>(productInventoryService.getDispatchSourceWarehouses());
+        locationRepository.findByCode(ProductInventoryService.RESERVE_LOCATION_CODE)
+                .filter(reserve -> locations.stream().noneMatch(loc -> Objects.equals(loc.getId(), reserve.getId())))
+                .ifPresent(locations::add);
+        return locations.stream()
+                .map(loc -> ProductLedgerLabLocationResponse.builder()
+                        .id(loc.getId())
+                        .code(loc.getCode())
+                        .name(loc.getName())
+                        .build())
+                .collect(Collectors.toList());
+    }
+
     @Transactional(readOnly = true)
     public List<ProductLedgerLabStockResponse> listStocks(
             Long locationId,
@@ -86,10 +106,10 @@ public class ProductLedgerLabService {
         if (stockId != null) {
             ProductInventoryLocation one = stockRepository.findById(stockId)
                     .orElseThrow(() -> new ResourceNotFoundException("ProductInventoryLocation", stockId));
-            requireAllowedLocation(one.getLocationId());
+            requireReadableLocation(one.getLocationId());
             stocks = List.of(one);
         } else {
-            requireAllowedLocation(locationId);
+            requireReadableLocation(locationId);
             stocks = stockRepository.findByLocationId(locationId);
         }
 
@@ -136,7 +156,7 @@ public class ProductLedgerLabService {
         if (movementId != null) {
             ProductInventoryKardex one = kardexRepository.findById(movementId)
                     .orElseThrow(() -> new ResourceNotFoundException("ProductInventoryKardex", movementId));
-            requireAllowedLocation(one.getLocationId());
+            requireReadableLocation(one.getLocationId());
             ProductLedgerLabMovementResponse dto = toLabMovement(one);
             applySizeLevelStock(List.of(dto), loadKardexAscForKeys(
                     one.getProductId(), one.getLocationId(), one.getColorId()));
@@ -151,11 +171,11 @@ public class ProductLedgerLabService {
         if (stockId != null) {
             stockFilter = stockRepository.findById(stockId)
                     .orElseThrow(() -> new ResourceNotFoundException("ProductInventoryLocation", stockId));
-            requireAllowedLocation(stockFilter.getLocationId());
+            requireReadableLocation(stockFilter.getLocationId());
             raw = kardexRepository.findByProductLocationColorDesc(
                     stockFilter.getProductId(), stockFilter.getLocationId(), stockFilter.getColorId());
         } else {
-            requireAllowedLocation(locationId);
+            requireReadableLocation(locationId);
             raw = kardexRepository.findByLocationIdOrderByMovementDateDescIdDesc(locationId);
         }
 
@@ -559,6 +579,23 @@ public class ProductLedgerLabService {
         if (!allowed.contains(locationId)) {
             throw new BusinessException(
                     "Ubicación no permitida (solo Bodega PT y Devoluciones).");
+        }
+    }
+
+    /** Lectura: las ubicaciones de despacho y la reserva de Luis Felipe. */
+    private void requireReadableLocation(Long locationId) throws BusinessException {
+        if (locationId == null) {
+            throw new BusinessException("locationId requerido.");
+        }
+        if (allowedLocationIds().contains(locationId)) {
+            return;
+        }
+        boolean isReserve = locationRepository.findByCode(ProductInventoryService.RESERVE_LOCATION_CODE)
+                .map(reserve -> Objects.equals(reserve.getId(), locationId))
+                .orElse(false);
+        if (!isReserve) {
+            throw new BusinessException(
+                    "Ubicación no permitida (solo Bodega PT, Devoluciones y la reserva de Luis Felipe).");
         }
     }
 
