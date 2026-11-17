@@ -150,6 +150,10 @@ empty='[]'
 
 bootstrap_repo
 
+expect_tag "final tag exists and pulls JSON selects the bump" \
+  "v1.5.0" main "$(lines v1.4.0 v1.5.0-rc.3)" "" \
+  '[{"title":"feat: after the first release","labels":[{"name":"minor"}]}]'
+
 finals="$(lines v1.9.0 v1.10.0 v1.999.0-rc.4 v1.10.0-rc.3 release-1 v1.2)"
 expect_tag "rc tags are not the latest final" "v1.10.1" main "${finals}" "" "${patch}"
 expect_tag "release patch starts at rc.1" "v1.10.1-rc.1" release "${finals}" "" "${patch}"
@@ -176,6 +180,108 @@ expect_tag "release commit that already has an rc tag is unchanged" \
   "v1.10.1-rc.2" release "${rc_tags}" "$(lines v1.10.1-rc.1 v1.10.1-rc.2)" "${patch}"
 
 expect_fail "other branches fail closed" env VERSION_BRANCH=develop
+
+run_build() {
+  local name="$1"
+  local dir="$2"
+  local branch="$3"
+  local expected="$4"
+  local wait_s="$5"
+  local out code
+  set +e
+  out="$(
+    cd "${dir}"
+    unset GITHUB_SHA GITHUB_REF_NAME GITHUB_REPOSITORY GH_TOKEN GITHUB_TOKEN
+    unset NEXT_VERSION_OFFLINE NEXT_VERSION_TAGS NEXT_VERSION_HEAD_TAGS NEXT_VERSION_PULLS_JSON
+    NEXT_VERSION_BUILD=1 \
+      NEXT_VERSION_WAIT_SECONDS="${wait_s}" \
+      NEXT_VERSION_POLL_SECONDS=1 \
+      VERSION_BRANCH="${branch}" \
+      bash "${script}"
+  )"
+  code=$?
+  set -e
+  if [ "${code}" -ne 0 ] || [ "${out}" != "${expected}" ]; then
+    echo "FAIL ${name}: expected [${expected}] exit 0, got [${out}] exit ${code}" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok ${name}"
+  fi
+}
+
+build_path_cases() {
+  local bare="${work}/wait-origin.git"
+  local src="${work}/waitsrc"
+  git init --bare -b main "${bare}" >/dev/null
+  git init -b main "${src}" >/dev/null
+  git -C "${src}" config user.email test@example.com
+  git -C "${src}" config user.name Test
+  git -C "${src}" remote add origin "${bare}"
+  echo base > "${src}/file"
+  git -C "${src}" add file
+  git -C "${src}" commit -q -m base
+  git -C "${src}" push -q -u origin main
+
+  local out_file="${work}/wait.out" err_file="${work}/wait.err" pid code out started elapsed
+  (
+    cd "${src}"
+    unset GITHUB_SHA GITHUB_REF_NAME GITHUB_REPOSITORY GH_TOKEN GITHUB_TOKEN
+    unset NEXT_VERSION_OFFLINE
+    export NEXT_VERSION_BUILD=1
+    export NEXT_VERSION_WAIT_SECONDS=12
+    export NEXT_VERSION_POLL_SECONDS=1
+    export VERSION_BRANCH=main
+    bash "${script}" >"${out_file}" 2>"${err_file}"
+  ) &
+  pid=$!
+  sleep 2
+  git -C "${src}" tag -a v1.8.0 -m rel
+  git -C "${src}" push -q origin v1.8.0
+  set +e
+  wait "${pid}"
+  code=$?
+  set -e
+  out="$(cat "${out_file}")"
+  if [ "${code}" -ne 0 ] || [ "${out}" != "v1.8.0" ]; then
+    echo "FAIL tag appears during wait: expected [v1.8.0] exit 0, got [${out}] exit ${code}" >&2
+    echo "stderr: $(cat "${err_file}")" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok tag appears during wait"
+  fi
+
+  echo more > "${src}/file"
+  git -C "${src}" add file
+  git -C "${src}" commit -q -m $'Merge pull request #12 from acme/feature\n\nfeat: add ledger'
+  git -C "${src}" push -q origin main
+  run_build "no tag and feat title is minor" "${src}" main "v1.9.0" 3
+
+  echo fix > "${src}/file"
+  git -C "${src}" add file
+  git -C "${src}" commit -q -m $'Merge pull request #13 from acme/fix\n\nfix: stock'
+  git -C "${src}" push -q origin main
+  run_build "no tag and no token is patch" "${src}" main "v1.8.1" 3
+
+  started="$(date +%s)"
+  set +e
+  out="$(
+    cd "${src}"
+    unset GITHUB_SHA GITHUB_REF_NAME GH_TOKEN GITHUB_TOKEN
+    NEXT_VERSION_BUILD=1 NEXT_VERSION_WAIT_SECONDS=20 NEXT_VERSION_POLL_SECONDS=5 \
+      VERSION_BRANCH=develop bash "${script}"
+  )"
+  code=$?
+  set -e
+  elapsed="$(( $(date +%s) - started ))"
+  if [ "${code}" -eq 0 ] || [ "${elapsed}" -ge 5 ]; then
+    echo "FAIL develop skips the wait: exit ${code} after ${elapsed}s, output [${out}]" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok develop skips the wait"
+  fi
+}
+
+build_path_cases
 
 if [ "${failures}" -ne 0 ]; then
   echo "${failures} failed" >&2

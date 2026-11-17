@@ -3,6 +3,9 @@
 # With no final tag, the version is v1.<merge-count>.0 from
 # `git rev-list --merges --count HEAD` on this commit. A shallow checkout is
 # unshallowed first. Any other branch, or any failed lookup, exits non-zero.
+# NEXT_VERSION_BUILD=1 (the jar build only) waits on main/release for a tag
+# on origin, then uses gh only when a token is set. Otherwise a commit
+# message starting with feat is a minor bump and every other message is a patch.
 set -euo pipefail
 
 export GIT_TERMINAL_PROMPT=0
@@ -65,6 +68,20 @@ bump_version() {
   printf '%s.%s.%s\n' "${major}" "${minor}" "${patch}"
 }
 
+bump_from_commit_message() {
+  local sha="$1"
+  local msg line lowered
+  msg="$(git log -1 --format=%B "${sha}")" || die "could not read commit message"
+  while IFS= read -r line || [ -n "${line}" ]; do
+    lowered="${line,,}"
+    if [[ "${lowered}" =~ ^feat([^[:alnum:]]|$) ]]; then
+      printf '%s\n' minor
+      return 0
+    fi
+  done <<< "${msg}"
+  printf '%s\n' patch
+}
+
 bump_kind() {
   local json="$1"
   command -v jq >/dev/null 2>&1 || die "jq is required"
@@ -110,6 +127,70 @@ emit() {
   printf '%s\n' "${tag}"
 }
 
+# Annotated tags show the tag object and a peeled refs/tags/<name>^{} commit line.
+remote_tag_for_commit() {
+  local want="$1"
+  local branch="$2"
+  local pattern listing sha ref name matches=""
+  if [ "${branch}" = "release" ]; then
+    pattern='^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$'
+  else
+    pattern='^v[0-9]+\.[0-9]+\.[0-9]+$'
+  fi
+  listing="$(git ls-remote --tags origin 2>/dev/null || true)"
+  while read -r sha ref; do
+    [ -n "${sha}" ] || continue
+    [[ "${ref}" == refs/tags/* ]] || continue
+    name="${ref#refs/tags/}"
+    [[ "${name}" == *'^{}' ]] || continue
+    name="${name%'^{}'}"
+    [ "${sha}" = "${want}" ] || continue
+    [[ "${name}" =~ ${pattern} ]] || continue
+    matches+="${name}"$'\n'
+  done <<< "${listing}"
+  while read -r sha ref; do
+    [ -n "${sha}" ] || continue
+    [[ "${ref}" == refs/tags/* ]] || continue
+    name="${ref#refs/tags/}"
+    [[ "${name}" == *'^{}' ]] && continue
+    if printf '%s\n' "${listing}" | grep -F -q "refs/tags/${name}^{}"; then
+      continue
+    fi
+    [ "${sha}" = "${want}" ] || continue
+    [[ "${name}" =~ ${pattern} ]] || continue
+    matches+="${name}"$'\n'
+  done <<< "${listing}"
+  printf '%s\n' "${matches}" | grep -E "${pattern}" | sort -V | tail -n 1 || true
+}
+
+wait_for_remote_tag() {
+  local want="$1"
+  local branch="$2"
+  local limit="${NEXT_VERSION_WAIT_SECONDS:-90}"
+  local interval="${NEXT_VERSION_POLL_SECONDS:-5}"
+  local deadline=$((SECONDS + limit))
+  local found
+  if ! git remote get-url origin >/dev/null 2>&1; then
+    return 1
+  fi
+  while :; do
+    found="$(remote_tag_for_commit "${want}" "${branch}")"
+    if [ -n "${found}" ]; then
+      printf '%s\n' "${found}"
+      return 0
+    fi
+    if [ "${SECONDS}" -ge "${deadline}" ]; then
+      return 1
+    fi
+    local remaining=$((deadline - SECONDS))
+    if [ "${remaining}" -gt "${interval}" ]; then
+      sleep "${interval}"
+    else
+      sleep "${remaining}"
+    fi
+  done
+}
+
 if [ "${NEXT_VERSION_OFFLINE:-}" = "1" ]; then
   all_tags="${NEXT_VERSION_TAGS-}"
   head_tags="${NEXT_VERSION_HEAD_TAGS-}"
@@ -117,14 +198,7 @@ if [ "${NEXT_VERSION_OFFLINE:-}" = "1" ]; then
   sha="${VERSION_SHA:-}"
 else
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git repository"
-  shallow="$(git rev-parse --is-shallow-repository)"
-  if [ "${shallow}" = "true" ]; then
-    git fetch --unshallow --tags origin \
-      || die "could not unshallow and fetch tags"
-  fi
   sha="${VERSION_SHA:-${GITHUB_SHA:-$(git rev-parse HEAD)}}"
-  all_tags="$(git tag --list)"
-  head_tags="$(git tag --points-at "${sha}")"
   branch="${VERSION_BRANCH:-${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}}"
 fi
 
@@ -132,6 +206,24 @@ case "${branch}" in
   main|release) ;;
   *) die "branch ${branch:-unknown} is not main or release" ;;
 esac
+
+# Build only: give the release workflow time to publish the tag. release.yml does not set this.
+if [ "${NEXT_VERSION_BUILD:-}" = "1" ] && [ "${NEXT_VERSION_OFFLINE:-}" != "1" ]; then
+  if found="$(wait_for_remote_tag "${sha}" "${branch}")"; then
+    emit "${found}"
+    exit 0
+  fi
+fi
+
+if [ "${NEXT_VERSION_OFFLINE:-}" != "1" ]; then
+  shallow="$(git rev-parse --is-shallow-repository)"
+  if [ "${shallow}" = "true" ]; then
+    git fetch --unshallow --tags origin \
+      || die "could not unshallow and fetch tags"
+  fi
+  all_tags="$(git tag --list)"
+  head_tags="$(git tag --points-at "${sha}")"
+fi
 
 if [ "${branch}" = "main" ]; then
   existing="$(highest_matching "${head_tags}" '^v[0-9]+\.[0-9]+\.[0-9]+$')"
@@ -165,11 +257,14 @@ fi
 if [ "${NEXT_VERSION_OFFLINE:-}" = "1" ]; then
   pulls_json="${NEXT_VERSION_PULLS_JSON-}"
   [ -n "${pulls_json}" ] || die "NEXT_VERSION_PULLS_JSON is required to bump"
+  kind="$(bump_kind "${pulls_json}")" || die "could not read the merged pull request"
+elif [ "${NEXT_VERSION_BUILD:-}" = "1" ] && [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
+  # Labels are not available without the API. A feat title is minor; everything else is patch.
+  kind="$(bump_from_commit_message "${sha}")"
 else
   pulls_json="$(fetch_pulls "${sha}")" || die "GitHub commits/${sha}/pulls failed"
+  kind="$(bump_kind "${pulls_json}")" || die "could not read the merged pull request"
 fi
-
-kind="$(bump_kind "${pulls_json}")" || die "could not read the merged pull request"
 next="$(bump_version "${latest_final#v}" "${kind}")"
 
 if [ "${branch}" = "main" ]; then

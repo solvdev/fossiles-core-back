@@ -167,11 +167,13 @@ String runNextVersionScript() {
         def processBuilder = new ProcessBuilder('bash', script.absolutePath)
         processBuilder.directory(rootDir)
         processBuilder.environment().put('GIT_TERMINAL_PROMPT', '0')
+        // Wait for the release tag, then best-effort. release.yml does not set this.
+        processBuilder.environment().put('NEXT_VERSION_BUILD', '1')
         def process = processBuilder.start()
         def output = new StringBuilder()
         def errors = new StringBuilder()
         process.consumeProcessOutput(output, errors)
-        if (!process.waitFor(180, java.util.concurrent.TimeUnit.SECONDS)) {
+        if (!process.waitFor(240, java.util.concurrent.TimeUnit.SECONDS)) {
             process.destroyForcibly()
             logger.warn('next-version.sh timed out; using dev')
             return null
