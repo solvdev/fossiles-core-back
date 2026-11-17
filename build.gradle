@@ -25,6 +25,17 @@ repositories {
     mavenCentral()
 }
 
+// Versión inyectada en el build (nunca a mano): la fija scripts/compute-version.js al compilar en
+// GitHub Actions (APP_VERSION / APP_COMMIT). En local queda "dev". Se publica en GET /api/version.
+springBoot {
+    buildInfo {
+        properties {
+            version = System.getenv('APP_VERSION') ?: 'dev'
+            additional = [commit: System.getenv('APP_COMMIT') ?: 'unknown']
+        }
+    }
+}
+
 sentry {
     // Generates a JVM (Java, Kotlin, etc.) source bundle and uploads your source code to Sentry.
     // This enables source context, allowing you to see your source

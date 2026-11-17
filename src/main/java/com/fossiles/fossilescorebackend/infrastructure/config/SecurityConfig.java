@@ -32,6 +32,8 @@ public class SecurityConfig {
     static final List<String> PUBLIC_PATHS = List.of(
             "/api/auth/**",
             "/api/public/**",
+            // Versión desplegada (footer del front y verificación de releases)
+            "/api/version",
             "/api/system-announcements/stream", "/api/system-announcements/active",
             "/api/system-announcements/ping",
             // Gancho del deploy: se valida con X-Deploy-Token en el controlador
