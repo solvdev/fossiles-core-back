@@ -41,10 +41,15 @@ public final class SupplierPaymentDtos {
 
     // ------------------------------------------------------------------ Cuentas por pagar
 
-    /** {@code status}: VENCIDA, POR_VENCER (15 días o menos), PARCIAL (ya tiene un pago) o AL_DIA. */
-    public record PayableRow(Long orderId, String code, Long supplierId, String supplierName, LocalDate orderDate,
-                             LocalDate receivedDate, LocalDate dueDate, BigDecimal total, BigDecimal paid,
-                             BigDecimal balance, String status, Integer daysToDue, String payeeName) {
+    /**
+     * Una orden de compra o un documento por pagar. {@code kind}: ORDEN, DOCUMENTO, SALDO_INICIAL o RENTA;
+     * {@code rowKey}: "O:<id>" o "D:<id>"; {@code payeeKey} agrupa lo que se puede pagar junto (mismo beneficiario).
+     * {@code status}: VENCIDA, POR_VENCER (15 días o menos), PARCIAL (ya tiene un pago) o AL_DIA.
+     */
+    public record PayableRow(String rowKey, String kind, Long orderId, Long documentId, String code, String payeeKey,
+                             Long supplierId, String supplierName, LocalDate orderDate, LocalDate receivedDate,
+                             LocalDate dueDate, BigDecimal total, BigDecimal paid, BigDecimal balance, String status,
+                             Integer daysToDue, String payeeName, String concept) {
     }
 
     public record PayablesSummary(BigDecimal totalBalance, int orderCount, int supplierCount, BigDecimal overdueAmount,
@@ -71,5 +76,23 @@ public final class SupplierPaymentDtos {
     public record ChequePrintItem(Long paymentId, String paymentNumber, String payeeName, BigDecimal amount,
                                   LocalDate payDate, String chequeNumber, String concept, boolean reprint,
                                   ChequeLayoutDto layout) {
+    }
+
+    // ------------------------------------------------------------------ Documentos por pagar
+
+    public record DocImportChange(String payeeName, boolean matchedSupplier, String concept, String documentNumber,
+                                  LocalDate issueDate, LocalDate dueDate, BigDecimal amount) {
+    }
+
+    public record DocImportError(int row, String payeeName, String message) {
+    }
+
+    public record DocImportResult(boolean applied, int readRows, BigDecimal total, List<DocImportChange> changes,
+                                  List<DocImportError> errors) {
+    }
+
+    /** Resultado de generar las rentas de un mes ({@code period} "YYYY-MM"). */
+    public record RentGenerationResult(String period, int created, int alreadyExisting, BigDecimal createdTotal,
+                                       List<String> skipped) {
     }
 }

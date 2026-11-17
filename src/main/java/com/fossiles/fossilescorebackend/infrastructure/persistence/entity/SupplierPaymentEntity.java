@@ -38,8 +38,13 @@ public class SupplierPaymentEntity {
     @Column(name = "payment_number", length = 20)
     private String paymentNumber;
 
-    @Column(name = "supplier_id", nullable = false)
+    /** El proveedor, o null si el beneficiario no es un proveedor (p. ej. un arrendador). */
+    @Column(name = "supplier_id")
     private Long supplierId;
+
+    /** Agrupa los pagos de un mismo beneficiario: S:<id de proveedor> o N:<nombre normalizado>. */
+    @Column(name = "payee_key", length = 220)
+    private String payeeKey;
 
     @Column(name = "payment_method_id", nullable = false)
     private Long paymentMethodId;
