@@ -30,5 +30,12 @@ public class SupplierRequest {
 
     @Size(max = 20, message = "Status must not exceed 20 characters")
     private String status;
+
+    @Size(max = 200, message = "Payee name must not exceed 200 characters")
+    private String payeeName;
+
+    @jakarta.validation.constraints.Min(value = 0, message = "Credit days must not be negative")
+    @jakarta.validation.constraints.Max(value = 365, message = "Credit days must not exceed 365")
+    private Integer creditDays;
 }
 

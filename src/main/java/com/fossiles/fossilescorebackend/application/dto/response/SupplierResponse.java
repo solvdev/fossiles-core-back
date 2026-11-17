@@ -19,6 +19,8 @@ public class SupplierResponse {
     private String email;
     private String address;
     private String status;
+    private String payeeName;
+    private Integer creditDays;
     private LocalDateTime createdAt;
     private Long createdBy;
     private LocalDateTime updatedAt;
