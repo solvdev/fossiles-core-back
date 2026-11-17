@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS payable_document (
     amount          NUMERIC(12,2) NOT NULL,
     kind            VARCHAR(10) NOT NULL DEFAULT 'MANUAL',
     location_id     BIGINT REFERENCES locations (id),     -- kiosco de una renta
-    period          CHAR(7),                              -- 'YYYY-MM' de una renta
+    period          VARCHAR(7),                           -- 'YYYY-MM' de una renta
     status          VARCHAR(10) NOT NULL DEFAULT 'ACTIVO',
     void_reason     VARCHAR(300),
     voided_at       TIMESTAMP,
@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS payable_document (
     CONSTRAINT chk_payable_document_kind CHECK (kind IN ('MANUAL', 'OPENING', 'RENT')),
     CONSTRAINT chk_payable_document_status CHECK (status IN ('ACTIVO', 'ANULADO'))
 );
+-- Corrige BDs ya creadas con CHAR(7): el entity espera varchar(7). Idempotente.
+ALTER TABLE payable_document ALTER COLUMN period TYPE VARCHAR(7);
 CREATE INDEX IF NOT EXISTS idx_payable_document_due ON payable_document (due_date);
 -- Una renta por kiosco y mes (las anuladas no cuentan, así se pueden volver a generar).
 CREATE UNIQUE INDEX IF NOT EXISTS uq_payable_document_rent
