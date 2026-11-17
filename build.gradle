@@ -117,6 +117,154 @@ tasks.named('test') {
     }
 }
 
+// Version metadata is packaged only into the boot jar. Keeping it off the main
+// resource output leaves tests on the dev/unknown fallback and does not rebuild
+// every test when build.time changes. The jar name stays fossiles-core-backend.jar.
+def generatedAppInfo = layout.buildDirectory.dir('generated/app-info')
+
+springBoot {
+    buildInfo {
+        destinationDir.set(generatedAppInfo.map { it.dir('META-INF') })
+    }
+}
+
+tasks.named('classes').configure { classesTask ->
+    classesTask.setDependsOn(classesTask.getDependsOn().findAll { dependency ->
+        !dependency.toString().contains('bootBuildInfo')
+    })
+}
+
+tasks.named('bootBuildInfo').configure {
+    properties { info ->
+        info.version.set(providers.provider { resolveReleaseVersion() })
+        info.additional.set(providers.provider { ['commit': resolveGitCommit()] })
+    }
+}
+
+tasks.register('writeGitProperties') {
+    def propsFile = generatedAppInfo.map { it.file('git.properties') }
+    inputs.property('commit', providers.provider { resolveGitCommit() })
+    outputs.file(propsFile)
+    doLast {
+        def props = propsFile.get().asFile
+        props.parentFile.mkdirs()
+        props.setText('git.commit.id.abbrev=' + resolveGitCommit() + '\n', 'UTF-8')
+    }
+}
+
+tasks.named('bootJar').configure {
+    dependsOn tasks.named('bootBuildInfo'), tasks.named('writeGitProperties')
+    classpath = classpath.plus(files(generatedAppInfo))
+}
+
+String runNextVersionScript() {
+    def script = file('.github/scripts/next-version.sh')
+    if (!script.isFile()) {
+        logger.warn('next-version.sh is missing; using dev')
+        return null
+    }
+    try {
+        def processBuilder = new ProcessBuilder('bash', script.absolutePath)
+        processBuilder.directory(rootDir)
+        processBuilder.environment().put('GIT_TERMINAL_PROMPT', '0')
+        def process = processBuilder.start()
+        def output = new StringBuilder()
+        def errors = new StringBuilder()
+        process.consumeProcessOutput(output, errors)
+        if (!process.waitFor(180, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            logger.warn('next-version.sh timed out; using dev')
+            return null
+        }
+        if (process.exitValue() != 0) {
+            def message = errors.toString().trim()
+            logger.warn('next-version.sh exited ' + process.exitValue()
+                    + (message.isEmpty() ? '; using dev' : ': ' + message))
+            return null
+        }
+        def tag = output.toString().trim()
+        if (tag.isEmpty()) {
+            logger.warn('next-version.sh printed no tag; using dev')
+            return null
+        }
+        return tag
+    } catch (Exception ex) {
+        logger.warn('next-version.sh could not be run; using dev: ' + ex.message)
+        return null
+    }
+}
+
+String normalizeVersion(String raw) {
+    if (raw == null) {
+        return 'dev'
+    }
+    def trimmed = raw.trim()
+    if (trimmed.startsWith('v') || trimmed.startsWith('V')) {
+        trimmed = trimmed.substring(1)
+    }
+    return trimmed ==~ /\d+\.\d+\.\d+(-rc\.\d+)?/ ? trimmed : 'dev'
+}
+
+String normalizeCommit(String raw) {
+    if (raw == null) {
+        return 'unknown'
+    }
+    def trimmed = raw.trim()
+    if (!(trimmed ==~ /[0-9a-fA-F]{7,64}/)) {
+        return 'unknown'
+    }
+    return trimmed.substring(0, 7).toLowerCase(java.util.Locale.ROOT)
+}
+
+String resolveReleaseVersion() {
+    try {
+        def forced = System.getenv('APP_VERSION')
+        if (forced == null || forced.isBlank()) {
+            forced = gradle.startParameter.projectProperties.get('version')
+        }
+        if (forced != null && !forced.isBlank()) {
+            return normalizeVersion(forced)
+        }
+        return normalizeVersion(runNextVersionScript())
+    } catch (Exception ex) {
+        logger.warn('Version computation failed, using dev: ' + ex.message)
+        return 'dev'
+    }
+}
+
+String resolveGitCommit() {
+    try {
+        def raw = System.getenv('GIT_COMMIT')
+        if (raw == null || raw.isBlank()) {
+            raw = System.getenv('GITHUB_SHA')
+        }
+        if (raw != null && !raw.isBlank()) {
+            def normalized = normalizeCommit(raw)
+            if (normalized != 'unknown') {
+                return normalized
+            }
+        }
+        def processBuilder = new ProcessBuilder('git', 'rev-parse', 'HEAD')
+        processBuilder.directory(rootDir)
+        def process = processBuilder.start()
+        def output = new StringBuilder()
+        def errors = new StringBuilder()
+        process.consumeProcessOutput(output, errors)
+        if (!process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            return 'unknown'
+        }
+        if (process.exitValue() != 0) {
+            logger.warn('git rev-parse failed, using unknown: ' + errors.toString().trim())
+            return 'unknown'
+        }
+        return normalizeCommit(output.toString())
+    } catch (Exception ex) {
+        logger.warn('Commit lookup failed, using unknown: ' + ex.message)
+        return 'unknown'
+    }
+}
+
 def testResourceDatasourceUrl() {
     def props = new java.util.Properties()
     file('src/test/resources/application.properties').withInputStream { props.load(it) }

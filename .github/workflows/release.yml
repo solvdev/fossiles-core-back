@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    branches: [main, release]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          case "${GITHUB_REF_NAME}" in
+            main|release) ;;
+            *)
+              echo "Refusing branch ${GITHUB_REF_NAME}" >&2
+              exit 1
+              ;;
+          esac
+
+          tag="$(bash .github/scripts/next-version.sh)"
+          if [ -z "${tag}" ]; then
+            echo "next-version.sh returned an empty tag" >&2
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            existing="$(git rev-list -n 1 "${tag}")"
+            if [ "${existing}" != "${GITHUB_SHA}" ]; then
+              echo "Tag ${tag} already points at ${existing}, not ${GITHUB_SHA}" >&2
+              exit 1
+            fi
+            echo "Commit ${GITHUB_SHA} already has ${tag}; not creating another tag."
+          else
+            git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                tag -a "${tag}" -m "Release ${tag}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${tag}"
+          fi
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "GitHub Release ${tag} already exists."
+            exit 0
+          fi
+
+          if [ "${GITHUB_REF_NAME}" = "release" ]; then
+            gh release create "${tag}" --target "${GITHUB_SHA}" --generate-notes --prerelease
+          else
+            gh release create "${tag}" --target "${GITHUB_SHA}" --generate-notes --latest
+          fi
