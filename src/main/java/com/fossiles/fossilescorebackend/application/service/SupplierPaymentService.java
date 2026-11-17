@@ -150,7 +150,9 @@ public class SupplierPaymentService {
                     : alreadyPaid.signum() > 0 ? "PARCIAL" : "AL_DIA";
             rows.add(new PayableRow(o.getId(), o.getCode(), o.getSupplierId(),
                     supplier != null ? supplier.getName() : "Proveedor " + o.getSupplierId(), o.getOrderDate(),
-                    receivedOn, due, o.getTotal(), alreadyPaid, balance, status, daysToDue));
+                    receivedOn, due, o.getTotal(), alreadyPaid, balance, status, daysToDue,
+                    supplier != null && supplier.getPayeeName() != null && !supplier.getPayeeName().isBlank()
+                            ? supplier.getPayeeName() : supplier != null ? supplier.getName() : null));
         }
         rows.sort(Comparator.comparing(PayableRow::supplierName, String.CASE_INSENSITIVE_ORDER)
                 .thenComparing(PayableRow::dueDate));

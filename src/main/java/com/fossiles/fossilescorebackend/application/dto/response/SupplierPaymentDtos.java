@@ -44,7 +44,7 @@ public final class SupplierPaymentDtos {
     /** {@code status}: VENCIDA, POR_VENCER (15 días o menos), PARCIAL (ya tiene un pago) o AL_DIA. */
     public record PayableRow(Long orderId, String code, Long supplierId, String supplierName, LocalDate orderDate,
                              LocalDate receivedDate, LocalDate dueDate, BigDecimal total, BigDecimal paid,
-                             BigDecimal balance, String status, Integer daysToDue) {
+                             BigDecimal balance, String status, Integer daysToDue, String payeeName) {
     }
 
     public record PayablesSummary(BigDecimal totalBalance, int orderCount, int supplierCount, BigDecimal overdueAmount,
