@@ -8,6 +8,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.SupplierPayment
 import com.fossiles.fossilescorebackend.application.dto.response.SupplierPaymentDtos.PaymentsResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.BankAccountEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.PayableDocumentEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.PaymentMethodEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.PurchaseOrderEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.SupplierEntity;
@@ -15,6 +16,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Suppli
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.SupplierPaymentEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.BankAccountRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.MaterialReceiptRepository;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.PayableDocumentRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.PaymentMethodRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.PurchaseOrderRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.SupplierPaymentAllocationRepository;
@@ -27,6 +29,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.text.Normalizer;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -40,9 +43,10 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Cuentas por pagar y pagos a proveedores. Lo que se debe de cada orden recibida es su total menos los pagos que no se
- * anularon; un pago puede juntar varias órdenes del mismo proveedor y cubrir solo una parte de cada una. Cada pago
- * genera su partida contable (cuentas por pagar contra el banco) y, al anularse, la invierte.
+ * Cuentas por pagar y pagos. Se debe cada orden de compra recibida y cada documento por pagar (saldo inicial, servicio,
+ * renta…), menos los pagos que no se anularon. Un pago junta varias de esas partidas de un mismo beneficiario y puede
+ * cubrir solo una parte de cada una. Cada pago genera su partida contable (cuentas por pagar contra el banco) y, al
+ * anularse, la invierte.
  */
 @Service
 @RequiredArgsConstructor
@@ -51,7 +55,7 @@ public class SupplierPaymentService {
     /** Órdenes que ya se recibieron, total o parcialmente: son las que se le deben al proveedor. */
     static final List<String> PAYABLE_STATUSES = List.of("RECIBIDA", "PARCIALMENTE_RECIBIDA");
     static final int DEFAULT_CREDIT_DAYS = 30;
-    /** Una orden que vence en estos días o menos aparece «por vencer». */
+    /** Una partida que vence en estos días o menos aparece «por vencer». */
     static final int DUE_SOON_DAYS = 15;
 
     private final PurchaseOrderRepository orderRepository;
@@ -59,16 +63,28 @@ public class SupplierPaymentService {
     private final MaterialReceiptRepository receiptRepository;
     private final SupplierPaymentRepository paymentRepository;
     private final SupplierPaymentAllocationRepository allocationRepository;
+    private final PayableDocumentRepository documentRepository;
     private final PaymentMethodRepository methodRepository;
     private final BankAccountRepository accountRepository;
     private final SupplierPaymentConfigService configService;
     private final AccountingService accountingService;
     private final SupplierPaymentAccessGuard guard;
 
-    public record AllocationInput(Long purchaseOrderId, BigDecimal amount) {}
+    /** Cada aplicación del pago es a una orden de compra O a un documento por pagar. */
+    public record AllocationInput(Long purchaseOrderId, Long payableDocumentId, BigDecimal amount) {}
 
-    public record CreateRequest(Long supplierId, Long paymentMethodId, Long bankAccountId, LocalDate payDate,
-                                String payeeName, String reference, String concept, List<AllocationInput> allocations) {}
+    public record CreateRequest(Long paymentMethodId, Long bankAccountId, LocalDate payDate, String payeeName,
+                                String reference, String concept, List<AllocationInput> allocations) {}
+
+    /** Identifica al beneficiario: «S:id» si es proveedor, «N:nombre» (sin acentos ni mayúsculas) si no. */
+    static String payeeKeyOf(Long supplierId, String payeeName) {
+        return supplierId != null ? "S:" + supplierId : "N:" + normalizeName(payeeName);
+    }
+
+    static String normalizeName(String value) {
+        String noAccents = Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+        return noAccents.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
 
     // ------------------------------------------------------------------------------------------------
     // Cuentas por pagar
@@ -108,14 +124,28 @@ public class SupplierPaymentService {
                 paymentsMonth++;
             }
         }
-        Set<Long> suppliers = rows.stream().map(PayableRow::supplierId).collect(Collectors.toSet());
-        PayablesSummary summary = new PayablesSummary(total, rows.size(), suppliers.size(), overdue, overdueCount,
+        Set<String> payees = rows.stream().map(PayableRow::payeeKey).collect(Collectors.toSet());
+        PayablesSummary summary = new PayablesSummary(total, rows.size(), payees.size(), overdue, overdueCount,
                 dueSoon, in7, in7Count, paidMonth, paymentsMonth);
         return new PayablesResponse(today, summary, rows, guard.canPay());
     }
 
     List<PayableRow> buildPayables(LocalDate today) {
         LocalDate start = configService.payablesStartDate();
+        List<PayableRow> rows = new ArrayList<>(orderRows(today, start));
+        rows.addAll(documentRows(today));
+        rows.sort(Comparator.comparing(PayableRow::supplierName, String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(PayableRow::dueDate));
+        return rows;
+    }
+
+    private static String statusOf(int daysToDue, BigDecimal alreadyPaid) {
+        return daysToDue < 0 ? "VENCIDA"
+                : daysToDue <= DUE_SOON_DAYS ? "POR_VENCER"
+                : alreadyPaid.signum() > 0 ? "PARCIAL" : "AL_DIA";
+    }
+
+    private List<PayableRow> orderRows(LocalDate today, LocalDate start) {
         List<PurchaseOrderEntity> orders = new ArrayList<>();
         for (String status : PAYABLE_STATUSES) {
             orders.addAll(orderRepository.findByStatus(status));
@@ -145,17 +175,45 @@ public class SupplierPaymentService {
             int creditDays = supplier != null && supplier.getCreditDays() != null ? supplier.getCreditDays() : DEFAULT_CREDIT_DAYS;
             LocalDate due = receivedOn.plusDays(creditDays);
             int daysToDue = (int) ChronoUnit.DAYS.between(today, due);
-            String status = daysToDue < 0 ? "VENCIDA"
-                    : daysToDue <= DUE_SOON_DAYS ? "POR_VENCER"
-                    : alreadyPaid.signum() > 0 ? "PARCIAL" : "AL_DIA";
-            rows.add(new PayableRow(o.getId(), o.getCode(), o.getSupplierId(),
-                    supplier != null ? supplier.getName() : "Proveedor " + o.getSupplierId(), o.getOrderDate(),
-                    receivedOn, due, o.getTotal(), alreadyPaid, balance, status, daysToDue,
+            String name = supplier != null ? supplier.getName() : "Proveedor " + o.getSupplierId();
+            rows.add(new PayableRow("O:" + o.getId(), "ORDEN", o.getId(), null, o.getCode(),
+                    payeeKeyOf(o.getSupplierId(), null), o.getSupplierId(), name, o.getOrderDate(), receivedOn, due,
+                    o.getTotal(), alreadyPaid, balance, statusOf(daysToDue, alreadyPaid), daysToDue,
                     supplier != null && supplier.getPayeeName() != null && !supplier.getPayeeName().isBlank()
-                            ? supplier.getPayeeName() : supplier != null ? supplier.getName() : null));
+                            ? supplier.getPayeeName() : name, null));
         }
-        rows.sort(Comparator.comparing(PayableRow::supplierName, String.CASE_INSENSITIVE_ORDER)
-                .thenComparing(PayableRow::dueDate));
+        return rows;
+    }
+
+    /** Los documentos por pagar con saldo. No dependen de la fecha de inicio: se capturan a propósito. */
+    private List<PayableRow> documentRows(LocalDate today) {
+        List<PayableDocumentEntity> documents = documentRepository.findByStatus(PayableDocumentEntity.STATUS_ACTIVE);
+        if (documents.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, BigDecimal> paid = new HashMap<>();
+        allocationRepository.paidByDocument().forEach(r -> paid.put(((Number) r[0]).longValue(), (BigDecimal) r[1]));
+        Map<Long, SupplierEntity> suppliers = new HashMap<>();
+        supplierRepository.findAllById(documents.stream().map(PayableDocumentEntity::getSupplierId)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet())).forEach(s -> suppliers.put(s.getId(), s));
+        List<PayableRow> rows = new ArrayList<>();
+        for (PayableDocumentEntity d : documents) {
+            BigDecimal alreadyPaid = paid.getOrDefault(d.getId(), BigDecimal.ZERO);
+            BigDecimal balance = d.getAmount().subtract(alreadyPaid);
+            if (balance.signum() <= 0) {
+                continue;
+            }
+            SupplierEntity supplier = d.getSupplierId() != null ? suppliers.get(d.getSupplierId()) : null;
+            int daysToDue = (int) ChronoUnit.DAYS.between(today, d.getDueDate());
+            String kind = PayableDocumentEntity.KIND_RENT.equals(d.getKind()) ? "RENTA"
+                    : PayableDocumentEntity.KIND_OPENING.equals(d.getKind()) ? "SALDO_INICIAL" : "DOCUMENTO";
+            String name = supplier != null ? supplier.getName() : d.getPayeeName();
+            rows.add(new PayableRow("D:" + d.getId(), kind, null, d.getId(),
+                    d.getDocumentNumber() != null ? d.getDocumentNumber() : "DOC-" + d.getId(),
+                    payeeKeyOf(d.getSupplierId(), d.getPayeeName()), d.getSupplierId(), name, d.getIssueDate(),
+                    d.getIssueDate(), d.getDueDate(), d.getAmount(), alreadyPaid, balance,
+                    statusOf(daysToDue, alreadyPaid), daysToDue, d.getPayeeName(), d.getConcept()));
+        }
         return rows;
     }
 
@@ -170,17 +228,19 @@ public class SupplierPaymentService {
         return new PaymentsResponse(toRows(payments), guard.canPay());
     }
 
+    /** Una partida ya validada que el pago va a cubrir. */
+    private record Target(String label, String payeeKey, Long supplierId, String payeeName,
+                          SupplierPaymentAllocationEntity allocation) {}
+
     @Transactional
     public PaymentRow createPayment(CreateRequest request) throws BusinessException {
         Long userId = guard.assertCanPay();
-        if (request == null || request.supplierId() == null || request.paymentMethodId() == null || request.payDate() == null) {
-            throw new BusinessException("Indique el proveedor, la forma de pago y la fecha.");
+        if (request == null || request.paymentMethodId() == null || request.payDate() == null) {
+            throw new BusinessException("Indique la forma de pago y la fecha.");
         }
         if (request.allocations() == null || request.allocations().isEmpty()) {
-            throw new BusinessException("Indique qué órdenes se pagan.");
+            throw new BusinessException("Indique qué se paga.");
         }
-        SupplierEntity supplier = supplierRepository.findById(request.supplierId())
-                .orElseThrow(() -> new BusinessException("El proveedor no existe."));
         PaymentMethodEntity method = methodRepository.findById(request.paymentMethodId())
                 .orElseThrow(() -> new BusinessException("La forma de pago no existe."));
         if (!Boolean.TRUE.equals(method.getActive())) {
@@ -216,55 +276,53 @@ public class SupplierPaymentService {
             throw new BusinessException("El cheque " + reference + " ya se usó en esa chequera (los anulados tampoco se reutilizan).");
         }
 
-        // Cada orden: del mismo proveedor, ya recibida y sin pasarse del saldo. Se bloquean en orden para no cruzar pagos.
+        // Cada partida: ya vencida o por vencer, sin pasarse del saldo y del mismo beneficiario que las demás.
         List<AllocationInput> inputs = new ArrayList<>(request.allocations());
-        inputs.sort(Comparator.comparing(AllocationInput::purchaseOrderId));
-        Set<Long> seen = new HashSet<>();
+        inputs.sort(Comparator.comparing((AllocationInput a) -> a.purchaseOrderId() == null ? 1 : 0)
+                .thenComparing(a -> a.purchaseOrderId() != null ? a.purchaseOrderId() : a.payableDocumentId()));
+        Set<String> seen = new HashSet<>();
+        List<Target> targets = new ArrayList<>();
         BigDecimal total = BigDecimal.ZERO;
-        List<String> codes = new ArrayList<>();
-        List<SupplierPaymentAllocationEntity> allocations = new ArrayList<>();
         for (AllocationInput in : inputs) {
-            if (in.purchaseOrderId() == null || in.amount() == null || in.amount().signum() <= 0) {
-                throw new BusinessException("Cada orden debe llevar un monto mayor que cero.");
+            if (in.amount() == null || in.amount().signum() <= 0) {
+                throw new BusinessException("Cada partida debe llevar un monto mayor que cero.");
             }
-            if (!seen.add(in.purchaseOrderId())) {
-                throw new BusinessException("Una orden aparece más de una vez en el pago.");
-            }
-            PurchaseOrderEntity order = orderRepository.findByIdForUpdate(in.purchaseOrderId())
-                    .orElseThrow(() -> new BusinessException("La orden " + in.purchaseOrderId() + " no existe."));
-            if (!supplier.getId().equals(order.getSupplierId())) {
-                throw new BusinessException("La orden " + order.getCode() + " no es de " + supplier.getName() + ".");
-            }
-            if (!PAYABLE_STATUSES.contains(order.getStatus())) {
-                throw new BusinessException("La orden " + order.getCode() + " aún no se ha recibido.");
+            if ((in.purchaseOrderId() == null) == (in.payableDocumentId() == null)) {
+                throw new BusinessException("Cada partida debe ser una orden de compra o un documento por pagar.");
             }
             BigDecimal amount = in.amount().setScale(2, RoundingMode.HALF_UP);
-            BigDecimal balance = order.getTotal().subtract(allocationRepository.paidForOrder(order.getId()));
-            if (amount.compareTo(balance) > 0) {
-                throw new BusinessException("La orden " + order.getCode() + " solo debe Q" + balance.setScale(2, RoundingMode.HALF_UP) + ".");
-            }
+            Target target = in.purchaseOrderId() != null
+                    ? orderTarget(in.purchaseOrderId(), amount, seen)
+                    : documentTarget(in.payableDocumentId(), amount, seen);
+            targets.add(target);
             total = total.add(amount);
-            codes.add(order.getCode());
-            allocations.add(SupplierPaymentAllocationEntity.builder().purchaseOrderId(order.getId()).amount(amount).build());
         }
-
+        String payeeKey = targets.get(0).payeeKey();
+        if (targets.stream().anyMatch(t -> !t.payeeKey().equals(payeeKey))) {
+            throw new BusinessException("Solo se pueden juntar en un pago partidas de un mismo beneficiario.");
+        }
+        Long supplierId = targets.get(0).supplierId();
         String payee = request.payeeName() != null && !request.payeeName().isBlank() ? request.payeeName().trim()
-                : supplier.getPayeeName() != null && !supplier.getPayeeName().isBlank() ? supplier.getPayeeName() : supplier.getName();
+                : targets.get(0).payeeName();
+        List<String> labels = targets.stream().map(Target::label).toList();
+
         SupplierPaymentEntity payment = paymentRepository.save(SupplierPaymentEntity.builder()
-                .supplierId(supplier.getId())
+                .supplierId(supplierId)
+                .payeeKey(payeeKey)
                 .paymentMethodId(method.getId())
                 .bankAccountId(account != null ? account.getId() : null)
                 .payDate(request.payDate())
                 .amount(total)
                 .payeeName(payee.toUpperCase(Locale.ROOT))
                 .reference(reference)
-                .concept(request.concept() == null || request.concept().isBlank() ? "Pago de " + String.join(", ", codes)
+                .concept(request.concept() == null || request.concept().isBlank() ? "Pago de " + String.join(", ", labels)
                         : request.concept().trim())
                 .status(printsCheque ? SupplierPaymentEntity.STATUS_TO_PRINT : SupplierPaymentEntity.STATUS_PAID)
                 .createdBy(userId)
                 .build());
         payment.setPaymentNumber(String.format("PAG-%05d", payment.getId()));
         paymentRepository.save(payment);
+        List<SupplierPaymentAllocationEntity> allocations = targets.stream().map(Target::allocation).toList();
         for (SupplierPaymentAllocationEntity a : allocations) {
             a.setPaymentId(payment.getId());
         }
@@ -272,8 +330,55 @@ public class SupplierPaymentService {
 
         accountingService.postSupplierPayment(payment.getId(), total, account != null ? account.getLedgerCode() : null,
                 account != null ? account.getLedgerName() : null, payment.getPaymentNumber(),
-                "Pago a proveedor " + supplier.getName() + " · " + String.join(", ", codes));
+                "Pago a " + payee + " · " + String.join(", ", labels));
         return toRows(List.of(payment)).get(0);
+    }
+
+    private Target orderTarget(Long orderId, BigDecimal amount, Set<String> seen) throws BusinessException {
+        if (!seen.add("O:" + orderId)) {
+            throw new BusinessException("Una partida aparece más de una vez en el pago.");
+        }
+        // Las órdenes se bloquean para no cruzar pagos al mismo tiempo.
+        PurchaseOrderEntity order = orderRepository.findByIdForUpdate(orderId)
+                .orElseThrow(() -> new BusinessException("La orden " + orderId + " no existe."));
+        if (order.getSupplierId() == null) {
+            throw new BusinessException("La orden " + order.getCode() + " no tiene proveedor.");
+        }
+        if (!PAYABLE_STATUSES.contains(order.getStatus())) {
+            throw new BusinessException("La orden " + order.getCode() + " aún no se ha recibido.");
+        }
+        BigDecimal balance = order.getTotal().subtract(allocationRepository.paidForOrder(order.getId()));
+        if (amount.compareTo(balance) > 0) {
+            throw new BusinessException("La orden " + order.getCode() + " solo debe Q" + balance.setScale(2, RoundingMode.HALF_UP) + ".");
+        }
+        SupplierEntity supplier = supplierRepository.findById(order.getSupplierId()).orElse(null);
+        String name = supplier != null ? supplier.getName() : "Proveedor " + order.getSupplierId();
+        String payee = supplier != null && supplier.getPayeeName() != null && !supplier.getPayeeName().isBlank()
+                ? supplier.getPayeeName() : name;
+        return new Target(order.getCode(), payeeKeyOf(order.getSupplierId(), null), order.getSupplierId(), payee,
+                SupplierPaymentAllocationEntity.builder().purchaseOrderId(order.getId()).amount(amount).build());
+    }
+
+    private Target documentTarget(Long documentId, BigDecimal amount, Set<String> seen) throws BusinessException {
+        if (!seen.add("D:" + documentId)) {
+            throw new BusinessException("Una partida aparece más de una vez en el pago.");
+        }
+        PayableDocumentEntity document = documentRepository.findById(documentId)
+                .orElseThrow(() -> new BusinessException("El documento " + documentId + " no existe."));
+        if (!PayableDocumentEntity.STATUS_ACTIVE.equals(document.getStatus())) {
+            throw new BusinessException("El documento " + documentId + " está anulado.");
+        }
+        BigDecimal balance = document.getAmount().subtract(allocationRepository.paidForDocument(document.getId()));
+        String label = document.getDocumentNumber() != null ? document.getDocumentNumber() : document.getConcept();
+        if (amount.compareTo(balance) > 0) {
+            throw new BusinessException("«" + label + "» solo debe Q" + balance.setScale(2, RoundingMode.HALF_UP) + ".");
+        }
+        SupplierEntity supplier = document.getSupplierId() != null
+                ? supplierRepository.findById(document.getSupplierId()).orElse(null) : null;
+        String payee = supplier != null && supplier.getPayeeName() != null && !supplier.getPayeeName().isBlank()
+                ? supplier.getPayeeName() : document.getPayeeName();
+        return new Target(label, payeeKeyOf(document.getSupplierId(), document.getPayeeName()), document.getSupplierId(),
+                payee, SupplierPaymentAllocationEntity.builder().payableDocumentId(document.getId()).amount(amount).build());
     }
 
     @Transactional
@@ -358,8 +463,8 @@ public class SupplierPaymentService {
             return List.of();
         }
         Map<Long, SupplierEntity> suppliers = new HashMap<>();
-        supplierRepository.findAllById(payments.stream().map(SupplierPaymentEntity::getSupplierId).collect(Collectors.toSet()))
-                .forEach(s -> suppliers.put(s.getId(), s));
+        supplierRepository.findAllById(payments.stream().map(SupplierPaymentEntity::getSupplierId)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet())).forEach(s -> suppliers.put(s.getId(), s));
         Map<Long, PaymentMethodEntity> methods = new HashMap<>();
         methodRepository.findAll().forEach(m -> methods.put(m.getId(), m));
         Map<Long, BankAccountEntity> accounts = new HashMap<>();
@@ -369,19 +474,25 @@ public class SupplierPaymentService {
         List<SupplierPaymentAllocationEntity> allocations = allocationRepository.findByPaymentIdIn(paymentIds);
         Map<Long, String> orderCodes = new HashMap<>();
         orderRepository.findAllById(allocations.stream().map(SupplierPaymentAllocationEntity::getPurchaseOrderId)
-                .collect(Collectors.toSet())).forEach(o -> orderCodes.put(o.getId(), o.getCode()));
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet())).forEach(o -> orderCodes.put(o.getId(), o.getCode()));
+        Map<Long, String> documentLabels = new HashMap<>();
+        documentRepository.findAllById(allocations.stream().map(SupplierPaymentAllocationEntity::getPayableDocumentId)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet()))
+                .forEach(d -> documentLabels.put(d.getId(), d.getDocumentNumber() != null ? d.getDocumentNumber() : d.getConcept()));
         Map<Long, List<String>> codesByPayment = new HashMap<>();
         for (SupplierPaymentAllocationEntity a : allocations) {
-            codesByPayment.computeIfAbsent(a.getPaymentId(), k -> new ArrayList<>()).add(orderCodes.get(a.getPurchaseOrderId()));
+            String label = a.getPurchaseOrderId() != null ? orderCodes.get(a.getPurchaseOrderId())
+                    : documentLabels.get(a.getPayableDocumentId());
+            codesByPayment.computeIfAbsent(a.getPaymentId(), k -> new ArrayList<>()).add(label);
         }
 
         List<PaymentRow> rows = new ArrayList<>();
         for (SupplierPaymentEntity p : payments) {
-            SupplierEntity supplier = suppliers.get(p.getSupplierId());
+            SupplierEntity supplier = p.getSupplierId() != null ? suppliers.get(p.getSupplierId()) : null;
             PaymentMethodEntity method = methods.get(p.getPaymentMethodId());
             BankAccountEntity account = p.getBankAccountId() != null ? accounts.get(p.getBankAccountId()) : null;
             rows.add(new PaymentRow(p.getId(), p.getPaymentNumber(), p.getSupplierId(),
-                    supplier != null ? supplier.getName() : "Proveedor " + p.getSupplierId(), p.getPaymentMethodId(),
+                    supplier != null ? supplier.getName() : p.getPayeeName(), p.getPaymentMethodId(),
                     method != null ? method.getName() : "—", method != null && Boolean.TRUE.equals(method.getPrintsCheque()),
                     p.getBankAccountId(), account != null ? account.getName() : null, p.getPayDate(), p.getAmount(),
                     p.getPayeeName(), p.getReference(), p.getConcept(), p.getStatus(), p.getPrintedAt(),

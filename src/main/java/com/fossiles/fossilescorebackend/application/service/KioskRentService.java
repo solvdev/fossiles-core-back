@@ -235,6 +235,49 @@ public class KioskRentService {
                 new ArrayList<>(landlords));
     }
 
+    /** Una renta que toca pagar en un mes. */
+    public record RentDue(Long locationId, String code, String name, String landlord, BigDecimal amount, LocalDate payDate) {}
+
+    /** Las rentas de un mes y los kioscos que se saltaron, con la razón. */
+    public record RentsDue(List<RentDue> due, List<String> skipped) {}
+
+    /**
+     * Rentas que se pagan en el mes: kioscos con arrendador, día de pago, contrato que cubre la fecha de pago y renta
+     * en Finanzas. Sin permisos: quien lo llama los valida. Los kioscos sin ningún dato cargado se dejan fuera sin avisar.
+     */
+    @Transactional(readOnly = true)
+    public RentsDue rentsDueIn(java.time.YearMonth month) {
+        Map<Long, KioskRentEntity> rents = new HashMap<>();
+        rentRepository.findAll().forEach(r -> rents.put(r.getLocationId(), r));
+        Map<Long, Rent> finance = financeRents();
+        List<RentDue> due = new ArrayList<>();
+        List<String> skipped = new ArrayList<>();
+        for (LocationEntity kiosk : rentKiosks()) {
+            KioskRentEntity r = rents.get(kiosk.getId());
+            if (r == null || valuesOf(r).isEmpty()) {
+                continue;
+            }
+            String name = kiosk.getName();
+            if (r.getLandlordName() == null || r.getPaymentDay() == null) {
+                skipped.add(name + ": faltan el arrendador o el día de pago.");
+                continue;
+            }
+            LocalDate payDate = month.atDay(Math.min(r.getPaymentDay(), month.lengthOfMonth()));
+            if ((r.getContractStart() != null && payDate.isBefore(r.getContractStart()))
+                    || (r.getContractEnd() != null && payDate.isAfter(r.getContractEnd()))) {
+                skipped.add(name + ": el contrato no cubre el " + payDate + ".");
+                continue;
+            }
+            Rent rent = finance.get(kiosk.getId());
+            if (rent == null) {
+                skipped.add(name + ": Finanzas no tiene la renta.");
+                continue;
+            }
+            due.add(new RentDue(kiosk.getId(), kiosk.getCode(), name, r.getLandlordName(), rent.amount(), payDate));
+        }
+        return new RentsDue(due, skipped);
+    }
+
     /** Renta vigente por kiosco: el costo ALQUILER más reciente que Finanzas tiene cargado. */
     private Map<Long, Rent> financeRents() {
         Map<Long, Rent> result = new HashMap<>();
