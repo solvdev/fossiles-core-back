@@ -443,7 +443,7 @@ public class KioskLiquidationService {
                         + "SELECT DISTINCT ON (location_id, period_to) location_id, period_to, src FROM ("
                         + "SELECT pc.location_id, pc.period_to, 'SISTEMA' AS src, 0 AS pr FROM kiosco_physical_count pc "
                         + "WHERE pc.status <> 'DRAFT' AND EXISTS (SELECT 1 FROM kiosk_count_visit v WHERE v.location_id = pc.location_id "
-                        + "AND v.status <> 'CANCELLED' AND ABS(v.visit_date - pc.period_to) <= " + SAME_COUNT_TOLERANCE_DAYS + ") "
+                        + "AND v.status NOT IN ('CANCELLED', 'DRAFT') AND ABS(v.visit_date - pc.period_to) <= " + SAME_COUNT_TOLERANCE_DAYS + ") "
                         + "UNION ALL SELECT v.location_id, v.visit_date, 'CALENDARIO', 1 FROM kiosk_count_visit v "
                         + "WHERE v.status = 'DONE' AND v.day_seq = 1 AND NOT EXISTS (SELECT 1 FROM kiosco_physical_count pc "
                         + "WHERE pc.location_id = v.location_id AND pc.status <> 'DRAFT' AND ABS(pc.period_to - v.visit_date) <= " + SAME_COUNT_TOLERANCE_DAYS + ") "

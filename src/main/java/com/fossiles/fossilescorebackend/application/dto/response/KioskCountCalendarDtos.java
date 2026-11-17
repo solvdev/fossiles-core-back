@@ -28,13 +28,16 @@ public final class KioskCountCalendarDtos {
     public record NonWorkingDayResponse(LocalDate date, String reason, String type) {
     }
 
-    /** Una semana (lunes a viernes) y las supervisoras para las que ya se generó. */
+    /**
+     * Una semana (lunes a viernes): las supervisoras con calendario aprobado (listo) y las que tienen un BORRADOR por
+     * aprobar.
+     */
     public record WeekResponse(LocalDate weekStart, LocalDate weekEnd, List<Long> generatedSupervisorIds,
-                               boolean allGenerated, boolean started) {
+                               List<Long> draftSupervisorIds, boolean allGenerated, boolean started) {
     }
 
     /** La próxima semana que le toca generar a una supervisora (se generan en orden). */
-    public record NextWeekResponse(Long supervisorUserId, LocalDate weekStart, LocalDate weekEnd) {
+    public record NextWeekResponse(Long supervisorUserId, LocalDate weekStart, LocalDate weekEnd, boolean draft) {
     }
 
     public record CalendarResponse(String month, LocalDate today, List<SupervisorResponse> supervisors,

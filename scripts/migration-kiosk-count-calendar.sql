@@ -139,3 +139,15 @@ CREATE TABLE IF NOT EXISTS kiosk_liquidation_extra_reviewer (
 INSERT INTO kiosk_liquidation_extra_reviewer (user_id)
 SELECT id FROM users WHERE username = 'rob.lique'
 ON CONFLICT (user_id) DO NOTHING;
+
+-- ───────── Borrador por aprobar ─────────
+-- Antes de quedar listo, cada semana se propone como BORRADOR (visitas en estado DRAFT) que se puede editar y que
+-- contabilidad aprueba; al aprobarlo las visitas pasan a PLANNED y la semana a APPROVED. Las semanas que ya estaban
+-- generadas quedan APROBADAS.
+ALTER TABLE kiosk_count_visit DROP CONSTRAINT IF EXISTS chk_kiosk_count_visit_status;
+ALTER TABLE kiosk_count_visit ADD CONSTRAINT chk_kiosk_count_visit_status
+    CHECK (status IN ('DRAFT', 'PLANNED', 'DONE', 'CANCELLED'));
+
+ALTER TABLE kiosk_count_week ADD COLUMN IF NOT EXISTS status VARCHAR(10) NOT NULL DEFAULT 'APPROVED';
+ALTER TABLE kiosk_count_week DROP CONSTRAINT IF EXISTS chk_kiosk_count_week_status;
+ALTER TABLE kiosk_count_week ADD CONSTRAINT chk_kiosk_count_week_status CHECK (status IN ('DRAFT', 'APPROVED'));
