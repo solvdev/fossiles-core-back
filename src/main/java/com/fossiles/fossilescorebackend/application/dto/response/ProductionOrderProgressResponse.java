@@ -96,6 +96,10 @@ public class ProductionOrderProgressResponse {
         /** Piezas de esta línea que van como extra OPL en tareas de otra OP. */
         private Integer extraUnits;
         private Integer overAssignedUnits;
+        /** Horas de producción por pieza (prd_time del producto, o el valor por defecto si no tiene). */
+        private Double prdTimePerUnit;
+        /** true si el producto no tiene prd_time y se usó el valor por defecto. */
+        private Boolean prdTimeDefault;
     }
 
     @Data
