@@ -34,7 +34,7 @@ public class KioskCountCalendarController {
     }
 
     public record UpdateVisitRequest(@DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate visitDate,
-                                     String status, String note, String month) {
+                                     String status, String note, Long locationId, String month) {
     }
 
     public record AddVisitRequest(Long locationId, @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate visitDate,
@@ -57,6 +57,18 @@ public class KioskCountCalendarController {
                 Boolean.TRUE.equals(request.redo()), request.month()));
     }
 
+    /** Aprueba el borrador de la semana: el calendario de esa semana queda listo. */
+    @PostMapping("/approve")
+    public ResponseEntity<GenerateResponse> approve(@RequestBody GenerateRequest request) throws BusinessException {
+        return ResponseEntity.ok(service.approveWeek(request.weekStart(), request.supervisorUserIds(), request.month()));
+    }
+
+    /** Descarta el borrador de la semana. */
+    @PostMapping("/discard")
+    public ResponseEntity<GenerateResponse> discard(@RequestBody GenerateRequest request) throws BusinessException {
+        return ResponseEntity.ok(service.discardDraft(request.weekStart(), request.supervisorUserIds(), request.month()));
+    }
+
     @PostMapping("/visits")
     public ResponseEntity<CalendarResponse> addVisit(@RequestBody AddVisitRequest request) throws BusinessException {
         return ResponseEntity.ok(service.addVisit(request.locationId(), request.visitDate(), request.note(), request.month()));
@@ -66,7 +78,7 @@ public class KioskCountCalendarController {
     public ResponseEntity<CalendarResponse> updateVisit(@PathVariable Long id, @RequestBody UpdateVisitRequest request)
             throws BusinessException {
         return ResponseEntity.ok(service.updateVisit(id, request.visitDate(), request.status(), request.note(),
-                request.month()));
+                request.locationId(), request.month()));
     }
 
     @PostMapping("/blocked-days")

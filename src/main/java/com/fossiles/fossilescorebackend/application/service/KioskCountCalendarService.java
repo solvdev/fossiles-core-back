@@ -50,7 +50,7 @@ public class KioskCountCalendarService {
 
     private static final int ITERATIONS = 4000;
     private static final int LOOKAHEAD_WEEKS = 10;
-    private static final Set<String> STATUSES = Set.of("PLANNED", "DONE", "CANCELLED");
+    private static final Set<String> STATUSES = Set.of("DRAFT", "PLANNED", "DONE", "CANCELLED");
 
     private final JdbcTemplate jdbc;
     private final KioskCountCalendarAccessGuard guard;
@@ -67,9 +67,10 @@ public class KioskCountCalendarService {
     // ───────────────────────── generar una semana ─────────────────────────
 
     /**
-     * Genera la semana de {@code anyDayOfWeek} para cada supervisora indicada. Solo se puede generar la próxima semana
-     * pendiente de cada una (en orden) y una semana ya generada no se genera otra vez, salvo {@code redo} mientras
-     * la semana no haya empezado (se vuelve a repartir lo pendiente; lo hecho o movido a mano se conserva).
+     * Propone la semana de {@code anyDayOfWeek} como <b>borrador por aprobar</b> para cada supervisora indicada. El
+     * borrador se puede editar libremente (mover, cambiar de kiosco, agregar, quitar) y no cuenta como calendario listo
+     * hasta que se aprueba con {@link #approveWeek}. Solo se puede proponer la próxima semana pendiente de cada una
+     * (las semanas se aprueban en orden). {@code redo} vuelve a proponer un borrador que ya existe (se pierde lo editado).
      */
     @Transactional
     public GenerateResponse generateWeek(LocalDate anyDayOfWeek, List<Long> supervisorIds, boolean redo,
@@ -102,29 +103,25 @@ public class KioskCountCalendarService {
 
         for (Long supervisorId : targets) {
             String name = supervisorNames.getOrDefault(supervisorId, "Supervisora " + supervisorId);
-            boolean exists = weekGenerated(weekStart, supervisorId);
-            if (exists && !redo) {
-                throw new BusinessException("La semana del " + weekStart + " ya fue generada para " + name
-                        + ". Para cambiar fechas usa «Editar calendario».");
+            if (weekGenerated(weekStart, supervisorId)) {
+                throw new BusinessException("La semana del " + weekStart + " ya fue aprobada para " + name
+                        + ". Para cambiar fechas o kioscos usa «Editar calendario».");
             }
-            if (redo) {
-                if (!exists) {
-                    throw new BusinessException("La semana del " + weekStart + " todavía no se ha generado para " + name + ".");
+            boolean hasDraft = weekDraft(weekStart, supervisorId);
+            if (hasDraft && !redo) {
+                throw new BusinessException("Ya hay un borrador de la semana del " + weekStart + " para " + name
+                        + ": apruébalo o vuelve a proponerlo.");
+            }
+            for (LocalDate w = KioskCountVisitPlanner.weekStart(today); w.isBefore(weekStart); w = w.plusWeeks(1)) {
+                if (hasFreeWorkday(w, today, nonWorking) && !weekGenerated(w, supervisorId)) {
+                    throw new BusinessException("Primero aprueba la semana del " + w + " para " + name
+                            + ": las semanas se aprueban en orden.");
                 }
-                if (!weekStart.isAfter(today)) {
-                    throw new BusinessException("La semana del " + weekStart + " ya empezó; no se puede volver a repartir. "
-                            + "Usa «Editar calendario» para mover visitas.");
-                }
+            }
+            if (hasDraft) {
+                // Volver a proponer: se descarta el borrador anterior (con lo que se hubiera editado).
                 jdbc.update("DELETE FROM kiosk_count_visit WHERE supervisor_user_id = ? AND visit_date BETWEEN ? AND ? "
-                                + "AND status = 'PLANNED' AND manual = FALSE AND kind = 'REGULAR'",
-                        supervisorId, Date.valueOf(weekStart), Date.valueOf(weekEnd));
-            } else {
-                for (LocalDate w = KioskCountVisitPlanner.weekStart(today); w.isBefore(weekStart); w = w.plusWeeks(1)) {
-                    if (hasFreeWorkday(w, today, nonWorking) && !weekGenerated(w, supervisorId)) {
-                        throw new BusinessException("Primero genera la semana del " + w + " para " + name
-                                + ": las semanas se generan en orden.");
-                    }
-                }
+                                + "AND status = 'DRAFT'", supervisorId, Date.valueOf(weekStart), Date.valueOf(weekEnd.plusDays(2)));
             }
 
             List<Kiosk> mine = bySupervisor.get(supervisorId);
@@ -186,9 +183,9 @@ public class KioskCountCalendarService {
                             + ". Quedarán sin fecha; muévelos o desbloquea días.");
                 }
             }
-            jdbc.update("INSERT INTO kiosk_count_week (week_start, supervisor_user_id, generated_by) VALUES (?, ?, ?) "
+            jdbc.update("INSERT INTO kiosk_count_week (week_start, supervisor_user_id, generated_by, status) VALUES (?, ?, ?, 'DRAFT') "
                             + "ON CONFLICT (week_start, supervisor_user_id) DO UPDATE SET generated_by = EXCLUDED.generated_by, "
-                            + "generated_at = NOW()",
+                            + "generated_at = NOW(), status = 'DRAFT'",
                     Date.valueOf(weekStart), supervisorId, userId);
             if (saved == 0) {
                 warnings.add(name + ": en la semana del " + weekStart + " no quedó ninguna visita por programar.");
@@ -212,7 +209,7 @@ public class KioskCountCalendarService {
                 int chunkSize = Math.min(per, dates.size() - chunk * per);
                 jdbc.update("INSERT INTO kiosk_count_visit (visit_month, visit_date, location_id, supervisor_user_id, "
                                 + "region, status, kind, day_seq, day_total, manual, generated_by) "
-                                + "VALUES (?, ?, ?, ?, ?, 'PLANNED', 'REGULAR', ?, ?, FALSE, ?)",
+                                + "VALUES (?, ?, ?, ?, ?, 'DRAFT', 'REGULAR', ?, ?, FALSE, ?)",
                         month.toString(), Date.valueOf(dates.get(i)), k.locationId, supervisorId, k.region.name(),
                         (i % per) + 1, chunkSize, userId);
                 count++;
@@ -221,14 +218,75 @@ public class KioskCountCalendarService {
         return count;
     }
 
+    // ───────────────────────── aprobar o descartar el borrador ─────────────────────────
+
+    /** Aprueba el borrador de la semana: las visitas pasan a PLANNED y el calendario de esa semana queda listo. */
+    @Transactional
+    public GenerateResponse approveWeek(LocalDate anyDayOfWeek, List<Long> supervisorIds, String viewMonthText)
+            throws BusinessException {
+        Long userId = guard.assertCanGenerate();
+        LocalDate weekStart = weekOrThrow(anyDayOfWeek);
+        List<String> warnings = new ArrayList<>();
+        Map<Long, String> names = loadSupervisorNames(loadAssignedKiosks().values());
+        for (Long supervisorId : draftTargets(weekStart, supervisorIds, names)) {
+            int visits = jdbc.update("UPDATE kiosk_count_visit SET status = 'PLANNED', updated_at = NOW() "
+                            + "WHERE supervisor_user_id = ? AND status = 'DRAFT' AND visit_date BETWEEN ? AND ?",
+                    supervisorId, Date.valueOf(weekStart), Date.valueOf(weekStart.plusDays(6)));
+            jdbc.update("UPDATE kiosk_count_week SET status = 'APPROVED', generated_by = ?, generated_at = NOW() "
+                            + "WHERE week_start = ? AND supervisor_user_id = ?", userId, Date.valueOf(weekStart), supervisorId);
+            if (visits == 0) {
+                warnings.add(names.getOrDefault(supervisorId, "Supervisora") + ": la semana quedó aprobada sin visitas.");
+            }
+        }
+        return new GenerateResponse(buildCalendar(viewMonth(viewMonthText, weekStart), null), warnings);
+    }
+
+    /** Descarta el borrador de la semana: se borran sus visitas y la semana vuelve a quedar sin generar. */
+    @Transactional
+    public GenerateResponse discardDraft(LocalDate anyDayOfWeek, List<Long> supervisorIds, String viewMonthText)
+            throws BusinessException {
+        guard.assertCanGenerate();
+        LocalDate weekStart = weekOrThrow(anyDayOfWeek);
+        Map<Long, String> names = loadSupervisorNames(loadAssignedKiosks().values());
+        for (Long supervisorId : draftTargets(weekStart, supervisorIds, names)) {
+            jdbc.update("DELETE FROM kiosk_count_visit WHERE supervisor_user_id = ? AND status = 'DRAFT' AND visit_date BETWEEN ? AND ?",
+                    supervisorId, Date.valueOf(weekStart), Date.valueOf(weekStart.plusDays(6)));
+            jdbc.update("DELETE FROM kiosk_count_week WHERE week_start = ? AND supervisor_user_id = ? AND status = 'DRAFT'",
+                    Date.valueOf(weekStart), supervisorId);
+        }
+        return new GenerateResponse(buildCalendar(viewMonth(viewMonthText, weekStart), null), List.of());
+    }
+
+    private LocalDate weekOrThrow(LocalDate anyDay) throws BusinessException {
+        if (anyDay == null) {
+            throw new BusinessException("Indica la semana.");
+        }
+        return KioskCountVisitPlanner.weekStart(anyDay);
+    }
+
+    /** Supervisoras (de las pedidas, o todas) que tienen borrador esa semana; si ninguna, avisa. */
+    private List<Long> draftTargets(LocalDate weekStart, List<Long> supervisorIds, Map<Long, String> names)
+            throws BusinessException {
+        List<Long> pool = supervisorIds == null || supervisorIds.isEmpty() ? new ArrayList<>(names.keySet()) : supervisorIds;
+        List<Long> result = pool.stream().filter(id -> weekDraft(weekStart, id)).toList();
+        if (result.isEmpty()) {
+            throw new BusinessException("La semana del " + weekStart + " no tiene un borrador por aprobar.");
+        }
+        return result;
+    }
+
+    private YearMonth viewMonth(String text, LocalDate fallbackWeek) throws BusinessException {
+        return text == null || text.isBlank() ? YearMonth.from(fallbackWeek.plusDays(3)) : parseMonth(text);
+    }
+
     // ───────────────────────── editar ─────────────────────────
 
     @Transactional
-    public CalendarResponse updateVisit(Long visitId, LocalDate newDate, String status, String note, String viewMonthText)
-            throws BusinessException {
+    public CalendarResponse updateVisit(Long visitId, LocalDate newDate, String status, String note, Long newLocationId,
+                                        String viewMonthText) throws BusinessException {
         guard.assertCanGenerate();
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT visit_month, visit_date, location_id, supervisor_user_id FROM kiosk_count_visit WHERE id = ?",
+                "SELECT visit_month, visit_date, location_id, supervisor_user_id, status FROM kiosk_count_visit WHERE id = ?",
                 visitId);
         if (rows.isEmpty()) {
             throw new BusinessException("No se encontró la visita.");
@@ -236,11 +294,21 @@ public class KioskCountCalendarService {
         Map<String, Object> row = rows.get(0);
         YearMonth month = YearMonth.parse((String) row.get("visit_month"));
         Long locationId = ((Number) row.get("location_id")).longValue();
+        Long supervisorOfVisit = ((Number) row.get("supervisor_user_id")).longValue();
+        String currentStatus = (String) row.get("status");
+        LocalDate visitDate = ((Date) row.get("visit_date")).toLocalDate();
 
+        if (newLocationId != null && !newLocationId.equals(locationId)) {
+            changeKiosk(visitId, visitDate, month, supervisorOfVisit, currentStatus, newLocationId);
+            locationId = newLocationId;
+        }
         if (status != null) {
             String normalized = status.trim().toUpperCase(Locale.ROOT);
             if (!STATUSES.contains(normalized)) {
                 throw new BusinessException("Estado de visita no válido.");
+            }
+            if ("DRAFT".equals(currentStatus) && !"CANCELLED".equals(normalized) && !"DRAFT".equals(normalized)) {
+                throw new BusinessException("Es un borrador: apruébalo para poder marcar visitas como hechas.");
             }
             jdbc.update("UPDATE kiosk_count_visit SET status = ?, updated_at = NOW() WHERE id = ?", normalized, visitId);
         }
@@ -292,14 +360,40 @@ public class KioskCountCalendarService {
         try {
             jdbc.update("INSERT INTO kiosk_count_visit (visit_month, visit_date, location_id, supervisor_user_id, region, "
                             + "status, kind, day_seq, day_total, manual, note, generated_by) "
-                            + "VALUES (?, ?, ?, ?, ?, 'PLANNED', ?, 1, 1, TRUE, ?, ?)",
+                            + "VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, TRUE, ?, ?)",
                     month.toString(), Date.valueOf(date), locationId, kiosk.supervisorId, kiosk.region.name(),
+                    weekDraft(KioskCountVisitPlanner.weekStart(date), kiosk.supervisorId) ? "DRAFT" : "PLANNED",
                     alreadyVisited ? "REVISIT" : "REGULAR",
                     trimmed.isEmpty() ? null : trimmed.substring(0, Math.min(500, trimmed.length())), userId);
         } catch (DuplicateKeyException e) {
             throw new BusinessException("Esa supervisora ya tiene otra visita el " + date + ".");
         }
         return buildCalendar(viewMonthText == null || viewMonthText.isBlank() ? month : parseMonth(viewMonthText), null);
+    }
+
+    /**
+     * Cambia el kiosco de una visita manteniendo su día y su supervisora. El kiosco nuevo debe ser de la misma
+     * supervisora; la visita queda como fija (movida a mano) y de un solo día.
+     */
+    private void changeKiosk(Long visitId, LocalDate visitDate, YearMonth month, Long supervisorId, String currentStatus,
+                             Long newLocationId) throws BusinessException {
+        if ("DONE".equals(currentStatus) || "CANCELLED".equals(currentStatus)) {
+            throw new BusinessException("Esa visita ya se hizo o se quitó: no se puede cambiar de kiosco.");
+        }
+        Kiosk kiosk = loadAssignedKiosks().get(newLocationId);
+        if (kiosk == null) {
+            throw new BusinessException("Ese kiosco no tiene supervisora asignada.");
+        }
+        if (kiosk.supervisorId != supervisorId) {
+            throw new BusinessException(kiosk.name + " es de otra supervisora: solo puedes cambiar por un kiosco de la misma.");
+        }
+        assertDayAllowed(visitDate, kiosk);
+        boolean alreadyVisited = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM kiosk_count_visit WHERE location_id = ? AND visit_month = ? AND id <> ? "
+                        + "AND status <> 'CANCELLED' AND kind = 'REGULAR'", Integer.class, newLocationId, month.toString(), visitId) > 0;
+        jdbc.update("UPDATE kiosk_count_visit SET location_id = ?, region = ?, kind = ?, day_seq = 1, day_total = 1, "
+                        + "manual = TRUE, updated_at = NOW() WHERE id = ?",
+                newLocationId, kiosk.region.name(), alreadyVisited ? "REVISIT" : "REGULAR", visitId);
     }
 
     private void assertDayAllowed(LocalDate date, Kiosk kiosk) throws BusinessException {
@@ -387,15 +481,17 @@ public class KioskCountCalendarService {
                 nonWorking.add(new NonWorkingDayResponse(d, reason, blocked.containsKey(d) ? "BLOCKED" : "HOLIDAY")));
 
         Map<LocalDate, List<Long>> generated = new LinkedHashMap<>();
-        jdbc.query("SELECT week_start, supervisor_user_id FROM kiosk_count_week WHERE week_start BETWEEN ? AND ?",
+        Map<LocalDate, List<Long>> drafts = new LinkedHashMap<>();
+        jdbc.query("SELECT week_start, supervisor_user_id, status FROM kiosk_count_week WHERE week_start BETWEEN ? AND ?",
                 rs -> {
-                    generated.computeIfAbsent(rs.getDate("week_start").toLocalDate(), d -> new ArrayList<>())
+                    Map<LocalDate, List<Long>> target = "DRAFT".equals(rs.getString("status")) ? drafts : generated;
+                    target.computeIfAbsent(rs.getDate("week_start").toLocalDate(), d -> new ArrayList<>())
                             .add(rs.getLong("supervisor_user_id"));
                 }, Date.valueOf(rangeFrom), Date.valueOf(rangeTo));
         List<WeekResponse> weeks = new ArrayList<>();
         for (LocalDate w = rangeFrom; !w.isAfter(rangeTo); w = w.plusWeeks(1)) {
             List<Long> ids = generated.getOrDefault(w, List.of());
-            weeks.add(new WeekResponse(w, w.plusDays(4), ids,
+            weeks.add(new WeekResponse(w, w.plusDays(4), ids, drafts.getOrDefault(w, List.of()),
                     !supervisors.isEmpty() && supervisors.stream().allMatch(s -> ids.contains(s.userId())),
                     !w.isAfter(today)));
         }
@@ -406,7 +502,7 @@ public class KioskCountCalendarService {
             LocalDate w = KioskCountVisitPlanner.weekStart(today);
             for (int i = 0; i < LOOKAHEAD_WEEKS; i++, w = w.plusWeeks(1)) {
                 if (hasFreeWorkday(w, today, horizon) && !weekGenerated(w, s.userId())) {
-                    nextWeeks.add(new NextWeekResponse(s.userId(), w, w.plusDays(4)));
+                    nextWeeks.add(new NextWeekResponse(s.userId(), w, w.plusDays(4), weekDraft(w, s.userId())));
                     break;
                 }
             }
@@ -544,9 +640,17 @@ public class KioskCountCalendarService {
                 rs.getString("note"), rs.getInt("day_seq"), rs.getInt("day_total"));
     }
 
+    /** La semana ya está aprobada (calendario listo) para esa supervisora. */
     private boolean weekGenerated(LocalDate weekStart, Long supervisorId) {
-        Integer n = jdbc.queryForObject("SELECT COUNT(*) FROM kiosk_count_week WHERE week_start = ? AND supervisor_user_id = ?",
-                Integer.class, Date.valueOf(weekStart), supervisorId);
+        Integer n = jdbc.queryForObject("SELECT COUNT(*) FROM kiosk_count_week WHERE week_start = ? AND supervisor_user_id = ? "
+                        + "AND status = 'APPROVED'", Integer.class, Date.valueOf(weekStart), supervisorId);
+        return n != null && n > 0;
+    }
+
+    /** La semana tiene un borrador por aprobar para esa supervisora. */
+    private boolean weekDraft(LocalDate weekStart, Long supervisorId) {
+        Integer n = jdbc.queryForObject("SELECT COUNT(*) FROM kiosk_count_week WHERE week_start = ? AND supervisor_user_id = ? "
+                        + "AND status = 'DRAFT'", Integer.class, Date.valueOf(weekStart), supervisorId);
         return n != null && n > 0;
     }
 
