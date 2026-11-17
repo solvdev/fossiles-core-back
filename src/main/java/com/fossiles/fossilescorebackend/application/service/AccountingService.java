@@ -428,6 +428,59 @@ public class AccountingService {
         }
     }
 
+    public static final String SUPPLIER_PAYMENT_DOCUMENT_TYPE = "SUPPLIER_PAYMENT";
+    public static final String SUPPLIER_PAYMENT_VOID_DOCUMENT_TYPE = "SUPPLIER_PAYMENT_VOID";
+
+    /**
+     * Pago a un proveedor: Debe cuentas por pagar, Haber la cuenta del banco (o la caja si no se indicó cuenta).
+     * Una segunda llamada para el mismo pago no duplica la partida.
+     */
+    public void postSupplierPayment(Long paymentId, BigDecimal amount, String bankLedgerCode, String bankLedgerName,
+                                    String reference, String description) {
+        BigDecimal value = money(amount);
+        if (value.signum() <= 0
+                || !accountingEntryRepository.findByDocumentTypeAndDocumentId(SUPPLIER_PAYMENT_DOCUMENT_TYPE, paymentId).isEmpty()) {
+            return;
+        }
+        String payable = getAccountCode(CONFIG_ACCOUNTS_PAYABLE_ACCOUNT, DEFAULT_ACCOUNTS_PAYABLE_ACCOUNT);
+        String creditCode = bankLedgerCode != null && !bankLedgerCode.isBlank()
+                ? bankLedgerCode : getAccountCode(PayrollAccount.CASH.configKey, PayrollAccount.CASH.defaultCode);
+        String creditName = bankLedgerCode != null && !bankLedgerCode.isBlank() && bankLedgerName != null && !bankLedgerName.isBlank()
+                ? bankLedgerName : PayrollAccount.CASH.label;
+        java.time.LocalDateTime now = com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime.now();
+        accountingEntryRepository.saveAll(List.of(
+                AccountingEntryEntity.builder()
+                        .documentType(SUPPLIER_PAYMENT_DOCUMENT_TYPE).documentId(paymentId).entryDate(now)
+                        .accountCode(payable).accountName(getAccountName(payable))
+                        .debitAmount(value).creditAmount(BigDecimal.ZERO)
+                        .description(description).referenceNumber(reference).build(),
+                AccountingEntryEntity.builder()
+                        .documentType(SUPPLIER_PAYMENT_DOCUMENT_TYPE).documentId(paymentId).entryDate(now)
+                        .accountCode(creditCode).accountName(creditName)
+                        .debitAmount(BigDecimal.ZERO).creditAmount(value)
+                        .description(description).referenceNumber(reference).build()));
+    }
+
+    /** Anulación de un pago a proveedor: invierte la partida original, una sola vez. */
+    public void reverseSupplierPayment(Long paymentId, String reference) {
+        if (!accountingEntryRepository.findByDocumentTypeAndDocumentId(SUPPLIER_PAYMENT_VOID_DOCUMENT_TYPE, paymentId).isEmpty()) {
+            return;
+        }
+        java.time.LocalDateTime now = com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime.now();
+        List<AccountingEntryEntity> reversal = accountingEntryRepository
+                .findByDocumentTypeAndDocumentId(SUPPLIER_PAYMENT_DOCUMENT_TYPE, paymentId).stream()
+                .map(original -> AccountingEntryEntity.builder()
+                        .documentType(SUPPLIER_PAYMENT_VOID_DOCUMENT_TYPE).documentId(paymentId).entryDate(now)
+                        .accountCode(original.getAccountCode()).accountName(original.getAccountName())
+                        .debitAmount(original.getCreditAmount()).creditAmount(original.getDebitAmount())
+                        .costCenterId(original.getCostCenterId())
+                        .description("Anulación de pago a proveedor " + reference).referenceNumber(reference).build())
+                .toList();
+        if (!reversal.isEmpty()) {
+            accountingEntryRepository.saveAll(reversal);
+        }
+    }
+
     private void postEmployeeChargePair(String documentType, Long chargeId, PayrollAccount debit, Long debitCostCenter,
                                         PayrollAccount credit, Long creditCostCenter, BigDecimal amount,
                                         String description, String reference, boolean onlyOnce) {

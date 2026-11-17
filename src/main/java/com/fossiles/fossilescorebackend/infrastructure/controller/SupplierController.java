@@ -85,6 +85,8 @@ public class SupplierController {
                 .email(entity.getEmail())
                 .address(entity.getAddress())
                 .status(entity.getStatus())
+                .payeeName(entity.getPayeeName())
+                .creditDays(entity.getCreditDays())
                 .createdAt(entity.getCreatedAt())
                 .createdBy(entity.getCreatedBy())
                 .updatedAt(entity.getUpdatedAt())
@@ -100,6 +102,8 @@ public class SupplierController {
                 .email(request.getEmail())
                 .address(request.getAddress())
                 .status(request.getStatus())
+                .payeeName(request.getPayeeName())
+                .creditDays(request.getCreditDays() != null ? request.getCreditDays() : 30)
                 .build();
     }
 
@@ -110,6 +114,8 @@ public class SupplierController {
         if (request.getEmail() != null) entity.setEmail(request.getEmail());
         if (request.getAddress() != null) entity.setAddress(request.getAddress());
         if (request.getStatus() != null) entity.setStatus(request.getStatus());
+        if (request.getPayeeName() != null) entity.setPayeeName(request.getPayeeName().isBlank() ? null : request.getPayeeName().trim());
+        if (request.getCreditDays() != null) entity.setCreditDays(request.getCreditDays());
     }
 }
 

@@ -37,6 +37,14 @@ public class SupplierEntity {
     @Column(length = 20)
     private String status;
 
+    /** Nombre que sale en el cheque, si es distinto del nombre comercial. */
+    @Column(name = "payee_name", length = 200)
+    private String payeeName;
+
+    @Column(name = "credit_days", nullable = false)
+    @lombok.Builder.Default
+    private Integer creditDays = 30;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
