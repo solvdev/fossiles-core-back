@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    branches: [main, release]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/compute-version.js
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+            gh release create "${{ steps.version.outputs.tag }}" \
+              --generate-notes \
+              --prerelease \
+              --target "${{ github.sha }}"
+          else
+            gh release create "${{ steps.version.outputs.tag }}" \
+              --generate-notes \
+              --target "${{ github.sha }}"
+          fi
+
+      - name: Skip existing tag
+        if: steps.version.outputs.skip == 'true'
+        run: echo "HEAD is already tagged as ${{ steps.version.outputs.tag }}; skipping release."

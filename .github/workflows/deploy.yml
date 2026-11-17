@@ -21,7 +21,10 @@ jobs:
       - name: Marcar inicio
         run: echo "DEPLOY_START=$(date +%s)" >> "$GITHUB_ENV"
 
+      # Historial completo + tags: la versión del build se calcula con scripts/compute-version.js
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # main → BACK_HOST (prod). develop → BACK_HOST_TEST (otro EC2).
       # Las IPs se ponen en GitHub → Settings → Secrets and variables → Actions.
@@ -145,12 +148,16 @@ jobs:
 
       # Importante: pipefail. Sin eso, `cmd | tee` reporta éxito aunque cmd falle
       # (Gradle compile error → Discord "Deploy exitoso" con JAR viejo en el server).
+      # La versión y el commit se inyectan en el JAR (GET /api/version). Si no se puede calcular,
+      # queda "dev" y el deploy sigue: el versionado nunca debe tumbar un deploy.
       - name: Build JAR (bootJar, sin tests)
         id: build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           chmod +x ./gradlew
-          ./gradlew clean bootJar -x test 2>&1 | tee -a /tmp/deploy.log
+          node scripts/compute-version.js --build 2>&1 | tee -a /tmp/deploy.log
           test -f build/libs/fossiles-core-backend.jar
           echo "JAR OK: $(ls -lh build/libs/fossiles-core-backend.jar)"
 
