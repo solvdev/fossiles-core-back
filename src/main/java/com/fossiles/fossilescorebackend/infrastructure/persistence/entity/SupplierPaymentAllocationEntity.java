@@ -29,8 +29,12 @@ public class SupplierPaymentAllocationEntity {
     @Column(name = "payment_id", nullable = false)
     private Long paymentId;
 
-    @Column(name = "purchase_order_id", nullable = false)
+    /** La orden de compra a la que se aplica, o null si se aplica a un documento por pagar. */
+    @Column(name = "purchase_order_id")
     private Long purchaseOrderId;
+
+    @Column(name = "payable_document_id")
+    private Long payableDocumentId;
 
     @Column(name = "amount", nullable = false, precision = 12, scale = 2)
     private BigDecimal amount;
