@@ -20,8 +20,17 @@ public interface SupplierPaymentAllocationRepository extends JpaRepository<Suppl
 
     /** Lo ya pagado por orden: {orderId, suma}; los pagos anulados no cuentan. */
     @Query("SELECT a.purchaseOrderId, SUM(a.amount) FROM SupplierPaymentAllocationEntity a, SupplierPaymentEntity p "
-            + "WHERE a.paymentId = p.id AND p.status <> 'ANULADO' GROUP BY a.purchaseOrderId")
+            + "WHERE a.paymentId = p.id AND p.status <> 'ANULADO' AND a.purchaseOrderId IS NOT NULL GROUP BY a.purchaseOrderId")
     List<Object[]> paidByOrder();
+
+    /** Lo ya pagado por documento por pagar: {documentId, suma}; los pagos anulados no cuentan. */
+    @Query("SELECT a.payableDocumentId, SUM(a.amount) FROM SupplierPaymentAllocationEntity a, SupplierPaymentEntity p "
+            + "WHERE a.paymentId = p.id AND p.status <> 'ANULADO' AND a.payableDocumentId IS NOT NULL GROUP BY a.payableDocumentId")
+    List<Object[]> paidByDocument();
+
+    @Query("SELECT COALESCE(SUM(a.amount), 0) FROM SupplierPaymentAllocationEntity a, SupplierPaymentEntity p "
+            + "WHERE a.paymentId = p.id AND p.status <> 'ANULADO' AND a.payableDocumentId = :documentId")
+    java.math.BigDecimal paidForDocument(@Param("documentId") Long documentId);
 
     @Query("SELECT COALESCE(SUM(a.amount), 0) FROM SupplierPaymentAllocationEntity a, SupplierPaymentEntity p "
             + "WHERE a.paymentId = p.id AND p.status <> 'ANULADO' AND a.purchaseOrderId = :orderId")
