@@ -1,5 +1,13 @@
 # Instrucciones del proyecto (back)
 
+## Flujo de ramas (desde 2026-11-17)
+
+Todos los cambios entran primero a `release`, no a `main`: los PR se abren contra `release`, y cada merge ahí genera su pre-release `vX.Y.Z-rc.N` con la versión que corresponde al cambio:
+- Módulo o funcionalidad nueva (`feat:` / label `minor`) → sube MENOR.
+- Fix o ajuste → sube PARCHE.
+- Rompe API o datos (label `major`) → sube MAYOR.
+Asegura que el PR lleve el título o label correcto, porque de eso sale la versión. `main` solo recibe lo ya probado en `release` (promoción), y ahí se crea el tag final y el GitHub Release.
+
 ## Versioning y releases (obligatorio)
 
 Este repo usa versionado semántico con tags `vMAYOR.MENOR.PARCHE`.
