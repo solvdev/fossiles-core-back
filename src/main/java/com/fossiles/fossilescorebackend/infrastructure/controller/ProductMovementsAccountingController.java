@@ -27,7 +27,7 @@ public class ProductMovementsAccountingController {
     @GetMapping("/locations")
     public ResponseEntity<List<ProductLedgerLabLocationResponse>> listLocations()
             throws BusinessException {
-        return ResponseEntity.ok(ledgerLabService.listAllowedLocations());
+        return ResponseEntity.ok(ledgerLabService.listReadableLocations());
     }
 
     @GetMapping("/stocks")
