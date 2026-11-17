@@ -6,7 +6,7 @@ Todos los cambios entran primero a `release`, no a `main`: los PR se abren contr
 - Módulo o funcionalidad nueva (`feat:` / label `minor`) → sube MENOR.
 - Fix o ajuste → sube PARCHE.
 - Rompe API o datos (label `major`) → sube MAYOR.
-Asegura que el PR lleve el título o label correcto, porque de eso sale la versión. `main` solo recibe lo ya probado en `release` (promoción), y ahí se crea el tag final y el GitHub Release.
+Asegura que el PR lleve el título o label correcto, porque de eso sale la versión. `main` solo recibe lo ya probado en `release` (promoción), y ahí se crea el tag final y el GitHub Release. El merge de `release` a `main` lo hace siempre el dueño del repo: Claude abre los PR contra `release` y nunca promueve a `main`.
 
 ## Versioning y releases (obligatorio)
 
