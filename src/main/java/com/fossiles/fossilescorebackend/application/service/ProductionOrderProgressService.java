@@ -20,6 +20,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Pr
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.TaskItemRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
 import com.fossiles.fossilescorebackend.infrastructure.util.ProductionOrderItemQuantityHelper;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -187,6 +188,9 @@ public class ProductionOrderProgressService {
                         .receivedUnits(lineReceived)
                         .extraUnits(extra)
                         .overAssignedUnits(lineAcc.over)
+                        .prdTimePerUnit(hasPrdTime(product) ? product.getPrdTime()
+                                : ProductionPlanningConstants.DEFAULT_PRD_TIME_PER_UNIT)
+                        .prdTimeDefault(!hasPrdTime(product))
                         .build());
             }
             lineRows.sort(Comparator.comparing(LineProgress::getProductCode, Comparator.nullsLast(Comparator.naturalOrder()))
@@ -335,6 +339,11 @@ public class ProductionOrderProgressService {
         if (!onTable) return "PENDING_TABLE_ENTRY";
         if (requiresMaterials && !materialsDelivered) return "PENDING_MATERIAL_DELIVERY";
         return "READY_TO_START";
+    }
+
+    /** Misma regla que la estimación de tiempo de la OP: prd_time mayor que cero, si no el valor por defecto. */
+    private static boolean hasPrdTime(ProductEntity product) {
+        return product != null && product.getPrdTime() != null && product.getPrdTime() > 0;
     }
 
     private static boolean productRequiresMaterials(ProductEntity product) {
