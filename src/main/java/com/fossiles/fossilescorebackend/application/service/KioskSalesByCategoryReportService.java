@@ -385,7 +385,7 @@ public class KioskSalesByCategoryReportService {
 
     /**
      * Misma regla que {@code KioskSalesByProductColorReportService}: sin ids, todos los kioskos
-     * excepto los de piloto ({@code posTestMode}) y los de {@code pos_mode = ENTRECUEROS}.
+     * excepto los de piloto ({@code posTestMode}) y Entrecueros ({@code pos_mode} o nombre).
      * Un id explícito se acepta aunque sea piloto o Entrecueros (el SQL omite sus datos).
      */
     private List<Long> resolveKioskIds(List<Long> requestedIds) throws BusinessException {
@@ -396,7 +396,7 @@ public class KioskSalesByCategoryReportService {
         if (requestedIds.isEmpty()) {
             List<Long> ids = kiosks.stream()
                     .filter(kiosk -> !Boolean.TRUE.equals(kiosk.getPosTestMode()))
-                    .filter(kiosk -> !KioskPosMode.isEntrecueros(kiosk.getPosMode()))
+                    .filter(kiosk -> !isExcludedEntrecueros(kiosk))
                     .map(LocationEntity::getId)
                     .toList();
             if (ids.isEmpty()) {
@@ -446,6 +446,18 @@ public class KioskSalesByCategoryReportService {
             }
         }
         return ids;
+    }
+
+    /** pos_mode ENTRECUEROS (trim/upper) o el nombre coincide con {@code %entrecuer%}. */
+    static boolean isExcludedEntrecueros(LocationEntity location) {
+        if (location == null) {
+            return false;
+        }
+        if (KioskPosMode.isEntrecueros(location.getPosMode())) {
+            return true;
+        }
+        String name = location.getName() == null ? "" : location.getName().toLowerCase(Locale.ROOT);
+        return name.contains("entrecuer");
     }
 
     /** Igual que el reporte de ventas por color: categoría, nombre o código de kiosko. */
