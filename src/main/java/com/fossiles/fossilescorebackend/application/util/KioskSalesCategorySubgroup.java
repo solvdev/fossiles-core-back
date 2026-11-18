@@ -15,25 +15,22 @@ public final class KioskSalesCategorySubgroup {
     public static final String DAMA = "DAMA";
     public static final String NINO = "NINO";
     public static final String DAMA_CASUAL = "DAMA_CASUAL";
-    public static final String DAMA_FORMAL = "DAMA_FORMAL";
+    public static final String DAMA_REVERSIBLE = "DAMA_REVERSIBLE";
     public static final String CABALLERO_CASUAL = "CABALLERO_CASUAL";
-    public static final String CABALLERO_FORMAL = "CABALLERO_FORMAL";
+    public static final String CABALLERO_REVERSIBLE = "CABALLERO_REVERSIBLE";
     public static final String SIN_CLASIFICAR = "SIN_CLASIFICAR";
 
     public static final String LABEL_CABALLERO = "Caballero";
     public static final String LABEL_DAMA = "Dama";
     public static final String LABEL_NINO = "Niño";
     public static final String LABEL_DAMA_CASUAL = "Dama casual";
-    public static final String LABEL_DAMA_FORMAL = "Dama formal";
+    public static final String LABEL_DAMA_REVERSIBLE = "Dama reversible";
     public static final String LABEL_CABALLERO_CASUAL = "Caballero casual";
-    public static final String LABEL_CABALLERO_FORMAL = "Caballero formal";
+    public static final String LABEL_CABALLERO_REVERSIBLE = "Caballero reversible";
     public static final String LABEL_SIN_CLASIFICAR = "Sin clasificar";
 
-    /**
-     * PROVISIONAL: {@code product.cincho_type} solo tiene CASUAL / REVERSIBLE; no existe FORMAL.
-     * Este valor se trata como FORMAL. Un cambio de una línea cuando Eduardo confirme.
-     */
-    public static final String CINCHO_TYPE_TREATED_AS_FORMAL = ProductCinchoType.REVERSIBLE;
+    /** {@code product.cincho_type} que mapea a {@code *_REVERSIBLE}. */
+    public static final String CINCHO_TYPE_REVERSIBLE = ProductCinchoType.REVERSIBLE;
 
     public static final Subgroup UNCLASSIFIED = new Subgroup(SIN_CLASIFICAR, LABEL_SIN_CLASIFICAR);
 
@@ -66,7 +63,7 @@ public final class KioskSalesCategorySubgroup {
     }
 
     /**
-     * Orden: Niño (kids / JR) → CASUAL → REVERSIBLE=FORMAL → Sin clasificar.
+     * Orden: Niño (kids / JR) → CASUAL → REVERSIBLE → Sin clasificar.
      * UNISEX o audiencia nula, y DAMA/CABALLERO sin tipo, caen en Sin clasificar.
      */
     private static Subgroup cinchoSubgroup(ProductEntity product) {
@@ -85,10 +82,10 @@ public final class KioskSalesCategorySubgroup {
                     ? new Subgroup(DAMA_CASUAL, LABEL_DAMA_CASUAL)
                     : new Subgroup(CABALLERO_CASUAL, LABEL_CABALLERO_CASUAL);
         }
-        if (CINCHO_TYPE_TREATED_AS_FORMAL.equals(type)) {
+        if (CINCHO_TYPE_REVERSIBLE.equals(type)) {
             return dama
-                    ? new Subgroup(DAMA_FORMAL, LABEL_DAMA_FORMAL)
-                    : new Subgroup(CABALLERO_FORMAL, LABEL_CABALLERO_FORMAL);
+                    ? new Subgroup(DAMA_REVERSIBLE, LABEL_DAMA_REVERSIBLE)
+                    : new Subgroup(CABALLERO_REVERSIBLE, LABEL_CABALLERO_REVERSIBLE);
         }
         return UNCLASSIFIED;
     }

@@ -8,8 +8,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class KioskSalesCategorySubgroupTest {
 
     @Test
-    void formalMappingIsTheReversibleSwitch() {
-        assertThat(KioskSalesCategorySubgroup.CINCHO_TYPE_TREATED_AS_FORMAL)
+    void reversibleConstantMatchesCinchoType() {
+        assertThat(KioskSalesCategorySubgroup.CINCHO_TYPE_REVERSIBLE)
                 .isEqualTo(ProductCinchoType.REVERSIBLE);
     }
 
@@ -36,9 +36,9 @@ class KioskSalesCategorySubgroupTest {
         assertSubgroup(cincho("FOSS-CC", "CABALLERO", ProductCinchoType.CASUAL, false),
                 "CABALLERO_CASUAL", "Caballero casual");
         assertSubgroup(cincho("FOSS-DF", "DAMA", ProductCinchoType.REVERSIBLE, false),
-                "DAMA_FORMAL", "Dama formal");
+                "DAMA_REVERSIBLE", "Dama reversible");
         assertSubgroup(cincho("FOSS-CF", "CABALLERO", ProductCinchoType.REVERSIBLE, false),
-                "CABALLERO_FORMAL", "Caballero formal");
+                "CABALLERO_REVERSIBLE", "Caballero reversible");
     }
 
     @Test

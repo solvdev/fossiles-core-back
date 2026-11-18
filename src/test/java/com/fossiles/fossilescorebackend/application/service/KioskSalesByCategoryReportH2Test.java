@@ -520,8 +520,8 @@ class KioskSalesByCategoryReportH2Test {
     }
 
     @Test
-    void reversibleBeltMapsToFormal() throws Exception {
-        ProductCategoryEntity cat = category("CinchosFormal");
+    void reversibleBeltMapsToReversible() throws Exception {
+        ProductCategoryEntity cat = category("CinchosReversible");
         LocalDate day = LocalDate.of(2026, 6, 13);
         sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("22.00"),
                 line(product("FOSS-DF", cat, "Cincho dama reversible", "DAMA", "REVERSIBLE", false),
@@ -531,11 +531,12 @@ class KioskSalesByCategoryReportH2Test {
                         "FOSS-CF", "1", "28.00", "28.00"));
 
         KioskSalesByCategoryReportResponse report = report(day, day, null);
-        assertMoney(row(report, "CinchosFormal", "DAMA_FORMAL").getTotalAmount(), "22.00");
-        assertThat(row(report, "CinchosFormal", "DAMA_FORMAL").getSubgroupLabel()).isEqualTo("Dama formal");
-        assertMoney(row(report, "CinchosFormal", "CABALLERO_FORMAL").getTotalAmount(), "28.00");
-        assertThat(row(report, "CinchosFormal", "CABALLERO_FORMAL").getSubgroupLabel())
-                .isEqualTo("Caballero formal");
+        assertMoney(row(report, "CinchosReversible", "DAMA_REVERSIBLE").getTotalAmount(), "22.00");
+        assertThat(row(report, "CinchosReversible", "DAMA_REVERSIBLE").getSubgroupLabel())
+                .isEqualTo("Dama reversible");
+        assertMoney(row(report, "CinchosReversible", "CABALLERO_REVERSIBLE").getTotalAmount(), "28.00");
+        assertThat(row(report, "CinchosReversible", "CABALLERO_REVERSIBLE").getSubgroupLabel())
+                .isEqualTo("Caballero reversible");
     }
 
     @Test
