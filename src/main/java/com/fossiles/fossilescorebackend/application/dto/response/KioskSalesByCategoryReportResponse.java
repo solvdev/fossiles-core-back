@@ -30,6 +30,10 @@ public class KioskSalesByCategoryReportResponse {
     public static class Row {
         private Long categoryId;
         private String categoryName;
+        /** Null si el producto no es billetera ni cincho. */
+        private String subgroupCode;
+        /** Null si el producto no es billetera ni cincho. */
+        private String subgroupLabel;
         /** Cantidad neta. NUMERIC(12,3); se omite el cero a la derecha. */
         private BigDecimal units;
         /** Cobrado con IVA incluido, escala 2. */

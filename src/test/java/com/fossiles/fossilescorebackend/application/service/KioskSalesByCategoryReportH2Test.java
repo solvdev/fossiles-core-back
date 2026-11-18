@@ -37,6 +37,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -438,6 +439,193 @@ class KioskSalesByCategoryReportH2Test {
     }
 
     @Test
+    void walletsSplitByAudienceAndReturnsUseTheSameClassification() throws Exception {
+        ProductCategoryEntity cat = category("Billeteras");
+        ProductEntity dama = product("BILL-D", cat, "Billetera dama", "DAMA", null, false);
+        ProductEntity caballero = product("BILL-C", cat, "Billetera caballero", "CABALLERO", null, false);
+        ProductEntity unisex = product("BILL-U", cat, "Billetera unisex", "UNISEX", null, false);
+        LocalDate day = LocalDate.of(2026, 6, 10);
+        KioskSaleEntity damaSale = sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null,
+                BigDecimal.ZERO, money("100.00"),
+                line(dama, dama.getCode(), "1", "100.00", "100.00"));
+        sale(kiosk, day, day.atTime(9, 1), "COMPLETED", false, null, BigDecimal.ZERO, money("80.00"),
+                line(caballero, caballero.getCode(), "1", "80.00", "80.00"));
+        sale(kiosk, day, day.atTime(9, 2), "COMPLETED", false, null, BigDecimal.ZERO, money("20.00"),
+                line(unisex, unisex.getCode(), "1", "20.00", "20.00"));
+        headerReturn(kiosk, damaSale, damaSale.getItems().get(0), dama, "1", "100.00",
+                "COMPLETED", day.atTime(11, 0), null);
+
+        KioskSalesByCategoryReportResponse report = report(day, day, null);
+        assertThat(report.getRows()).hasSize(3);
+        Row damaRow = row(report, "Billeteras", "DAMA");
+        assertThat(damaRow.getSubgroupLabel()).isEqualTo("Dama");
+        assertUnits(damaRow.getUnits(), "0");
+        assertMoney(damaRow.getTotalAmount(), "0.00");
+        Row cabRow = row(report, "Billeteras", "CABALLERO");
+        assertThat(cabRow.getSubgroupLabel()).isEqualTo("Caballero");
+        assertMoney(cabRow.getTotalAmount(), "80.00");
+        Row unclassified = row(report, "Billeteras", "SIN_CLASIFICAR");
+        assertThat(unclassified.getSubgroupLabel()).isEqualTo("Sin clasificar");
+        assertMoney(unclassified.getTotalAmount(), "20.00");
+        assertMoney(sumAmounts(report), "100.00");
+        assertMoney(report.getTotals().getTotalAmount(), "100.00");
+    }
+
+    @Test
+    void beltsSplitIncludingSinClasificarAndSumToGrandTotal() throws Exception {
+        ProductCategoryEntity cat = category("Cinchos");
+        LocalDate day = LocalDate.of(2026, 6, 11);
+        sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("50.00"),
+                line(product("FOSS-N", cat, "Cincho niño", "DAMA", "CASUAL", true), "FOSS-N", "1", "50.00", "50.00"));
+        sale(kiosk, day, day.atTime(9, 1), "COMPLETED", false, null, BigDecimal.ZERO, money("40.00"),
+                line(product("FOSS-DC", cat, "Cincho dama casual", "DAMA", "CASUAL", false),
+                        "FOSS-DC", "1", "40.00", "40.00"));
+        sale(kiosk, day, day.atTime(9, 2), "COMPLETED", false, null, BigDecimal.ZERO, money("30.00"),
+                line(product("FOSS-CC", cat, "Cincho caballero casual", "CABALLERO", "CASUAL", false),
+                        "FOSS-CC", "1", "30.00", "30.00"));
+        sale(kiosk, day, day.atTime(9, 3), "COMPLETED", false, null, BigDecimal.ZERO, money("10.00"),
+                line(product("FOSS-U", cat, "Cincho unisex", "UNISEX", "CASUAL", false),
+                        "FOSS-U", "1", "10.00", "10.00"));
+
+        KioskSalesByCategoryReportResponse report = report(day, day, null);
+        assertThat(report.getRows()).hasSize(4);
+        assertMoney(row(report, "Cinchos", "NINO").getTotalAmount(), "50.00");
+        assertThat(row(report, "Cinchos", "NINO").getSubgroupLabel()).isEqualTo("Niño");
+        assertMoney(row(report, "Cinchos", "DAMA_CASUAL").getTotalAmount(), "40.00");
+        assertMoney(row(report, "Cinchos", "CABALLERO_CASUAL").getTotalAmount(), "30.00");
+        assertMoney(row(report, "Cinchos", "SIN_CLASIFICAR").getTotalAmount(), "10.00");
+        assertThat(row(report, "Cinchos", "SIN_CLASIFICAR").getSubgroupLabel()).isEqualTo("Sin clasificar");
+        assertMoney(sumAmounts(report), "130.00");
+        assertMoney(report.getTotals().getTotalAmount(), "130.00");
+        assertUnits(report.getTotals().getUnits(), "4");
+    }
+
+    @Test
+    void kidsCinchoTakesPrecedenceOverAudienceAndType() throws Exception {
+        ProductCategoryEntity cat = category("CinchosKids");
+        LocalDate day = LocalDate.of(2026, 6, 12);
+        sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("15.00"),
+                line(product("FOSS-K", cat, "Cincho dama casual kids", "DAMA", "CASUAL", true),
+                        "FOSS-K", "1", "15.00", "15.00"));
+        sale(kiosk, day, day.atTime(9, 1), "COMPLETED", false, null, BigDecimal.ZERO, money("17.00"),
+                line(product("N-113-JR", cat, "Cincho JR reversible", "CABALLERO", "REVERSIBLE", false),
+                        "N-113-JR", "1", "17.00", "17.00"));
+
+        KioskSalesByCategoryReportResponse report = report(day, day, null);
+        assertThat(report.getRows()).hasSize(1);
+        Row nino = row(report, "CinchosKids", "NINO");
+        assertThat(nino.getSubgroupLabel()).isEqualTo("Niño");
+        assertMoney(nino.getTotalAmount(), "32.00");
+        assertUnits(nino.getUnits(), "2");
+    }
+
+    @Test
+    void reversibleBeltMapsToReversible() throws Exception {
+        ProductCategoryEntity cat = category("CinchosReversible");
+        LocalDate day = LocalDate.of(2026, 6, 13);
+        sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("22.00"),
+                line(product("FOSS-DF", cat, "Cincho dama reversible", "DAMA", "REVERSIBLE", false),
+                        "FOSS-DF", "1", "22.00", "22.00"));
+        sale(kiosk, day, day.atTime(9, 1), "COMPLETED", false, null, BigDecimal.ZERO, money("28.00"),
+                line(product("FOSS-CF", cat, "Cincho caballero reversible", "CABALLERO", "REVERSIBLE", false),
+                        "FOSS-CF", "1", "28.00", "28.00"));
+
+        KioskSalesByCategoryReportResponse report = report(day, day, null);
+        assertMoney(row(report, "CinchosReversible", "DAMA_REVERSIBLE").getTotalAmount(), "22.00");
+        assertThat(row(report, "CinchosReversible", "DAMA_REVERSIBLE").getSubgroupLabel())
+                .isEqualTo("Dama reversible");
+        assertMoney(row(report, "CinchosReversible", "CABALLERO_REVERSIBLE").getTotalAmount(), "28.00");
+        assertThat(row(report, "CinchosReversible", "CABALLERO_REVERSIBLE").getSubgroupLabel())
+                .isEqualTo("Caballero reversible");
+    }
+
+    @Test
+    void unisexGoesToSinClasificar() throws Exception {
+        ProductCategoryEntity wallets = category("BilleterasUnisex");
+        ProductCategoryEntity belts = category("CinchosUnisex");
+        LocalDate day = LocalDate.of(2026, 6, 14);
+        sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("9.00"),
+                line(product("BILL-U2", wallets, "Billetera unisex", "UNISEX", null, false),
+                        "BILL-U2", "1", "9.00", "9.00"));
+        sale(kiosk, day, day.atTime(9, 1), "COMPLETED", false, null, BigDecimal.ZERO, money("11.00"),
+                line(product("FOSS-U2", belts, "Cincho unisex", "UNISEX", "CASUAL", false),
+                        "FOSS-U2", "1", "11.00", "11.00"));
+
+        KioskSalesByCategoryReportResponse report = report(day, day, null);
+        assertThat(row(report, "BilleterasUnisex", "SIN_CLASIFICAR").getSubgroupLabel())
+                .isEqualTo("Sin clasificar");
+        assertMoney(row(report, "BilleterasUnisex", "SIN_CLASIFICAR").getTotalAmount(), "9.00");
+        assertThat(row(report, "CinchosUnisex", "SIN_CLASIFICAR").getSubgroupLabel())
+                .isEqualTo("Sin clasificar");
+        assertMoney(row(report, "CinchosUnisex", "SIN_CLASIFICAR").getTotalAmount(), "11.00");
+    }
+
+    @Test
+    void damaBeltWithNullCinchoTypeIsSinClasificar() throws Exception {
+        ProductCategoryEntity cat = category("CinchosNullType");
+        LocalDate day = LocalDate.of(2026, 6, 15);
+        sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("18.00"),
+                line(product("FOSS-DNULL", cat, "Cincho dama sin tipo", "DAMA", null, false),
+                        "FOSS-DNULL", "1", "18.00", "18.00"));
+
+        KioskSalesByCategoryReportResponse report = report(day, day, null);
+        Row row = row(report, "CinchosNullType", "SIN_CLASIFICAR");
+        assertThat(row.getSubgroupLabel()).isEqualTo("Sin clasificar");
+        assertMoney(row.getTotalAmount(), "18.00");
+    }
+
+    @Test
+    void nonSplitCategoryHasNullSubgroupFields() throws Exception {
+        ProductCategoryEntity cat = category("Bolsas");
+        LocalDate day = LocalDate.of(2026, 6, 16);
+        sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("12.00"),
+                line(product("BOL-1", cat), "BOL-1", "1", "12.00", "12.00"));
+
+        KioskSalesByCategoryReportResponse report = report(day, day, null);
+        assertThat(report.getRows()).hasSize(1);
+        Row row = row(report, "Bolsas");
+        assertThat(row.getSubgroupCode()).isNull();
+        assertThat(row.getSubgroupLabel()).isNull();
+        assertMoney(row.getTotalAmount(), "12.00");
+    }
+
+    @Test
+    void entrecuerosIsExcludedFromSalesAndReturns() throws Exception {
+        LocationEntity entrecueros = kiosk("ETRC" + SEQ.incrementAndGet(), false, "ENTRECUEROS");
+        ProductCategoryEntity cat = category("CueroExcl");
+        ProductEntity product = product("CUO-EX", cat);
+        LocalDate day = LocalDate.of(2026, 6, 17);
+        sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("100.00"),
+                line(product, "CUO-EX", "1", "100.00", "100.00"));
+        sale(entrecueros, day, day.atTime(9, 1), "COMPLETED", false, null, BigDecimal.ZERO, money("999.00"),
+                line(product, "CUO-EX", "1", "999.00", "999.00"));
+        KioskSaleEntity regularReturnSale = sale(kiosk, day, day.atTime(8, 0), "COMPLETED", false, null,
+                BigDecimal.ZERO, money("40.00"),
+                line(product, "CUO-EX", "1", "40.00", "40.00"));
+        headerReturn(kiosk, regularReturnSale, regularReturnSale.getItems().get(0), product,
+                "1", "40.00", "COMPLETED", day.atTime(12, 0), null);
+        KioskSaleEntity entrecuerosReturnSale = sale(entrecueros, day, day.atTime(8, 1), "COMPLETED", false, null,
+                BigDecimal.ZERO, money("50.00"),
+                line(product, "CUO-EX", "1", "50.00", "50.00"));
+        headerReturn(entrecueros, entrecuerosReturnSale, entrecuerosReturnSale.getItems().get(0), product,
+                "1", "50.00", "COMPLETED", day.atTime(12, 1), null);
+
+        KioskSalesByCategoryReportResponse all = report(day, day, null);
+        assertMoney(row(all, "CueroExcl").getTotalAmount(), "100.00");
+        assertUnits(row(all, "CueroExcl").getUnits(), "1");
+        assertThat(row(all, "CueroExcl").getSubgroupCode()).isNull();
+
+        KioskSalesByCategoryReportResponse bothIds = report(day, day,
+                kiosk.getId() + "," + entrecueros.getId());
+        assertMoney(row(bothIds, "CueroExcl").getTotalAmount(), "100.00");
+
+        KioskSalesByCategoryReportResponse onlyEntrecueros = report(day, day,
+                String.valueOf(entrecueros.getId()));
+        assertThat(onlyEntrecueros.getRows()).isEmpty();
+        assertMoney(onlyEntrecueros.getTotals().getTotalAmount(), "0.00");
+    }
+
+    @Test
     void userWithoutReportsAccessGets403() throws Exception {
         UserEntity seller = userWithRole("VENDEDOR");
         when(securityUtil.getCurrentUserId()).thenReturn(seller.getId());
@@ -475,12 +663,16 @@ class KioskSalesByCategoryReportH2Test {
     }
 
     private LocationEntity kiosk(String code, boolean pilot) {
+        return kiosk(code, pilot, "STANDARD");
+    }
+
+    private LocationEntity kiosk(String code, boolean pilot, String posMode) {
         return locationRepository.saveAndFlush(LocationEntity.builder()
                 .code(code)
                 .name("Kiosko " + code)
                 .categoria("KIOSKO")
                 .posTestMode(pilot)
-                .posMode("STANDARD")
+                .posMode(posMode)
                 .posOpeningCashAmount(new BigDecimal("300.00"))
                 .build());
     }
@@ -493,10 +685,24 @@ class KioskSalesByCategoryReportH2Test {
     }
 
     private ProductEntity product(String code, ProductCategoryEntity category) {
+        return product(code, category, code, null, null, false);
+    }
+
+    private ProductEntity product(
+            String code,
+            ProductCategoryEntity category,
+            String name,
+            String audience,
+            String cinchoType,
+            Boolean kids
+    ) {
         return productRepository.saveAndFlush(ProductEntity.builder()
                 .code(code + "-" + SEQ.incrementAndGet())
-                .name(code)
+                .name(name)
                 .categoryId(category == null ? null : category.getId())
+                .audienceCategory(audience)
+                .cinchoType(cinchoType)
+                .cinchoForKids(Boolean.TRUE.equals(kids))
                 .build());
     }
 
@@ -600,6 +806,15 @@ class KioskSalesByCategoryReportH2Test {
                 .filter(row -> name.equals(row.getCategoryName()))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Sin fila " + name + " en " + report.getRows()));
+    }
+
+    private static Row row(KioskSalesByCategoryReportResponse report, String name, String subgroupCode) {
+        return report.getRows().stream()
+                .filter(row -> name.equals(row.getCategoryName())
+                        && Objects.equals(subgroupCode, row.getSubgroupCode()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "Sin fila " + name + "/" + subgroupCode + " en " + report.getRows()));
     }
 
     private static BigDecimal sumAmounts(KioskSalesByCategoryReportResponse report) {
