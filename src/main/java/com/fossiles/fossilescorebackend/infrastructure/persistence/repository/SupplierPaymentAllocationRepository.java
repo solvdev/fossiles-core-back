@@ -18,6 +18,9 @@ public interface SupplierPaymentAllocationRepository extends JpaRepository<Suppl
 
     List<SupplierPaymentAllocationEntity> findByPaymentId(Long paymentId);
 
+    /** Cualquier fila cuenta, aunque el pago esté anulado: esa renta ya no se toca. */
+    boolean existsByPayableDocumentId(Long payableDocumentId);
+
     /** Lo ya pagado por orden: {orderId, suma}; los pagos anulados no cuentan. */
     @Query("SELECT a.purchaseOrderId, SUM(a.amount) FROM SupplierPaymentAllocationEntity a, SupplierPaymentEntity p "
             + "WHERE a.paymentId = p.id AND p.status <> 'ANULADO' AND a.purchaseOrderId IS NOT NULL GROUP BY a.purchaseOrderId")

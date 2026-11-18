@@ -173,8 +173,10 @@ public class PayableDocumentService {
     // ------------------------------------------------------------------------------------------------
 
     /**
-     * Genera un documento por pagar por cada renta del mes ({@code month} «YYYY-MM»): el arrendador es el beneficiario, el
-     * monto sale de Finanzas y vence el día de pago del contrato. Se puede repetir sin duplicar.
+     * Genera un documento por pagar por cada renta del mes ({@code month} «YYYY-MM»): kioscos y otras rentas. El
+     * arrendador es el beneficiario (o el nombre de la renta, si la otra renta no tiene arrendador), el monto sale de
+     * Finanzas o de la otra renta, y vence el día de pago de ese mismo mes. Se puede repetir sin duplicar. Si la renta
+     * ya existe, sigue activa y nadie le ha aplicado un pago, se corrige el vencimiento cuando el día de pago cambió.
      */
     @Transactional
     public RentGenerationResult generateRents(String month) throws BusinessException {
@@ -185,37 +187,91 @@ public class PayableDocumentService {
         } catch (DateTimeParseException | NullPointerException e) {
             throw new BusinessException("Indique el mes con el formato AAAA-MM.");
         }
-        KioskRentService.RentsDue due = rentService.rentsDueIn(period);
-        Set<Long> existing = new HashSet<>();
-        documentRepository.findByKindAndPeriodAndStatus(PayableDocumentEntity.KIND_RENT, period.toString(),
-                PayableDocumentEntity.STATUS_ACTIVE).forEach(d -> existing.add(d.getLocationId()));
+        KioskRentService.RentsDue kiosks = rentService.rentsDueIn(period);
+        KioskRentService.OtherRentsDue others = rentService.otherRentsDueIn(period);
+        Map<Long, PayableDocumentEntity> byLocation = new HashMap<>();
+        Map<Long, PayableDocumentEntity> byOtherRent = new HashMap<>();
+        for (PayableDocumentEntity document : documentRepository.findByKindAndPeriodAndStatus(
+                PayableDocumentEntity.KIND_RENT, period.toString(), PayableDocumentEntity.STATUS_ACTIVE)) {
+            if (document.getOtherRentId() != null) {
+                byOtherRent.put(document.getOtherRentId(), document);
+            } else if (document.getLocationId() != null) {
+                byLocation.put(document.getLocationId(), document);
+            }
+        }
         SupplierIndex suppliers = supplierIndex();
         int created = 0;
         int already = 0;
+        int updated = 0;
         BigDecimal total = BigDecimal.ZERO;
-        for (KioskRentService.RentDue rent : due.due()) {
-            if (existing.contains(rent.locationId())) {
-                already++;
+        for (KioskRentService.RentDue rent : kiosks.due()) {
+            PayableDocumentEntity existing = byLocation.get(rent.locationId());
+            if (existing != null) {
+                if (syncDueDate(existing, rent.payDate())) {
+                    updated++;
+                } else {
+                    already++;
+                }
                 continue;
             }
             SupplierEntity supplier = suppliers.find(rent.landlord(), null);
-            documentRepository.save(PayableDocumentEntity.builder()
-                    .supplierId(supplier != null ? supplier.getId() : null)
-                    .payeeName(supplier != null ? supplier.getName() : rent.landlord())
-                    .concept("Renta de " + rent.name() + " · " + period)
-                    .documentNumber("RENTA-" + (rent.code() != null ? rent.code() : rent.locationId()) + "-" + period)
-                    .issueDate(rent.payDate())
-                    .dueDate(rent.payDate())
-                    .amount(rent.amount())
-                    .kind(PayableDocumentEntity.KIND_RENT)
-                    .locationId(rent.locationId())
-                    .period(period.toString())
-                    .createdBy(userId)
-                    .build());
+            documentRepository.save(rentDocument(userId, period, supplier, rent.landlord(), rent.name(),
+                    "RENTA-" + (rent.code() != null ? rent.code() : rent.locationId()) + "-" + period,
+                    rent.payDate(), rent.amount(), rent.locationId(), null));
             created++;
             total = total.add(rent.amount());
         }
-        return new RentGenerationResult(period.toString(), created, already, total, due.skipped());
+        for (KioskRentService.OtherRentDue rent : others.due()) {
+            PayableDocumentEntity existing = byOtherRent.get(rent.otherRentId());
+            if (existing != null) {
+                if (syncDueDate(existing, rent.payDate())) {
+                    updated++;
+                } else {
+                    already++;
+                }
+                continue;
+            }
+            SupplierEntity supplier = rent.landlord() == null ? null : suppliers.find(rent.landlord(), null);
+            String payee = rent.landlord() != null ? rent.landlord() : rent.name();
+            documentRepository.save(rentDocument(userId, period, supplier, payee, rent.name(),
+                    "RENTA-O" + rent.otherRentId() + "-" + period, rent.payDate(), rent.amount(), null, rent.otherRentId()));
+            created++;
+            total = total.add(rent.amount());
+        }
+        List<String> skipped = new ArrayList<>();
+        skipped.addAll(kiosks.skipped());
+        skipped.addAll(others.skipped());
+        return new RentGenerationResult(period.toString(), created, already, total, skipped, updated);
+    }
+
+    /** Corrige vencimiento y fecha del documento si nadie le ha aplicado un pago. */
+    private boolean syncDueDate(PayableDocumentEntity existing, LocalDate payDate) {
+        if (payDate.equals(existing.getDueDate()) || allocationRepository.existsByPayableDocumentId(existing.getId())) {
+            return false;
+        }
+        existing.setDueDate(payDate);
+        existing.setIssueDate(payDate);
+        documentRepository.save(existing);
+        return true;
+    }
+
+    private PayableDocumentEntity rentDocument(Long userId, YearMonth period, SupplierEntity supplier, String payeeName,
+                                               String rentName, String documentNumber, LocalDate payDate, BigDecimal amount,
+                                               Long locationId, Long otherRentId) {
+        return PayableDocumentEntity.builder()
+                .supplierId(supplier != null ? supplier.getId() : null)
+                .payeeName(supplier != null ? supplier.getName() : payeeName)
+                .concept("Renta de " + rentName + " · " + period)
+                .documentNumber(documentNumber)
+                .issueDate(payDate)
+                .dueDate(payDate)
+                .amount(amount)
+                .kind(PayableDocumentEntity.KIND_RENT)
+                .locationId(locationId)
+                .otherRentId(otherRentId)
+                .period(period.toString())
+                .createdBy(userId)
+                .build();
     }
 
     // ------------------------------------------------------------------------------------------------

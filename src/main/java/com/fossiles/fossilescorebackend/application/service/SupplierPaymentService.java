@@ -57,6 +57,10 @@ public class SupplierPaymentService {
     static final int DEFAULT_CREDIT_DAYS = 30;
     /** Una partida que vence en estos días o menos aparece «por vencer». */
     static final int DUE_SOON_DAYS = 15;
+    /** Órdenes, documentos y saldos iniciales. Sin las rentas. */
+    static final String SCOPE_SUPPLIERS = "SUPPLIERS";
+    /** Solo documentos de renta. */
+    static final String SCOPE_RENTS = "RENTS";
 
     private final PurchaseOrderRepository orderRepository;
     private final SupplierRepository supplierRepository;
@@ -92,9 +96,23 @@ public class SupplierPaymentService {
 
     @Transactional(readOnly = true)
     public PayablesResponse payables() throws BusinessException {
+        return payables(null);
+    }
+
+    /**
+     * {@code scope} nulo: todo, como siempre. {@code SUPPLIERS}: órdenes, documentos y saldos. {@code RENTS}: rentas.
+     * Los totales se recalculan sobre las filas que quedan. {@code orderCount} cuenta solo órdenes y
+     * {@code supplierCount} solo beneficiarios que no son renta, con o sin scope.
+     */
+    @Transactional(readOnly = true)
+    public PayablesResponse payables(String scope) throws BusinessException {
         guard.assertCanView();
+        String normalized = normalizeScope(scope);
         LocalDate today = GuatemalaDateTime.today();
         List<PayableRow> rows = buildPayables(today);
+        if (normalized != null) {
+            rows = rows.stream().filter(row -> rowInScope(row.kind(), normalized)).toList();
+        }
 
         BigDecimal total = BigDecimal.ZERO;
         BigDecimal overdue = BigDecimal.ZERO;
@@ -102,6 +120,8 @@ public class SupplierPaymentService {
         int overdueCount = 0;
         int dueSoon = 0;
         int in7Count = 0;
+        int orderCount = 0;
+        Set<String> supplierPayees = new HashSet<>();
         for (PayableRow r : rows) {
             total = total.add(r.balance());
             if ("VENCIDA".equals(r.status())) {
@@ -114,20 +134,87 @@ public class SupplierPaymentService {
                 in7 = in7.add(r.balance());
                 in7Count++;
             }
-        }
-        LocalDate monthStart = today.withDayOfMonth(1);
-        BigDecimal paidMonth = BigDecimal.ZERO;
-        int paymentsMonth = 0;
-        for (SupplierPaymentEntity p : paymentRepository.findAll()) {
-            if (!SupplierPaymentEntity.STATUS_VOID.equals(p.getStatus()) && !p.getPayDate().isBefore(monthStart)) {
-                paidMonth = paidMonth.add(p.getAmount());
-                paymentsMonth++;
+            if ("ORDEN".equals(r.kind())) {
+                orderCount++;
+            }
+            if (!"RENTA".equals(r.kind())) {
+                supplierPayees.add(r.payeeKey());
             }
         }
-        Set<String> payees = rows.stream().map(PayableRow::payeeKey).collect(Collectors.toSet());
-        PayablesSummary summary = new PayablesSummary(total, rows.size(), payees.size(), overdue, overdueCount,
-                dueSoon, in7, in7Count, paidMonth, paymentsMonth);
+        MonthPaid paid = paidInMonth(today.withDayOfMonth(1), normalized);
+        PayablesSummary summary = new PayablesSummary(total, orderCount, supplierPayees.size(), overdue, overdueCount,
+                dueSoon, in7, in7Count, paid.amount(), paid.count());
         return new PayablesResponse(today, summary, rows, guard.canPay());
+    }
+
+    private static String normalizeScope(String scope) throws BusinessException {
+        if (scope == null || scope.isBlank()) {
+            return null;
+        }
+        String value = scope.trim();
+        if (SCOPE_SUPPLIERS.equals(value) || SCOPE_RENTS.equals(value)) {
+            return value;
+        }
+        throw new BusinessException("El alcance debe ser SUPPLIERS o RENTS.");
+    }
+
+    private static boolean rowInScope(String kind, String scope) {
+        boolean rent = "RENTA".equals(kind);
+        return SCOPE_RENTS.equals(scope) ? rent : !rent;
+    }
+
+    private record MonthPaid(BigDecimal amount, int count) {}
+
+    /** Sin scope suma todos los pagos del mes. Con scope, solo los pagos cuyas partidas son todas de ese alcance. */
+    private MonthPaid paidInMonth(LocalDate monthStart, String scope) {
+        List<SupplierPaymentEntity> payments = new ArrayList<>();
+        for (SupplierPaymentEntity payment : paymentRepository.findAll()) {
+            if (!SupplierPaymentEntity.STATUS_VOID.equals(payment.getStatus()) && !payment.getPayDate().isBefore(monthStart)) {
+                payments.add(payment);
+            }
+        }
+        if (scope == null) {
+            BigDecimal total = BigDecimal.ZERO;
+            for (SupplierPaymentEntity payment : payments) {
+                total = total.add(payment.getAmount());
+            }
+            return new MonthPaid(total, payments.size());
+        }
+        if (payments.isEmpty()) {
+            return new MonthPaid(BigDecimal.ZERO, 0);
+        }
+        List<SupplierPaymentAllocationEntity> allocations = allocationRepository.findByPaymentIdIn(
+                payments.stream().map(SupplierPaymentEntity::getId).toList());
+        Map<Long, List<SupplierPaymentAllocationEntity>> byPayment = new HashMap<>();
+        Set<Long> documentIds = new HashSet<>();
+        for (SupplierPaymentAllocationEntity allocation : allocations) {
+            byPayment.computeIfAbsent(allocation.getPaymentId(), id -> new ArrayList<>()).add(allocation);
+            if (allocation.getPayableDocumentId() != null) {
+                documentIds.add(allocation.getPayableDocumentId());
+            }
+        }
+        Map<Long, String> kindByDocument = new HashMap<>();
+        if (!documentIds.isEmpty()) {
+            documentRepository.findAllById(documentIds).forEach(document -> kindByDocument.put(document.getId(), document.getKind()));
+        }
+        BigDecimal total = BigDecimal.ZERO;
+        int count = 0;
+        for (SupplierPaymentEntity payment : payments) {
+            List<SupplierPaymentAllocationEntity> rows = byPayment.get(payment.getId());
+            if (rows == null || rows.isEmpty() || rows.stream().anyMatch(row -> !allocationInScope(row, kindByDocument, scope))) {
+                continue;
+            }
+            total = total.add(payment.getAmount());
+            count++;
+        }
+        return new MonthPaid(total, count);
+    }
+
+    private static boolean allocationInScope(SupplierPaymentAllocationEntity allocation, Map<Long, String> kindByDocument,
+                                             String scope) {
+        boolean rent = allocation.getPayableDocumentId() != null
+                && PayableDocumentEntity.KIND_RENT.equals(kindByDocument.get(allocation.getPayableDocumentId()));
+        return SCOPE_RENTS.equals(scope) ? rent : !rent;
     }
 
     List<PayableRow> buildPayables(LocalDate today) {
@@ -228,9 +315,9 @@ public class SupplierPaymentService {
         return new PaymentsResponse(toRows(payments), guard.canPay());
     }
 
-    /** Una partida ya validada que el pago va a cubrir. */
+    /** Una partida ya validada que el pago va a cubrir. {@code rent} si el documento es una renta. */
     private record Target(String label, String payeeKey, Long supplierId, String payeeName,
-                          SupplierPaymentAllocationEntity allocation) {}
+                          SupplierPaymentAllocationEntity allocation, boolean rent) {}
 
     @Transactional
     public PaymentRow createPayment(CreateRequest request) throws BusinessException {
@@ -297,6 +384,9 @@ public class SupplierPaymentService {
             targets.add(target);
             total = total.add(amount);
         }
+        if (targets.stream().anyMatch(Target::rent) && targets.stream().anyMatch(target -> !target.rent())) {
+            throw new BusinessException("Un pago no puede combinar rentas con pagos a proveedores.");
+        }
         String payeeKey = targets.get(0).payeeKey();
         if (targets.stream().anyMatch(t -> !t.payeeKey().equals(payeeKey))) {
             throw new BusinessException("Solo se pueden juntar en un pago partidas de un mismo beneficiario.");
@@ -356,7 +446,7 @@ public class SupplierPaymentService {
         String payee = supplier != null && supplier.getPayeeName() != null && !supplier.getPayeeName().isBlank()
                 ? supplier.getPayeeName() : name;
         return new Target(order.getCode(), payeeKeyOf(order.getSupplierId(), null), order.getSupplierId(), payee,
-                SupplierPaymentAllocationEntity.builder().purchaseOrderId(order.getId()).amount(amount).build());
+                SupplierPaymentAllocationEntity.builder().purchaseOrderId(order.getId()).amount(amount).build(), false);
     }
 
     private Target documentTarget(Long documentId, BigDecimal amount, Set<String> seen) throws BusinessException {
@@ -378,7 +468,8 @@ public class SupplierPaymentService {
         String payee = supplier != null && supplier.getPayeeName() != null && !supplier.getPayeeName().isBlank()
                 ? supplier.getPayeeName() : document.getPayeeName();
         return new Target(label, payeeKeyOf(document.getSupplierId(), document.getPayeeName()), document.getSupplierId(),
-                payee, SupplierPaymentAllocationEntity.builder().payableDocumentId(document.getId()).amount(amount).build());
+                payee, SupplierPaymentAllocationEntity.builder().payableDocumentId(document.getId()).amount(amount).build(),
+                PayableDocumentEntity.KIND_RENT.equals(document.getKind()));
     }
 
     @Transactional
@@ -456,6 +547,19 @@ public class SupplierPaymentService {
         return new PaymentsResponse(toRows(paymentRepository.findAllByOrderByIdDesc()), true);
     }
 
+    /** Verdadero solo si cada partida es un documento de renta. */
+    private static boolean rentPayment(List<SupplierPaymentAllocationEntity> allocations, Set<Long> rentDocumentIds) {
+        if (allocations == null || allocations.isEmpty()) {
+            return false;
+        }
+        for (SupplierPaymentAllocationEntity allocation : allocations) {
+            if (allocation.getPayableDocumentId() == null || !rentDocumentIds.contains(allocation.getPayableDocumentId())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // ------------------------------------------------------------------------------------------------
 
     private List<PaymentRow> toRows(List<SupplierPaymentEntity> payments) {
@@ -476,11 +580,19 @@ public class SupplierPaymentService {
         orderRepository.findAllById(allocations.stream().map(SupplierPaymentAllocationEntity::getPurchaseOrderId)
                 .filter(java.util.Objects::nonNull).collect(Collectors.toSet())).forEach(o -> orderCodes.put(o.getId(), o.getCode()));
         Map<Long, String> documentLabels = new HashMap<>();
+        Set<Long> rentDocumentIds = new HashSet<>();
         documentRepository.findAllById(allocations.stream().map(SupplierPaymentAllocationEntity::getPayableDocumentId)
                 .filter(java.util.Objects::nonNull).collect(Collectors.toSet()))
-                .forEach(d -> documentLabels.put(d.getId(), d.getDocumentNumber() != null ? d.getDocumentNumber() : d.getConcept()));
+                .forEach(d -> {
+                    documentLabels.put(d.getId(), d.getDocumentNumber() != null ? d.getDocumentNumber() : d.getConcept());
+                    if (PayableDocumentEntity.KIND_RENT.equals(d.getKind())) {
+                        rentDocumentIds.add(d.getId());
+                    }
+                });
         Map<Long, List<String>> codesByPayment = new HashMap<>();
+        Map<Long, List<SupplierPaymentAllocationEntity>> allocationsByPayment = new HashMap<>();
         for (SupplierPaymentAllocationEntity a : allocations) {
+            allocationsByPayment.computeIfAbsent(a.getPaymentId(), k -> new ArrayList<>()).add(a);
             String label = a.getPurchaseOrderId() != null ? orderCodes.get(a.getPurchaseOrderId())
                     : documentLabels.get(a.getPayableDocumentId());
             codesByPayment.computeIfAbsent(a.getPaymentId(), k -> new ArrayList<>()).add(label);
@@ -497,7 +609,8 @@ public class SupplierPaymentService {
                     p.getBankAccountId(), account != null ? account.getName() : null, p.getPayDate(), p.getAmount(),
                     p.getPayeeName(), p.getReference(), p.getConcept(), p.getStatus(), p.getPrintedAt(),
                     p.getPrintCount() == null ? 0 : p.getPrintCount(), p.getVoidReason(),
-                    codesByPayment.getOrDefault(p.getId(), List.of()), p.getCreatedAt()));
+                    codesByPayment.getOrDefault(p.getId(), List.of()), p.getCreatedAt(),
+                    rentPayment(allocationsByPayment.get(p.getId()), rentDocumentIds)));
         }
         return rows;
     }

@@ -63,6 +63,10 @@ public class PayableDocumentEntity {
     @Column(name = "location_id")
     private Long locationId;
 
+    /** Renta que no es kiosco. En una renta ACTIVA va este id o {@code location_id}, no los dos. */
+    @Column(name = "other_rent_id")
+    private Long otherRentId;
+
     /** "YYYY-MM" de una renta. */
     @Column(name = "period", length = 7)
     private String period;

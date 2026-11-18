@@ -62,11 +62,14 @@ public final class SupplierPaymentDtos {
 
     // ------------------------------------------------------------------ Pagos
 
+    /**
+     * {@code rentPayment} es verdadero cuando todas las partidas del pago son documentos de renta.
+     */
     public record PaymentRow(Long id, String number, Long supplierId, String supplierName, Long paymentMethodId,
                              String methodName, boolean printsCheque, Long bankAccountId, String bankName,
                              LocalDate payDate, BigDecimal amount, String payeeName, String reference, String concept,
                              String status, LocalDateTime printedAt, int printCount, String voidReason,
-                             List<String> orderCodes, LocalDateTime createdAt) {
+                             List<String> orderCodes, LocalDateTime createdAt, boolean rentPayment) {
     }
 
     public record PaymentsResponse(List<PaymentRow> rows, boolean canPay) {
@@ -91,8 +94,11 @@ public final class SupplierPaymentDtos {
                                   List<DocImportError> errors) {
     }
 
-    /** Resultado de generar las rentas de un mes ({@code period} "YYYY-MM"). */
+    /**
+     * Resultado de generar las rentas de un mes ({@code period} "YYYY-MM").
+     * {@code updated}: rentas que ya existían, no tenían pagos y se les corrigió el vencimiento.
+     */
     public record RentGenerationResult(String period, int created, int alreadyExisting, BigDecimal createdTotal,
-                                       List<String> skipped) {
+                                       List<String> skipped, int updated) {
     }
 }
