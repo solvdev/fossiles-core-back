@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
@@ -45,9 +46,10 @@ public class SupplierPaymentController {
 
     // ---- Cuentas por pagar y pagos
 
+    /** {@code scope}: SUPPLIERS (órdenes, documentos y saldos) o RENTS (rentas). Sin scope, todo. */
     @GetMapping("/payables")
-    public ResponseEntity<PayablesResponse> payables() throws BusinessException {
-        return ResponseEntity.ok(service.payables());
+    public ResponseEntity<PayablesResponse> payables(@RequestParam(required = false) String scope) throws BusinessException {
+        return ResponseEntity.ok(service.payables(scope));
     }
 
     @GetMapping("/payments")

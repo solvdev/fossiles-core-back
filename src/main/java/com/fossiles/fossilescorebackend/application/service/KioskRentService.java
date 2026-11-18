@@ -262,7 +262,7 @@ public class KioskRentService {
                 skipped.add(name + ": faltan el arrendador o el día de pago.");
                 continue;
             }
-            LocalDate payDate = month.atDay(Math.min(r.getPaymentDay(), month.lengthOfMonth()));
+            LocalDate payDate = clampedPayDate(month, r.getPaymentDay());
             if ((r.getContractStart() != null && payDate.isBefore(r.getContractStart()))
                     || (r.getContractEnd() != null && payDate.isAfter(r.getContractEnd()))) {
                 skipped.add(name + ": el contrato no cubre el " + payDate + ".");
@@ -276,6 +276,52 @@ public class KioskRentService {
             due.add(new RentDue(kiosk.getId(), kiosk.getCode(), name, r.getLandlordName(), rent.amount(), payDate));
         }
         return new RentsDue(due, skipped);
+    }
+
+    /** Día de pago del mes, sin pasarse del último día (31 en febrero cae el 28 o 29). */
+    static LocalDate clampedPayDate(java.time.YearMonth month, int paymentDay) {
+        return month.atDay(Math.min(paymentDay, month.lengthOfMonth()));
+    }
+
+    /** Una renta que no es kiosco y toca pagar en un mes. {@code landlord} puede ser null. */
+    public record OtherRentDue(Long otherRentId, String name, String landlord, BigDecimal amount, LocalDate payDate) {}
+
+    /** Otras rentas del mes y las que se saltaron, con la misma razón que un kiosco. */
+    public record OtherRentsDue(List<OtherRentDue> due, List<String> skipped) {}
+
+    /**
+     * Otras rentas activas del mes: con día de pago, monto mayor que cero y contrato que cubre la fecha de pago.
+     * Sin arrendador igual se generan: el beneficiario será el nombre de la renta.
+     */
+    @Transactional(readOnly = true)
+    public OtherRentsDue otherRentsDueIn(java.time.YearMonth month) {
+        List<OtherRentDue> due = new ArrayList<>();
+        List<String> skipped = new ArrayList<>();
+        for (OtherRentEntity other : otherRentRepository.findByActiveTrueOrderByNameAscIdAsc()) {
+            String name = other.getName();
+            if (other.getPaymentDay() == null) {
+                skipped.add(name + ": faltan el arrendador o el día de pago.");
+                continue;
+            }
+            LocalDate payDate = clampedPayDate(month, other.getPaymentDay());
+            if ((other.getContractStart() != null && payDate.isBefore(other.getContractStart()))
+                    || (other.getContractEnd() != null && payDate.isAfter(other.getContractEnd()))) {
+                skipped.add(name + ": el contrato no cubre el " + payDate + ".");
+                continue;
+            }
+            if (other.getMonthlyAmount() == null) {
+                skipped.add(name + ": Finanzas no tiene la renta.");
+                continue;
+            }
+            BigDecimal amount = other.getMonthlyAmount().setScale(2, RoundingMode.HALF_UP);
+            if (amount.signum() <= 0) {
+                skipped.add(name + ": Finanzas no tiene la renta.");
+                continue;
+            }
+            String landlord = blankToNull(other.getLandlordName());
+            due.add(new OtherRentDue(other.getId(), name, landlord, amount, payDate));
+        }
+        return new OtherRentsDue(due, skipped);
     }
 
     /** Renta vigente por kiosco: el costo ALQUILER más reciente que Finanzas tiene cargado. */

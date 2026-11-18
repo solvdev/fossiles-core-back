@@ -32,6 +32,12 @@ public class FelEmissionProperties {
      * kioskos en modo piloto o con {@link #testMode}. Apagar solo cuando se valide en pruebas.
      */
     private boolean creditDebitNotesSandboxOnly = true;
+    /**
+     * Frase tipo 9 escenario 22 en NCRE/NDEB emitidas después de los dos meses de la factura origen
+     * (Reglas y Validaciones SAT v2.2). Apagada: la SAT pospuso esa validación "hasta nuevo aviso"
+     * (aviso INFILE nov-2026) y pide seguir con el XML anterior. Encender cuando la SAT la active.
+     */
+    private boolean lateNoteFraseEnabled = false;
 
     private String signUrl = "https://signer-emisores.feel.com.gt/sign_solicitud_firmas/firma_xml";
     private String certifyUrl = "https://certificador.feel.com.gt/fel/certificacion/v2/dte/";

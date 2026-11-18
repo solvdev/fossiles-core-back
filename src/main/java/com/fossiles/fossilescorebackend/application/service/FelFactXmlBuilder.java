@@ -122,7 +122,8 @@ public class FelFactXmlBuilder {
         }
 
         String frasesXml = buildFrasesXml(resolveFrases(
-                credentials.frases(), documentType, document.getNoteReference(), emission));
+                credentials.frases(), documentType, document.getNoteReference(), emission,
+                properties.isLateNoteFraseEnabled()));
         String adendaXml = buildAdendaXml(document.getInternalNumber());
         BigDecimal granTotal = granTotalFromLines.setScale(2, RoundingMode.HALF_UP);
         String commercialName = firstNonBlank(document.getEmitterCommercialName(), credentials.nombreComercial());
@@ -400,12 +401,16 @@ public class FelFactXmlBuilder {
      * Frases del emisor + frase tipo 9 escenario 22 (Reglas y Validaciones SAT v2.2, 2.6.13) en NCRE/NDEB
      * emitidas después de los dos meses siguientes a la factura origen (Ley del IVA art. 17:
      * "no se reconoce como crédito fiscal"). En cualquier otro caso SAT rechaza la frase 9-22.
+     *
+     * @param lateNoteFraseEnabled {@code fel.emission.late-note-frase-enabled}: la SAT pospuso la validación,
+     *                             así que mientras esté apagado ninguna nota lleva la frase 9-22.
      */
     static List<FelEmissionProperties.Frase> resolveFrases(
             List<FelEmissionProperties.Frase> emitterFrases,
             String documentType,
             TaxInvoiceDocument.NoteReference noteReference,
-            ZonedDateTime emission
+            ZonedDateTime emission,
+            boolean lateNoteFraseEnabled
     ) {
         List<FelEmissionProperties.Frase> frases = new ArrayList<>();
         if (emitterFrases != null) {
@@ -415,7 +420,8 @@ public class FelFactXmlBuilder {
                 }
             }
         }
-        if (FelSatReceptorRules.isNotaCreditoDebito(documentType)
+        if (lateNoteFraseEnabled
+                && FelSatReceptorRules.isNotaCreditoDebito(documentType)
                 && noteReference != null
                 && isLateNote(noteReference.getOriginEmissionDate(), emission)) {
             FelEmissionProperties.Frase late = new FelEmissionProperties.Frase();
