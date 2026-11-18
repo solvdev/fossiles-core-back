@@ -15,6 +15,7 @@ import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
 import com.fossiles.fossilescorebackend.application.util.CinchoSizePricing;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
+import com.fossiles.fossilescorebackend.application.util.KioskSalePricing;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioscoPhysicalCountStatus;
@@ -990,16 +991,7 @@ public class KioskExchangeService {
 
     /** Precio de empaque según factura original: sin repartir descuento de la venta. */
     static BigDecimal packagingLineAmountNoDiscount(KioskSaleItemEntity item) {
-        if (item == null) {
-            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
-        }
-        BigDecimal qty = item.getQuantity() != null && item.getQuantity().compareTo(BigDecimal.ZERO) > 0
-                ? item.getQuantity()
-                : BigDecimal.ONE;
-        if (item.getLineTotal() != null && item.getLineTotal().compareTo(BigDecimal.ZERO) > 0) {
-            return item.getLineTotal().setScale(2, RoundingMode.HALF_UP);
-        }
-        return safeAmount(item.getUnitPrice()).multiply(qty).setScale(2, RoundingMode.HALF_UP);
+        return KioskSalePricing.packagingLineAmountNoDiscount(item);
     }
 
     private record PackagingAllocation(BigDecimal returnedCredit) {
@@ -2034,56 +2026,7 @@ public class KioskExchangeService {
             KioskSaleItemEntity item,
             List<KioskSaleItemEntity> allItems
     ) {
-        if (item == null) {
-            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
-        }
-        BigDecimal qty = item.getQuantity() != null && item.getQuantity().compareTo(BigDecimal.ZERO) > 0
-                ? item.getQuantity()
-                : BigDecimal.ONE;
-        if (ProductCinchoType.isPackagingProductCode(item.getProductCode())) {
-            return packagingLineAmountNoDiscount(item).divide(qty, 2, RoundingMode.HALF_UP);
-        }
-        BigDecimal lineSubtotal = item.getLineTotal() != null
-                ? item.getLineTotal()
-                : safeAmount(item.getUnitPrice()).multiply(qty);
-        // Promoción dinámica (RULES): cada línea guarda su propio descuento (p.ej. la cara 15%, la barata 30%).
-        List<KioskSaleItemEntity> saleItems = allItems != null && !allItems.isEmpty()
-                ? allItems
-                : (sale != null && sale.getItems() != null ? List.copyOf(sale.getItems()) : List.of());
-        boolean perLineDiscount = item.getDiscountAmount() != null
-                || saleItems.stream().anyMatch(row -> row != null && row.getDiscountAmount() != null);
-        if (perLineDiscount) {
-            BigDecimal linePaid = lineSubtotal.subtract(safeAmount(item.getDiscountAmount())).max(BigDecimal.ZERO);
-            return linePaid.divide(qty, 2, RoundingMode.HALF_UP);
-        }
-        BigDecimal discount = sale != null && sale.getDiscountAmount() != null
-                ? sale.getDiscountAmount()
-                : BigDecimal.ZERO;
-        List<KioskSaleItemEntity> items = allItems != null && !allItems.isEmpty()
-                ? allItems
-                : (sale != null && sale.getItems() != null ? List.copyOf(sale.getItems()) : List.of());
-        BigDecimal discountBase = BigDecimal.ZERO;
-        for (KioskSaleItemEntity saleItem : items) {
-            if (saleItem == null || ProductCinchoType.isPackagingProductCode(saleItem.getProductCode())) {
-                continue;
-            }
-            BigDecimal itemQty = saleItem.getQuantity() != null && saleItem.getQuantity().compareTo(BigDecimal.ZERO) > 0
-                    ? saleItem.getQuantity() : BigDecimal.ONE;
-            BigDecimal itemSub = saleItem.getLineTotal() != null
-                    ? saleItem.getLineTotal()
-                    : safeAmount(saleItem.getUnitPrice()).multiply(itemQty);
-            discountBase = discountBase.add(itemSub);
-        }
-        if (discountBase.compareTo(BigDecimal.ZERO) <= 0) {
-            discountBase = lineSubtotal;
-        }
-        if (discountBase.compareTo(BigDecimal.ZERO) <= 0) {
-            return safeAmount(item.getUnitPrice()).setScale(2, RoundingMode.HALF_UP);
-        }
-        BigDecimal lineDiscountShare = discount.multiply(lineSubtotal)
-                .divide(discountBase, 6, RoundingMode.HALF_UP);
-        BigDecimal linePaid = lineSubtotal.subtract(lineDiscountShare).max(BigDecimal.ZERO);
-        return linePaid.divide(qty, 2, RoundingMode.HALF_UP);
+        return KioskSalePricing.effectivePaidUnitPrice(sale, item, allItems);
     }
 
     static BigDecimal computeEffectivePaidUnitPrice(KioskSaleEntity sale, KioskSaleItemEntity item) {
