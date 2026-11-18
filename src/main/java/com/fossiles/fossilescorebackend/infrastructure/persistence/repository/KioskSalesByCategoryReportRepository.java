@@ -32,6 +32,10 @@ import java.util.List;
  * Fecha: {@code COALESCE(completed_at, created_at) >= from 00:00 AND < to+1 00:00},
  * sin AT TIME ZONE (hora de pared de Guatemala).
  * Si hay filas en {@code kiosk_exchange_slip_returned_item} se usan esas; si no, la cabecera.
+ *
+ * <p>Entrecueros: se excluye a nivel de local ({@code locations.pos_mode}). Las consultas
+ * unen {@code locations} por {@code kiosk_location_id} y omiten
+ * {@code COALESCE(pos_mode, 'STANDARD') = 'ENTRECUEROS'} en ventas y devoluciones.
  */
 @Repository
 @RequiredArgsConstructor
@@ -48,9 +52,17 @@ public class KioskSalesByCategoryReportRepository {
                    i.line_total AS line_total,
                    i.discount_amount AS line_discount,
                    c.id AS category_id,
-                   c.name AS category_name
+                   c.name AS category_name,
+                   p.id AS catalog_product_id,
+                   p.code AS catalog_product_code,
+                   p.name AS catalog_product_name,
+                   p.audience_category AS audience_category,
+                   p.cincho_type AS cincho_type,
+                   p.cincho_for_kids AS cincho_for_kids
             FROM kiosk_sale_item i
             JOIN kiosk_sale s ON s.id = i.kiosk_sale_id
+            JOIN locations loc ON loc.id = s.kiosk_location_id
+             AND COALESCE(loc.pos_mode, 'STANDARD') <> 'ENTRECUEROS'
             LEFT JOIN product p ON p.id = i.product_id
             LEFT JOIN product_category c ON c.id = p.category_id
             WHERE s.sale_date BETWEEN :from AND :to
@@ -75,6 +87,8 @@ public class KioskSalesByCategoryReportRepository {
                            THEN 1 ELSE 0
                        END AS in_period
                 FROM kiosk_exchange_slip r
+                JOIN locations loc ON loc.id = r.kiosk_location_id
+                 AND COALESCE(loc.pos_mode, 'STANDARD') <> 'ENTRECUEROS'
                 WHERE r.kiosk_location_id IN (:kioskIds)
                   AND COALESCE(r.completed_at, r.created_at) < :toExclusive
                   AND (
@@ -108,7 +122,13 @@ public class KioskSalesByCategoryReportRepository {
                    i.line_total AS line_total,
                    i.discount_amount AS line_discount,
                    c.id AS category_id,
-                   c.name AS category_name
+                   c.name AS category_name,
+                   p.id AS catalog_product_id,
+                   p.code AS catalog_product_code,
+                   p.name AS catalog_product_name,
+                   p.audience_category AS audience_category,
+                   p.cincho_type AS cincho_type,
+                   p.cincho_for_kids AS cincho_for_kids
             FROM slips r
             LEFT JOIN kiosk_exchange_slip_returned_item ri ON ri.exchange_slip_id = r.id
             LEFT JOIN kiosk_sale_item anchor
@@ -137,7 +157,13 @@ public class KioskSalesByCategoryReportRepository {
                 rs.getBigDecimal("line_total"),
                 rs.getBigDecimal("line_discount"),
                 asLong(rs, "category_id"),
-                rs.getString("category_name")));
+                rs.getString("category_name"),
+                asLong(rs, "catalog_product_id"),
+                rs.getString("catalog_product_code"),
+                rs.getString("catalog_product_name"),
+                rs.getString("audience_category"),
+                rs.getString("cincho_type"),
+                asBoolean(rs, "cincho_for_kids")));
     }
 
     public List<ReturnRow> findReturns(
@@ -173,7 +199,13 @@ public class KioskSalesByCategoryReportRepository {
                 rs.getBigDecimal("line_total"),
                 rs.getBigDecimal("line_discount"),
                 asLong(rs, "category_id"),
-                rs.getString("category_name")));
+                rs.getString("category_name"),
+                asLong(rs, "catalog_product_id"),
+                rs.getString("catalog_product_code"),
+                rs.getString("catalog_product_name"),
+                rs.getString("audience_category"),
+                rs.getString("cincho_type"),
+                asBoolean(rs, "cincho_for_kids")));
     }
 
     private static Long asLong(ResultSet rs, String column) throws SQLException {
@@ -185,6 +217,20 @@ public class KioskSalesByCategoryReportRepository {
             return number.longValue();
         }
         return Long.parseLong(value.toString());
+    }
+
+    private static Boolean asBoolean(ResultSet rs, String column) throws SQLException {
+        Object value = rs.getObject(column);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value instanceof Number number) {
+            return number.intValue() != 0;
+        }
+        return Boolean.parseBoolean(value.toString());
     }
 
     private static Integer asInt(ResultSet rs, String column) throws SQLException {
@@ -214,7 +260,13 @@ public class KioskSalesByCategoryReportRepository {
             BigDecimal lineTotal,
             BigDecimal lineDiscount,
             Long categoryId,
-            String categoryName
+            String categoryName,
+            Long catalogProductId,
+            String catalogProductCode,
+            String catalogProductName,
+            String audienceCategory,
+            String cinchoType,
+            Boolean cinchoForKids
     ) {
     }
 
@@ -242,7 +294,13 @@ public class KioskSalesByCategoryReportRepository {
             BigDecimal lineTotal,
             BigDecimal lineDiscount,
             Long categoryId,
-            String categoryName
+            String categoryName,
+            Long catalogProductId,
+            String catalogProductCode,
+            String catalogProductName,
+            String audienceCategory,
+            String cinchoType,
+            Boolean cinchoForKids
     ) {
     }
 }

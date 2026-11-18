@@ -6,9 +6,12 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskSalesByCat
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.util.KioskAccessHelper;
 import com.fossiles.fossilescorebackend.application.util.KioskSalePricing;
+import com.fossiles.fossilescorebackend.application.util.KioskSalesCategorySubgroup;
+import com.fossiles.fossilescorebackend.application.util.KioskSalesCategorySubgroup.Subgroup;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.UserEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSalesByCategoryReportRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.KioskSalesByCategoryReportRepository.ReturnRow;
@@ -16,6 +19,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ki
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.util.FelIvaCalculator;
+import com.fossiles.fossilescorebackend.infrastructure.util.KioskPosMode;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.AccessDeniedException;
@@ -58,20 +62,22 @@ public class KioskSalesByCategoryReportService {
     }
 
     KioskSalesByCategoryReportResponse build(LocalDate from, LocalDate to, List<Long> kioskIds) {
-        Map<Long, Acc> byCategory = new HashMap<>();
-        addSales(byCategory, reportRepository.findSaleLines(from, to, kioskIds));
-        addReturns(byCategory, reportRepository.findReturns(
+        Map<AccKey, Acc> byRow = new HashMap<>();
+        addSales(byRow, reportRepository.findSaleLines(from, to, kioskIds));
+        addReturns(byRow, reportRepository.findReturns(
                 from.atStartOfDay(), to.plusDays(1).atStartOfDay(), kioskIds));
 
         List<Row> rows = new ArrayList<>();
         BigDecimal totalUnits = BigDecimal.ZERO;
         BigDecimal totalAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
-        for (Acc acc : byCategory.values()) {
+        for (Acc acc : byRow.values()) {
             BigDecimal units = units(acc.units);
             BigDecimal amount = money(acc.amount);
             rows.add(Row.builder()
                     .categoryId(acc.categoryId)
                     .categoryName(acc.categoryName)
+                    .subgroupCode(acc.subgroupCode)
+                    .subgroupLabel(acc.subgroupLabel)
                     .units(units)
                     .totalAmount(amount)
                     .totalAmountNoIva(withoutIva(amount))
@@ -80,7 +86,8 @@ public class KioskSalesByCategoryReportService {
             totalAmount = totalAmount.add(amount);
         }
         rows.sort(Comparator.comparing(Row::getTotalAmount, Comparator.reverseOrder())
-                .thenComparing(Row::getCategoryName, Comparator.nullsLast(String::compareTo)));
+                .thenComparing(Row::getCategoryName, Comparator.nullsLast(String::compareTo))
+                .thenComparing(Row::getSubgroupLabel, Comparator.nullsLast(String::compareTo)));
         totalAmount = money(totalAmount);
         return KioskSalesByCategoryReportResponse.builder()
                 .from(from)
@@ -94,7 +101,7 @@ public class KioskSalesByCategoryReportService {
                 .build();
     }
 
-    private void addSales(Map<Long, Acc> byCategory, List<SaleLine> lines) {
+    private void addSales(Map<AccKey, Acc> byRow, List<SaleLine> lines) {
         Map<Long, List<SaleLine>> bySale = new LinkedHashMap<>();
         for (SaleLine line : lines) {
             if (line.saleId() == null || line.lineId() == null) {
@@ -119,12 +126,12 @@ public class KioskSalesByCategoryReportService {
                 SaleLine line = saleLines.get(i);
                 BigDecimal qty = line.quantity() == null ? BigDecimal.ZERO : line.quantity();
                 BigDecimal amount = paid.getOrDefault(line.lineId(), BigDecimal.ZERO);
-                add(byCategory, line.categoryId(), line.categoryName(), qty, amount);
+                add(byRow, line.categoryId(), line.categoryName(), catalogProduct(line), qty, amount);
             }
         }
     }
 
-    private void addReturns(Map<Long, Acc> byCategory, List<ReturnRow> rows) {
+    private void addReturns(Map<AccKey, Acc> byRow, List<ReturnRow> rows) {
         Map<Long, List<ReturnRow>> bySlip = new LinkedHashMap<>();
         for (ReturnRow row : rows) {
             if (row.slipId() == null) {
@@ -141,25 +148,26 @@ public class KioskSalesByCategoryReportService {
             ReturnRow head = slipRows.get(0);
             if ("EXCHANGE".equalsIgnoreCase(head.slipKind())) {
                 if (head.inPeriod()) {
-                    addExchangeUnits(byCategory, slipRows);
+                    addExchangeUnits(byRow, slipRows);
                 }
                 continue;
             }
             boolean hasItemRows = slipRows.stream().anyMatch(row -> row.returnedItemId() != null);
             if (hasItemRows) {
-                addReturnedItemRows(byCategory, slipRows, consumed);
+                addReturnedItemRows(byRow, slipRows, consumed);
             } else {
-                addHeaderReturn(byCategory, slipRows, consumed);
+                addHeaderReturn(byRow, slipRows, consumed);
             }
         }
     }
 
     /** El cambio mueve unidades. El dinero queda en la venta original; la venta nueva ya neteó el crédito. */
-    private void addExchangeUnits(Map<Long, Acc> byCategory, List<ReturnRow> slipRows) {
+    private void addExchangeUnits(Map<AccKey, Acc> byRow, List<ReturnRow> slipRows) {
         boolean hasItemRows = slipRows.stream().anyMatch(row -> row.returnedItemId() != null);
         if (!hasItemRows) {
             ReturnRow head = slipRows.get(0);
-            add(byCategory, head.categoryId(), head.categoryName(), negate(head.headerQuantity()), BigDecimal.ZERO);
+            add(byRow, head.categoryId(), head.categoryName(), catalogProduct(head),
+                    negate(head.headerQuantity()), BigDecimal.ZERO);
             return;
         }
         Map<Long, ReturnRow> byItem = new LinkedHashMap<>();
@@ -169,13 +177,13 @@ public class KioskSalesByCategoryReportService {
             }
         }
         for (ReturnRow row : byItem.values()) {
-            add(byCategory, row.categoryId(), row.categoryName(),
+            add(byRow, row.categoryId(), row.categoryName(), catalogProduct(row),
                     negate(row.returnedItemQuantity()), BigDecimal.ZERO);
         }
     }
 
     private void addReturnedItemRows(
-            Map<Long, Acc> byCategory,
+            Map<AccKey, Acc> byRow,
             List<ReturnRow> slipRows,
             Map<Long, BigDecimal> consumed
     ) {
@@ -198,14 +206,14 @@ public class KioskSalesByCategoryReportService {
                     itemRows,
                     consumed);
             if (inPeriod) {
-                add(byCategory, head.categoryId(), head.categoryName(),
+                add(byRow, head.categoryId(), head.categoryName(), catalogProduct(head),
                         negate(head.returnedItemQuantity()), negate(amount));
             }
         }
     }
 
     private void addHeaderReturn(
-            Map<Long, Acc> byCategory,
+            Map<AccKey, Acc> byRow,
             List<ReturnRow> slipRows,
             Map<Long, BigDecimal> consumed
     ) {
@@ -217,7 +225,7 @@ public class KioskSalesByCategoryReportService {
                 slipRows,
                 consumed);
         if (head.inPeriod()) {
-            add(byCategory, head.categoryId(), head.categoryName(),
+            add(byRow, head.categoryId(), head.categoryName(), catalogProduct(head),
                     negate(head.headerQuantity()), negate(amount));
         }
     }
@@ -279,23 +287,69 @@ public class KioskSalesByCategoryReportService {
     }
 
     private static void add(
-            Map<Long, Acc> byCategory,
+            Map<AccKey, Acc> byRow,
             Long categoryId,
             String categoryName,
+            ProductEntity product,
             BigDecimal units,
             BigDecimal amount
     ) {
-        Long key = categoryId;
         String name = categoryName == null || categoryName.isBlank() ? SIN_CATEGORIA : categoryName.trim();
-        if (SIN_CATEGORIA.equals(name) && (categoryName == null || categoryName.isBlank())) {
-            key = null;
-        }
-        Acc acc = byCategory.computeIfAbsent(key, id -> new Acc(id, name));
+        Long resolvedCategoryId = SIN_CATEGORIA.equals(name) && (categoryName == null || categoryName.isBlank())
+                ? null
+                : categoryId;
+        Subgroup subgroup = KioskSalesCategorySubgroup.classify(product);
+        String subgroupCode = subgroup == null ? null : subgroup.code();
+        String subgroupLabel = subgroup == null ? null : subgroup.label();
+        AccKey accKey = new AccKey(resolvedCategoryId, subgroupCode);
+        Acc acc = byRow.computeIfAbsent(accKey,
+                ignored -> new Acc(resolvedCategoryId, name, subgroupCode, subgroupLabel));
         if (acc.categoryName == null || acc.categoryName.isBlank()) {
             acc.categoryName = name;
         }
         acc.units = acc.units.add(units == null ? BigDecimal.ZERO : units);
         acc.amount = acc.amount.add(amount == null ? BigDecimal.ZERO : amount);
+    }
+
+    private static ProductEntity catalogProduct(SaleLine line) {
+        return catalogProduct(
+                line.catalogProductId(),
+                line.catalogProductCode(),
+                line.catalogProductName(),
+                line.audienceCategory(),
+                line.cinchoType(),
+                line.cinchoForKids());
+    }
+
+    private static ProductEntity catalogProduct(ReturnRow row) {
+        return catalogProduct(
+                row.catalogProductId(),
+                row.catalogProductCode(),
+                row.catalogProductName(),
+                row.audienceCategory(),
+                row.cinchoType(),
+                row.cinchoForKids());
+    }
+
+    private static ProductEntity catalogProduct(
+            Long id,
+            String code,
+            String name,
+            String audienceCategory,
+            String cinchoType,
+            Boolean cinchoForKids
+    ) {
+        if (id == null) {
+            return null;
+        }
+        return ProductEntity.builder()
+                .id(id)
+                .code(code)
+                .name(name)
+                .audienceCategory(audienceCategory)
+                .cinchoType(cinchoType)
+                .cinchoForKids(Boolean.TRUE.equals(cinchoForKids))
+                .build();
     }
 
     private static KioskSaleItemEntity toItem(
@@ -331,7 +385,8 @@ public class KioskSalesByCategoryReportService {
 
     /**
      * Misma regla que {@code KioskSalesByProductColorReportService}: sin ids, todos los kioskos
-     * excepto los de piloto ({@code posTestMode}). Un id explícito se acepta aunque sea piloto.
+     * excepto los de piloto ({@code posTestMode}) y los de {@code pos_mode = ENTRECUEROS}.
+     * Un id explícito se acepta aunque sea piloto o Entrecueros (el SQL omite sus datos).
      */
     private List<Long> resolveKioskIds(List<Long> requestedIds) throws BusinessException {
         List<LocationEntity> kiosks = locationRepository.findAll().stream()
@@ -341,6 +396,7 @@ public class KioskSalesByCategoryReportService {
         if (requestedIds.isEmpty()) {
             List<Long> ids = kiosks.stream()
                     .filter(kiosk -> !Boolean.TRUE.equals(kiosk.getPosTestMode()))
+                    .filter(kiosk -> !KioskPosMode.isEntrecueros(kiosk.getPosMode()))
                     .map(LocationEntity::getId)
                     .toList();
             if (ids.isEmpty()) {
@@ -435,15 +491,22 @@ public class KioskSalesByCategoryReportService {
                 .replaceAll("\\s+", " ");
     }
 
+    private record AccKey(Long categoryId, String subgroupCode) {
+    }
+
     private static final class Acc {
         private final Long categoryId;
         private String categoryName;
+        private final String subgroupCode;
+        private final String subgroupLabel;
         private BigDecimal units = BigDecimal.ZERO;
         private BigDecimal amount = BigDecimal.ZERO;
 
-        private Acc(Long categoryId, String categoryName) {
+        private Acc(Long categoryId, String categoryName, String subgroupCode, String subgroupLabel) {
             this.categoryId = categoryId;
             this.categoryName = categoryName;
+            this.subgroupCode = subgroupCode;
+            this.subgroupLabel = subgroupLabel;
         }
     }
 }
