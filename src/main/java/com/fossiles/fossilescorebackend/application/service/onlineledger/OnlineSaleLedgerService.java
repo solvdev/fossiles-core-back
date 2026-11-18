@@ -173,11 +173,11 @@ public class OnlineSaleLedgerService {
     }
 
     /**
-     * Desbloquear es solo de administradores: si quien edita pudiera desbloquear, el bloqueo no impediría volver a
-     * modificar lo ya revisado.
+     * Desbloquear líneas lo puede hacer quien edita el libro (Administración y Contabilidad): contabilidad necesita
+     * reabrir filas bloqueadas al revisar. Reabrir un periodo cerrado sigue siendo solo de administradores.
      */
     public boolean canUnlock() {
-        return guard.isAdmin();
+        return canEdit();
     }
 
     public void assertCanView() throws BusinessException {
@@ -646,7 +646,7 @@ public class OnlineSaleLedgerService {
             throw new BusinessException("Solo Administración y Contabilidad pueden bloquear líneas del libro.");
         }
         if (!lock && !canUnlock()) {
-            throw new BusinessException("Solo un administrador puede desbloquear líneas del libro.");
+            throw new BusinessException("Solo Administración y Contabilidad pueden desbloquear líneas del libro.");
         }
         List<Long> ids = request.getSaleIds().stream().filter(Objects::nonNull).distinct().toList();
         if (ids.size() > MAX_ROWS) {
