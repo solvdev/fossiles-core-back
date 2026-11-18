@@ -626,6 +626,34 @@ class KioskSalesByCategoryReportH2Test {
     }
 
     @Test
+    void entrecuerosNameWithStandardPosModeIsExcludedFromSalesAndReturns() throws Exception {
+        LocationEntity named = kiosk("STD" + SEQ.incrementAndGet(), false, "STANDARD", "ENTRECUEROS PUEBLITO");
+        ProductCategoryEntity cat = category("CueroNombre");
+        ProductEntity product = product("CUO-NOM", cat);
+        LocalDate day = LocalDate.of(2026, 6, 18);
+        sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("70.00"),
+                line(product, "CUO-NOM", "1", "70.00", "70.00"));
+        sale(named, day, day.atTime(9, 1), "COMPLETED", false, null, BigDecimal.ZERO, money("888.00"),
+                line(product, "CUO-NOM", "1", "888.00", "888.00"));
+        KioskSaleEntity namedReturnSale = sale(named, day, day.atTime(8, 0), "COMPLETED", false, null,
+                BigDecimal.ZERO, money("30.00"),
+                line(product, "CUO-NOM", "1", "30.00", "30.00"));
+        headerReturn(named, namedReturnSale, namedReturnSale.getItems().get(0), product,
+                "1", "30.00", "COMPLETED", day.atTime(12, 0), null);
+
+        KioskSalesByCategoryReportResponse all = report(day, day, null);
+        assertMoney(row(all, "CueroNombre").getTotalAmount(), "70.00");
+        assertUnits(row(all, "CueroNombre").getUnits(), "1");
+
+        KioskSalesByCategoryReportResponse bothIds = report(day, day, kiosk.getId() + "," + named.getId());
+        assertMoney(row(bothIds, "CueroNombre").getTotalAmount(), "70.00");
+
+        KioskSalesByCategoryReportResponse onlyNamed = report(day, day, String.valueOf(named.getId()));
+        assertThat(onlyNamed.getRows()).isEmpty();
+        assertMoney(onlyNamed.getTotals().getTotalAmount(), "0.00");
+    }
+
+    @Test
     void userWithoutReportsAccessGets403() throws Exception {
         UserEntity seller = userWithRole("VENDEDOR");
         when(securityUtil.getCurrentUserId()).thenReturn(seller.getId());
@@ -667,9 +695,13 @@ class KioskSalesByCategoryReportH2Test {
     }
 
     private LocationEntity kiosk(String code, boolean pilot, String posMode) {
+        return kiosk(code, pilot, posMode, "Kiosko " + code);
+    }
+
+    private LocationEntity kiosk(String code, boolean pilot, String posMode, String name) {
         return locationRepository.saveAndFlush(LocationEntity.builder()
                 .code(code)
-                .name("Kiosko " + code)
+                .name(name)
                 .categoria("KIOSKO")
                 .posTestMode(pilot)
                 .posMode(posMode)
