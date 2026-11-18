@@ -66,7 +66,12 @@ class FelNotaXmlBuilderTest {
     }
 
     private static String build(TaxInvoiceDocument document, String establishment) {
+        return build(document, establishment, false);
+    }
+
+    private static String build(TaxInvoiceDocument document, String establishment, boolean lateNoteFraseEnabled) {
         FelEmissionProperties props = props(establishment);
+        props.setLateNoteFraseEnabled(lateNoteFraseEnabled);
         return new FelFactXmlBuilder(props).buildUnsignedXml(document, props.resolveCredentials(false));
     }
 
@@ -149,16 +154,30 @@ class FelNotaXmlBuilderTest {
 
     @Test
     void noteWithinTwoMonthsHasNoLateFrase() {
-        String xml = build(note("NCRE", "2", "Devolución"), "2");
+        String xml = build(note("NCRE", "2", "Devolución"), "2", true);
 
         assertThat(xml).doesNotContain("TipoFrase=\"9\"");
     }
 
     @Test
-    void noteAfterTwoMonthsIncludesFrase9Escenario22() {
+    void lateNoteFraseIsOffByDefault() {
+        // SAT pospuso la validación 9-22 (aviso INFILE nov-2026): XML anterior aunque la factura sea vieja.
+        assertThat(new FelEmissionProperties().isLateNoteFraseEnabled()).isFalse();
         TaxInvoiceDocument document = note("NCRE", "2", "Devolución factura origen mayor a dos meses");
         document.getNoteReference().setOriginEmissionDate(LocalDate.of(2026, 7, 15));
+
         String xml = build(document, "2");
+
+        assertThat(xml).doesNotContain("TipoFrase=\"9\"");
+        assertThat(xml).contains("<dte:Frases><dte:Frase CodigoEscenario=\"1\" TipoFrase=\"1\"/></dte:Frases>");
+        assertWellFormed(xml);
+    }
+
+    @Test
+    void noteAfterTwoMonthsIncludesFrase9Escenario22WhenEnabled() {
+        TaxInvoiceDocument document = note("NCRE", "2", "Devolución factura origen mayor a dos meses");
+        document.getNoteReference().setOriginEmissionDate(LocalDate.of(2026, 7, 15));
+        String xml = build(document, "2", true);
 
         assertThat(xml).contains("<dte:Frase CodigoEscenario=\"1\" TipoFrase=\"1\"/>"
                 + "<dte:Frase CodigoEscenario=\"22\" TipoFrase=\"9\"/>");
@@ -166,7 +185,7 @@ class FelNotaXmlBuilderTest {
 
         TaxInvoiceDocument debit = note("NDEB", "2", "Recargo");
         debit.getNoteReference().setOriginEmissionDate(LocalDate.of(2026, 7, 15));
-        assertThat(build(debit, "2")).contains("<dte:Frase CodigoEscenario=\"22\" TipoFrase=\"9\"/>");
+        assertThat(build(debit, "2", true)).contains("<dte:Frase CodigoEscenario=\"22\" TipoFrase=\"9\"/>");
     }
 
     @Test
@@ -184,7 +203,7 @@ class FelNotaXmlBuilderTest {
         late.setEscenario(22);
         ZonedDateTime now = ZonedDateTime.now(ZoneId.of("America/Guatemala"));
 
-        assertThat(FelFactXmlBuilder.resolveFrases(List.of(late), "FACT", null, now)).isEmpty();
+        assertThat(FelFactXmlBuilder.resolveFrases(List.of(late), "FACT", null, now, true)).isEmpty();
     }
 
     @Test
