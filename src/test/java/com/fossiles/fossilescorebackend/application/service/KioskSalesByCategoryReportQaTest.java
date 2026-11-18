@@ -233,20 +233,26 @@ class KioskSalesByCategoryReportQaTest {
         assertMoney(row(report(day, day, second.getId() + ", " + third.getId()), "Filtro").getTotalAmount(), "60.00");
     }
 
-    @Disabled("BUG: unknown kioskIds return 400 'El kiosko seleccionado no existe o no es un kiosko.'; "
-            + "contract: ignore that id, return the rest, no error")
     @Test
-    void unknownKioskIdIsIgnoredWithoutError() throws Exception {
+    void unknownKioskIdReturns400WithSpanishMessage() throws Exception {
         ProductCategoryEntity cat = category("Desconocido");
         ProductEntity product = product("UNK-1", cat);
         LocalDate day = LocalDate.of(2026, 4, 5);
         sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("10.00"),
                 line(product, "UNK-1", "1", "10.00", "10.00"));
 
-        assertMoney(row(report(day, day, kiosk.getId() + ",999999"), "Desconocido").getTotalAmount(), "10.00");
-        KioskSalesByCategoryReportResponse empty = report(day, day, "999999");
-        assertThat(empty.getRows()).isEmpty();
-        assertMoney(empty.getTotals().getTotalAmount(), "0.00");
+        mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
+                        .param("from", day.toString())
+                        .param("to", day.toString())
+                        .param("kioskIds", kiosk.getId() + ",999999"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("El kiosko seleccionado no existe o no es un kiosko."));
+        mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
+                        .param("from", day.toString())
+                        .param("to", day.toString())
+                        .param("kioskIds", "999999"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("El kiosko seleccionado no existe o no es un kiosko."));
     }
 
     @Test
