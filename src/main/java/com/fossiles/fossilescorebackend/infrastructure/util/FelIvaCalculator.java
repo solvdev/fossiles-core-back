@@ -5,7 +5,8 @@ import java.math.RoundingMode;
 
 public final class FelIvaCalculator {
 
-    private static final BigDecimal IVA_FACTOR = new BigDecimal("1.12");
+    /** 1 + 12 %. El reporte de ventas por categoría divide el agregado entre este factor. */
+    public static final BigDecimal IVA_FACTOR = new BigDecimal("1.12");
 
     private FelIvaCalculator() {
     }
