@@ -35,7 +35,7 @@ import java.util.List;
  *
  * <p>Entrecueros: se excluye a nivel de local. Las consultas unen {@code locations}
  * por {@code kiosk_location_id} y omiten {@code pos_mode = 'ENTRECUEROS'} o un nombre
- * que coincida con {@code ILIKE '%entrecuero%'} (ventas y devoluciones).
+ * que coincida con {@code ILIKE '%entrecuer%'} (ventas y devoluciones).
  */
 @Repository
 @RequiredArgsConstructor
@@ -62,8 +62,8 @@ public class KioskSalesByCategoryReportRepository {
             FROM kiosk_sale_item i
             JOIN kiosk_sale s ON s.id = i.kiosk_sale_id
             JOIN locations loc ON loc.id = s.kiosk_location_id
-             AND COALESCE(loc.pos_mode, 'STANDARD') <> 'ENTRECUEROS'
-             AND LOWER(COALESCE(loc.name, '')) NOT LIKE '%entrecuero%'
+             AND UPPER(TRIM(COALESCE(loc.pos_mode, 'STANDARD'))) <> 'ENTRECUEROS'
+             AND COALESCE(loc.name, '') NOT ILIKE '%entrecuer%'
             LEFT JOIN product p ON p.id = i.product_id
             LEFT JOIN product_category c ON c.id = p.category_id
             WHERE s.sale_date BETWEEN :from AND :to
@@ -89,8 +89,8 @@ public class KioskSalesByCategoryReportRepository {
                        END AS in_period
                 FROM kiosk_exchange_slip r
                 JOIN locations loc ON loc.id = r.kiosk_location_id
-                 AND COALESCE(loc.pos_mode, 'STANDARD') <> 'ENTRECUEROS'
-                 AND LOWER(COALESCE(loc.name, '')) NOT LIKE '%entrecuero%'
+                 AND UPPER(TRIM(COALESCE(loc.pos_mode, 'STANDARD'))) <> 'ENTRECUEROS'
+                 AND COALESCE(loc.name, '') NOT ILIKE '%entrecuer%'
                 WHERE r.kiosk_location_id IN (:kioskIds)
                   AND COALESCE(r.completed_at, r.created_at) < :toExclusive
                   AND (

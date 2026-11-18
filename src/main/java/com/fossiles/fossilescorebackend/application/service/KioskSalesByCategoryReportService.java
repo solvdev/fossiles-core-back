@@ -448,7 +448,7 @@ public class KioskSalesByCategoryReportService {
         return ids;
     }
 
-    /** pos_mode ENTRECUEROS o el nombre coincide con {@code %entrecuero%} (sin distinguir mayúsculas). */
+    /** pos_mode ENTRECUEROS (trim/upper) o el nombre coincide con {@code %entrecuer%}. */
     static boolean isExcludedEntrecueros(LocationEntity location) {
         if (location == null) {
             return false;
@@ -457,7 +457,7 @@ public class KioskSalesByCategoryReportService {
             return true;
         }
         String name = location.getName() == null ? "" : location.getName().toLowerCase(Locale.ROOT);
-        return name.contains("entrecuero");
+        return name.contains("entrecuer");
     }
 
     /** Igual que el reporte de ventas por color: categoría, nombre o código de kiosko. */
