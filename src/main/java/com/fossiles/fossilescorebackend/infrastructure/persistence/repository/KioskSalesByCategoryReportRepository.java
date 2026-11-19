@@ -51,6 +51,8 @@ public class KioskSalesByCategoryReportRepository {
                    i.unit_price AS unit_price,
                    i.line_total AS line_total,
                    i.discount_amount AS line_discount,
+                   s.kiosk_location_id AS kiosk_id,
+                   i.color_name AS color_name,
                    c.id AS category_id,
                    c.name AS category_name,
                    p.id AS catalog_product_id,
@@ -165,7 +167,9 @@ public class KioskSalesByCategoryReportRepository {
                 rs.getString("catalog_product_name"),
                 rs.getString("audience_category"),
                 rs.getString("cincho_type"),
-                asBoolean(rs, "cincho_for_kids")));
+                asBoolean(rs, "cincho_for_kids"),
+                asLong(rs, "kiosk_id"),
+                rs.getString("color_name")));
     }
 
     public List<ReturnRow> findReturns(
@@ -268,7 +272,9 @@ public class KioskSalesByCategoryReportRepository {
             String catalogProductName,
             String audienceCategory,
             String cinchoType,
-            Boolean cinchoForKids
+            Boolean cinchoForKids,
+            Long kioskId,
+            String colorName
     ) {
     }
 

@@ -88,23 +88,47 @@ public class ProductInventoryController {
     // ========== KARDEX ==========
 
     @GetMapping("/kardex/product/{productId}")
-    public ResponseEntity<List<ProductInventoryKardexResponse>> getKardexByProduct(@PathVariable Long productId) {
+    public ResponseEntity<List<ProductInventoryKardexResponse>> getKardexByProduct(
+            @PathVariable Long productId,
+            @RequestParam(defaultValue = "true") boolean includeHistorico) {
         List<ProductInventoryKardexResponse> kardex = productInventoryService.getKardexByProduct(productId);
-        return ResponseEntity.ok(kardex);
+        return ResponseEntity.ok(withHistorico(kardex, includeHistorico, productId, null));
     }
 
     @GetMapping("/kardex/location/{locationId}")
-    public ResponseEntity<List<ProductInventoryKardexResponse>> getKardexByLocation(@PathVariable Long locationId) {
+    public ResponseEntity<List<ProductInventoryKardexResponse>> getKardexByLocation(
+            @PathVariable Long locationId,
+            @RequestParam(defaultValue = "true") boolean includeHistorico) {
         List<ProductInventoryKardexResponse> kardex = productInventoryService.getKardexByLocation(locationId);
-        return ResponseEntity.ok(kardex);
+        return ResponseEntity.ok(withHistorico(kardex, includeHistorico, null, locationId));
     }
 
     @GetMapping("/kardex/product/{productId}/location/{locationId}")
     public ResponseEntity<List<ProductInventoryKardexResponse>> getKardexByProductAndLocation(
             @PathVariable Long productId,
-            @PathVariable Long locationId) {
+            @PathVariable Long locationId,
+            @RequestParam(defaultValue = "true") boolean includeHistorico) {
         List<ProductInventoryKardexResponse> kardex = productInventoryService.getKardexByProductAndLocation(productId, locationId);
-        return ResponseEntity.ok(kardex);
+        return ResponseEntity.ok(withHistorico(kardex, includeHistorico, productId, locationId));
+    }
+
+    /**
+     * Suma los movimientos archivados por limpiezas (con su línea de corte) para que el kardex se vea
+     * completo. Solo es lectura: el stock y el kardex activo no cambian.
+     */
+    private List<ProductInventoryKardexResponse> withHistorico(
+            List<ProductInventoryKardexResponse> active, boolean includeHistorico, Long productId, Long locationId) {
+        if (!includeHistorico) {
+            return active;
+        }
+        List<ProductInventoryKardexResponse> archived = kardexHistoricoService.archivedAsKardex(productId, locationId);
+        if (archived.isEmpty()) {
+            return active;
+        }
+        List<ProductInventoryKardexResponse> all = new java.util.ArrayList<>(archived.size() + active.size());
+        all.addAll(archived);
+        all.addAll(active);
+        return all;
     }
 
     @GetMapping("/kardex/movement-type/{movementType}")
