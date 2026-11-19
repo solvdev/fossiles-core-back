@@ -763,7 +763,64 @@ public class ProductionOrderWarehouseUnitService {
         unit.setRejectionReason(null);
         unit.setReceivedAt(now);
         unit.setReceivedBy(userId);
+        dischargeIfSaleAlreadyShipped(po, item, unit, target, bodega, sizeKey, userId, now);
         unitRepository.save(unit);
+    }
+
+    /**
+     * El envío a cliente pudo despacharse antes de que esta pieza llegara a Bodega PT (el despacho no se
+     * bloquea por piezas pendientes y por eso no descontó nada). Al llegar, la pieza ya está vendida y
+     * enviada: se descuenta en ese momento y queda en el kardex el motivo, para que no sobre en Bodega PT.
+     * Idempotente por pieza (misma referencia que el despacho normal).
+     */
+    private void dischargeIfSaleAlreadyShipped(
+            ProductionOrderEntity po,
+            ProductionOrderItemEntity item,
+            ProductionOrderWarehouseUnitEntity unit,
+            LocationEntity target,
+            LocationEntity bodega,
+            String sizeKey,
+            Long userId,
+            LocalDateTime now) throws BusinessException {
+        Long saleId = item.getOnlineSaleId();
+        // Solo piezas que entraron a Bodega PT (no reserva LF, no anuladas, no OPI) y no enviadas aún.
+        if (saleId == null || unit.getShippedAt() != null || !Objects.equals(target.getId(), bodega.getId())
+                || isReserveOrder(po)) {
+            return;
+        }
+        OnlineSaleEntity sale = onlineSaleRepository.findById(saleId).orElse(null);
+        if (sale == null || sale.getStatus() == null) {
+            return;
+        }
+        String status = sale.getStatus().trim();
+        if (!"ENVIADO".equals(status) && !"ENTREGADO".equals(status)) {
+            return;
+        }
+        // Si «Preparar envío» ya sacó la venta completa del inventario, esta pieza ya está descontada.
+        if (productInventoryService.hasNetOutboundForReference(ProductInventoryService.REF_ONLINE_SALE_PREPARE, saleId)) {
+            return;
+        }
+        String ref = sale.getShipmentNumber() != null && !sale.getShipmentNumber().isBlank()
+                ? sale.getShipmentNumber() : sale.getSaleNumber();
+        String description = "Despacho venta en línea " + (ref != null ? ref : "#" + saleId)
+                + " · la pieza " + unit.getUnitLabel() + " llegó a Bodega PT después de despachar el envío; "
+                + "se descuenta al recibirla para que no sobre en inventario";
+        productInventoryService.decrementFromDispatchWarehouses(
+                item.getProductId(),
+                item.getColorId(),
+                sizeKey != null && !sizeKey.isBlank() ? sizeKey : null,
+                BigDecimal.ONE,
+                ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
+                saleId,
+                ref,
+                description,
+                ProductInventoryService.MOVEMENT_ONLINE_SALE_DISPATCH,
+                unit.getId(),
+                ProductInventoryService.DispatchSource.PT_FIRST);
+        unit.setShipmentRefType(REF_ONLINE_SALE);
+        unit.setShipmentRefId(saleId);
+        unit.setShippedAt(now);
+        unit.setShippedBy(userId);
     }
 
     /**

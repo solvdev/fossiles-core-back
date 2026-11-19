@@ -954,7 +954,15 @@ public class OnlineSaleProductionOrderService {
         if (qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
-        String desc = "Prep venta online #" + (sale.getSaleNumber() != null ? sale.getSaleNumber() : sale.getId());
+        String ref = sale.getShipmentNumber() != null && !sale.getShipmentNumber().isBlank()
+                ? sale.getShipmentNumber() + " (venta #" + sale.getSaleNumber() + ")"
+                : "venta #" + (sale.getSaleNumber() != null ? sale.getSaleNumber() : sale.getId());
+        String customer = sale.getCustomerName() != null && !sale.getCustomerName().isBlank()
+                ? " · cliente " + sale.getCustomerName().trim() : "";
+        String desc = "Preparar envío venta en línea " + ref + customer
+                + (OnlineSaleService.isExchangeSale(sale)
+                        ? " · cambio: sale primero de Devoluciones"
+                        : " · venta normal: sale primero de Bodega PT, luego Devoluciones");
         productInventoryService.decrementFromDispatchWarehouses(
                 productId,
                 colorId,
