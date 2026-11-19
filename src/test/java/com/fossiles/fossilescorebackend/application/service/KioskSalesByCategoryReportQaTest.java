@@ -23,7 +23,6 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Us
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -403,9 +402,9 @@ class KioskSalesByCategoryReportQaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"LOGISTICA", "CONTABILIDAD"})
+    @ValueSource(strings = {"ADMIN", "LOGISTICA", "CONTABILIDAD"})
     void kioskReportsRolesCanRead(String roleName) throws Exception {
-        UserEntity user = userWithRole(roleName);
+        UserEntity user = "ADMIN".equals(roleName) ? admin : userWithRole(roleName);
         when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
         mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
                         .param("from", "2026-01-01").param("to", "2026-01-31"))
@@ -429,8 +428,6 @@ class KioskSalesByCategoryReportQaTest {
                 .andExpect(jsonPath("$.message").value("No se pudo identificar el usuario autenticado."));
     }
 
-    @Disabled("BUG: VENTA_EN_LINEA and SUPERVISORA_KIOSKO are allowed via hasAllKiosksAccess; "
-            + "contract is 403 except admin, logistics, accounting")
     @ParameterizedTest
     @ValueSource(strings = {"VENTA_EN_LINEA", "SUPERVISORA_KIOSKO"})
     void extraGlobalKioskRolesShouldBeForbidden(String roleName) throws Exception {
@@ -438,7 +435,20 @@ class KioskSalesByCategoryReportQaTest {
         when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
         mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
                         .param("from", "2026-01-01").param("to", "2026-01-31"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message")
+                        .value("Solo administradores, logística o contabilidad pueden ver este reporte."));
+    }
+
+    @Test
+    void plainUserIsForbidden() throws Exception {
+        UserEntity user = userWithRole("USUARIO");
+        when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
+        mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
+                        .param("from", "2026-01-01").param("to", "2026-01-31"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message")
+                        .value("Solo administradores, logística o contabilidad pueden ver este reporte."));
     }
 
     @Test

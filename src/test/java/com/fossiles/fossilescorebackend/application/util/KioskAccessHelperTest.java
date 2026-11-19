@@ -45,6 +45,22 @@ class KioskAccessHelperTest {
         assertThat(KioskAccessHelper.hasAllKiosksAccess(userWithRoles("VENDEDOR"))).isFalse();
     }
 
+    @Test
+    void hasKioskSalesByCategoryReportAccess_adminLogisticsAccounting() {
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("ADMIN"))).isTrue();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("LOGISTICA"))).isTrue();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("CONTABILIDAD"))).isTrue();
+    }
+
+    @Test
+    void hasKioskSalesByCategoryReportAccess_deniedForOtherRoles() {
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("VENTA_EN_LINEA"))).isFalse();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("SUPERVISORA_KIOSKO"))).isFalse();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("ENCARGADA_KIOSKO"))).isFalse();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("USUARIO"))).isFalse();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(null)).isFalse();
+    }
+
     private static UserEntity userWithRoles(String... roleNames) {
         Set<RoleEntity> roles = java.util.Arrays.stream(roleNames)
                 .map(name -> RoleEntity.builder().name(name).build())
