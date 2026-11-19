@@ -49,4 +49,10 @@ public interface ProductInventoryKardexHistoricoRepository extends JpaRepository
 
     @Query("SELECT DISTINCT h.movementType FROM ProductInventoryKardexHistorico h ORDER BY h.movementType")
     List<String> findDistinctMovementTypes();
+
+    List<ProductInventoryKardexHistorico> findByProductId(Long productId);
+
+    List<ProductInventoryKardexHistorico> findByLocationId(Long locationId);
+
+    List<ProductInventoryKardexHistorico> findByProductIdAndLocationId(Long productId, Long locationId);
 }
