@@ -23,6 +23,12 @@ public class KioskSalesByCategoryReportResponse {
 
     private Totals totals;
 
+    /** Solo con {@code compare=true}: los días inmediatamente anteriores, con la misma duración. */
+    private LocalDate previousFrom;
+    private LocalDate previousTo;
+    /** Mismo reporte para el periodo anterior (sin su propio {@code previous}). */
+    private KioskSalesByCategoryReportResponse previous;
+
     @Data
     @Builder
     @NoArgsConstructor
@@ -47,9 +53,15 @@ public class KioskSalesByCategoryReportResponse {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class Totals {
+        /** Piezas de producto: no incluye bolsas ni cajas de empaque (subgrupo EMPAQUE). */
         private BigDecimal units;
+        /** Todo lo cobrado, empaque incluido (cuadra con caja y Finanzas). */
         private BigDecimal totalAmount;
         /** totalAmount / 1.12 una sola vez. No es la suma de las filas ya redondeadas. */
         private BigDecimal totalAmountNoIva;
+        /** Unidades de empaque (bolsas y cajas), aparte de {@code units}. */
+        private BigDecimal packagingUnits;
+        /** Cobrado por empaque con IVA; ya está dentro de {@code totalAmount}. */
+        private BigDecimal packagingAmount;
     }
 }

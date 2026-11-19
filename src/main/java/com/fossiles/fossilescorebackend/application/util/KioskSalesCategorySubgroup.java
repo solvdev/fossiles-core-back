@@ -7,7 +7,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.Produc
  *
  * <p>Billeteras y cinchos se identifican por producto ({@link KioscoInventoryInitRules#isWalletProduct},
  * {@link KioscoInventoryInitRules#isCinchoProduct}), no por código de {@code product_category}.
- * El resto de productos deja ambos campos nulos.
+ * Los empaques (SUM-) van como subgrupo {@link #EMPAQUE}. El resto de productos deja ambos campos nulos.
  */
 public final class KioskSalesCategorySubgroup {
 
@@ -19,7 +19,10 @@ public final class KioskSalesCategorySubgroup {
     public static final String CABALLERO_CASUAL = "CABALLERO_CASUAL";
     public static final String CABALLERO_REVERSIBLE = "CABALLERO_REVERSIBLE";
     public static final String SIN_CLASIFICAR = "SIN_CLASIFICAR";
+    /** Bolsas y cajas de empaque (códigos SUM-): se cobran pero no son producto vendido. */
+    public static final String EMPAQUE = "EMPAQUE";
 
+    public static final String LABEL_EMPAQUE = "Empaque";
     public static final String LABEL_CABALLERO = "Caballero";
     public static final String LABEL_DAMA = "Dama";
     public static final String LABEL_NINO = "Niño";
@@ -42,6 +45,9 @@ public final class KioskSalesCategorySubgroup {
 
     /** Misma función para ventas, devoluciones y unidades de cambio, con los atributos actuales del producto. */
     public static Subgroup classify(ProductEntity product) {
+        if (KioscoInventoryInitRules.isPackagingProduct(product)) {
+            return new Subgroup(EMPAQUE, LABEL_EMPAQUE);
+        }
         if (KioscoInventoryInitRules.isWalletProduct(product)) {
             return walletSubgroup(product);
         }

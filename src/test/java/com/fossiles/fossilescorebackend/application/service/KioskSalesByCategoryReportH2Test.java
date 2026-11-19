@@ -3,6 +3,7 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskSalesByCategoryReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskSalesByCategoryReportResponse.Row;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskTopProductsResponse;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskExchangeSlipReturnedItemEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.KioskSaleEntity;
@@ -662,6 +663,111 @@ class KioskSalesByCategoryReportH2Test {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message")
                         .value("Solo administradores, logística o contabilidad pueden ver este reporte."));
+    }
+
+    @Test
+    void packagingIsReportedApartFromProductUnits() throws Exception {
+        LocalDate day = LocalDate.of(2026, 7, 1);
+        ProductCategoryEntity accesorios = category("Accesorios");
+        ProductEntity estuche = product("AC-6", accesorios);
+        ProductEntity bolsa = product("SUM-BL-P", accesorios);
+        ProductEntity caja = product("SUM-CAJA-P", accesorios);
+        sale(kiosk, day, day.atTime(10, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("205.00"),
+                line(estuche, "AC-6", "1", "200.00", "200.00"),
+                line(bolsa, "SUM-BL-P", "2", "2.00", "4.00"),
+                line(caja, "SUM-CAJA-P", "3", "0.33", "1.00"));
+
+        KioskSalesByCategoryReportResponse report = report(day, day, null);
+
+        assertUnits(row(report, "Accesorios", null).getUnits(), "1");
+        assertUnits(row(report, "Accesorios", "EMPAQUE").getUnits(), "5");
+        assertUnits(report.getTotals().getUnits(), "1");
+        assertUnits(report.getTotals().getPackagingUnits(), "5");
+        assertMoney(report.getTotals().getPackagingAmount(), "5.00");
+        assertMoney(report.getTotals().getTotalAmount(), "205.00");
+    }
+
+    @Test
+    void compareAddsThePreviousPeriodWithTheSameLength() throws Exception {
+        ProductCategoryEntity cuero = category("Cuero previo");
+        ProductEntity product = product("CP-1", cuero);
+        LocalDate from = LocalDate.of(2026, 8, 11);
+        LocalDate to = LocalDate.of(2026, 8, 20);
+        sale(kiosk, from, from.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("300.00"),
+                line(product, "CP-1", "3", "100.00", "300.00"));
+        LocalDate prevDay = LocalDate.of(2026, 8, 5);
+        sale(kiosk, prevDay, prevDay.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("100.00"),
+                line(product, "CP-1", "1", "100.00", "100.00"));
+        LocalDate firstPrevDay = LocalDate.of(2026, 8, 1);
+        sale(kiosk, firstPrevDay, firstPrevDay.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("999.00"),
+                line(product, "CP-1", "9", "111.00", "999.00"));
+
+        MvcResult result = mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
+                        .param("from", from.toString()).param("to", to.toString()).param("compare", "true"))
+                .andExpect(status().isOk()).andReturn();
+        KioskSalesByCategoryReportResponse report = objectMapper.readValue(
+                result.getResponse().getContentAsString(), KioskSalesByCategoryReportResponse.class);
+
+        assertThat(report.getPreviousFrom()).isEqualTo(LocalDate.of(2026, 8, 1));
+        assertThat(report.getPreviousTo()).isEqualTo(LocalDate.of(2026, 8, 10));
+        assertMoney(row(report, "Cuero previo").getTotalAmount(), "300.00");
+        assertThat(report.getPrevious()).isNotNull();
+        assertThat(report.getPrevious().getPrevious()).isNull();
+        assertUnits(row(report.getPrevious(), "Cuero previo").getUnits(), "10");
+        assertMoney(row(report.getPrevious(), "Cuero previo").getTotalAmount(), "1099.00");
+    }
+
+    @Test
+    void topProductsRankModelsWithKiosksColorsAndReturns() throws Exception {
+        LocalDate day = LocalDate.of(2026, 9, 10);
+        ProductCategoryEntity billeteras = category("Billeteras top");
+        ProductCategoryEntity otra = category("Otra top");
+        ProductEntity ignacio = product("B-10", billeteras, "BILLETERA IGNACIO", "CABALLERO", null, false);
+        ProductEntity opalo = product("B-35", billeteras, "BILLETERA OPALO", "DAMA", null, false);
+        ProductEntity llavero = product("LL-1", otra);
+        LocationEntity second = kiosk("K" + SEQ.incrementAndGet(), false);
+
+        KioskSaleItemEntity negro = line(ignacio, "B-10", "2", "100.00", "200.00");
+        negro.setColorName("NEGRO");
+        KioskSaleItemEntity cafe = line(ignacio, "B-10", "1", "100.00", "100.00");
+        cafe.setColorName("CAFE");
+        sale(kiosk, day, day.atTime(9, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("300.00"), negro, cafe);
+        sale(second, day, day.atTime(10, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("100.00"),
+                line(ignacio, "B-10", "1", "100.00", "100.00"));
+        sale(kiosk, day, day.atTime(11, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("150.00"),
+                line(opalo, "B-35", "1", "150.00", "150.00"));
+        sale(kiosk, day, day.atTime(12, 0), "COMPLETED", false, null, BigDecimal.ZERO, money("10.00"),
+                line(llavero, "LL-1", "1", "10.00", "10.00"));
+
+        MvcResult result = mockMvc.perform(get("/api/reports/kiosk-sales-by-category/top-products")
+                        .param("from", day.toString()).param("to", day.toString())
+                        .param("categoryId", String.valueOf(billeteras.getId())))
+                .andExpect(status().isOk()).andReturn();
+        KioskTopProductsResponse top = objectMapper.readValue(
+                result.getResponse().getContentAsString(), KioskTopProductsResponse.class);
+
+        assertThat(top.getItems()).extracting(KioskTopProductsResponse.Item::getProductName)
+                .containsExactly("BILLETERA IGNACIO", "BILLETERA OPALO");
+        KioskTopProductsResponse.Item first = top.getItems().get(0);
+        assertUnits(first.getUnits(), "4");
+        assertMoney(first.getTotalAmount(), "400.00");
+        assertThat(first.getKiosksSold()).isEqualTo(2);
+        assertThat(first.getTopColors()).extracting(KioskTopProductsResponse.ColorUnits::getColor)
+                .containsExactly("NEGRO", "CAFE");
+        assertThat(first.getSubgroupCode()).isEqualTo("CABALLERO");
+        assertUnits(top.getTotals().getUnits(), "5");
+        assertThat(top.getTotals().getProducts()).isEqualTo(2);
+        assertThat(first.getPreviousUnits()).isNull();
+
+        MvcResult onlyDama = mockMvc.perform(get("/api/reports/kiosk-sales-by-category/top-products")
+                        .param("from", day.toString()).param("to", day.toString())
+                        .param("categoryId", String.valueOf(billeteras.getId()))
+                        .param("subgroupCode", "dama"))
+                .andExpect(status().isOk()).andReturn();
+        KioskTopProductsResponse dama = objectMapper.readValue(
+                onlyDama.getResponse().getContentAsString(), KioskTopProductsResponse.class);
+        assertThat(dama.getItems()).extracting(KioskTopProductsResponse.Item::getProductName)
+                .containsExactly("BILLETERA OPALO");
     }
 
     private KioskSalesByCategoryReportResponse report(LocalDate from, LocalDate to, String kioskIds) throws Exception {
