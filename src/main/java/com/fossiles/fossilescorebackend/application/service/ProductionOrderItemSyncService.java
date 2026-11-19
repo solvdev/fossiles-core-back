@@ -53,11 +53,35 @@ public class ProductionOrderItemSyncService {
     private final ColorRepository colorRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /** Motivo mínimo para poder bajar una línea por debajo de lo asignado o recibido. */
+    public static final int MIN_REASON_LENGTH = 10;
+
     @Transactional(rollbackFor = Exception.class)
     public void sync(Long productionOrderId, String orderType, List<ProductionOrderItemRequest> requests)
             throws BusinessException {
+        sync(productionOrderId, orderType, requests, null);
+    }
+
+    /**
+     * Igual que {@link #sync(Long, String, List)}, pero con un {@code quantityChangeReason} justificado
+     * (al menos {@value #MIN_REASON_LENGTH} caracteres) se permite bajar la cantidad de una línea por
+     * debajo de lo ya asignado a tareas o recibido en bodega. Devuelve una descripción por cada línea
+     * que quedó por debajo de ese piso, para dejar rastro en la orden.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public List<String> sync(
+            Long productionOrderId,
+            String orderType,
+            List<ProductionOrderItemRequest> requests,
+            String quantityChangeReason) throws BusinessException {
         if (requests == null) {
-            return;
+            return List.of();
+        }
+        String reason = quantityChangeReason == null ? "" : quantityChangeReason.trim();
+        boolean allowBelowFloor = !reason.isEmpty();
+        if (allowBelowFloor && reason.length() < MIN_REASON_LENGTH) {
+            throw new BusinessException("El motivo del ajuste de cantidad debe tener al menos "
+                    + MIN_REASON_LENGTH + " caracteres.");
         }
         List<ProductionOrderItemEntity> existing = new ArrayList<>();
         List<ProductionOrderItemEntity> loaded = itemRepository.findByProductionOrderId(productionOrderId);
@@ -123,7 +147,7 @@ public class ProductionOrderItemSyncService {
         if (!toDelete.isEmpty()) {
             assertCanDelete(toDelete);
         }
-        assertMatchedLinesCanChange(orderType, matched);
+        List<String> adjustments = assertMatchedLinesCanChange(orderType, matched, allowBelowFloor);
 
         List<ProductionOrderItemEntity> toSave = new ArrayList<>();
         for (ProductionOrderItemRequest request : requests) {
@@ -141,6 +165,7 @@ public class ProductionOrderItemSyncService {
         if (!toSave.isEmpty()) {
             itemRepository.saveAll(toSave);
         }
+        return adjustments;
     }
 
     private ProductionOrderItemEntity requireOwnedLine(
@@ -191,10 +216,15 @@ public class ProductionOrderItemSyncService {
     /**
      * Revisa las líneas ya emparejadas, venga el match del id o del respaldo
      * producto + color + marca. No escribe: si algo no se puede, lanza antes.
+     * Con {@code allowBelowFloor} (hay un motivo justificado) bajar la cantidad por debajo de lo
+     * asignado o recibido ya no bloquea; devuelve esas líneas descritas como «B-7 / NEGRO: 10 → 7».
+     * Cambiar producto, color o marca de una línea citada sigue bloqueado.
      */
-    private void assertMatchedLinesCanChange(
+    private List<String> assertMatchedLinesCanChange(
             String orderType,
-            Map<ProductionOrderItemRequest, ProductionOrderItemEntity> matched) {
+            Map<ProductionOrderItemRequest, ProductionOrderItemEntity> matched,
+            boolean allowBelowFloor) {
+        List<String> adjustments = new ArrayList<>();
         List<Map.Entry<ProductionOrderItemRequest, ProductionOrderItemEntity>> identityChanges = new ArrayList<>();
         List<Long> matchedIds = new ArrayList<>();
         for (Map.Entry<ProductionOrderItemRequest, ProductionOrderItemEntity> entry : matched.entrySet()) {
@@ -233,6 +263,7 @@ public class ProductionOrderItemSyncService {
             }
             List<ProductionOrderItemEntity> tooLow = new ArrayList<>();
             Map<Long, Integer> minimumByLine = new HashMap<>();
+            Map<Long, Integer> requestedByLine = new HashMap<>();
             for (Map.Entry<ProductionOrderItemRequest, ProductionOrderItemEntity> entry : matched.entrySet()) {
                 Integer requested = entry.getKey().getQuantity();
                 if (requested == null || entry.getValue().getId() == null) {
@@ -242,14 +273,21 @@ public class ProductionOrderItemSyncService {
                 if (requested < minimum) {
                     tooLow.add(entry.getValue());
                     minimumByLine.put(entry.getValue().getId(), minimum);
+                    requestedByLine.put(entry.getValue().getId(), requested);
                 }
             }
             if (!tooLow.isEmpty()) {
                 Map<Long, ProductEntity> products = loadProducts(tooLow);
                 Map<Long, ColorEntity> colors = loadColors(tooLow);
                 for (ProductionOrderItemEntity line : tooLow) {
-                    messages.add("No se puede bajar la cantidad de la línea " + lineLabel(line, products, colors)
-                            + " por debajo de " + minimumByLine.get(line.getId()) + ".");
+                    if (allowBelowFloor) {
+                        adjustments.add(lineLabel(line, products, colors) + ": " + line.getQuantity()
+                                + " → " + requestedByLine.get(line.getId())
+                                + " (asignado/recibido " + minimumByLine.get(line.getId()) + ")");
+                    } else {
+                        messages.add("No se puede bajar la cantidad de la línea " + lineLabel(line, products, colors)
+                                + " por debajo de " + minimumByLine.get(line.getId()) + ".");
+                    }
                 }
             }
         }
@@ -257,6 +295,7 @@ public class ProductionOrderItemSyncService {
         if (!messages.isEmpty()) {
             throw new ProductionOrderItemConflictException(String.join(" ", messages));
         }
+        return adjustments;
     }
 
     /** Máximo entre lo asignado a tareas no canceladas y lo ya recibido en bodega. */

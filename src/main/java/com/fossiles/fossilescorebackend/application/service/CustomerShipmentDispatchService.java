@@ -174,6 +174,10 @@ public class CustomerShipmentDispatchService {
      */
     private void deductInventoryForReceivedUnits(long productionOrderId, OnlineSaleEntity sale)
             throws BusinessException {
+        // Líneas de la venta que se resolvieron como DESPACHO desde inventario (venta mixta) y nadie preparó:
+        // no pertenecen a la OP, así que sin esto el envío salía y la pieza se quedaba en Bodega PT/Devoluciones.
+        deductUnpreparedDispatchLines(sale);
+
         if (productInventoryService.hasNetOutboundForReference(
                 ProductInventoryService.REF_ONLINE_SALE_PREPARE, sale.getId())) {
             return;
@@ -196,8 +200,9 @@ public class CustomerShipmentDispatchService {
         String referenceNumber = sale.getShipmentNumber() != null && !sale.getShipmentNumber().isBlank()
                 ? sale.getShipmentNumber()
                 : sale.getSaleNumber();
-        String description = "Despacho venta online a cliente #"
-                + (referenceNumber != null ? referenceNumber : sale.getId());
+        String description = "Despacho venta en línea " + (referenceNumber != null ? referenceNumber : "#" + sale.getId())
+                + customerSuffix(sale)
+                + " · salida de la pieza producida para esta venta (OP) al despachar el envío";
         // La pieza se produjo para esta venta y entró a Bodega PT: sale de PT. Si antes se anuló su envío, la
         // pieza quedó en Devoluciones y sale de ahí.
         ProductInventoryService.DispatchSource source = productInventoryService.hasAnyMovementForReference(
@@ -235,6 +240,52 @@ public class CustomerShipmentDispatchService {
                     unit.getId(),
                     source);
         }
+    }
+
+    /**
+     * Descuenta las líneas con ruta DISPATCH que todavía no tienen salida de inventario. Usa el mismo
+     * movimiento y el mismo id de línea que «Preparar envío» ({@code ONLINE_SALE_PREPARE}), así que si ya
+     * se prepararon no vuelve a descontar. El despacho no se bloquea si falta stock.
+     */
+    private void deductUnpreparedDispatchLines(OnlineSaleEntity sale) throws BusinessException {
+        ProductInventoryService.DispatchSource source = OnlineSaleService.isExchangeSale(sale)
+                ? ProductInventoryService.DispatchSource.RETURNS_FIRST
+                : ProductInventoryService.DispatchSource.PT_FIRST;
+        String ref = sale.getShipmentNumber() != null && !sale.getShipmentNumber().isBlank()
+                ? sale.getShipmentNumber()
+                : sale.getSaleNumber();
+        for (OnlineSaleItemEntity item : onlineSaleItemRepository.findByOnlineSaleIdOrderByIdAsc(sale.getId())) {
+            if (item.getProductId() == null || item.getFulfillmentRoute() == null
+                    || !"DISPATCH".equalsIgnoreCase(item.getFulfillmentRoute().trim())) {
+                continue;
+            }
+            int qty = item.getQuantity() != null ? item.getQuantity() : 1;
+            if (qty <= 0) {
+                continue;
+            }
+            String description = "Despacho venta en línea " + (ref != null ? ref : "#" + sale.getId())
+                    + customerSuffix(sale)
+                    + " · línea marcada «despachar desde inventario» que no se había preparado; "
+                    + "se descuenta al despachar el envío";
+            productInventoryService.decrementFromDispatchWarehouses(
+                    item.getProductId(),
+                    item.getColorId(),
+                    item.getSize(),
+                    BigDecimal.valueOf(qty),
+                    ProductInventoryService.REF_ONLINE_SALE_PREPARE,
+                    sale.getId(),
+                    sale.getSaleNumber(),
+                    description,
+                    ProductInventoryService.REF_ONLINE_SALE_PREPARE,
+                    item.getId(),
+                    false,
+                    source);
+        }
+    }
+
+    private static String customerSuffix(OnlineSaleEntity sale) {
+        String name = sale.getCustomerName();
+        return name == null || name.isBlank() ? "" : " · cliente " + name.trim();
     }
 
     /**
