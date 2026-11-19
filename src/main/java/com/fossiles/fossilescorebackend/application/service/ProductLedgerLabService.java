@@ -115,17 +115,29 @@ public class ProductLedgerLabService {
         }
 
         String term = normalizeTerm(productTerm);
+        List<ProductInventoryLocation> filtered = stocks.stream()
+                .filter(stock -> productId == null || Objects.equals(stock.getProductId(), productId))
+                .filter(stock -> colorId == null || Objects.equals(stock.getColorId(), colorId))
+                .collect(Collectors.toList());
+        // Una consulta por tabla en vez de tres por línea de stock (Bodega PT tiene más de mil).
+        Map<Long, ProductEntity> productsById = new HashMap<>();
+        productRepository.findAllById(filtered.stream().map(ProductInventoryLocation::getProductId)
+                .filter(Objects::nonNull).collect(Collectors.toSet()))
+                .forEach(p -> productsById.put(p.getId(), p));
+        Map<Long, ColorEntity> colorsById = new HashMap<>();
+        colorRepository.findAllById(filtered.stream().map(ProductInventoryLocation::getColorId)
+                .filter(Objects::nonNull).collect(Collectors.toSet()))
+                .forEach(c -> colorsById.put(c.getId(), c));
+        Map<Long, LocationEntity> locationsById = new HashMap<>();
+        locationRepository.findAllById(filtered.stream().map(ProductInventoryLocation::getLocationId)
+                .filter(Objects::nonNull).collect(Collectors.toSet()))
+                .forEach(l -> locationsById.put(l.getId(), l));
+
         List<ProductLedgerLabStockResponse> out = new ArrayList<>();
-        for (ProductInventoryLocation stock : stocks) {
-            if (productId != null && !Objects.equals(stock.getProductId(), productId)) {
-                continue;
-            }
-            if (colorId != null && !Objects.equals(stock.getColorId(), colorId)) {
-                continue;
-            }
-            ProductEntity product = resolveProduct(stock);
-            ColorEntity color = resolveColor(stock);
-            LocationEntity location = resolveLocation(stock);
+        for (ProductInventoryLocation stock : filtered) {
+            ProductEntity product = productsById.get(stock.getProductId());
+            ColorEntity color = stock.getColorId() != null ? colorsById.get(stock.getColorId()) : null;
+            LocationEntity location = locationsById.get(stock.getLocationId());
             if (term != null) {
                 String haystack = ((product != null ? nullToEmpty(product.getCode()) : "")
                         + " "
@@ -211,8 +223,12 @@ public class ProductLedgerLabService {
         String sizeNorm = sizeLabel != null ? ProductInventorySizesJson.normalizeKey(sizeLabel) : null;
         String typeNorm = type != null ? type.trim().toUpperCase(Locale.ROOT) : null;
 
+        // Lo archivado por limpiezas se suma con una línea o producto elegido, o con algún filtro de
+        // fecha/referencia; la bodega completa sin filtros serían decenas de miles de filas.
+        boolean narrowed = stockFilter != null || productId != null || fromDt != null || toDtExclusive != null
+                || refTerm != null || referenceId != null;
         List<ProductInventoryKardex> archived = List.of();
-        if (includeArchived) {
+        if (includeArchived && narrowed) {
             archived = stockFilter != null
                     ? kardexHistoricoService.archivedAsEntities(stockFilter.getProductId(), stockFilter.getLocationId())
                     : kardexHistoricoService.archivedAsEntities(productId, locationId);
@@ -223,15 +239,15 @@ public class ProductLedgerLabService {
                         .collect(Collectors.toList());
             }
         }
-        Set<ProductInventoryKardex> archivedSet = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-        archivedSet.addAll(archived);
-        ArchivedLookups lookups = archived.isEmpty() ? null : new ArchivedLookups(archived);
-        List<ProductInventoryKardex> combined = archived.isEmpty() ? raw : new ArrayList<>(raw);
+        List<ProductInventoryKardex> combined = raw;
         if (!archived.isEmpty()) {
+            combined = new ArrayList<>(raw.size() + archived.size());
+            combined.addAll(raw);
             combined.addAll(archived);
         }
 
-        List<ProductLedgerLabMovementResponse> out = new ArrayList<>();
+        // Primero se filtra con los datos de la fila y después se arma la respuesta en lote.
+        List<ProductInventoryKardex> kept = new ArrayList<>();
         for (ProductInventoryKardex m : combined) {
             if (productId != null && !Objects.equals(m.getProductId(), productId)) {
                 continue;
@@ -266,25 +282,30 @@ public class ProductLedgerLabService {
                     continue;
                 }
             }
-            ProductLedgerLabMovementResponse dto = archivedSet.contains(m)
-                    ? lookups.toLabMovement(m)
-                    : toLabMovement(m);
             if (refTerm != null) {
-                String hay = (nullToEmpty(dto.getReferenceNumber())
+                String hay = (nullToEmpty(m.getReferenceNumber())
                         + " "
-                        + nullToEmpty(dto.getReferenceType())
+                        + nullToEmpty(m.getReferenceType())
                         + " "
-                        + nullToEmpty(dto.getDescription())).toLowerCase(Locale.ROOT);
+                        + nullToEmpty(m.getDescription())).toLowerCase(Locale.ROOT);
                 if (!hay.contains(refTerm)) {
                     continue;
                 }
             }
-            out.add(dto);
+            kept.add(m);
+        }
+
+        RowLookups lookups = new RowLookups(kept);
+        List<ProductLedgerLabMovementResponse> out = new ArrayList<>(kept.size());
+        for (ProductInventoryKardex m : kept) {
+            out.add(lookups.toLabMovement(m));
         }
 
         if (stockFilter != null) {
-            applySizeLevelStock(out, loadKardexAscForKeys(
-                    stockFilter.getProductId(), stockFilter.getLocationId(), stockFilter.getColorId()));
+            // raw ya viene de esa línea, de la más nueva a la más vieja: al revés es el orden cronológico.
+            List<ProductInventoryKardex> chronological = new ArrayList<>(raw);
+            java.util.Collections.reverse(chronological);
+            applySizeLevelStock(out, chronological);
         }
         return out;
     }
@@ -700,17 +721,17 @@ public class ProductLedgerLabService {
     }
 
     /**
-     * Nombres, stock y usuarios cargados de una vez para los movimientos archivados (pueden ser miles
-     * en Bodega PT); el mapeo normal hace varias consultas por fila.
+     * Producto, ubicación, color, línea de stock y usuario cargados una sola vez para todas las filas
+     * (Bodega PT tiene miles de movimientos); {@link #toLabMovement} hace hasta 5 consultas por fila.
      */
-    private final class ArchivedLookups {
+    private final class RowLookups {
         private final Map<Long, ProductEntity> products = new HashMap<>();
         private final Map<Long, LocationEntity> locations = new HashMap<>();
         private final Map<Long, ColorEntity> colors = new HashMap<>();
         private final Map<String, Long> stockIds = new HashMap<>();
         private final Map<Long, String> usernames = new HashMap<>();
 
-        ArchivedLookups(List<ProductInventoryKardex> rows) {
+        RowLookups(List<ProductInventoryKardex> rows) {
             Set<Long> productIds = new HashSet<>();
             Set<Long> locationIds = new HashSet<>();
             Set<Long> colorIds = new HashSet<>();

@@ -20,11 +20,14 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -1906,45 +1909,35 @@ public class ProductInventoryService {
      * Obtiene el kardex de un producto
      */
     public List<ProductInventoryKardexResponse> getKardexByProduct(Long productId) {
-        return productInventoryKardexRepository.findByProductId(productId).stream()
-                .map(this::toProductInventoryKardexResponse)
-                .collect(Collectors.toList());
+        return toProductInventoryKardexResponses(productInventoryKardexRepository.findByProductId(productId));
     }
 
     /**
      * Obtiene el kardex de una ubicación
      */
     public List<ProductInventoryKardexResponse> getKardexByLocation(Long locationId) {
-        return productInventoryKardexRepository.findByLocationId(locationId).stream()
-                .map(this::toProductInventoryKardexResponse)
-                .collect(Collectors.toList());
+        return toProductInventoryKardexResponses(productInventoryKardexRepository.findByLocationId(locationId));
     }
 
     /**
      * Obtiene el kardex de un producto en una ubicación específica
      */
     public List<ProductInventoryKardexResponse> getKardexByProductAndLocation(Long productId, Long locationId) {
-        return productInventoryKardexRepository.findByProductIdAndLocationId(productId, locationId).stream()
-                .map(this::toProductInventoryKardexResponse)
-                .collect(Collectors.toList());
+        return toProductInventoryKardexResponses(productInventoryKardexRepository.findByProductIdAndLocationId(productId, locationId));
     }
 
     /**
      * Obtiene el kardex por tipo de movimiento
      */
     public List<ProductInventoryKardexResponse> getKardexByMovementType(String movementType) {
-        return productInventoryKardexRepository.findByMovementType(movementType).stream()
-                .map(this::toProductInventoryKardexResponse)
-                .collect(Collectors.toList());
+        return toProductInventoryKardexResponses(productInventoryKardexRepository.findByMovementType(movementType));
     }
 
     /**
      * Obtiene el kardex por referencia (ej: orden de producción, orden de venta)
      */
     public List<ProductInventoryKardexResponse> getKardexByReference(String referenceType, Long referenceId) {
-        return productInventoryKardexRepository.findByReferenceTypeAndReferenceId(referenceType, referenceId).stream()
-                .map(this::toProductInventoryKardexResponse)
-                .collect(Collectors.toList());
+        return toProductInventoryKardexResponses(productInventoryKardexRepository.findByReferenceTypeAndReferenceId(referenceType, referenceId));
     }
 
     // ========== CRITICAL INVENTORY ==========
@@ -2413,43 +2406,76 @@ public class ProductInventoryService {
         return null;
     }
 
+    /**
+     * Igual que {@link #toProductInventoryKardexResponse} para muchas filas, pero con producto, ubicación,
+     * color y lotes FIFO cargados una vez (el mapeo por fila hacía 4-5 consultas por movimiento).
+     */
+    private List<ProductInventoryKardexResponse> toProductInventoryKardexResponses(List<ProductInventoryKardex> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return new ArrayList<>();
+        }
+        Set<Long> productIds = new HashSet<>();
+        Set<Long> locationIds = new HashSet<>();
+        for (ProductInventoryKardex k : rows) {
+            if (k.getProductId() != null) productIds.add(k.getProductId());
+            if (k.getLocationId() != null) locationIds.add(k.getLocationId());
+        }
+        Map<Long, ProductEntity> products = new HashMap<>();
+        productRepository.findAllById(productIds).forEach(p -> products.put(p.getId(), p));
+        Map<Long, LocationEntity> locations = new HashMap<>();
+        locationRepository.findAllById(locationIds).forEach(l -> locations.put(l.getId(), l));
+
+        // Color de cada fila (las viejas sin color toman el único color del stock, como resolveKardexColorId).
+        Map<String, Long> singleColorByProductLocation = new HashMap<>();
+        Map<ProductInventoryKardex, Long> resolvedColor = new java.util.IdentityHashMap<>();
+        Set<Long> colorIds = new HashSet<>();
+        for (ProductInventoryKardex k : rows) {
+            Long colorId = k.getColorId();
+            if (colorId == null) {
+                String key = k.getProductId() + "|" + k.getLocationId();
+                if (!singleColorByProductLocation.containsKey(key)) {
+                    List<ProductInventoryLocation> stockRows = productInventoryLocationRepository
+                            .findAllByProductIdAndLocationId(k.getProductId(), k.getLocationId());
+                    singleColorByProductLocation.put(key, stockRows.size() == 1 ? stockRows.get(0).getColorId() : null);
+                }
+                colorId = singleColorByProductLocation.get(key);
+            }
+            resolvedColor.put(k, colorId);
+            if (colorId != null) colorIds.add(colorId);
+        }
+        Map<Long, ColorEntity> colors = new HashMap<>();
+        colorRepository.findAllById(colorIds).forEach(c -> colors.put(c.getId(), c));
+
+        Map<String, List<ProductInventoryKardexResponse.FifoBatchInfo>> lotsByLine = new HashMap<>();
+        List<ProductInventoryKardexResponse> out = new ArrayList<>(rows.size());
+        for (ProductInventoryKardex k : rows) {
+            Long colorId = resolvedColor.get(k);
+            List<ProductInventoryKardexResponse.FifoBatchInfo> lots = lotsByLine.computeIfAbsent(
+                    k.getProductId() + "|" + k.getLocationId() + "|" + colorId,
+                    key -> toFifoBatchInfos(productFifoBatchRepository
+                            .findAvailableBatchesByProductAndLocationAndColor(k.getProductId(), k.getLocationId(), colorId)));
+            out.add(buildKardexResponse(k, products.get(k.getProductId()), locations.get(k.getLocationId()),
+                    colorId != null ? colors.get(colorId) : null, lots));
+        }
+        return out;
+    }
+
     private ProductInventoryKardexResponse toProductInventoryKardexResponse(ProductInventoryKardex entity) {
         ProductEntity product = productRepository.findById(entity.getProductId()).orElse(null);
         LocationEntity location = locationRepository.findById(entity.getLocationId()).orElse(null);
-
         Long colorIdForFifoAndName = resolveKardexColorId(entity);
         ColorEntity color = colorIdForFifoAndName != null
                 ? colorRepository.findById(colorIdForFifoAndName).orElse(null)
                 : null;
-
-        // Separar entradas y salidas para método FIFO
-        BigDecimal cantidadEntrada = null;
-        BigDecimal costoUnitarioEntrada = null;
-        BigDecimal totalEntrada = null;
-        BigDecimal cantidadSalida = null;
-        BigDecimal costoUnitarioSalida = null;
-        BigDecimal totalSalida = null;
-
-        if (entity.getQuantity() != null) {
-            if (entity.getQuantity().compareTo(BigDecimal.ZERO) >= 0) {
-                // Es una entrada
-                cantidadEntrada = entity.getQuantity();
-                costoUnitarioEntrada = entity.getUnitCost();
-                totalEntrada = entity.getTotalCost();
-            } else {
-                // Es una salida
-                cantidadSalida = entity.getQuantity().abs();
-                costoUnitarioSalida = entity.getUnitCost();
-                totalSalida = entity.getTotalCost();
-            }
-        }
-
         // Lotes FIFO alineados con el color del movimiento (o inferencia conservadora en histórico)
-        List<ProductFifoBatch> availableBatches = productFifoBatchRepository
+        List<ProductInventoryKardexResponse.FifoBatchInfo> lotesFifo = toFifoBatchInfos(productFifoBatchRepository
                 .findAvailableBatchesByProductAndLocationAndColor(
-                        entity.getProductId(), entity.getLocationId(), colorIdForFifoAndName);
-        
-        List<ProductInventoryKardexResponse.FifoBatchInfo> lotesFifo = availableBatches.stream()
+                        entity.getProductId(), entity.getLocationId(), colorIdForFifoAndName));
+        return buildKardexResponse(entity, product, location, color, lotesFifo);
+    }
+
+    private static List<ProductInventoryKardexResponse.FifoBatchInfo> toFifoBatchInfos(List<ProductFifoBatch> batches) {
+        return batches.stream()
                 .map(batch -> ProductInventoryKardexResponse.FifoBatchInfo.builder()
                         .fechaEntrada(batch.getEntryDate())
                         .cantidad(batch.getQuantityAvailable())
@@ -2457,7 +2483,29 @@ public class ProductInventoryService {
                         .total(batch.getQuantityAvailable().multiply(batch.getUnitCost()))
                         .build())
                 .collect(Collectors.toList());
+    }
 
+    private static ProductInventoryKardexResponse buildKardexResponse(
+            ProductInventoryKardex entity, ProductEntity product, LocationEntity location, ColorEntity color,
+            List<ProductInventoryKardexResponse.FifoBatchInfo> lotesFifo) {
+        // Separar entradas y salidas para método FIFO
+        BigDecimal cantidadEntrada = null;
+        BigDecimal costoUnitarioEntrada = null;
+        BigDecimal totalEntrada = null;
+        BigDecimal cantidadSalida = null;
+        BigDecimal costoUnitarioSalida = null;
+        BigDecimal totalSalida = null;
+        if (entity.getQuantity() != null) {
+            if (entity.getQuantity().compareTo(BigDecimal.ZERO) >= 0) {
+                cantidadEntrada = entity.getQuantity();
+                costoUnitarioEntrada = entity.getUnitCost();
+                totalEntrada = entity.getTotalCost();
+            } else {
+                cantidadSalida = entity.getQuantity().abs();
+                costoUnitarioSalida = entity.getUnitCost();
+                totalSalida = entity.getTotalCost();
+            }
+        }
         return ProductInventoryKardexResponse.builder()
                 .id(entity.getId())
                 .productId(entity.getProductId())
