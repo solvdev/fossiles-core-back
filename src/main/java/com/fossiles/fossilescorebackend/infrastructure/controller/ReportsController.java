@@ -1,6 +1,7 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
 import com.fossiles.fossilescorebackend.application.dto.response.KioskSalesByCategoryReportResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskTopProductsResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.KioskSalesByCategoryReportService;
 import lombok.RequiredArgsConstructor;
@@ -24,8 +25,23 @@ public class ReportsController {
     public ResponseEntity<KioskSalesByCategoryReportResponse> kioskSalesByCategory(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
-            @RequestParam(required = false) String kioskIds
+            @RequestParam(required = false) String kioskIds,
+            @RequestParam(required = false, defaultValue = "false") boolean compare
     ) throws BusinessException {
-        return ResponseEntity.ok(kioskSalesByCategoryReportService.getReport(from, to, kioskIds));
+        return ResponseEntity.ok(kioskSalesByCategoryReportService.getReport(from, to, kioskIds, compare));
+    }
+
+    /** Productos de una categoría de más a menos vendidos. Sin {@code categoryId} = «Sin categoría». */
+    @GetMapping("/kiosk-sales-by-category/top-products")
+    public ResponseEntity<KioskTopProductsResponse> kioskTopProducts(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(required = false) String kioskIds,
+            @RequestParam(required = false) Long categoryId,
+            @RequestParam(required = false) String subgroupCode,
+            @RequestParam(required = false, defaultValue = "false") boolean compare
+    ) throws BusinessException {
+        return ResponseEntity.ok(kioskSalesByCategoryReportService.getTopProducts(
+                from, to, kioskIds, categoryId, subgroupCode, compare));
     }
 }
