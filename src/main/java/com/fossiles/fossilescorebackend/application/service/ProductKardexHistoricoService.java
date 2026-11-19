@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.ProductKardexHi
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ColorEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.LocationEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductEntity;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryKardex;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductInventoryKardexHistorico;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ColorRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.LocationRepository;
@@ -105,12 +106,13 @@ public class ProductKardexHistoricoService {
     public static final String CUT_MOVEMENT_TYPE = "CORTE_INVENTARIO";
 
     /**
-     * Movimientos archivados con la forma del kardex activo, para mostrarlos junto a él en
-     * Inventario de productos. Solo lectura: no toca kardex activo, stock ni lotes FIFO.
-     * Por cada producto/ubicación/color con saldo al archivarse se agrega una línea de corte
-     * (saldo → 0) para que el saldo cuadre con los ajustes que recargaron el conteo.
+     * Movimientos archivados por limpiezas como filas del kardex activo (objetos sueltos, nunca se
+     * guardan), para mostrarlos junto a él en Inventario de productos. Solo lectura: no toca kardex
+     * activo, stock ni lotes FIFO. Por cada producto/ubicación/color con saldo al archivarse se agrega
+     * una línea de corte (saldo → 0, id negativo) para que el saldo cuadre con los ajustes que
+     * recargaron el conteo físico. Orden: más reciente primero.
      */
-    public List<ProductInventoryKardexResponse> archivedAsKardex(Long productId, Long locationId) {
+    public List<ProductInventoryKardex> archivedAsEntities(Long productId, Long locationId) {
         List<ProductInventoryKardexHistorico> rows;
         if (productId != null && locationId != null) {
             rows = historicoRepository.findByProductIdAndLocationId(productId, locationId);
@@ -125,23 +127,33 @@ public class ProductKardexHistoricoService {
             return List.of();
         }
 
-        Map<Long, ProductEntity> products = indexById(productRepository.findAllById(
-                ids(rows, ProductInventoryKardexHistorico::getProductId)), ProductEntity::getId);
-        Map<Long, LocationEntity> locations = indexById(locationRepository.findAllById(
-                ids(rows, ProductInventoryKardexHistorico::getLocationId)), LocationEntity::getId);
-        Map<Long, ColorEntity> colors = indexById(colorRepository.findAllById(
-                ids(rows, ProductInventoryKardexHistorico::getColorId)), ColorEntity::getId);
-
-        List<ProductInventoryKardexResponse> out = new ArrayList<>(rows.size() + 16);
-        Map<String, ProductInventoryKardexHistorico> lastByLine = new LinkedHashMap<>();
         Comparator<ProductInventoryKardexHistorico> chronological = Comparator
                 .comparing(ProductInventoryKardexHistorico::getMovementDate)
                 .thenComparing(ProductInventoryKardexHistorico::getId);
+        List<ProductInventoryKardex> out = new ArrayList<>(rows.size() + 16);
+        Map<String, ProductInventoryKardexHistorico> lastByLine = new LinkedHashMap<>();
         for (ProductInventoryKardexHistorico h : rows) {
-            out.add(toKardexRow(h, h.getQuantity(), h.getQuantityBefore(), h.getQuantityAfter(),
-                    h.getId(), h.getMovementType(), h.getMovementDate(), h.getReferenceType(),
-                    h.getReferenceId(), h.getReferenceNumber(), h.getDescription(),
-                    h.getUnitCost(), h.getTotalCost(), products, locations, colors));
+            out.add(ProductInventoryKardex.builder()
+                    .id(h.getId())
+                    .productId(h.getProductId())
+                    .locationId(h.getLocationId())
+                    .colorId(h.getColorId())
+                    .sizeLabel(h.getSizeLabel())
+                    .movementType(h.getMovementType())
+                    .quantity(h.getQuantity())
+                    .quantityBefore(h.getQuantityBefore())
+                    .quantityAfter(h.getQuantityAfter())
+                    .unitCost(h.getUnitCost())
+                    .totalCost(h.getTotalCost())
+                    .referenceType(h.getReferenceType())
+                    .referenceId(h.getReferenceId())
+                    .referenceNumber(h.getReferenceNumber())
+                    .referenceLineId(h.getReferenceLineId())
+                    .description(h.getDescription())
+                    .movementDate(h.getMovementDate())
+                    .createdAt(h.getCreatedAt())
+                    .createdBy(h.getCreatedBy())
+                    .build());
             String key = h.getProductId() + "|" + h.getLocationId() + "|" + h.getColorId()
                     + "|" + h.getArchiveReference();
             lastByLine.merge(key, h, (a, b) -> chronological.compare(a, b) >= 0 ? a : b);
@@ -155,55 +167,82 @@ public class ProductKardexHistoricoService {
             LocalDateTime cutAt = last.getArchivedAt() != null && last.getArchivedAt().isAfter(last.getMovementDate())
                     ? last.getArchivedAt()
                     : last.getMovementDate().plusSeconds(1);
-            out.add(toKardexRow(last, saldo.negate(), saldo, BigDecimal.ZERO,
-                    -last.getId(), CUT_MOVEMENT_TYPE, cutAt, "LIMPIEZA", null,
-                    last.getArchiveReference(),
-                    "Corte de inventario: la bodega quedó en 0 y se volvió a cargar con el conteo físico.",
-                    null, null, products, locations, colors));
+            out.add(ProductInventoryKardex.builder()
+                    .id(-last.getId())
+                    .productId(last.getProductId())
+                    .locationId(last.getLocationId())
+                    .colorId(last.getColorId())
+                    .movementType(CUT_MOVEMENT_TYPE)
+                    .quantity(saldo.negate())
+                    .quantityBefore(saldo)
+                    .quantityAfter(BigDecimal.ZERO)
+                    .referenceType("LIMPIEZA")
+                    .referenceNumber(last.getArchiveReference())
+                    .description("Corte de inventario: la bodega quedó en 0 y se volvió a cargar con el conteo físico.")
+                    .movementDate(cutAt)
+                    .createdAt(cutAt)
+                    .build());
         }
+        out.sort(Comparator.comparing(ProductInventoryKardex::getMovementDate)
+                .thenComparing(ProductInventoryKardex::getId)
+                .reversed());
         return out;
     }
 
-    private ProductInventoryKardexResponse toKardexRow(
-            ProductInventoryKardexHistorico h, BigDecimal quantity, BigDecimal before, BigDecimal after,
-            Long id, String movementType, LocalDateTime date, String referenceType, Long referenceId,
-            String referenceNumber, String description, BigDecimal unitCost, BigDecimal totalCost,
-            Map<Long, ProductEntity> products, Map<Long, LocationEntity> locations, Map<Long, ColorEntity> colors) {
-        ProductEntity product = products.get(h.getProductId());
-        LocationEntity location = locations.get(h.getLocationId());
-        ColorEntity color = h.getColorId() != null ? colors.get(h.getColorId()) : null;
-        boolean entering = quantity != null && quantity.signum() >= 0;
-        return ProductInventoryKardexResponse.builder()
-                .id(id)
-                .productId(h.getProductId())
-                .productCode(product != null ? product.getCode() : null)
-                .productName(product != null ? product.getName() : null)
-                .locationId(h.getLocationId())
-                .locationCode(location != null ? location.getCode() : null)
-                .locationName(location != null ? location.getName() : null)
-                .colorId(h.getColorId())
-                .colorName(color != null ? color.getName() : null)
-                .movementType(movementType)
-                .quantity(quantity)
-                .quantityBefore(before)
-                .quantityAfter(after)
-                .unitCost(unitCost)
-                .totalCost(totalCost)
-                .referenceType(referenceType)
-                .referenceId(referenceId)
-                .referenceNumber(referenceNumber)
-                .description(description)
-                .movementDate(date)
-                .createdAt(h.getCreatedAt())
-                .createdBy(h.getCreatedBy())
-                .cantidadEntrada(entering ? quantity : null)
-                .costoUnitarioEntrada(entering ? unitCost : null)
-                .totalEntrada(entering ? totalCost : null)
-                .cantidadSalida(!entering && quantity != null ? quantity.abs() : null)
-                .costoUnitarioSalida(!entering ? unitCost : null)
-                .totalSalida(!entering ? totalCost : null)
-                .lotesFifo(List.of())
-                .build();
+    /** Lo mismo que {@link #archivedAsEntities} con la forma de respuesta del kardex de producto. */
+    public List<ProductInventoryKardexResponse> archivedAsKardex(Long productId, Long locationId) {
+        List<ProductInventoryKardex> rows = archivedAsEntities(productId, locationId);
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, ProductEntity> products = indexById(productRepository.findAllById(
+                idsOf(rows, ProductInventoryKardex::getProductId)), ProductEntity::getId);
+        Map<Long, LocationEntity> locations = indexById(locationRepository.findAllById(
+                idsOf(rows, ProductInventoryKardex::getLocationId)), LocationEntity::getId);
+        Map<Long, ColorEntity> colors = indexById(colorRepository.findAllById(
+                idsOf(rows, ProductInventoryKardex::getColorId)), ColorEntity::getId);
+        return rows.stream().map(k -> {
+            ProductEntity product = products.get(k.getProductId());
+            LocationEntity location = locations.get(k.getLocationId());
+            ColorEntity color = k.getColorId() != null ? colors.get(k.getColorId()) : null;
+            BigDecimal quantity = k.getQuantity();
+            boolean entering = quantity != null && quantity.signum() >= 0;
+            return ProductInventoryKardexResponse.builder()
+                    .id(k.getId())
+                    .productId(k.getProductId())
+                    .productCode(product != null ? product.getCode() : null)
+                    .productName(product != null ? product.getName() : null)
+                    .locationId(k.getLocationId())
+                    .locationCode(location != null ? location.getCode() : null)
+                    .locationName(location != null ? location.getName() : null)
+                    .colorId(k.getColorId())
+                    .colorName(color != null ? color.getName() : null)
+                    .movementType(k.getMovementType())
+                    .quantity(quantity)
+                    .quantityBefore(k.getQuantityBefore())
+                    .quantityAfter(k.getQuantityAfter())
+                    .unitCost(k.getUnitCost())
+                    .totalCost(k.getTotalCost())
+                    .referenceType(k.getReferenceType())
+                    .referenceId(k.getReferenceId())
+                    .referenceNumber(k.getReferenceNumber())
+                    .description(k.getDescription())
+                    .movementDate(k.getMovementDate())
+                    .createdAt(k.getCreatedAt())
+                    .createdBy(k.getCreatedBy())
+                    .cantidadEntrada(entering ? quantity : null)
+                    .costoUnitarioEntrada(entering ? k.getUnitCost() : null)
+                    .totalEntrada(entering ? k.getTotalCost() : null)
+                    .cantidadSalida(!entering && quantity != null ? quantity.abs() : null)
+                    .costoUnitarioSalida(!entering ? k.getUnitCost() : null)
+                    .totalSalida(!entering ? k.getTotalCost() : null)
+                    .lotesFifo(List.of())
+                    .build();
+        }).collect(Collectors.toList());
+    }
+
+    private static Set<Long> idsOf(List<ProductInventoryKardex> rows, Function<ProductInventoryKardex, Long> getter) {
+        return rows.stream().map(getter).filter(Objects::nonNull).collect(Collectors.toSet());
     }
 
     private ProductKardexHistoricoResponse.Row toRow(
