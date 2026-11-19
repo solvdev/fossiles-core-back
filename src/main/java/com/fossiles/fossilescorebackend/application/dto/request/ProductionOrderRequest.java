@@ -50,6 +50,13 @@ public class ProductionOrderRequest {
 
     private BigDecimal shippingCost;
 
+    /**
+     * Solo al editar: motivo justificado para bajar la cantidad de una línea por debajo de lo ya
+     * asignado a tareas o recibido en bodega. Sin motivo, esa baja se rechaza.
+     */
+    @Size(max = 300, message = "El motivo del ajuste no debe exceder 300 caracteres")
+    private String quantityChangeReason;
+
     @Valid
     private List<PackingItemRequest> packingItems;
 

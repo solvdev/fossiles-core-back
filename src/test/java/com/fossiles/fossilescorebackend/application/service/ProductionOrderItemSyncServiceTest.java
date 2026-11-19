@@ -356,6 +356,46 @@ class ProductionOrderItemSyncServiceTest {
     }
 
     @Test
+    void allowsQuantityBelowAssignedWhenAJustifiedReasonIsGiven() throws Exception {
+        ProductionOrderItemEntity line = referencedLine();
+        line.setQuantity(10);
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        when(taskItemRepository.assignedQuantityMap(any())).thenReturn(Map.of(10L, 8));
+        givenLineLabels();
+
+        List<String> adjustments = service.sync(ORDER_ID, "NORMAL",
+                List.of(request(10L, 1L, 3L, null, 7)), "Llegaron menos hebillas de las pedidas");
+
+        assertThat(single(savedItems()).getQuantity()).isEqualTo(7);
+        assertThat(adjustments).containsExactly("B-7 / NEGRO: 10 → 7 (asignado/recibido 8)");
+    }
+
+    @Test
+    void rejectsAReasonThatIsTooShortAndWritesNothing() {
+        assertThatThrownBy(() -> service.sync(ORDER_ID, "NORMAL",
+                List.of(request(10L, 1L, 3L, null, 7)), "ajuste"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("al menos 10 caracteres");
+        verifyNothingWritten();
+    }
+
+    @Test
+    void reasonDoesNotAllowChangingProductOfALineWithTasks() {
+        ProductionOrderItemEntity line = referencedLine();
+        line.setQuantity(10);
+        when(itemRepository.findByProductionOrderId(ORDER_ID)).thenReturn(List.of(line));
+        givenReferences(List.of(line.getId()), List.of(), List.of());
+        lenient().when(taskItemRepository.assignedQuantityMap(any())).thenReturn(Map.of(10L, 8));
+        givenLineLabels();
+
+        assertThatThrownBy(() -> service.sync(ORDER_ID, "NORMAL",
+                List.of(request(10L, 9L, 3L, null, 7)), "Llegaron menos hebillas de las pedidas"))
+                .isInstanceOf(ProductionOrderItemConflictException.class)
+                .hasMessageContaining("No se puede cambiar la línea");
+        verifyNothingWritten();
+    }
+
+    @Test
     void allowsQuantityEqualToTheHigherFloor() throws Exception {
         ProductionOrderItemEntity line = referencedLine();
         line.setQuantity(10);
