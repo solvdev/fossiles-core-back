@@ -48,8 +48,13 @@ class KioskAccessHelperTest {
     @Test
     void hasKioskSalesByCategoryReportAccess_adminLogisticsAccounting() {
         assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("ADMIN"))).isTrue();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("SUPER_ADMIN"))).isTrue();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("ADMIN_FULL_ACCESS"))).isTrue();
         assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("LOGISTICA"))).isTrue();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("LOGISTICO"))).isTrue();
         assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("CONTABILIDAD"))).isTrue();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(
+                userWithRoles("VENTA_EN_LINEA", "CONTABILIDAD"))).isTrue();
     }
 
     @Test
@@ -58,7 +63,19 @@ class KioskAccessHelperTest {
         assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("SUPERVISORA_KIOSKO"))).isFalse();
         assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("ENCARGADA_KIOSKO"))).isFalse();
         assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("USUARIO"))).isFalse();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("VENDEDOR"))).isFalse();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles())).isFalse();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(
+                UserEntity.builder().roles(null).build())).isFalse();
         assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(null)).isFalse();
+    }
+
+    @Test
+    void hasKioskReportsAccess_stillAllowsVentaEnLineaAndSupervisora() {
+        assertThat(KioskAccessHelper.hasKioskReportsAccess(userWithRoles("VENTA_EN_LINEA"))).isTrue();
+        assertThat(KioskAccessHelper.hasKioskReportsAccess(userWithRoles("SUPERVISORA_KIOSKO"))).isTrue();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("VENTA_EN_LINEA"))).isFalse();
+        assertThat(KioskAccessHelper.hasKioskSalesByCategoryReportAccess(userWithRoles("SUPERVISORA_KIOSKO"))).isFalse();
     }
 
     private static UserEntity userWithRoles(String... roleNames) {
