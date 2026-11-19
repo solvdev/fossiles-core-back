@@ -58,6 +58,7 @@ public class ProductLedgerLabService {
     private final ProductRepository productRepository;
     private final ColorRepository colorRepository;
     private final UserRepository userRepository;
+    private final ProductKardexHistoricoService kardexHistoricoService;
 
     @Transactional(readOnly = true)
     public List<ProductLedgerLabLocationResponse> listAllowedLocations() throws BusinessException {
@@ -153,6 +154,30 @@ public class ProductLedgerLabService {
             String sizeLabel,
             Long movementId
     ) throws BusinessException, ResourceNotFoundException {
+        return listMovements(locationId, stockId, productId, colorId, type, from, to, referenceId,
+                referenceTerm, descriptionContains, sizeLabel, movementId, false);
+    }
+
+    /**
+     * @param includeArchived también los movimientos archivados por limpiezas de bodega (con su línea de
+     *                        corte), solo para mostrar: no se pueden editar y no cambian el stock.
+     */
+    @Transactional(readOnly = true)
+    public List<ProductLedgerLabMovementResponse> listMovements(
+            Long locationId,
+            Long stockId,
+            Long productId,
+            Long colorId,
+            String type,
+            LocalDate from,
+            LocalDate to,
+            Long referenceId,
+            String referenceTerm,
+            String descriptionContains,
+            String sizeLabel,
+            Long movementId,
+            boolean includeArchived
+    ) throws BusinessException, ResourceNotFoundException {
         if (movementId != null) {
             ProductInventoryKardex one = kardexRepository.findById(movementId)
                     .orElseThrow(() -> new ResourceNotFoundException("ProductInventoryKardex", movementId));
@@ -186,8 +211,28 @@ public class ProductLedgerLabService {
         String sizeNorm = sizeLabel != null ? ProductInventorySizesJson.normalizeKey(sizeLabel) : null;
         String typeNorm = type != null ? type.trim().toUpperCase(Locale.ROOT) : null;
 
+        List<ProductInventoryKardex> archived = List.of();
+        if (includeArchived) {
+            archived = stockFilter != null
+                    ? kardexHistoricoService.archivedAsEntities(stockFilter.getProductId(), stockFilter.getLocationId())
+                    : kardexHistoricoService.archivedAsEntities(productId, locationId);
+            if (stockFilter != null) {
+                Long stockColor = stockFilter.getColorId();
+                archived = archived.stream()
+                        .filter(k -> Objects.equals(k.getColorId(), stockColor))
+                        .collect(Collectors.toList());
+            }
+        }
+        Set<ProductInventoryKardex> archivedSet = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        archivedSet.addAll(archived);
+        ArchivedLookups lookups = archived.isEmpty() ? null : new ArchivedLookups(archived);
+        List<ProductInventoryKardex> combined = archived.isEmpty() ? raw : new ArrayList<>(raw);
+        if (!archived.isEmpty()) {
+            combined.addAll(archived);
+        }
+
         List<ProductLedgerLabMovementResponse> out = new ArrayList<>();
-        for (ProductInventoryKardex m : raw) {
+        for (ProductInventoryKardex m : combined) {
             if (productId != null && !Objects.equals(m.getProductId(), productId)) {
                 continue;
             }
@@ -221,7 +266,9 @@ public class ProductLedgerLabService {
                     continue;
                 }
             }
-            ProductLedgerLabMovementResponse dto = toLabMovement(m);
+            ProductLedgerLabMovementResponse dto = archivedSet.contains(m)
+                    ? lookups.toLabMovement(m)
+                    : toLabMovement(m);
             if (refTerm != null) {
                 String hay = (nullToEmpty(dto.getReferenceNumber())
                         + " "
@@ -649,6 +696,78 @@ public class ProductLedgerLabService {
                 dto.setSizeStockBefore(pair[0]);
                 dto.setSizeStockAfter(pair[1]);
             }
+        }
+    }
+
+    /**
+     * Nombres, stock y usuarios cargados de una vez para los movimientos archivados (pueden ser miles
+     * en Bodega PT); el mapeo normal hace varias consultas por fila.
+     */
+    private final class ArchivedLookups {
+        private final Map<Long, ProductEntity> products = new HashMap<>();
+        private final Map<Long, LocationEntity> locations = new HashMap<>();
+        private final Map<Long, ColorEntity> colors = new HashMap<>();
+        private final Map<String, Long> stockIds = new HashMap<>();
+        private final Map<Long, String> usernames = new HashMap<>();
+
+        ArchivedLookups(List<ProductInventoryKardex> rows) {
+            Set<Long> productIds = new HashSet<>();
+            Set<Long> locationIds = new HashSet<>();
+            Set<Long> colorIds = new HashSet<>();
+            Set<Long> userIds = new HashSet<>();
+            for (ProductInventoryKardex k : rows) {
+                if (k.getProductId() != null) productIds.add(k.getProductId());
+                if (k.getLocationId() != null) locationIds.add(k.getLocationId());
+                if (k.getColorId() != null) colorIds.add(k.getColorId());
+                if (k.getCreatedBy() != null) userIds.add(k.getCreatedBy());
+            }
+            productRepository.findAllById(productIds).forEach(p -> products.put(p.getId(), p));
+            locationRepository.findAllById(locationIds).forEach(l -> locations.put(l.getId(), l));
+            colorRepository.findAllById(colorIds).forEach(c -> colors.put(c.getId(), c));
+            userRepository.findAllById(userIds).forEach(u -> usernames.put(u.getId(), u.getUsername()));
+            for (Long locId : locationIds) {
+                for (ProductInventoryLocation s : stockRepository.findByLocationId(locId)) {
+                    stockIds.putIfAbsent(stockKey(s.getProductId(), s.getLocationId(), s.getColorId()), s.getId());
+                }
+            }
+        }
+
+        ProductLedgerLabMovementResponse toLabMovement(ProductInventoryKardex k) {
+            ProductEntity product = products.get(k.getProductId());
+            LocationEntity location = locations.get(k.getLocationId());
+            ColorEntity color = k.getColorId() != null ? colors.get(k.getColorId()) : null;
+            return ProductLedgerLabMovementResponse.builder()
+                    .id(k.getId())
+                    .stockId(stockIds.get(stockKey(k.getProductId(), k.getLocationId(), k.getColorId())))
+                    .locationId(k.getLocationId())
+                    .locationCode(location != null ? location.getCode() : null)
+                    .locationName(location != null ? location.getName() : null)
+                    .productId(k.getProductId())
+                    .productCode(product != null ? product.getCode() : null)
+                    .productName(product != null ? product.getName() : null)
+                    .colorId(k.getColorId())
+                    .colorName(color != null ? color.getName() : null)
+                    .movementType(k.getMovementType())
+                    .quantity(k.getQuantity())
+                    .sizeLabel(k.getSizeLabel())
+                    .quantityBefore(k.getQuantityBefore())
+                    .quantityAfter(k.getQuantityAfter())
+                    .unitCost(k.getUnitCost())
+                    .totalCost(k.getTotalCost())
+                    .referenceType(k.getReferenceType())
+                    .referenceId(k.getReferenceId())
+                    .referenceNumber(k.getReferenceNumber())
+                    .referenceLineId(k.getReferenceLineId())
+                    .description(k.getDescription())
+                    .movementDate(k.getMovementDate())
+                    .createdAt(k.getCreatedAt())
+                    .createdBy(k.getCreatedBy())
+                    .username(k.getCreatedBy() != null ? usernames.get(k.getCreatedBy()) : null)
+                    .build();
+        }
+
+        private String stockKey(Long productId, Long locationId, Long colorId) {
+            return productId + "|" + locationId + "|" + colorId;
         }
     }
 
