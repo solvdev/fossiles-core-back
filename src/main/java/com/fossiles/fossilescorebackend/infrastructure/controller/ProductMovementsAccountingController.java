@@ -55,6 +55,6 @@ public class ProductMovementsAccountingController {
     ) throws BusinessException, ResourceNotFoundException {
         return ResponseEntity.ok(ledgerLabService.listMovements(
                 locationId, stockId, productId, colorId, type, from, to, null, referenceTerm,
-                null, sizeLabel, null));
+                null, sizeLabel, null, true));
     }
 }
