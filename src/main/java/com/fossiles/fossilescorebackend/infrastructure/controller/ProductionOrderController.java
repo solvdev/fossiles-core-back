@@ -33,7 +33,10 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -53,6 +56,7 @@ import java.time.LocalDate;
 @RestController
 @RequestMapping("/api/production-orders")
 @RequiredArgsConstructor
+@Slf4j
 public class ProductionOrderController {
     private static final String OPV_PACKING_TAG = "__OPV_PACKING__:";
     private static final String OPV_SHIPPING_TAG = "__OPV_SHIPPING__:";
@@ -457,10 +461,34 @@ public class ProductionOrderController {
         ProductionOrderEntity updated = productionOrderRepository.save(entity);
 
         if (request.getItems() != null) {
-            productionOrderItemSyncService.sync(updated.getId(), effectiveOrderType, request.getItems());
+            List<String> adjustments = productionOrderItemSyncService.sync(
+                    updated.getId(), effectiveOrderType, request.getItems(), request.getQuantityChangeReason());
+            if (adjustments != null && !adjustments.isEmpty()) {
+                recordQuantityAdjustment(updated, request.getQuantityChangeReason().trim(), adjustments);
+            }
         }
 
         return ResponseEntity.ok(toResponse(updated));
+    }
+
+    /**
+     * Deja rastro de un ajuste de cantidad por debajo de lo asignado/recibido: log del servidor y,
+     * si cabe en el campo (1000 caracteres, compartido con el empaque), una línea en las observaciones.
+     */
+    private void recordQuantityAdjustment(ProductionOrderEntity order, String reason, List<String> adjustments) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        String user = auth != null && auth.getName() != null ? auth.getName() : "desconocido";
+        String detail = String.join("; ", adjustments);
+        log.warn("Ajuste de cantidad bajo lo asignado/recibido en {} por {}. Motivo: {}. Líneas: {}",
+                order.getCode(), user, reason, detail);
+        String note = "[Ajuste de cantidad " + LocalDate.now(java.time.ZoneId.of("America/Guatemala"))
+                + " por " + user + "] " + reason + " — " + detail;
+        String current = order.getObservations() == null ? "" : order.getObservations().trim();
+        String next = current.isEmpty() ? note : current + "\n" + note;
+        if (next.length() <= 1000) {
+            order.setObservations(next);
+            productionOrderRepository.save(order);
+        }
     }
 
     /**
