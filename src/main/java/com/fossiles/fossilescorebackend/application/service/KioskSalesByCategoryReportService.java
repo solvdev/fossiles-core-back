@@ -559,7 +559,7 @@ public class KioskSalesByCategoryReportService {
         }
         UserEntity user = userRepository.findById(currentUserId)
                 .orElseThrow(() -> new AccessDeniedException("No se pudo identificar el usuario autenticado."));
-        if (!KioskAccessHelper.hasKioskReportsAccess(user)) {
+        if (!KioskAccessHelper.hasKioskSalesByCategoryReportAccess(user)) {
             throw new AccessDeniedException(
                     "Solo administradores, logística o contabilidad pueden ver este reporte.");
         }
