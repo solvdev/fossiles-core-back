@@ -720,8 +720,33 @@ public class KioskExchangeService {
                 returnedLines,
                 givenLines,
                 packaging,
-                normalizePricingMode(request.getPricingMode())
+                normalizePricingMode(request.getPricingMode()),
+                promotionalCatalogUnits(access, givenLines)
         );
+    }
+
+    /**
+     * Precio de catálogo de hoy por pieza que sale, con las promociones automáticas vigentes
+     * (mismo cálculo del POS). Así una promoción activa no genera una diferencia falsa.
+     */
+    private List<BigDecimal> promotionalCatalogUnits(AccessContext access, List<ResolvedGivenLine> givenLines) {
+        List<KioskPosService.PreparedLine> preparedLines = new ArrayList<>();
+        for (ResolvedGivenLine given : givenLines) {
+            BigDecimal base = resolveFullSaleUnitPrice(given.product(), given.size());
+            BigDecimal quantity = given.quantity();
+            preparedLines.add(new KioskPosService.PreparedLine(
+                    given.product(),
+                    given.color(),
+                    given.size(),
+                    quantity,
+                    base,
+                    base.multiply(quantity).setScale(2, RoundingMode.HALF_UP),
+                    false,
+                    null
+            ));
+        }
+        Long kioskId = access.kiosk() != null ? access.kiosk().getId() : null;
+        return kioskPosService.promotionalUnitPrices(kioskId, GuatemalaDateTime.today(), preparedLines);
     }
 
     /**
@@ -1649,7 +1674,9 @@ public class KioskExchangeService {
             List<ResolvedReturnedLine> returnedLines,
             List<ResolvedGivenLine> givenLines,
             PackagingAllocation packaging,
-            String pricingMode
+            String pricingMode,
+            /** Precio unitario de hoy por línea que sale, con promociones vigentes (mismo orden que givenLines). */
+            List<BigDecimal> givenCatalogUnits
     ) {
         KioskExchangePreviewResponse preview() throws BusinessException {
             return buildPreview();
@@ -1707,7 +1734,11 @@ public class KioskExchangeService {
             boolean forceSameUnitPrice = isSameUnitPriceMode(pricingMode);
             boolean forceCatalogGiven = "CATALOG_GIVEN".equals(pricingMode);
 
-            for (ResolvedGivenLine given : givenLines) {
+            for (int gi = 0; gi < givenLines.size(); gi++) {
+                ResolvedGivenLine given = givenLines.get(gi);
+                BigDecimal promoCatalogUnit = givenCatalogUnits != null && gi < givenCatalogUnits.size()
+                        ? givenCatalogUnits.get(gi)
+                        : resolveFullSaleUnitPrice(given.product(), given.size());
                 BigDecimal givenUnitPrice;
                 BigDecimal preservedPaidPrice = forceSameUnitPrice || forceCatalogGiven
                         ? null
@@ -1719,7 +1750,7 @@ public class KioskExchangeService {
                 } else if (preservedPaidPrice != null) {
                     givenUnitPrice = preservedPaidPrice;
                 } else {
-                    givenUnitPrice = resolveFullSaleUnitPrice(given.product(), given.size());
+                    givenUnitPrice = promoCatalogUnit;
                     if (givenUnitPrice.compareTo(BigDecimal.ZERO) <= 0) {
                         throw new BusinessException(
                                 "El producto " + safeTrim(given.product().getCode())
@@ -1728,7 +1759,7 @@ public class KioskExchangeService {
                 }
                 BigDecimal lineTotal = givenUnitPrice.multiply(given.quantity()).setScale(2, RoundingMode.HALF_UP);
                 productGivenAmount = productGivenAmount.add(lineTotal);
-                BigDecimal catalogUnitPrice = resolveFullSaleUnitPrice(given.product(), given.size());
+                BigDecimal catalogUnitPrice = promoCatalogUnit;
                 if (catalogUnitPrice.compareTo(BigDecimal.ZERO) <= 0) {
                     catalogUnitPrice = givenUnitPrice;
                 }
