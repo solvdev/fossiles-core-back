@@ -211,5 +211,33 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
             @Param("id") Long id,
             @Param("sentAt") LocalDateTime sentAt,
             @Param("sentBy") Long sentBy);
+
+    /**
+     * Candidatos de la consulta «Envíos»: rango por fecha de creación, envío o recepción ([from, to)), y filtros
+     * opcionales de kiosco, estado y número. El resto de filtros (procedencia, producto, origen…) se aplican en
+     * memoria sobre este conjunto, que el llamador acota con {@code limit}.
+     */
+    @Query("""
+        SELECT s FROM ProductShipmentEntity s
+        WHERE (
+            (:dateField = 'created' AND s.createdAt >= :from AND s.createdAt < :to)
+            OR (:dateField = 'sent' AND s.sentAt >= :from AND s.sentAt < :to)
+            OR (:dateField = 'received' AND s.receivedAt >= :from AND s.receivedAt < :to)
+          )
+          AND (:allLocations = true OR s.locationId IN :locationIds)
+          AND (:allStatuses = true OR UPPER(s.status) IN :statuses)
+          AND (:numberLike = '' OR UPPER(s.shipmentNumber) LIKE :numberLike)
+        ORDER BY s.id DESC
+        """)
+    List<ProductShipmentEntity> searchCandidates(
+            @Param("dateField") String dateField,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to,
+            @Param("allLocations") boolean allLocations,
+            @Param("locationIds") Collection<Long> locationIds,
+            @Param("allStatuses") boolean allStatuses,
+            @Param("statuses") Collection<String> statuses,
+            @Param("numberLike") String numberLike,
+            Pageable limit);
 }
 
