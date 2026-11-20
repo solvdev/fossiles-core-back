@@ -65,6 +65,9 @@ public interface ProductInventoryKardexRepository extends JpaRepository<ProductI
     List<ProductInventoryKardex> findByMovementType(String movementType);
     
     List<ProductInventoryKardex> findByReferenceTypeAndReferenceId(String referenceType, Long referenceId);
+
+    /** Movimientos de varios documentos del mismo tipo en una sola consulta (p. ej. origen de descarga de envíos). */
+    List<ProductInventoryKardex> findByReferenceTypeAndReferenceIdIn(String referenceType, java.util.Collection<Long> referenceIds);
     
     List<ProductInventoryKardex> findByMovementDateBetween(LocalDateTime startDate, LocalDateTime endDate);
     

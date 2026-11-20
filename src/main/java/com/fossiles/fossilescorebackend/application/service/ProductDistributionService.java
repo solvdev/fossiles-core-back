@@ -4992,7 +4992,7 @@ public class ProductDistributionService {
      * Convierte varios envíos a DTO cargando detalles, productos, colores, categorías, ubicaciones,
      * distribuciones, órdenes, usuarios y materiales en consultas por lote (sin N+1 por envío/línea).
      */
-    private List<ProductShipmentResponse> toShipmentResponses(Collection<ProductShipmentEntity> entities) {
+    List<ProductShipmentResponse> toShipmentResponses(Collection<ProductShipmentEntity> entities) {
         if (entities == null || entities.isEmpty()) {
             return new ArrayList<>();
         }
