@@ -2685,6 +2685,53 @@ public class KioskPosService {
         );
     }
 
+    /**
+     * Precio unitario de cada línea con las promociones automáticas vigentes hoy (mismo cálculo del POS).
+     * Lo usa el cambio para valorar lo que sale: si hay promoción, sale al precio promocional.
+     * Devuelve un precio por línea, en el mismo orden; sin promoción devuelve el precio base de la línea.
+     */
+    List<BigDecimal> promotionalUnitPrices(Long kioskId, LocalDate saleDate, List<PreparedLine> lines) {
+        List<BigDecimal> units = new ArrayList<>();
+        if (lines == null || lines.isEmpty()) {
+            return units;
+        }
+        BigDecimal subtotal = lines.stream()
+                .map(PreparedLine::lineTotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .setScale(2, RoundingMode.HALF_UP);
+        DiscountResolution resolution = resolveSaleDiscount(
+                subtotal,
+                lines,
+                false,
+                KioskPosSaleRequest.builder().build(),
+                null,
+                kioskId,
+                saleDate
+        );
+        BigDecimal discountTotal = resolution.discountAmount() == null
+                ? BigDecimal.ZERO
+                : resolution.discountAmount().min(subtotal).max(BigDecimal.ZERO);
+        for (int i = 0; i < lines.size(); i++) {
+            PreparedLine line = lines.get(i);
+            BigDecimal lineTotal = line.lineTotal().setScale(2, RoundingMode.HALF_UP);
+            BigDecimal quantity = line.quantity();
+            if (quantity == null || quantity.signum() <= 0) {
+                units.add(line.unitPrice());
+                continue;
+            }
+            BigDecimal lineDiscount = resolution.lineDiscount(i);
+            if (lineDiscount == null) {
+                // Promoción de porcentaje total: se reparte proporcional al total de cada línea.
+                lineDiscount = subtotal.signum() > 0
+                        ? discountTotal.multiply(lineTotal).divide(subtotal, 2, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO;
+            }
+            BigDecimal net = lineTotal.subtract(lineDiscount).max(BigDecimal.ZERO);
+            units.add(net.divide(quantity, 2, RoundingMode.HALF_UP));
+        }
+        return units;
+    }
+
     // ------------------------------------------------------------------ promociones dinámicas (RULES)
 
     static final String RULES_TYPE = "RULES";
