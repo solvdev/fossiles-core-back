@@ -39,14 +39,23 @@ public record ExecutiveDashboardResponse(
             List<Point> weeks,
             /** Promedio de piezas de las últimas 4 semanas completas. */
             double avgWeekPieces,
+            /** Horas estándar terminadas por semana (piezas × horas por pieza del producto, 0.1 si no tiene). */
+            List<Point> weeksStdHours,
+            double avgWeekStdHours,
             List<DeskRow> desks,
             List<ProductTimeRow> productTime,
-            /** Órdenes abiertas sin cinchos: piezas pedidas, terminadas (tope = pedidas), en proceso y que faltan. */
-            long backlogOrdered,
-            long backlogDone,
-            long backlogInProgress,
-            long backlogPending
+            /**
+             * Órdenes activas con el mismo cálculo que «Avance por orden» del Dashboard de Producción: piezas pedidas,
+             * terminadas (incluye lo ya recibido en bodega), en bodega/QA, en mesa, por iniciar, sin tarea; faltan =
+             * pedidas − terminadas; horas que faltan = faltan × horas por pieza de cada línea.
+             */
+            Stages backlog,
+            long backlogPending,
+            double backlogHoursLeft
     ) {
+    }
+
+    public record Stages(long units, long noTask, long pending, long inProgress, long warehouse, long done) {
     }
 
     /** {@code desk} null = tareas sin mesa; {@code hours} null = la mesa no registra horas (maquila). */
@@ -57,17 +66,23 @@ public record ExecutiveDashboardResponse(
     public record ProductTimeRow(String code, String name, long pieces, double hours, Double medianHoursPerPiece) {
     }
 
-    public record Orders(long open, long pending, long inProgress, long overdue, List<TypeCount> byType, List<OrderRow> orders) {
+    /** Mismas órdenes que «Avance por orden» (PENDING, IN_PROGRESS, IN_QA). */
+    public record Orders(long open, long pending, long inProgress, long inQa, long overdue, long workingNow,
+                         double hoursLeft, double lateHoursLeft, List<TypeCount> byType, List<OrderRow> orders) {
     }
 
     public record TypeCount(String type, long count) {
     }
 
-    public record OrderRow(Long id, String code, String type, String customer, LocalDate deliveryDate,
-                           long ordered, long done, long inProgress) {
+    /** {@code stages} igual que en Avance por orden; {@code hoursLeft} = (pedidas − terminadas) × horas por pieza. */
+    public record OrderRow(Long id, String code, String type, String status, String customer, LocalDate deliveryDate,
+                           boolean late, Stages stages, double hoursLeft) {
     }
 
+    /** Ventas con el día cerrado: {@code from}–{@code to} terminan ayer. */
     public record KioskSales(
+            LocalDate from,
+            LocalDate to,
             double sales,
             double previousSales,
             long tickets,
@@ -89,26 +104,35 @@ public record ExecutiveDashboardResponse(
                              long kiosksWithout, long kiosksLow) {
     }
 
+    /**
+     * Finanzas de kioscos en el rango elegido. Hoy nunca cuenta: el rango termina como máximo ayer (día cerrado);
+     * {@code cappedToYesterday} = se pidió hasta hoy o después y se recortó. {@code projectionFactor}: × ventas para
+     * proyectar el cierre del mes (1 = mes completo; null = el rango no empieza el 1, no se proyecta).
+     */
     public record Finance(
+            LocalDate from,
+            LocalDate to,
+            boolean cappedToYesterday,
+            int days,
             int year,
             int month,
-            double daysElapsed,
             int daysInMonth,
+            Double projectionFactor,
             List<GoalRow> goals,
             Integer pnlYear,
             Integer pnlMonth,
             List<PnlRow> pnl,
             /** Motivo cuando el P&amp;L oficial no se pudo leer (por ejemplo, sin permiso de Finanzas). */
             String pnlUnavailable,
-            double monthToDate,
-            double lastYearSameDays,
-            int sameDaysUntil,
+            double sales,
+            double lastYearSameRange,
             double lastYearMonth,
             double lastYearNextMonth
     ) {
     }
 
-    public record GoalRow(Long locationId, String name, double goal, double monthToDate) {
+    /** {@code monthGoal} = meta del mes del rango; {@code goal} = metas prorrateadas a los días del rango. */
+    public record GoalRow(Long locationId, String name, double monthGoal, double goal, double sales) {
     }
 
     /** P&amp;L oficial del mes cerrado (Finanzas por kiosco): utilidad = diferencia; equilibrio = venta que cubre todo. */

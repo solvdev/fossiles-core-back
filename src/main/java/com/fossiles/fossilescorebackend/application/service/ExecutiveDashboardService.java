@@ -24,8 +24,13 @@ import com.fossiles.fossilescorebackend.application.dto.response.ExecutiveDashbo
 import com.fossiles.fossilescorebackend.application.dto.response.ExecutiveDashboardResponse.SlowRow;
 import com.fossiles.fossilescorebackend.application.dto.response.ExecutiveDashboardResponse.TopProduct;
 import com.fossiles.fossilescorebackend.application.dto.response.ExecutiveDashboardResponse.TypeCount;
+import com.fossiles.fossilescorebackend.application.dto.response.ExecutiveDashboardResponse.Stages;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskFinancialsPnlResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ProductionOrderProgressResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ProductionOrderProgressResponse.LineProgress;
+import com.fossiles.fossilescorebackend.application.dto.response.ProductionOrderProgressResponse.OrderProgress;
 import com.fossiles.fossilescorebackend.infrastructure.util.GuatemalaDateTime;
+import com.fossiles.fossilescorebackend.infrastructure.util.ProductionPlanningConstants;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
@@ -40,6 +45,7 @@ import java.sql.Timestamp;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.time.temporal.ChronoUnit;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -80,16 +86,26 @@ public class ExecutiveDashboardService {
     private final SalesDashboardCache cache;
     private final KioskFinancialsReportService financialsReportService;
     private final ExecutiveDashboardAccessGuard guard;
+    private final ProductionOrderProgressService progressService;
 
-    public ExecutiveDashboardResponse get(Integer days, boolean refresh) {
+    public ExecutiveDashboardResponse get(Integer days, LocalDate finFrom, LocalDate finTo, boolean refresh) {
         guard.assertCanView();
         int window = days == null || days < 1 ? DEFAULT_DAYS : Math.min(days, MAX_DAYS);
         LocalDate today = GuatemalaDateTime.today();
-        // El P&L oficial revisa sus propios permisos: se lee fuera del caché compartido por quien tenga acceso.
         ExecutiveDashboardResponse base = cache.get(
                 SalesDashboardCache.key("executive", today.minusDays(window - 1L), today, null), refresh,
                 () -> build(window, today));
-        return withPnl(base, today);
+        // Finanzas va aparte: depende del rango elegido y el P&L revisa los permisos de cada usuario.
+        Finance finance = finance(today, finFrom, finTo);
+        return new ExecutiveDashboardResponse(base.from(), base.to(), base.days(), base.generatedAt(), base.production(),
+                base.orders(), base.kioskSales(), finance, base.profitability(), base.leather(), base.receivables(),
+                base.ads());
+    }
+
+    /** Solo la parte de Finanzas, para cambiar el rango sin recargar todo el tablero. */
+    public Finance finance(LocalDate from, LocalDate to) {
+        guard.assertCanView();
+        return finance(GuatemalaDateTime.today(), from, to);
     }
 
     private ExecutiveDashboardResponse build(int window, LocalDate today) {
@@ -104,15 +120,21 @@ public class ExecutiveDashboardService {
                 .addValue("weeksFrom", Date.valueOf(today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).minusWeeks(WEEKS - 1L)))
                 .addValue("since90", Date.valueOf(today.minusDays(89)))
                 .addValue("since90Ts", Timestamp.valueOf(today.minusDays(89).atStartOfDay()))
-                .addValue("today", Date.valueOf(today));
+                .addValue("today", Date.valueOf(today))
+                // Ventas de kioscos con el día cerrado: la misma ventana, pero terminando ayer.
+                .addValue("salesFrom", Date.valueOf(from.minusDays(1)))
+                .addValue("salesTo", Date.valueOf(today.minusDays(1)))
+                .addValue("salesPrevFrom", Date.valueOf(from.minusDays(1L + window)))
+                .addValue("salesPrevTo", Date.valueOf(from.minusDays(2)));
 
         Profitability profitability = profitability(p);
+        ProductionOrderProgressResponse progress = progressService.report();
         return new ExecutiveDashboardResponse(
                 from, today, window, GuatemalaDateTime.now(),
-                production(p, today),
-                orders(p, today),
+                production(p, today, progress),
+                orders(progress),
                 kioskSales(p, today),
-                finance(today, null, null, null, null),
+                null,
                 profitability,
                 leather(),
                 receivables(p),
@@ -121,7 +143,7 @@ public class ExecutiveDashboardService {
 
     // ------------------------------------------------------------------ Producción
 
-    private Production production(MapSqlParameterSource p, LocalDate today) {
+    private Production production(MapSqlParameterSource p, LocalDate today, ProductionOrderProgressResponse progress) {
         long[] totals = new long[4];
         double[] minutes = new double[1];
         jdbc.query("""
@@ -183,70 +205,97 @@ public class ExecutiveDashboardService {
                 rs.getLong("pieces"), round1(rs.getDouble("minutes") / 60.0),
                 round2(rs.getDouble("median_min") / 60.0)));
 
-        long[] backlog = new long[4];
-        jdbc.query(OPEN_ORDERS_CTE + """
-                SELECT COALESCE(SUM(qty), 0) AS ordered, COALESCE(SUM(LEAST(done, qty)), 0) AS done,
-                       COALESCE(SUM(LEAST(wip, GREATEST(qty - done, 0))), 0) AS wip,
-                       COALESCE(SUM(GREATEST(qty - done - wip, 0)), 0) AS pending
-                FROM open_orders WHERE order_type <> 'CINCHOS_FOSSILES'
-                """, p, rs -> {
-            backlog[0] = rs.getLong("ordered");
-            backlog[1] = rs.getLong("done");
-            backlog[2] = rs.getLong("wip");
-            backlog[3] = rs.getLong("pending");
+        // Horas estándar terminadas por semana: la capacidad real de la planta medida en el mismo «idioma» que las
+        // horas que faltan (piezas × horas por pieza del producto).
+        Map<LocalDate, Double> weeklyHours = new HashMap<>();
+        jdbc.query("""
+                SELECT date_trunc('week', t.completed_at)::date AS wk,
+                       SUM(t.quantity * COALESCE(NULLIF(pr.prd_time, 0), :defaultHours)) AS h
+                FROM task t LEFT JOIN product pr ON pr.id = t.product_id
+                WHERE t.status = 'COMPLETED' AND t.completed_at >= :weeksFrom GROUP BY 1
+                """, new MapSqlParameterSource(p.getValues())
+                .addValue("defaultHours", ProductionPlanningConstants.DEFAULT_PRD_TIME_PER_UNIT), rs -> {
+            weeklyHours.put(rs.getDate("wk").toLocalDate(), rs.getDouble("h"));
         });
+        List<Point> weeksHours = weekSeries(weeklyHours, today);
+        double avgWeekHours = weeksHours.stream().filter(w -> !w.current()).skip(Math.max(0, weeksHours.size() - 5L))
+                .mapToDouble(Point::value).average().orElse(0);
+
+        Stages backlog = stages(progress.getTotals() == null ? null : progress.getTotals().getStages());
+        double hoursLeft = orderList(progress).stream().mapToDouble(o -> hoursLeft(o.getLines())).sum();
 
         return new Production(totals[0], totals[1], round1(minutes[0] / 60.0), totals[2], startedOn[0], all[0], all[1],
-                weeks, round1(avgWeek), desks, productTime, backlog[0], backlog[1], backlog[2], backlog[3]);
+                weeks, round1(avgWeek), weeksHours, round1(avgWeekHours), desks, productTime, backlog,
+                Math.max(0, backlog.units() - backlog.done()), round1(hoursLeft));
     }
-
-    /** Órdenes PENDING/IN_PROGRESS con piezas pedidas (sin talla), terminadas y en proceso según sus tareas. */
-    private static final String OPEN_ORDERS_CTE = """
-            WITH oo AS (
-                SELECT id, code, order_type, status, customer_name, delivery_date
-                FROM production_order WHERE status IN ('PENDING', 'IN_PROGRESS')
-            ), qty AS (
-                SELECT production_order_id AS id, COALESCE(SUM(quantity), 0) AS qty
-                FROM production_order_item WHERE production_order_id IN (SELECT id FROM oo) GROUP BY 1
-            ), prog AS (
-                SELECT production_order_id AS id,
-                       COALESCE(SUM(quantity) FILTER (WHERE status = 'COMPLETED'), 0) AS done,
-                       COALESCE(SUM(quantity) FILTER (WHERE status = 'IN_PROGRESS'), 0) AS wip
-                FROM task WHERE production_order_id IN (SELECT id FROM oo) GROUP BY 1
-            ), open_orders AS (
-                SELECT oo.*, COALESCE(qty.qty, 0) AS qty, COALESCE(prog.done, 0) AS done, COALESCE(prog.wip, 0) AS wip
-                FROM oo LEFT JOIN qty ON qty.id = oo.id LEFT JOIN prog ON prog.id = oo.id
-            )
-            """;
 
     // ------------------------------------------------------------------ Órdenes
 
-    private Orders orders(MapSqlParameterSource p, LocalDate today) {
-        long[] counts = new long[4];
-        jdbc.query("""
-                SELECT COUNT(*) AS open_orders,
-                       COUNT(*) FILTER (WHERE status = 'PENDING') AS pending,
-                       COUNT(*) FILTER (WHERE status = 'IN_PROGRESS') AS in_progress,
-                       COUNT(*) FILTER (WHERE delivery_date < :today) AS overdue
-                FROM production_order WHERE status IN ('PENDING', 'IN_PROGRESS')
-                """, p, rs -> {
-            counts[0] = rs.getLong("open_orders");
-            counts[1] = rs.getLong("pending");
-            counts[2] = rs.getLong("in_progress");
-            counts[3] = rs.getLong("overdue");
-        });
-        List<TypeCount> byType = jdbc.query("""
-                SELECT order_type, COUNT(*) AS n FROM production_order
-                WHERE status IN ('PENDING', 'IN_PROGRESS') GROUP BY 1 ORDER BY 2 DESC
-                """, p, (rs, i) -> new TypeCount(rs.getString("order_type"), rs.getLong("n")));
-        List<OrderRow> rows = jdbc.query(OPEN_ORDERS_CTE + """
-                SELECT id, code, order_type, customer_name, delivery_date, qty, done, wip FROM open_orders
-                WHERE order_type <> 'CINCHOS_FOSSILES' AND qty > 0
-                ORDER BY GREATEST(qty - done, 0) DESC, delivery_date NULLS LAST LIMIT 40
-                """, p, (rs, i) -> new OrderRow(rs.getLong("id"), rs.getString("code"), rs.getString("order_type"),
-                trim(rs.getString("customer_name")), localDate(rs, "delivery_date"),
-                rs.getLong("qty"), rs.getLong("done"), rs.getLong("wip")));
-        return new Orders(counts[0], counts[1], counts[2], counts[3], byType, rows);
+    /** Mismo cálculo que «Avance por orden» del Dashboard de Producción, para que las cifras cuadren. */
+    private Orders orders(ProductionOrderProgressResponse progress) {
+        List<OrderProgress> list = orderList(progress);
+        long pending = list.stream().filter(o -> "PENDING".equals(o.getStatus())).count();
+        long inProgress = list.stream().filter(o -> "IN_PROGRESS".equals(o.getStatus())).count();
+        long inQa = list.stream().filter(o -> "IN_QA".equals(o.getStatus())).count();
+        ProductionOrderProgressResponse.Totals t = progress.getTotals();
+        long late = t != null && t.getLateOrders() != null ? t.getLateOrders() : list.stream().filter(o -> Boolean.TRUE.equals(o.getLate())).count();
+        long working = t != null && t.getOrdersWorkingNow() != null ? t.getOrdersWorkingNow() : 0;
+
+        Map<String, Long> types = new LinkedHashMap<>();
+        double hours = 0;
+        double lateHours = 0;
+        List<OrderRow> rows = new ArrayList<>();
+        for (OrderProgress o : list) {
+            types.merge(o.getOrderType() == null ? "OTRO" : o.getOrderType(), 1L, Long::sum);
+            double h = hoursLeft(o.getLines());
+            hours += h;
+            if (Boolean.TRUE.equals(o.getLate())) {
+                lateHours += h;
+            }
+            Stages s = stages(o.getStages());
+            if (s.units() > 0) {
+                rows.add(new OrderRow(o.getOrderId(), o.getCode(), o.getOrderType(), o.getStatus(), trim(o.getCustomerName()),
+                        o.getDeliveryDate(), Boolean.TRUE.equals(o.getLate()), s, round1(h)));
+            }
+        }
+        rows.sort(Comparator.comparingLong((OrderRow r) -> r.stages().units() - r.stages().done()).reversed());
+        List<TypeCount> byType = new ArrayList<>();
+        types.entrySet().stream().sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .forEach(e -> byType.add(new TypeCount(e.getKey(), e.getValue())));
+        return new Orders(list.size(), pending, inProgress, inQa, late, working, round1(hours), round1(lateHours), byType,
+                rows.size() > 80 ? rows.subList(0, 80) : rows);
+    }
+
+    private static List<OrderProgress> orderList(ProductionOrderProgressResponse progress) {
+        return progress == null || progress.getOrders() == null ? List.of() : progress.getOrders();
+    }
+
+    private static Stages stages(ProductionOrderProgressResponse.Stages s) {
+        if (s == null) {
+            return new Stages(0, 0, 0, 0, 0, 0);
+        }
+        return new Stages(nz(s.getUnits()), nz(s.getNoTask()), nz(s.getPending()), nz(s.getInProgress()),
+                nz(s.getWarehouse()), nz(s.getDone()));
+    }
+
+    /** Igual que el front de Avance por orden: (pedidas − terminadas) × horas por pieza de la línea. */
+    static double hoursLeft(List<LineProgress> lines) {
+        if (lines == null) {
+            return 0;
+        }
+        double h = 0;
+        for (LineProgress l : lines) {
+            ProductionOrderProgressResponse.Stages s = l.getStages();
+            long missing = s == null ? 0 : Math.max(0, nz(s.getUnits()) - nz(s.getDone()));
+            double perUnit = l.getPrdTimePerUnit() != null ? l.getPrdTimePerUnit()
+                    : ProductionPlanningConstants.DEFAULT_PRD_TIME_PER_UNIT;
+            h += missing * perUnit;
+        }
+        return h;
+    }
+
+    private static long nz(Integer v) {
+        return v == null ? 0 : v;
     }
 
     // ------------------------------------------------------------------ Ventas de kioscos
@@ -260,7 +309,7 @@ public class ExecutiveDashboardService {
                            ROW_NUMBER() OVER (PARTITION BY s.kiosk_location_id ORDER BY SUM(i.quantity) DESC) AS rn
                     FROM kiosk_sale_item i JOIN kiosk_sale s ON s.id = i.kiosk_sale_id
                     LEFT JOIN product pr ON pr.id = i.product_id
-                    WHERE %s AND s.sale_date BETWEEN :from AND :to AND COALESCE(i.product_code, '') NOT LIKE 'SUM%%'
+                    WHERE %s AND s.sale_date BETWEEN :salesFrom AND :salesTo AND COALESCE(i.product_code, '') NOT LIKE 'SUM%%'
                     GROUP BY 1, 2
                 )
                 SELECT loc, code, name, q FROM x WHERE rn <= %d ORDER BY loc, rn
@@ -273,7 +322,7 @@ public class ExecutiveDashboardService {
                 SELECT l.id, l.name, COUNT(s.id) AS tickets, COALESCE(SUM(s.total_amount), 0) AS sales,
                        COALESCE(SUM(s.total_items), 0) AS units
                 FROM locations l
-                LEFT JOIN kiosk_sale s ON s.kiosk_location_id = l.id AND %s AND s.sale_date BETWEEN :from AND :to
+                LEFT JOIN kiosk_sale s ON s.kiosk_location_id = l.id AND %s AND s.sale_date BETWEEN :salesFrom AND :salesTo
                 WHERE l.id IN (%s)
                 GROUP BY l.id, l.name ORDER BY 4 DESC
                 """.formatted(KIOSK_SALE_OK, KIOSKS), p, (rs, i) -> {
@@ -287,13 +336,13 @@ public class ExecutiveDashboardService {
         double units = kiosks.stream().mapToDouble(KioskRow::units).sum();
         Double previous = jdbc.queryForObject("""
                 SELECT COALESCE(SUM(s.total_amount), 0) FROM kiosk_sale s
-                WHERE %s AND s.sale_date BETWEEN :prevFrom AND :prevTo AND s.kiosk_location_id IN (%s)
+                WHERE %s AND s.sale_date BETWEEN :salesPrevFrom AND :salesPrevTo AND s.kiosk_location_id IN (%s)
                 """.formatted(KIOSK_SALE_OK, KIOSKS), p, Double.class);
 
         Map<LocalDate, Double> weekly = new HashMap<>();
         jdbc.query("""
                 SELECT date_trunc('week', s.sale_date)::date AS wk, SUM(s.total_amount) AS amount FROM kiosk_sale s
-                WHERE %s AND s.sale_date >= :weeksFrom AND s.kiosk_location_id IN (%s) GROUP BY 1
+                WHERE %s AND s.sale_date >= :weeksFrom AND s.sale_date <= :salesTo AND s.kiosk_location_id IN (%s) GROUP BY 1
                 """.formatted(KIOSK_SALE_OK, KIOSKS), p, rs -> {
             weekly.put(rs.getDate("wk").toLocalDate(), rs.getDouble("amount"));
         });
@@ -302,7 +351,7 @@ public class ExecutiveDashboardService {
                 WITH sold AS (
                     SELECT i.product_id, SUM(i.quantity) AS q, SUM(i.line_total) AS amount
                     FROM kiosk_sale_item i JOIN kiosk_sale s ON s.id = i.kiosk_sale_id
-                    WHERE %s AND s.sale_date BETWEEN :from AND :to
+                    WHERE %s AND s.sale_date BETWEEN :salesFrom AND :salesTo
                       AND COALESCE(i.product_code, '') NOT LIKE 'SUM%%' AND COALESCE(i.product_code, '') NOT LIKE 'FOSS%%'
                     GROUP BY 1 ORDER BY 2 DESC LIMIT %d
                 ), k AS (%s),
@@ -328,45 +377,105 @@ public class ExecutiveDashboardService {
                         round2(rs.getDouble("amount")), rs.getLong("kiosk_stock"), rs.getLong("pt"),
                         rs.getLong("without_stock"), rs.getLong("low_stock")));
 
-        return new KioskSales(round2(sales), round2(previous == null ? 0 : previous), tickets, units,
+        return new KioskSales(((Date) p.getValue("salesFrom")).toLocalDate(), today.minusDays(1), round2(sales),
+                round2(previous == null ? 0 : previous), tickets, units,
                 weekSeries(weekly, today), kiosks, top);
     }
 
     // ------------------------------------------------------------------ Finanzas
 
-    private Finance finance(LocalDate today, Integer pnlYear, Integer pnlMonth, List<PnlRow> pnl, String pnlUnavailable) {
-        YearMonth ym = YearMonth.from(today);
+    /**
+     * Finanzas de kioscos en un rango. El día de hoy nunca cuenta (la venta se toma con el día cerrado): si el rango
+     * llega a hoy o después, termina ayer. Sin fechas = del 1 del mes hasta ayer (el 1 del mes, el mes anterior completo).
+     */
+    private Finance finance(LocalDate today, LocalDate fromParam, LocalDate toParam) {
+        LocalDate yesterday = today.minusDays(1);
+        LocalDate to = toParam == null ? yesterday : toParam;
+        boolean capped = false;
+        if (to.isAfter(yesterday)) {
+            to = yesterday;
+            capped = toParam != null;
+        }
+        LocalDate from = fromParam == null ? to.withDayOfMonth(1) : fromParam;
+        if (from.isAfter(to)) {
+            from = to.withDayOfMonth(1);
+        }
+        if (from.isBefore(to.minusDays(MAX_DAYS))) {
+            from = to.minusDays(MAX_DAYS);
+        }
+        YearMonth ym = YearMonth.from(to);
+        YearMonth current = YearMonth.from(today);
+        int days = (int) ChronoUnit.DAYS.between(from, to) + 1;
+        // Para proyectar al cierre: solo si el rango empieza el 1 del mes; mes completo = 1, mes abierto = días/mes.
+        Double factor = null;
+        if (from.equals(ym.atDay(1))) {
+            if (to.equals(ym.atEndOfMonth())) {
+                factor = 1.0;
+            } else if (ym.equals(current)) {
+                factor = (double) ym.lengthOfMonth() / days;
+            }
+        }
+
+        // Meta de cada mes que toca el rango, prorrateada por los días del rango dentro de ese mes.
+        Map<YearMonth, Double> monthShare = new LinkedHashMap<>();
+        for (YearMonth m = YearMonth.from(from); !m.isAfter(ym); m = m.plusMonths(1)) {
+            LocalDate a = from.isAfter(m.atDay(1)) ? from : m.atDay(1);
+            LocalDate b = to.isBefore(m.atEndOfMonth()) ? to : m.atEndOfMonth();
+            long overlap = ChronoUnit.DAYS.between(a, b) + 1;
+            monthShare.put(m, (double) overlap / m.lengthOfMonth());
+        }
+        YearMonth firstMonth = YearMonth.from(from);
         MapSqlParameterSource p = new MapSqlParameterSource()
-                .addValue("y", ym.getYear()).addValue("m", ym.getMonthValue())
-                .addValue("monthStart", Date.valueOf(ym.atDay(1)))
-                .addValue("today", Date.valueOf(today));
+                .addValue("a", firstMonth.getYear() * 100 + firstMonth.getMonthValue())
+                .addValue("b", ym.getYear() * 100 + ym.getMonthValue())
+                .addValue("from", Date.valueOf(from)).addValue("to", Date.valueOf(to));
+        Map<Long, double[]> goalByKiosk = new HashMap<>();
+        jdbc.query("""
+                SELECT kiosk_location_id AS id, goal_year, goal_month, SUM(goal_amount) AS goal FROM kiosk_monthly_goal
+                WHERE goal_year * 100 + goal_month BETWEEN :a AND :b GROUP BY 1, 2, 3
+                """, p, rs -> {
+            YearMonth m = YearMonth.of(rs.getInt("goal_year"), rs.getInt("goal_month"));
+            double goal = rs.getDouble("goal");
+            double[] g = goalByKiosk.computeIfAbsent(rs.getLong("id"), k -> new double[2]);
+            g[0] += goal * monthShare.getOrDefault(m, 0d);
+            if (m.equals(ym)) {
+                g[1] = goal;
+            }
+        });
         List<GoalRow> goals = jdbc.query("""
                 WITH k AS (%s),
-                g AS (SELECT kiosk_location_id AS id, SUM(goal_amount) AS goal FROM kiosk_monthly_goal
-                      WHERE goal_year = :y AND goal_month = :m GROUP BY 1),
-                v AS (SELECT s.kiosk_location_id AS id, SUM(s.total_amount) AS mtd FROM kiosk_sale s
-                      WHERE %s AND s.sale_date BETWEEN :monthStart AND :today GROUP BY 1)
-                SELECT l.id, l.name, COALESCE(g.goal, 0) AS goal, COALESCE(v.mtd, 0) AS mtd
-                FROM locations l LEFT JOIN g ON g.id = l.id LEFT JOIN v ON v.id = l.id
-                WHERE l.id IN (SELECT id FROM k) ORDER BY 4 DESC
-                """.formatted(KIOSKS, KIOSK_SALE_OK), p,
-                (rs, i) -> new GoalRow(rs.getLong("id"), rs.getString("name"), round2(rs.getDouble("goal")),
-                        round2(rs.getDouble("mtd"))));
-        double mtd = goals.stream().mapToDouble(GoalRow::monthToDate).sum();
+                v AS (SELECT s.kiosk_location_id AS id, SUM(s.total_amount) AS sales FROM kiosk_sale s
+                      WHERE %s AND s.sale_date BETWEEN :from AND :to GROUP BY 1)
+                SELECT l.id, l.name, COALESCE(v.sales, 0) AS sales
+                FROM locations l LEFT JOIN v ON v.id = l.id
+                WHERE l.id IN (SELECT id FROM k) ORDER BY 3 DESC
+                """.formatted(KIOSKS, KIOSK_SALE_OK), p, (rs, i) -> {
+            double[] g = goalByKiosk.getOrDefault(rs.getLong("id"), new double[2]);
+            return new GoalRow(rs.getLong("id"), rs.getString("name"), round2(g[1]), round2(g[0]),
+                    round2(rs.getDouble("sales")));
+        });
+        double sales = goals.stream().mapToDouble(GoalRow::sales).sum();
 
-        // Mismos días del año pasado (hasta ayer): histórico importado + POS, por si el kiosco ya tenía sistema.
-        LocalDate until = today.getDayOfMonth() > 1 ? today.minusDays(1) : today;
-        LocalDate lyStart = ym.atDay(1).minusYears(1);
-        LocalDate lyUntil = until.minusYears(1);
-        double current = sumKioskSales(ym.atDay(1), until);
-        double lastYearSame = sumHistory(lyStart, lyUntil);
-        double lastYearMonth = sumHistory(lyStart, ym.minusYears(1).atEndOfMonth());
-        YearMonth next = ym.plusMonths(1).minusYears(1);
-        double lastYearNext = sumHistory(next.atDay(1), next.atEndOfMonth());
+        // Mismo rango del año pasado (histórico importado + POS) y la temporada: el mes del rango y el siguiente.
+        double lastYearSame = sumHistory(from.minusYears(1), to.minusYears(1));
+        YearMonth lyMonth = ym.minusYears(1);
+        double lastYearMonth = sumHistory(lyMonth.atDay(1), lyMonth.atEndOfMonth());
+        YearMonth lyNext = lyMonth.plusMonths(1);
+        double lastYearNext = sumHistory(lyNext.atDay(1), lyNext.atEndOfMonth());
 
-        double elapsed = today.getDayOfMonth() - 0.5;
-        return new Finance(ym.getYear(), ym.getMonthValue(), elapsed, ym.lengthOfMonth(), goals, pnlYear, pnlMonth,
-                pnl == null ? List.of() : pnl, pnlUnavailable, round2(current), round2(lastYearSame), until.getDayOfMonth(),
+        // P&L oficial: el mes del rango si ya cerró; si no, el mes cerrado anterior.
+        YearMonth pnlMonth = ym.isBefore(current) ? ym : current.minusMonths(1);
+        List<PnlRow> pnl;
+        String unavailable = null;
+        try {
+            pnl = pnl(pnlMonth);
+        } catch (RuntimeException e) {
+            log.info("Tablero gerencial sin P&L de Finanzas: {}", e.getMessage());
+            unavailable = "No se pudo leer el P&L de Finanzas por kiosco (" + e.getMessage() + ").";
+            pnl = List.of();
+        }
+        return new Finance(from, to, capped, days, ym.getYear(), ym.getMonthValue(), ym.lengthOfMonth(), factor, goals,
+                pnlMonth.getYear(), pnlMonth.getMonthValue(), pnl, unavailable, round2(sales), round2(lastYearSame),
                 round2(lastYearMonth), round2(lastYearNext));
     }
 
@@ -389,46 +498,32 @@ public class ExecutiveDashboardService {
         return (hist == null ? 0 : hist) + sumKioskSales(from, to);
     }
 
-    /** P&amp;L oficial del último mes cerrado. Se calcula por usuario porque Finanzas valida sus propios permisos. */
-    private ExecutiveDashboardResponse withPnl(ExecutiveDashboardResponse base, LocalDate today) {
-        YearMonth last = YearMonth.from(today).minusMonths(1);
-        List<PnlRow> rows = new ArrayList<>();
-        String unavailable = null;
+    /** P&amp;L oficial de Finanzas por kiosco del mes. Se lee por usuario porque Finanzas valida sus propios permisos. */
+    private List<PnlRow> pnl(YearMonth month) {
+        Map<Long, Long> siteToLocation = new HashMap<>();
+        jdbc.query("SELECT id, location_id FROM kiosk_site", new MapSqlParameterSource(), rs -> {
+            long loc = rs.getLong("location_id");
+            siteToLocation.put(rs.getLong("id"), rs.wasNull() ? null : loc);
+        });
+        KioskFinancialsPnlResponse pnl;
         try {
-            Map<Long, Long> siteToLocation = new HashMap<>();
-            jdbc.query("SELECT id, location_id FROM kiosk_site", new MapSqlParameterSource(), rs -> {
-                long loc = rs.getLong("location_id");
-                siteToLocation.put(rs.getLong("id"), rs.wasNull() ? null : loc);
-            });
-            KioskFinancialsPnlResponse pnl;
-            try {
-                pnl = financialsReportService.getPnl(last.getYear(), last.getMonthValue(), null);
-            } catch (Exception e) {
-                throw new IllegalStateException(e.getMessage(), e);
-            }
-            if (pnl != null && pnl.getSites() != null) {
-                for (KioskFinancialsPnlResponse.SitePnl s : pnl.getSites()) {
-                    double sales = num(s.getSales());
-                    if (sales <= 0) {
-                        continue;
-                    }
-                    double fixed = s.getFixed() == null ? 0 : num(s.getFixed().getTotal());
-                    rows.add(new PnlRow(s.getSiteId(), siteToLocation.get(s.getSiteId()), s.getName(), round2(sales),
-                            round2(fixed), round2(num(s.getDifference())), round2(num(s.getBreakEven()))));
-                }
-            }
-        } catch (RuntimeException e) {
-            log.info("Tablero gerencial sin P&L de Finanzas: {}", e.getMessage());
-            unavailable = "No se pudo leer el P&L de Finanzas por kiosco (" + e.getMessage() + ").";
-            rows = List.of();
+            pnl = financialsReportService.getPnl(month.getYear(), month.getMonthValue(), null);
+        } catch (Exception e) {
+            throw new IllegalStateException(e.getMessage(), e);
         }
-        Finance f = base.finance();
-        Finance finance = new Finance(f.year(), f.month(), f.daysElapsed(), f.daysInMonth(), f.goals(),
-                last.getYear(), last.getMonthValue(), rows, unavailable, f.monthToDate(), f.lastYearSameDays(),
-                f.sameDaysUntil(), f.lastYearMonth(), f.lastYearNextMonth());
-        return new ExecutiveDashboardResponse(base.from(), base.to(), base.days(), base.generatedAt(), base.production(),
-                base.orders(), base.kioskSales(), finance, base.profitability(), base.leather(), base.receivables(),
-                base.ads());
+        List<PnlRow> rows = new ArrayList<>();
+        if (pnl != null && pnl.getSites() != null) {
+            for (KioskFinancialsPnlResponse.SitePnl s : pnl.getSites()) {
+                double sales = num(s.getSales());
+                if (sales <= 0) {
+                    continue;
+                }
+                double fixed = s.getFixed() == null ? 0 : num(s.getFixed().getTotal());
+                rows.add(new PnlRow(s.getSiteId(), siteToLocation.get(s.getSiteId()), s.getName(), round2(sales),
+                        round2(fixed), round2(num(s.getDifference())), round2(num(s.getBreakEven()))));
+            }
+        }
+        return rows;
     }
 
     // ------------------------------------------------------------------ Rentabilidad
