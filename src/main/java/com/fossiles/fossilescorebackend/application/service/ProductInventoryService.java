@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -103,7 +104,9 @@ public class ProductInventoryService {
         RETURNS_FIRST,
         PT_FIRST,
         /** Solo Devoluciones: las OPI (envíos internos a colaboradores) no consumen Bodega PT. */
-        RETURNS_ONLY
+        RETURNS_ONLY,
+        /** Solo Bodega PT: envíos de una distribución; Devoluciones únicamente con autorización explícita. */
+        PT_ONLY
     }
 
     /**
@@ -117,6 +120,14 @@ public class ProductInventoryService {
     @Transactional(readOnly = true)
     public List<LocationEntity> getDispatchSourceWarehouses(DispatchSource source) throws BusinessException {
         List<LocationEntity> warehouses = new ArrayList<>();
+        if (source == DispatchSource.PT_ONLY) {
+            LocationEntity bodegaPt = findBodegaPtLocation();
+            if (bodegaPt == null) {
+                throw new BusinessException("No existe una ubicacion configurada para BODEGA_PT.");
+            }
+            warehouses.add(bodegaPt);
+            return warehouses;
+        }
         returnsWarehouseLocator.find().ifPresent(warehouses::add);
         if (source == DispatchSource.RETURNS_ONLY) {
             if (warehouses.isEmpty()) {
@@ -377,6 +388,34 @@ public class ProductInventoryService {
                 .map(k -> k.getQuantity() != null ? k.getQuantity() : BigDecimal.ZERO)
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .compareTo(BigDecimal.ZERO) < 0;
+    }
+
+    /**
+     * True si el documento tiene alguna salida (cantidad negativa) en las bodegas de {@code source}
+     * (p. ej. {@link DispatchSource#PT_ONLY} = Bodega PT). Sirve para saber si un envío ya tomó un
+     * faltante autorizado de la otra cubeta antes de reescribir sus líneas.
+     */
+    @Transactional(readOnly = true)
+    public boolean hasOutflowFromWarehouses(String referenceType, Long referenceId, DispatchSource source)
+            throws BusinessException {
+        if (referenceType == null || referenceId == null || source == null) {
+            return false;
+        }
+        Set<Long> locationIds;
+        try {
+            locationIds = getDispatchSourceWarehouses(source).stream()
+                    .map(LocationEntity::getId)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet());
+        } catch (BusinessException ex) {
+            // Si esa bodega no está configurada, nada pudo salir de ella.
+            return false;
+        }
+        return productInventoryKardexRepository.findByReferenceTypeAndReferenceId(referenceType, referenceId).stream()
+                .anyMatch(k -> k.getLocationId() != null
+                        && locationIds.contains(k.getLocationId())
+                        && k.getQuantity() != null
+                        && k.getQuantity().compareTo(BigDecimal.ZERO) < 0);
     }
 
     /** True si el documento tiene cualquier movimiento de kardex (aunque su neto ya sea cero). */
