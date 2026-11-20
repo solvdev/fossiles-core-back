@@ -2099,7 +2099,12 @@ public class ProductionOrderController {
             return;
         }
         int sum = CinchoSizeKeys.sum(CinchoSizeKeys.aggregate(itemRequest.getSizes()));
-        int quantity = itemRequest.getQuantity() != null ? itemRequest.getQuantity() : 0;
+        if (itemRequest.getQuantity() == null) {
+            // Cinchos capturados solo por talla: la cantidad de la línea es la suma del desglose.
+            itemRequest.setQuantity(sum);
+            return;
+        }
+        int quantity = itemRequest.getQuantity();
         if (sum == quantity) {
             return;
         }
