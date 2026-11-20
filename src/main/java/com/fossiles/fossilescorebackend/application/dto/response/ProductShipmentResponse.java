@@ -18,6 +18,13 @@ public class ProductShipmentResponse {
     private Long distributionId;
     /** Origen de la distribución del envío (MANUAL / REPOSICION); null si el envío no tiene distribución. */
     private String distributionOrigin;
+    /**
+     * True si es un envío directo a kiosco: kiosco destino, sin OP ni ENVI interno, con productos y sin distribución
+     * (o en una distribución MANUAL «Envío directo a kiosko…» de antes). Sale de Devoluciones.
+     */
+    private Boolean directKioskShipment;
+    /** True si es un envío directo a kiosco sin distribución (withoutDistribution). */
+    private Boolean withoutDistribution;
     /** True si es un envío de reposición que espera producción (faltante en bodega al crear la distribución). */
     private Boolean pendingProduction;
     /** OP (OPI/OPCK) cuando el envío no usa distribución. */

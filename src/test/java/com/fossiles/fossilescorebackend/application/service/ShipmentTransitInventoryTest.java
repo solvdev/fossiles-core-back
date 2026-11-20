@@ -1,5 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.DistributionOrigin;
+import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.ProductDistributionEntity;
 import com.fossiles.fossilescorebackend.application.dto.request.ConfirmReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InventoryAdjustmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InventoryTransferRequest;
@@ -34,6 +36,9 @@ import static org.mockito.Mockito.when;
 @ActiveProfiles("test")
 @Transactional
 class ShipmentTransitInventoryTest {
+
+    @Autowired
+    private com.fossiles.fossilescorebackend.infrastructure.persistence.repository.ProductDistributionRepository distributionRepositoryForShipments;
 
     @Autowired private ProductDistributionService productDistributionService;
     @Autowired private ProductInventoryService productInventoryService;
@@ -357,8 +362,23 @@ class ShipmentTransitInventoryTest {
                 .build());
     }
 
+    /**
+     * Los envíos de estas pruebas viven en una distribución: salen de Bodega PT, donde se siembra el stock.
+     * (Un envío a kiosco sin distribución ni OP es directo y sale de Devoluciones.)
+     */
+    private Long testDistributionId() {
+        return distributionRepositoryForShipments.save(ProductDistributionEntity.builder()
+                .distributionNumber("DIST-QA-" + java.util.UUID.randomUUID().toString().substring(0, 8))
+                .distributionDate(java.time.LocalDate.now())
+                .status("IN_PROGRESS")
+                .origin(DistributionOrigin.MANUAL)
+                .description("Distribución QA")
+                .build()).getId();
+    }
+
     private ProductShipmentEntity saveShipment(String number) {
         return shipmentRepository.save(ProductShipmentEntity.builder()
+                .distributionId(testDistributionId())
                 .shipmentNumber(number)
                 .status("CONFIRMED")
                 .locationId(kiosko.getId())

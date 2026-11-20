@@ -15,6 +15,10 @@ import java.util.List;
 public class DispatchStockPreviewResponse {
     private BigDecimal availableTotal;
     private List<DispatchStockBreakdownRow> breakdown;
+    /** Bodega de la que sale sin autorización (p. ej. "Devoluciones" para un envío directo). */
+    private String primaryWarehouseLabel;
+    /** Total contando también la cubeta de respaldo (solo con autorización); null si no aplica. */
+    private BigDecimal fallbackAvailableTotal;
 
     @Data
     @Builder

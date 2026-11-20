@@ -14,6 +14,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentS
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockPreviewResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ShipmentDispatchStockCheckResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockShortageResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductDistributionResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.ProductInventoryLocationResponse;
@@ -94,7 +95,7 @@ public class ProductDistributionService {
      * confirma cuando la OPK sugerida ya dejó el producto en Bodega PT.
      */
     public static final String PENDING_PRODUCTION_TAG = "PENDING_PRODUCTION:1";
-    /** Descripción de la distribución que envuelve un envío directo a kiosco (sin OP). */
+    /** Descripción de las distribuciones MANUAL que antes envolvían un envío directo a kiosco (ya no se crean). */
     public static final String DIRECT_KIOSK_DISTRIBUTION_DESCRIPTION = "Envío directo a kiosko";
     private static final String DISCOUNT_PERCENT_TAG = "DISCOUNT_PERCENT:";
     private static final String DISCOUNT_AMOUNT_TAG = "DISCOUNT_AMOUNT:";
@@ -684,7 +685,7 @@ public class ProductDistributionService {
     }
 
     /**
-     * Envío directo a kiosko sin OP ni distribución.
+     * Envío directo a kiosko sin OP ni distribución (sale solo de Devoluciones al enviarlo).
      * Por defecto solo confirma el documento; el envío a tránsito se hace después con sendShipment.
      */
     @Transactional(rollbackFor = Exception.class)
@@ -710,13 +711,12 @@ public class ProductDistributionService {
 
         String persistedNotes = mergeDocumentDateIntoNotes(request.getNotes(), request.getDocumentDate());
         Long currentUserId = securityUtil.getCurrentUserId();
-        // Por regla todo envío a kiosco vive en una distribución (la indicada o una MANUAL nueva). Excepción
-        // explícita: withoutDistribution=true y sin distributionId crea el envío suelto.
-        boolean withoutDistribution = request.getDistributionId() == null
-                && Boolean.TRUE.equals(request.getWithoutDistribution());
+        // Envío directo: sin distribución (sale de Devoluciones). Si se eligió una distribución existente, el envío
+        // vive en ella y deja de ser directo (sale de Bodega PT como el resto de la distribución).
+        boolean withoutDistribution = request.getDistributionId() == null;
         Long distributionId = withoutDistribution
                 ? null
-                : resolveDirectKioskDistribution(request.getDistributionId(), location, currentUserId);
+                : requireOpenDistribution(request.getDistributionId());
         String shipmentNumber = generateShipmentNumber(location);
         ProductShipmentEntity shipment = ProductShipmentEntity.builder()
                 .distributionId(distributionId)
@@ -739,7 +739,7 @@ public class ProductDistributionService {
         if (confirmOnly) {
             return confirmed;
         }
-        return sendShipment(saved.getId());
+        return sendShipment(saved.getId(), Boolean.TRUE.equals(request.getTakeShortageFromFallback()));
     }
 
     /**
@@ -879,16 +879,31 @@ public class ProductDistributionService {
     /** {@code internal}: envío interno (OPI) cuenta solo Devoluciones; el resto, Devoluciones + Bodega PT. */
     public DispatchStockPreviewResponse previewDispatchStock(Long productId, Long colorId, String size, boolean internal)
             throws BusinessException {
+        return previewDispatchStock(productId, colorId, size, internal, false);
+    }
+
+    /**
+     * {@code direct}: envío directo a kiosco. El disponible es solo Devoluciones; el desglose muestra también
+     * Bodega PT y {@code fallbackAvailableTotal} lo que habría tomando el faltante de PT con autorización.
+     */
+    public DispatchStockPreviewResponse previewDispatchStock(
+            Long productId, Long colorId, String size, boolean internal, boolean direct) throws BusinessException {
         if (productId == null) {
             throw new BusinessException("Producto requerido.");
         }
         String sizeLabel = normalizeSize(size);
-        ProductInventoryService.DispatchSource source = internal
+        ProductInventoryService.DispatchSource source = internal || direct
                 ? ProductInventoryService.DispatchSource.RETURNS_ONLY
                 : ProductInventoryService.DispatchSource.RETURNS_FIRST;
-        List<LocationEntity> warehouses = productInventoryService.getDispatchSourceWarehouses(source);
+        List<LocationEntity> warehouses = productInventoryService.getDispatchSourceWarehouses(direct && !internal
+                ? ProductInventoryService.DispatchSource.RETURNS_FIRST
+                : source);
         BigDecimal total = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
                 productId, colorId, sizeLabel, source);
+        BigDecimal fallbackTotal = direct && !internal
+                ? productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
+                        productId, colorId, sizeLabel, ProductInventoryService.DispatchSource.RETURNS_FIRST)
+                : null;
         List<DispatchStockPreviewResponse.DispatchStockBreakdownRow> breakdown = new ArrayList<>();
         for (LocationEntity loc : warehouses) {
             if (loc == null) {
@@ -906,6 +921,88 @@ public class ProductDistributionService {
         return DispatchStockPreviewResponse.builder()
                 .availableTotal(total)
                 .breakdown(breakdown)
+                .primaryWarehouseLabel(sourceLabel(source))
+                .fallbackAvailableTotal(fallbackTotal)
+                .build();
+    }
+
+    /**
+     * Desglose de stock del envío antes de enviarlo (ver {@link ShipmentDispatchStockCheckResponse}). Cuenta lo
+     * que falta por salir de cada línea, igual que la validación de {@link #sendShipment(Long, boolean)}.
+     */
+    @Transactional(readOnly = true)
+    public ShipmentDispatchStockCheckResponse checkShipmentDispatchStock(Long shipmentId)
+            throws ResourceNotFoundException, BusinessException {
+        ProductShipmentEntity shipment = shipmentRepository.findById(shipmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Shipment", shipmentId));
+        DispatchPlan plan = resolveDispatchPlan(shipment);
+        LocationEntity returnsLoc = productInventoryService
+                .getDispatchSourceWarehouses(ProductInventoryService.DispatchSource.RETURNS_ONLY).get(0);
+        LocationEntity ptLoc = productInventoryService
+                .getDispatchSourceWarehouses(ProductInventoryService.DispatchSource.PT_ONLY).get(0);
+
+        List<ShipmentDispatchStockCheckResponse.Line> lines = new ArrayList<>();
+        boolean hasShortage = false;
+        boolean fallbackCoversAll = true;
+        for (ProductShipmentDetailEntity detail : shipmentDetailRepository.findByShipmentId(shipmentId)) {
+            BigDecimal qty = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
+            if (qty.compareTo(BigDecimal.ZERO) <= 0
+                    || isPackagingProduct(detail.getProductId())
+                    || skipsWarehouseForLine(shipment, detail.getProductId())) {
+                continue;
+            }
+            BigDecimal alreadyOut = productInventoryService.getNetConsumedForLine(
+                    "SHIPMENT", shipment.getId(), ProductInventoryService.MOVEMENT_SHIPMENT,
+                    detail.getProductId(), null, detail.getColorId(), detail.getId());
+            BigDecimal needed = qty.subtract(alreadyOut).max(BigDecimal.ZERO);
+            BigDecimal returnsQty = productInventoryService.getAvailableQuantity(
+                    detail.getProductId(), returnsLoc.getId(), detail.getColorId(), detail.getSizeLabel());
+            BigDecimal ptQty = productInventoryService.getAvailableQuantity(
+                    detail.getProductId(), ptLoc.getId(), detail.getColorId(), detail.getSizeLabel());
+            BigDecimal primaryQty = switch (plan.primary()) {
+                case RETURNS_ONLY -> returnsQty;
+                case PT_ONLY -> ptQty;
+                default -> returnsQty.add(ptQty);
+            };
+            BigDecimal shortage = needed.subtract(primaryQty).max(BigDecimal.ZERO);
+            BigDecimal shortageAfterFallback = plan.hasFallback()
+                    ? needed.subtract(returnsQty.add(ptQty)).max(BigDecimal.ZERO)
+                    : shortage;
+            hasShortage |= shortage.signum() > 0;
+            fallbackCoversAll &= shortageAfterFallback.signum() == 0;
+
+            ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
+            String colorName = detail.getColorId() == null
+                    ? null
+                    : colorRepository.findById(detail.getColorId()).map(ColorEntity::getName).orElse(null);
+            lines.add(ShipmentDispatchStockCheckResponse.Line.builder()
+                    .detailId(detail.getId())
+                    .productId(detail.getProductId())
+                    .productCode(product != null ? product.getCode() : null)
+                    .productName(product != null ? product.getName() : "Producto #" + detail.getProductId())
+                    .colorId(detail.getColorId())
+                    .colorName(colorName)
+                    .size(detail.getSizeLabel())
+                    .requiredQuantity(needed)
+                    .returnsAvailable(returnsQty)
+                    .ptAvailable(ptQty)
+                    .primaryAvailable(primaryQty)
+                    .shortageQuantity(shortage)
+                    .shortageAfterFallback(shortageAfterFallback)
+                    .build());
+        }
+        return ShipmentDispatchStockCheckResponse.builder()
+                .shipmentId(shipment.getId())
+                .shipmentNumber(shipment.getShipmentNumber())
+                .directKioskShipment(plan.directKiosk())
+                .distributionShipment(plan.distribution())
+                .dispatchSource(plan.primary().name())
+                .primaryWarehouseLabel(plan.primaryLabel())
+                .fallbackWarehouseLabel(plan.fallbackLabel())
+                .fallbackAvailable(plan.hasFallback())
+                .hasShortage(hasShortage)
+                .canSendWithFallback(plan.hasFallback() && hasShortage && fallbackCoversAll)
+                .lines(lines)
                 .build();
     }
 
@@ -1778,12 +1875,22 @@ public class ProductDistributionService {
         boolean dispatchInventory = shipmentDispatchesFromPtWarehouses(shipment);
         boolean sentStatus = "SENT".equals(status);
 
+        DispatchPlan editPlan = null;
+        boolean editUsesFallback = false;
         if (sentStatus && dispatchInventory) {
+            editPlan = resolveDispatchPlan(shipment);
+            // Si al enviarlo se autorizó tomar el faltante de la otra cubeta, la edición conserva esa autorización.
+            editUsesFallback = editPlan.hasFallback()
+                    && productInventoryService.hasOutflowFromWarehouses(
+                            "SHIPMENT", shipment.getId(), editPlan.fallbackOnly());
+            ProductInventoryService.DispatchSource editSource = editUsesFallback
+                    ? editPlan.withFallback()
+                    : editPlan.primary();
             reverseSentShipmentDispatchInventory(shipment);
             try {
                 assertDispatchStockAvailable(normalized.stream()
                         .filter(line -> !skipsWarehouseForLine(shipment, line.getProductId()))
-                        .collect(Collectors.toList()), resolveDispatchSource(shipment));
+                        .collect(Collectors.toList()), editSource);
             } catch (BusinessException ex) {
                 // La devolución a PT ya se escribió: sin rollback quedaría stock que no existe con el envío aún SENT.
                 org.springframework.transaction.interceptor.TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
@@ -1829,7 +1936,7 @@ public class ProductDistributionService {
         }
 
         if (sentStatus && dispatchInventory) {
-            redispatchShipmentProducts(shipment);
+            redispatchShipmentProducts(shipment, editPlan, editUsesFallback);
         }
 
         shipment.setUpdatedBy(securityUtil.getCurrentUserId());
@@ -1901,18 +2008,114 @@ public class ProductDistributionService {
         return normalizeEntreCuerosToken(extractDestinationFromNotes(shipment.getNotes())).contains("ENTRECUEROS");
     }
 
+    static final String RETURNS_WAREHOUSE_LABEL = "Devoluciones";
+    static final String PT_WAREHOUSE_LABEL = "Bodega PT";
+    static final String DIRECT_KIOSK_KARDEX_PREFIX = "Envío directo a kiosco · ";
+
     /**
-     * De qué bodega sale primero un envío. Las OP hechas a pedido (kiosko cliente, interna, cinchos)
-     * entraron a Bodega PT al recibirse, así que salen de PT; las distribuciones de OPK y los envíos
-     * sin OP consumen Devoluciones primero.
+     * De dónde sale un envío. {@code primary} es la única bodega que se usa sin preguntar; si hay
+     * {@code withFallback}, el faltante puede tomarse de la otra cubeta solo con autorización explícita
+     * al enviar ({@code fallbackOnly} es esa otra cubeta sola, para saber si ya se usó).
      */
-    private ProductInventoryService.DispatchSource resolveDispatchSource(ProductShipmentEntity shipment) {
-        // ENVI interno (OPI): sale solo de Devoluciones; si no hay, se produce con una OPI.
-        if (isStandaloneInternalEnviShipment(shipment)) {
-            return ProductInventoryService.DispatchSource.RETURNS_ONLY;
+    record DispatchPlan(
+            ProductInventoryService.DispatchSource primary,
+            ProductInventoryService.DispatchSource withFallback,
+            ProductInventoryService.DispatchSource fallbackOnly,
+            String primaryLabel,
+            String fallbackLabel,
+            boolean directKiosk,
+            boolean distribution) {
+
+        static DispatchPlan single(ProductInventoryService.DispatchSource source) {
+            return new DispatchPlan(source, null, null, sourceLabel(source), null, false, false);
         }
-        if (shipment == null || shipment.getDistributionId() != null || shipment.getProductionOrderId() == null) {
-            return ProductInventoryService.DispatchSource.RETURNS_FIRST;
+
+        /** Envío directo a kiosco: solo Devoluciones; el faltante, de Bodega PT si se autoriza. */
+        static DispatchPlan directKioskPlan() {
+            return new DispatchPlan(
+                    ProductInventoryService.DispatchSource.RETURNS_ONLY,
+                    ProductInventoryService.DispatchSource.RETURNS_FIRST,
+                    ProductInventoryService.DispatchSource.PT_ONLY,
+                    RETURNS_WAREHOUSE_LABEL, PT_WAREHOUSE_LABEL, true, false);
+        }
+
+        /** Envío de una distribución: solo Bodega PT; el faltante, de Devoluciones si se autoriza. */
+        static DispatchPlan distributionPlan() {
+            return new DispatchPlan(
+                    ProductInventoryService.DispatchSource.PT_ONLY,
+                    ProductInventoryService.DispatchSource.PT_FIRST,
+                    ProductInventoryService.DispatchSource.RETURNS_ONLY,
+                    PT_WAREHOUSE_LABEL, RETURNS_WAREHOUSE_LABEL, false, true);
+        }
+
+        boolean hasFallback() {
+            return withFallback != null;
+        }
+    }
+
+    static String sourceLabel(ProductInventoryService.DispatchSource source) {
+        if (source == ProductInventoryService.DispatchSource.RETURNS_ONLY) {
+            return RETURNS_WAREHOUSE_LABEL;
+        }
+        if (source == ProductInventoryService.DispatchSource.PT_ONLY) {
+            return PT_WAREHOUSE_LABEL;
+        }
+        return RETURNS_WAREHOUSE_LABEL + " / " + PT_WAREHOUSE_LABEL;
+    }
+
+    /**
+     * Distribución MANUAL que antes se creaba sola para envolver un envío directo a kiosco
+     * («Envío directo a kiosko · <kiosko>»). Sus envíos se siguen tratando como directos.
+     */
+    static boolean isLegacyDirectKioskDistribution(ProductDistributionEntity distribution) {
+        return distribution != null
+                && distribution.getDescription() != null
+                && distribution.getDescription().startsWith(DIRECT_KIOSK_DISTRIBUTION_DESCRIPTION);
+    }
+
+    /**
+     * Envío directo a kiosco: tiene kiosco destino, no tiene OP ni es ENVI interno, y no pertenece a una
+     * distribución (o pertenece a una de las MANUAL «Envío directo a kiosko…» de antes).
+     * {@code distribution} es la distribución del envío ya cargada (null si no tiene).
+     */
+    static boolean isDirectKioskShipment(ProductShipmentEntity shipment, ProductDistributionEntity distribution) {
+        if (shipment == null || shipment.getProductionOrderId() != null || shipment.getLocationId() == null) {
+            return false;
+        }
+        if (isStandaloneInternalEnviShipment(shipment)) {
+            return false;
+        }
+        return shipment.getDistributionId() == null || isLegacyDirectKioskDistribution(distribution);
+    }
+
+    /**
+     * Plan de descarga de un envío:
+     * <ul>
+     *   <li>ENVI interno (OPI): solo Devoluciones.</li>
+     *   <li>Envío directo a kiosco: solo Devoluciones; faltante de Bodega PT con autorización.</li>
+     *   <li>Con distribución (MANUAL, OPK, reposición): solo Bodega PT; faltante de Devoluciones con autorización.</li>
+     *   <li>OP hecha a pedido (interna, kiosko cliente, cinchos): Bodega PT primero (entró a PT al recibirse).</li>
+     *   <li>Resto: Devoluciones primero.</li>
+     * </ul>
+     */
+    DispatchPlan resolveDispatchPlan(ProductShipmentEntity shipment) {
+        if (isStandaloneInternalEnviShipment(shipment)) {
+            return DispatchPlan.single(ProductInventoryService.DispatchSource.RETURNS_ONLY);
+        }
+        if (shipment == null) {
+            return DispatchPlan.single(ProductInventoryService.DispatchSource.RETURNS_FIRST);
+        }
+        ProductDistributionEntity distribution = shipment.getDistributionId() == null
+                ? null
+                : distributionRepository.findById(shipment.getDistributionId()).orElse(null);
+        if (isDirectKioskShipment(shipment, distribution)) {
+            return DispatchPlan.directKioskPlan();
+        }
+        if (shipment.getDistributionId() != null) {
+            return DispatchPlan.distributionPlan();
+        }
+        if (shipment.getProductionOrderId() == null) {
+            return DispatchPlan.single(ProductInventoryService.DispatchSource.RETURNS_FIRST);
         }
         return productionOrderRepository.findById(shipment.getProductionOrderId())
                 .map(po -> {
@@ -1920,11 +2123,75 @@ public class ProductDistributionService {
                     boolean madeToOrder = "INTERNA".equals(type)
                             || "CLIENTE_KIOSKO".equals(type)
                             || isCinchoOrderType(type);
-                    return madeToOrder
+                    return DispatchPlan.single(madeToOrder
                             ? ProductInventoryService.DispatchSource.PT_FIRST
-                            : ProductInventoryService.DispatchSource.RETURNS_FIRST;
+                            : ProductInventoryService.DispatchSource.RETURNS_FIRST);
                 })
-                .orElse(ProductInventoryService.DispatchSource.RETURNS_FIRST);
+                .orElse(DispatchPlan.single(ProductInventoryService.DispatchSource.RETURNS_FIRST));
+    }
+
+    /** Bodega de la que sale un envío sin autorización de faltante (ver {@link #resolveDispatchPlan}). */
+    ProductInventoryService.DispatchSource resolveDispatchSource(ProductShipmentEntity shipment) {
+        return resolveDispatchPlan(shipment).primary();
+    }
+
+    /**
+     * Descarga una línea del envío según su plan. Sin {@code useFallback} sale solo de la bodega principal.
+     * Con él, primero se agota la principal y el resto sale de la otra cubeta, con su propia descripción
+     * en el kardex que dice quién lo autorizó.
+     */
+    private void dispatchShipmentLine(
+            ProductShipmentEntity shipment,
+            ProductShipmentDetailEntity detail,
+            BigDecimal qty,
+            String description,
+            DispatchPlan plan,
+            boolean useFallback,
+            String authorizedBy) throws BusinessException {
+        String baseDescription = plan.directKiosk() ? DIRECT_KIOSK_KARDEX_PREFIX + description : description;
+        boolean fallback = useFallback && plan.hasFallback();
+        productInventoryService.decrementFromDispatchWarehouses(
+                detail.getProductId(),
+                detail.getColorId(),
+                detail.getSizeLabel(),
+                qty,
+                "SHIPMENT",
+                shipment.getId(),
+                shipment.getShipmentNumber(),
+                baseDescription,
+                ProductInventoryService.MOVEMENT_SHIPMENT,
+                detail.getId(),
+                !SKIP_DISPATCH_STOCK_CHECK && !fallback,
+                plan.primary());
+        if (!fallback) {
+            return;
+        }
+        // La principal ya quedó agotada para esta línea: lo que falte sale de la otra cubeta.
+        productInventoryService.decrementFromDispatchWarehouses(
+                detail.getProductId(),
+                detail.getColorId(),
+                detail.getSizeLabel(),
+                qty,
+                "SHIPMENT",
+                shipment.getId(),
+                shipment.getShipmentNumber(),
+                baseDescription + " · faltante tomado de " + plan.fallbackLabel()
+                        + " (autorizado por " + authorizedBy + ")",
+                ProductInventoryService.MOVEMENT_SHIPMENT,
+                detail.getId(),
+                !SKIP_DISPATCH_STOCK_CHECK,
+                plan.withFallback());
+    }
+
+    private String currentUserDisplayName() {
+        Long userId = securityUtil.getCurrentUserId();
+        if (userId == null) {
+            return "usuario desconocido";
+        }
+        return userRepository.findById(userId)
+                .map(this::userDisplayName)
+                .filter(name -> name != null && !name.isBlank())
+                .orElse("usuario #" + userId);
     }
 
     /**
@@ -1973,8 +2240,10 @@ public class ProductDistributionService {
                 detail.getId());
     }
 
-    private void redispatchShipmentProducts(ProductShipmentEntity shipment) throws BusinessException {
+    private void redispatchShipmentProducts(ProductShipmentEntity shipment, DispatchPlan plan, boolean useFallback)
+            throws BusinessException {
         String destinationLabel = resolveDispatchDestinationLabel(shipment);
+        String authorizedBy = useFallback ? currentUserDisplayName() : null;
 
         // Las líneas se reescribieron en product_shipment_detail: se releen para descargar contra el
         // id de cada línea, que es lo que hace idempotente la salida sin confundir tallas.
@@ -1986,19 +2255,8 @@ public class ProductDistributionService {
             if (isPackagingProduct(detail.getProductId()) || skipsWarehouseForLine(shipment, detail.getProductId())) {
                 continue;
             }
-            productInventoryService.decrementFromDispatchWarehouses(
-                    detail.getProductId(),
-                    detail.getColorId(),
-                    detail.getSizeLabel(),
-                    qty,
-                    "SHIPMENT",
-                    shipment.getId(),
-                    shipment.getShipmentNumber(),
-                    "Reenvío tras edición hacia " + destinationLabel,
-                    ProductInventoryService.MOVEMENT_SHIPMENT,
-                    detail.getId(),
-                    !SKIP_DISPATCH_STOCK_CHECK,
-                    resolveDispatchSource(shipment));
+            dispatchShipmentLine(shipment, detail, qty, "Reenvío tras edición hacia " + destinationLabel,
+                    plan, useFallback, authorizedBy);
             creditShipmentLineInTransit(shipment, detail, qty, destinationLabel);
         }
     }
@@ -2342,6 +2600,16 @@ public class ProductDistributionService {
      * Al recibir el envío en kiosko, los empaques cargan stock kiosco vía {@link #confirmReceipt}.
      */
     public ProductShipmentResponse sendShipment(Long shipmentId) throws ResourceNotFoundException, BusinessException {
+        return sendShipment(shipmentId, false);
+    }
+
+    /**
+     * {@code takeShortageFromFallback}: el usuario autorizó tomar el faltante de la otra cubeta (envío directo:
+     * de Bodega PT; envío de distribución: de Devoluciones). Sin esa autorización el envío sale solo de su
+     * bodega principal y falla con el desglose si no alcanza.
+     */
+    public ProductShipmentResponse sendShipment(Long shipmentId, boolean takeShortageFromFallback)
+            throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Shipment", shipmentId));
         String currentStatus = shipment.getStatus() == null ? "" : shipment.getStatus().trim().toUpperCase();
@@ -2420,10 +2688,14 @@ public class ProductDistributionService {
         // salida las mismas unidades quedarían contadas en los dos lados.
         String destinationLabel = resolveDispatchDestinationLabel(shipment);
 
+        DispatchPlan plan = resolveDispatchPlan(shipment);
+        boolean useFallback = takeShortageFromFallback && plan.hasFallback();
         if (!SKIP_DISPATCH_STOCK_CHECK) {
-            // Pre-validar stock: Devoluciones primero, luego Bodega PT (total combinado).
-            ProductInventoryService.DispatchSource sendSource = resolveDispatchSource(shipment);
-            List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses(sendSource);
+            // Pre-validar stock contra la bodega principal (o principal + respaldo si se autorizó).
+            ProductInventoryService.DispatchSource sendSource = useFallback ? plan.withFallback() : plan.primary();
+            // El desglose muestra las dos cubetas cuando el envío tiene respaldo, para que se vea dónde hay.
+            List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses(
+                    plan.hasFallback() ? plan.withFallback() : sendSource);
             List<String> shortages = new java.util.ArrayList<>();
             for (ProductShipmentDetailEntity detail : details) {
                 BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
@@ -2453,38 +2725,29 @@ public class ProductDistributionService {
                     String stockBreakdown = buildDispatchStockBreakdown(
                             detail.getProductId(), detail.getColorId(), sizeLabel, dispatchWarehouses);
                     shortages.add(productName + colorName + ": disponible " + availableTotal
-                            + (sendSource == ProductInventoryService.DispatchSource.RETURNS_ONLY
-                            ? " (Devoluciones: " : " (Devoluciones + Bodega PT: ")
-                            + stockBreakdown + "), requerido " + stillNeeded);
+                            + " (" + sourceLabel(sendSource) + "; " + stockBreakdown + "), requerido " + stillNeeded);
                 }
             }
             if (!shortages.isEmpty()) {
-                throw new BusinessException((sendSource == ProductInventoryService.DispatchSource.RETURNS_ONLY
-                        ? "Stock insuficiente en Devoluciones para enviar:\n• "
-                        : "Stock insuficiente en Devoluciones / Bodega PT para enviar:\n• ")
-                        + String.join("\n• ", shortages));
+                String header = "Stock insuficiente en " + sourceLabel(sendSource)
+                        + (plan.directKiosk() ? " para el envío directo a kiosco" : " para enviar") + ":\n• ";
+                String hint = plan.hasFallback() && !useFallback
+                        ? "\nSi el faltante está en " + plan.fallbackLabel() + ", envíe con «Tomar el faltante de "
+                                + plan.fallbackLabel() + "»."
+                        : "";
+                throw new BusinessException(header + String.join("\n• ", shortages) + hint);
             }
         }
 
+        String authorizedBy = useFallback ? currentUserDisplayName() : null;
         for (ProductShipmentDetailEntity detail : details) {
             BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
             if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
             if (isPackagingProduct(detail.getProductId())) continue;
             if (skipsWarehouseForLine(shipment, detail.getProductId())) continue;
 
-            productInventoryService.decrementFromDispatchWarehouses(
-                    detail.getProductId(),
-                    detail.getColorId(),
-                    detail.getSizeLabel(),
-                    qtyToSend,
-                    "SHIPMENT",
-                    shipment.getId(),
-                    shipment.getShipmentNumber(),
-                    "Salida a envio en transito hacia " + destinationLabel,
-                    ProductInventoryService.MOVEMENT_SHIPMENT,
-                    detail.getId(),
-                    !SKIP_DISPATCH_STOCK_CHECK,
-                    resolveDispatchSource(shipment));
+            dispatchShipmentLine(shipment, detail, qtyToSend,
+                    "Salida a envio en transito hacia " + destinationLabel, plan, useFallback, authorizedBy);
             creditShipmentLineInTransit(shipment, detail, qtyToSend, destinationLabel);
         }
 
@@ -4992,7 +5255,7 @@ public class ProductDistributionService {
      * Convierte varios envíos a DTO cargando detalles, productos, colores, categorías, ubicaciones,
      * distribuciones, órdenes, usuarios y materiales en consultas por lote (sin N+1 por envío/línea).
      */
-    private List<ProductShipmentResponse> toShipmentResponses(Collection<ProductShipmentEntity> entities) {
+    List<ProductShipmentResponse> toShipmentResponses(Collection<ProductShipmentEntity> entities) {
         if (entities == null || entities.isEmpty()) {
             return new ArrayList<>();
         }
@@ -5084,6 +5347,9 @@ public class ProductDistributionService {
                     .id(entity.getId())
                     .distributionId(entity.getDistributionId())
                     .distributionOrigin(distribution != null ? DistributionOrigin.normalize(distribution.getOrigin()) : null)
+                    // Solo empaques SUM- no cuenta como envío directo: no descarga Devoluciones.
+                    .directKioskShipment(isDirectKioskShipment(entity, distribution) && !details.isEmpty())
+                    .withoutDistribution(entity.isWithoutDistribution())
                     .pendingProduction(isPendingProductionShipment(entity))
                     .productionOrderId(entity.getProductionOrderId())
                     .partialReleaseId(entity.getPartialReleaseId())
@@ -5557,33 +5823,15 @@ public class ProductDistributionService {
         return productionOrderRepository.save(order);
     }
 
-    /**
-     * Distribución para un envío directo a kiosco sin OP: la indicada (debe existir y no estar cerrada) o una
-     * MANUAL nueva de un solo envío.
-     */
-    private Long resolveDirectKioskDistribution(Long requestedDistributionId, LocationEntity location, Long userId)
+    /** Distribución existente y abierta donde meter un envío a kiosco sin OP. */
+    private Long requireOpenDistribution(Long requestedDistributionId)
             throws ResourceNotFoundException, BusinessException {
-        if (requestedDistributionId != null) {
-            ProductDistributionEntity dist = distributionRepository.findById(requestedDistributionId)
-                    .orElseThrow(() -> new ResourceNotFoundException("ProductDistribution", requestedDistributionId));
-            if ("COMPLETED".equalsIgnoreCase(safeTrim(dist.getStatus()))) {
-                throw new BusinessException("La distribución " + dist.getDistributionNumber() + " ya está completada.");
-            }
-            return dist.getId();
+        ProductDistributionEntity dist = distributionRepository.findById(requestedDistributionId)
+                .orElseThrow(() -> new ResourceNotFoundException("ProductDistribution", requestedDistributionId));
+        if ("COMPLETED".equalsIgnoreCase(safeTrim(dist.getStatus()))) {
+            throw new BusinessException("La distribución " + dist.getDistributionNumber() + " ya está completada.");
         }
-        String kioskName = location.getName() == null || location.getName().isBlank()
-                ? String.valueOf(location.getCode())
-                : location.getName().trim();
-        ProductDistributionEntity created = distributionRepository.save(ProductDistributionEntity.builder()
-                .distributionNumber(generateDistributionNumber())
-                .distributionDate(LocalDate.now())
-                .status("IN_PROGRESS")
-                .origin(DistributionOrigin.MANUAL)
-                .description(DIRECT_KIOSK_DISTRIBUTION_DESCRIPTION + " · " + kioskName)
-                .createdBy(userId)
-                .updatedBy(userId)
-                .build());
-        return created.getId();
+        return dist.getId();
     }
 
     static boolean isPendingProductionShipment(ProductShipmentEntity shipment) {

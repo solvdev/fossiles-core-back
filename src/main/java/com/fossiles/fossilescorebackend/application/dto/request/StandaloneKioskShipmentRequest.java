@@ -17,12 +17,15 @@ public class StandaloneKioskShipmentRequest {
 
     @NotNull(message = "El kiosko destino es obligatorio")
     private Long locationId;
-    /** Opcional: distribución donde meter el envío. Sin ella se crea una distribución MANUAL de un solo envío. */
+    /**
+     * Opcional: distribución existente donde meter el envío. Con ella el envío ya no es directo y sale de Bodega PT.
+     * Sin ella el envío es directo a kiosco: no tiene distribución y sale de Devoluciones.
+     */
     private Long distributionId;
 
     /**
-     * Excepción: crea el envío sin distribución. Por defecto (false/null) el envío se mete en una distribución
-     * MANUAL. Se ignora si viene distributionId.
+     * Se conserva por compatibilidad y se ignora: sin distributionId el envío siempre queda sin distribución
+     * (withoutDistribution = true).
      */
     private Boolean withoutDistribution;
 
@@ -42,4 +45,7 @@ public class StandaloneKioskShipmentRequest {
      * Si false, valida stock, descuenta PT y deja SENT (comportamiento legado).
      */
     private Boolean confirmOnly;
+
+    /** Solo con confirmOnly=false: autoriza tomar el faltante de la otra cubeta al enviar (ver sendShipment). */
+    private Boolean takeShortageFromFallback;
 }

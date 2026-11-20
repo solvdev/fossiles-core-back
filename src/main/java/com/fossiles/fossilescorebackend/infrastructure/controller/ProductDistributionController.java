@@ -11,6 +11,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.StandaloneIntern
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseItemReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.DispatchStockPreviewResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.ShipmentDispatchStockCheckResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.WarehouseLfReceiptResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.WarehouseWorkspaceResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.InternalShipmentRequestResponse;
@@ -218,10 +219,23 @@ public class ProductDistributionController {
 
     // ========== SHIPMENT TRANSIT & RECEIPT ==========
 
+    /**
+     * takeShortageFromFallback=true: el usuario autorizó tomar el faltante de la otra cubeta (envío directo: de
+     * Bodega PT; envío de distribución: de Devoluciones). Sin él, el envío sale solo de su bodega principal.
+     */
     @PutMapping("/shipments/{id}/send")
-    public ResponseEntity<ProductShipmentResponse> sendShipment(@PathVariable Long id)
+    public ResponseEntity<ProductShipmentResponse> sendShipment(
+            @PathVariable Long id,
+            @RequestParam(required = false, defaultValue = "false") boolean takeShortageFromFallback)
             throws ResourceNotFoundException, BusinessException {
-        return ResponseEntity.ok(distributionService.sendShipment(id));
+        return ResponseEntity.ok(distributionService.sendShipment(id, takeShortageFromFallback));
+    }
+
+    /** Desglose Devoluciones / Bodega PT por línea antes de enviar, y si el faltante se puede tomar de la otra cubeta. */
+    @GetMapping("/shipments/{id}/dispatch-stock-check")
+    public ResponseEntity<ShipmentDispatchStockCheckResponse> checkShipmentDispatchStock(@PathVariable Long id)
+            throws ResourceNotFoundException, BusinessException {
+        return ResponseEntity.ok(distributionService.checkShipmentDispatchStock(id));
     }
 
     /** Revierte un envío en tránsito (SENT) a confirmado y devuelve stock a Bodega PT / Devoluciones. */
@@ -310,9 +324,11 @@ public class ProductDistributionController {
             @RequestParam Long productId,
             @RequestParam(required = false) Long colorId,
             @RequestParam(required = false) String size,
-            @RequestParam(required = false, defaultValue = "false") boolean internal) throws BusinessException {
+            @RequestParam(required = false, defaultValue = "false") boolean internal,
+            @RequestParam(required = false, defaultValue = "false") boolean direct) throws BusinessException {
         // internal=true: envío interno (OPI), que solo puede salir de Devoluciones.
-        return ResponseEntity.ok(distributionService.previewDispatchStock(productId, colorId, size, internal));
+        // direct=true: envío directo a kiosco (Devoluciones; Bodega PT solo con autorización).
+        return ResponseEntity.ok(distributionService.previewDispatchStock(productId, colorId, size, internal, direct));
     }
 
     @PostMapping("/validate-dispatch-stock")
