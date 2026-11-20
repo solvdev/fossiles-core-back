@@ -240,9 +240,10 @@ class DistributionReplenishmentFlowTest {
     }
 
     @Test
-    void directKioskShipmentIsWrappedInAManualDistributionAndStillListed() throws Exception {
+    void directKioskShipmentHasNoDistributionAndIsStillListed() throws Exception {
         LocationEntity k1 = saveKiosk("D1");
         ProductEntity product = saveProduct("DIR");
+        long distributionsBefore = distributions.count();
 
         ProductShipmentResponse direct = distributionService.createStandaloneKioskShipment(
                 StandaloneKioskShipmentRequest.builder()
@@ -250,15 +251,62 @@ class DistributionReplenishmentFlowTest {
                         .products(List.of(line(product, "1")))
                         .build());
 
-        assertThat(direct.getDistributionId()).isNotNull();
-        assertThat(direct.getDistributionOrigin()).isEqualTo(DistributionOrigin.MANUAL);
+        // Ya no se crea la distribución MANUAL «Envío directo a kiosko».
+        assertThat(distributions.count()).isEqualTo(distributionsBefore);
+        assertThat(direct.getDistributionId()).isNull();
+        assertThat(direct.getDistributionOrigin()).isNull();
+        assertThat(direct.getWithoutDistribution()).isTrue();
+        assertThat(direct.getDirectKioskShipment()).isTrue();
+        assertThat(shipments.findById(direct.getId()).orElseThrow().isWithoutDistribution()).isTrue();
         assertThat(direct.getStatus()).isEqualTo("CONFIRMED");
         assertThat(direct.getShipmentNumber()).isEqualTo(k1.getCode() + "-ENV-00001");
-        ProductDistributionEntity dist = distributions.findById(direct.getDistributionId()).orElseThrow();
-        assertThat(dist.getDescription()).startsWith(ProductDistributionService.DIRECT_KIOSK_DISTRIBUTION_DESCRIPTION);
         assertThat(distributionService.listStandaloneKioskShipments())
                 .extracting(ProductShipmentResponse::getId)
                 .contains(direct.getId());
+    }
+
+    @Test
+    void kioskShipmentInAChosenDistributionIsNotDirect() throws Exception {
+        LocationEntity k1 = saveKiosk("D2");
+        ProductEntity product = saveProduct("DIS");
+        ProductDistributionResponse dist = distributionService.createDistribution(
+                com.fossiles.fossilescorebackend.application.dto.request.ProductDistributionRequest.builder()
+                        .distributionDate(LocalDate.now()).build());
+
+        ProductShipmentResponse shipment = distributionService.createStandaloneKioskShipment(
+                StandaloneKioskShipmentRequest.builder()
+                        .locationId(k1.getId())
+                        .distributionId(dist.getId())
+                        .withoutDistribution(true)
+                        .products(List.of(line(product, "1")))
+                        .build());
+
+        assertThat(shipment.getDistributionId()).isEqualTo(dist.getId());
+        assertThat(shipment.getWithoutDistribution()).isFalse();
+        assertThat(shipment.getDirectKioskShipment()).isFalse();
+    }
+
+    @Test
+    void legacyDirectKioskDistributionShipmentsStillShowAsDirect() throws Exception {
+        LocationEntity k1 = saveKiosk("D3");
+        ProductEntity product = saveProduct("LEG");
+        ProductDistributionEntity legacy = distributions.save(ProductDistributionEntity.builder()
+                .distributionNumber("DIST-LEG-" + tag())
+                .distributionDate(LocalDate.now())
+                .status("IN_PROGRESS")
+                .origin(DistributionOrigin.MANUAL)
+                .description(ProductDistributionService.DIRECT_KIOSK_DISTRIBUTION_DESCRIPTION + " · Kiosko D3")
+                .build());
+
+        ProductShipmentResponse shipment = distributionService.createStandaloneKioskShipment(
+                StandaloneKioskShipmentRequest.builder()
+                        .locationId(k1.getId())
+                        .distributionId(legacy.getId())
+                        .products(List.of(line(product, "1")))
+                        .build());
+
+        assertThat(shipment.getDistributionId()).isEqualTo(legacy.getId());
+        assertThat(shipment.getDirectKioskShipment()).isTrue();
     }
 
     @Test
