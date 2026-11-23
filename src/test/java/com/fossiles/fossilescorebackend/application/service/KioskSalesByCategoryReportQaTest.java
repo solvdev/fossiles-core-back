@@ -23,7 +23,6 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Us
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -403,9 +402,11 @@ class KioskSalesByCategoryReportQaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"LOGISTICA", "CONTABILIDAD"})
+    @ValueSource(strings = {
+            "ADMIN", "SUPER_ADMIN", "ADMIN_FULL_ACCESS", "LOGISTICA", "LOGISTICO", "CONTABILIDAD"
+    })
     void kioskReportsRolesCanRead(String roleName) throws Exception {
-        UserEntity user = userWithRole(roleName);
+        UserEntity user = "ADMIN".equals(roleName) ? admin : userWithRole(roleName);
         when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
         mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
                         .param("from", "2026-01-01").param("to", "2026-01-31"))
@@ -429,8 +430,6 @@ class KioskSalesByCategoryReportQaTest {
                 .andExpect(jsonPath("$.message").value("No se pudo identificar el usuario autenticado."));
     }
 
-    @Disabled("BUG: VENTA_EN_LINEA and SUPERVISORA_KIOSKO are allowed via hasAllKiosksAccess; "
-            + "contract is 403 except admin, logistics, accounting")
     @ParameterizedTest
     @ValueSource(strings = {"VENTA_EN_LINEA", "SUPERVISORA_KIOSKO"})
     void extraGlobalKioskRolesShouldBeForbidden(String roleName) throws Exception {
@@ -438,7 +437,73 @@ class KioskSalesByCategoryReportQaTest {
         when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
         mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
                         .param("from", "2026-01-01").param("to", "2026-01-31"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message")
+                        .value("Solo administradores, logística o contabilidad pueden ver este reporte."));
+    }
+
+    @Test
+    void plainUserIsForbidden() throws Exception {
+        UserEntity user = userWithRole("USUARIO");
+        when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
+        mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
+                        .param("from", "2026-01-01").param("to", "2026-01-31"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message")
+                        .value("Solo administradores, logística o contabilidad pueden ver este reporte."));
+    }
+
+    @Test
+    void userWithNoRolesIsForbidden() throws Exception {
+        UserEntity user = userWithRoles();
+        when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
+        mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
+                        .param("from", "2026-01-01").param("to", "2026-01-31"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message")
+                        .value("Solo administradores, logística o contabilidad pueden ver este reporte."));
+    }
+
+    @Test
+    void allowedRolePlusForbiddenRoleCanRead() throws Exception {
+        UserEntity user = userWithRoles("CONTABILIDAD", "VENTA_EN_LINEA");
+        when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
+        mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
+                        .param("from", "2026-01-01").param("to", "2026-01-31"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void categoryAccessFollowsDatabaseRolesForTheSameUserId() throws Exception {
+        UserEntity user = userWithRole("LOGISTICA");
+        when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
+        mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
+                        .param("from", "2026-01-01").param("to", "2026-01-31"))
+                .andExpect(status().isOk());
+
+        RoleEntity ventaEnLinea = roleRepository.save(RoleEntity.builder()
+                .name("VENTA_EN_LINEA-" + SEQ.incrementAndGet())
+                .build());
+        user.setRoles(new HashSet<>(Set.of(ventaEnLinea)));
+        userRepository.saveAndFlush(user);
+        entityManager.clear();
+
+        mockMvc.perform(get("/api/reports/kiosk-sales-by-category")
+                        .param("from", "2026-01-01").param("to", "2026-01-31"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message")
+                        .value("Solo administradores, logística o contabilidad pueden ver este reporte."));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"VENTA_EN_LINEA", "SUPERVISORA_KIOSKO"})
+    void otherKioskReportStillAllowsFormerGlobalKioskRoles(String roleName) throws Exception {
+        UserEntity user = userWithRole(roleName);
+        when(securityUtil.getCurrentUserId()).thenReturn(user.getId());
+        mockMvc.perform(get("/api/kiosk-pos/reports/general")
+                        .param("startDate", "2026-01-01")
+                        .param("endDate", "2026-01-31"))
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -590,18 +655,27 @@ class KioskSalesByCategoryReportQaTest {
     }
 
     private UserEntity userWithRole(String roleName) {
-        RoleEntity role = roleRepository.save(RoleEntity.builder().name(roleName + "-" + SEQ.incrementAndGet()).build());
-        if ("ADMIN".equals(roleName)) {
-            role.setName("ADMIN");
-            role = roleRepository.save(role);
+        return userWithRoles(roleName);
+    }
+
+    private UserEntity userWithRoles(String... roleNames) {
+        Set<RoleEntity> roles = new HashSet<>();
+        for (String roleName : roleNames) {
+            RoleEntity role = roleRepository.save(RoleEntity.builder()
+                    .name(roleName + "-" + SEQ.incrementAndGet())
+                    .build());
+            if ("ADMIN".equals(roleName)) {
+                role.setName("ADMIN");
+                role = roleRepository.save(role);
+            }
+            roles.add(role);
         }
-        UserEntity user = UserEntity.builder()
+        return userRepository.saveAndFlush(UserEntity.builder()
                 .username("u" + SEQ.incrementAndGet())
                 .email("u" + SEQ.get() + "@t.local")
                 .password("x")
-                .roles(new HashSet<>(Set.of(role)))
-                .build();
-        return userRepository.saveAndFlush(user);
+                .roles(roles)
+                .build());
     }
 
     private LocationEntity kiosk(String code, boolean pilot) {

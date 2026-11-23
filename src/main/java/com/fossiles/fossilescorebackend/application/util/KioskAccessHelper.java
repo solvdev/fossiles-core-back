@@ -37,6 +37,22 @@ public final class KioskAccessHelper {
         return hasAllKiosksAccess(user) || hasAccountingRole(user);
     }
 
+    /**
+     * GET /api/reports/kiosk-sales-by-category only. Admin, logistics and accounting.
+     * Does not include SUPERVISORA_KIOSKO or VENTA_EN_LINEA (those still pass {@link #hasKioskReportsAccess}).
+     */
+    public static boolean hasKioskSalesByCategoryReportAccess(UserEntity user) {
+        if (user == null || user.getRoles() == null) {
+            return false;
+        }
+        return user.getRoles().stream()
+                .filter(Objects::nonNull)
+                .map(RoleEntity::getName)
+                .filter(Objects::nonNull)
+                .map(KioskAccessHelper::normalizeRole)
+                .anyMatch(KioskAccessHelper::isAdminLogisticsOrAccountingRole);
+    }
+
     private static boolean hasAccountingRole(UserEntity user) {
         if (user == null || user.getRoles() == null) {
             return false;
@@ -47,6 +63,16 @@ public final class KioskAccessHelper {
                 .filter(Objects::nonNull)
                 .map(KioskAccessHelper::normalizeRole)
                 .anyMatch(normalized -> ACCOUNTING_ROLE_TOKENS.stream().anyMatch(normalized::contains));
+    }
+
+    private static boolean isAdminLogisticsOrAccountingRole(String normalizedRoleName) {
+        if (normalizedRoleName.contains("ADMIN")) {
+            return true;
+        }
+        if (ACCOUNTING_ROLE_TOKENS.stream().anyMatch(normalizedRoleName::contains)) {
+            return true;
+        }
+        return LOGISTICS_ROLE_TOKENS.stream().anyMatch(normalizedRoleName::contains);
     }
 
     private static boolean isGlobalKioskRole(String normalizedRoleName) {
