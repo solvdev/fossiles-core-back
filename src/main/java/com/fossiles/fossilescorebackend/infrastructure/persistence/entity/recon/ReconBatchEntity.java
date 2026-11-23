@@ -49,6 +49,9 @@ public class ReconBatchEntity {
     private LocalDateTime voidedAt;
     @Column(name = "voided_by")
     private Long voidedBy;
+    /** Periodo de revisión del libro de ventas en línea que se liquidó con este lote (nulo si se armó a mano). */
+    @Column(name = "ledger_period_id")
+    private Long ledgerPeriodId;
 
     @PrePersist
     void onCreate() {

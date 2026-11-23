@@ -98,8 +98,13 @@ public class ReconciliationSettlementService {
         return new BulkReceiptRow(c.getId(), c.getShipmentNumber(), true, r.message(), r.received(), r.difference(), r.status());
     }
 
-    @Transactional(rollbackFor = Exception.class)
     public SettleResult settle(List<Long> caseIds, String idempotencyKey) throws BusinessException, ResourceNotFoundException {
+        return settle(caseIds, idempotencyKey, null);
+    }
+
+    /** Igual que {@link #settle(List, String)}; con {@code ledgerPeriodId} el lote queda asociado al periodo de revisión del libro que se liquidó. */
+    @Transactional(rollbackFor = Exception.class)
+    public SettleResult settle(List<Long> caseIds, String idempotencyKey, Long ledgerPeriodId) throws BusinessException, ResourceNotFoundException {
         if (caseIds == null || caseIds.isEmpty()) throw new BusinessException("Elija las ventas por liquidar.");
         Optional<Long> already = batchService.findByIdempotencyKey(idempotencyKey);
         if (already.isPresent()) return new SettleResult(batchService.close(already.get(), idempotencyKey), 0, List.of());
@@ -136,6 +141,7 @@ public class ReconciliationSettlementService {
                     .collect(Collectors.joining("; ")));
         }
         BatchDto batch = batchService.createForCases(eligible);
+        if (ledgerPeriodId != null) batchService.linkToLedgerPeriod(batch.id(), ledgerPeriodId);
         BatchCloseResult closed = batchService.close(batch.id(), idempotencyKey);
         return new SettleResult(closed, accepted, skipped);
     }

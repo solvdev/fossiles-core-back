@@ -259,8 +259,23 @@ public class ReconciliationCaseService {
         requireReason(reason, 10, "Escriba el motivo (mínimo 10 caracteres).");
         OnlineSaleEntity sale = saleRepository.findById(c.getOnlineSaleId())
                 .orElseThrow(() -> new ResourceNotFoundException("Venta no encontrada: " + c.getOnlineSaleId()));
-        if (sameMoney(sale.getTotalAmount(), c.getExpectedAmount())) {
-            throw new BusinessException("El monto de la venta no cambió: sigue siendo " + q(c.getExpectedAmount()) + ".");
+        return changeExpectedAmount(c, sale.getTotalAmount(), reason);
+    }
+
+    /**
+     * Fija el monto cobrado de un caso abierto a un valor dado (lo usa la liquidación de un periodo del libro, que manda lo
+     * revisado por Contabilidad). Mismo trato que {@link #refreshAmountFromSale}: reversa del cargo anterior, cargo nuevo y evento.
+     */
+    @Transactional
+    public ReconCaseEntity overwriteExpectedAmount(Long id, java.math.BigDecimal amount, String reason) throws ResourceNotFoundException, BusinessException {
+        ReconCaseEntity c = openCase(id);
+        requireReason(reason, 10, "Escriba el motivo (mínimo 10 caracteres).");
+        return changeExpectedAmount(c, amount, reason);
+    }
+
+    private ReconCaseEntity changeExpectedAmount(ReconCaseEntity c, java.math.BigDecimal newAmount, String reason) throws BusinessException {
+        if (sameMoney(newAmount, c.getExpectedAmount())) {
+            throw new BusinessException("El monto no cambió: sigue siendo " + q(c.getExpectedAmount()) + ".");
         }
         boolean activeAdjustment = differenceRepository.findFirstByCaseIdAndStatusOrderByIdDesc(c.getId(), Recon.DifferenceStatus.PROPOSED).isPresent()
                 || differenceRepository.findFirstByCaseIdAndStatusOrderByIdDesc(c.getId(), Recon.DifferenceStatus.AUTHORIZED).isPresent();
@@ -269,7 +284,7 @@ public class ReconciliationCaseService {
         }
         var before = c.getExpectedAmount();
         ledger.reverseCharges(c, reason.trim());
-        c.setExpectedAmount(money(sale.getTotalAmount()));
+        c.setExpectedAmount(money(newAmount));
         caseRepository.saveAndFlush(c);
         ledger.postCharge(c);
         recompute.recompute(c);

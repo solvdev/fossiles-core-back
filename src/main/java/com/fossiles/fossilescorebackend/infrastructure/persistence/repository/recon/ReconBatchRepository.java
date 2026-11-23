@@ -19,6 +19,8 @@ public interface ReconBatchRepository extends JpaRepository<ReconBatchEntity, Lo
 
     List<ReconBatchEntity> findAllByOrderByIdDesc();
 
+    List<ReconBatchEntity> findByLedgerPeriodIdInOrderByIdDesc(java.util.Collection<Long> ledgerPeriodIds);
+
     /** Bloquea el lote mientras se cierra o anula (evita cierres simultáneos). */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select b from ReconBatchEntity b where b.id = :id")
