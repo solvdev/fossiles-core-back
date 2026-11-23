@@ -28,6 +28,7 @@ public class OnlineLedgerLogEntity {
     public static final String EDIT = "EDIT";
     public static final String LOCK = "LOCK";
     public static final String UNLOCK = "UNLOCK";
+    public static final String LIQUIDATE = "LIQUIDATE";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

@@ -95,6 +95,23 @@ public class ReconciliationBatchService {
         return toDto(batch, available);
     }
 
+    /** Deja constancia de qué periodo de revisión del libro se liquida con este lote. */
+    @Transactional
+    public void linkToLedgerPeriod(Long batchId, Long ledgerPeriodId) throws ResourceNotFoundException {
+        ReconBatchEntity b = batchRepository.findById(batchId).orElseThrow(() -> new ResourceNotFoundException("Lote no encontrado: " + batchId));
+        b.setLedgerPeriodId(ledgerPeriodId);
+        batchRepository.save(b);
+    }
+
+    /** Lotes (no anulados) que se liquidaron con cada periodo de revisión del libro. */
+    @Transactional(readOnly = true)
+    public Map<Long, List<ReconBatchEntity>> batchesByLedgerPeriod(Collection<Long> periodIds) {
+        if (periodIds == null || periodIds.isEmpty()) return Map.of();
+        return batchRepository.findByLedgerPeriodIdInOrderByIdDesc(periodIds).stream()
+                .filter(b -> b.getStatus() != Recon.BatchStatus.VOID)
+                .collect(Collectors.groupingBy(ReconBatchEntity::getLedgerPeriodId));
+    }
+
     /** Lote ya cerrado con esa clave de cierre, si existe (para que reintentar una liquidación no la duplique). */
     @Transactional(readOnly = true)
     public Optional<Long> findByIdempotencyKey(String key) {

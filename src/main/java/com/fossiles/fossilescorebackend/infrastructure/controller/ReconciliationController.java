@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.reconciliation.LedgerLinkDtos;
 import com.fossiles.fossilescorebackend.application.dto.reconciliation.ReconciliationDtos.*;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
@@ -41,6 +42,7 @@ public class ReconciliationController {
     private final ReconciliationCommissionService commissionService;
     private final ReconciliationSellerService sellerService;
     private final ReconciliationGuideImportService guideImportService;
+    private final ReconciliationLedgerLinkService ledgerLinkService;
 
     // ───────── dashboard y bandeja ─────────
 
@@ -291,6 +293,28 @@ public class ReconciliationController {
             throws BusinessException, ResourceNotFoundException {
         guard.assertCanClose();
         return ResponseEntity.ok(settlementService.settle(body == null ? null : body.caseIds(), key));
+    }
+
+    // ───────── Liquidar un periodo de revisión del libro contable ─────────
+
+    @GetMapping("/ledger-link/periods")
+    public ResponseEntity<List<LedgerLinkDtos.PeriodOption>> ledgerPeriods() throws BusinessException {
+        return ResponseEntity.ok(ledgerLinkService.periods());
+    }
+
+    /** Compara el periodo del libro contra la conciliación sin cambiar nada. */
+    @GetMapping("/ledger-link/periods/{id}/preview")
+    public ResponseEntity<LedgerLinkDtos.Preview> ledgerPreview(@PathVariable Long id, @RequestParam(defaultValue = "false") boolean assumeEqual)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(ledgerLinkService.preview(id, assumeEqual));
+    }
+
+    /** Sobrescribe la conciliación con el libro, liquida y (si se pide) cierra la revisión. Todo o nada. El Excel se baja con /batches/{id}/export. */
+    @PostMapping("/ledger-link/periods/{id}/apply")
+    public ResponseEntity<LedgerLinkDtos.ApplyResult> ledgerApply(@PathVariable Long id, @RequestBody LedgerLinkDtos.ApplyRequest body,
+                                                                  @RequestHeader(value = "Idempotency-Key", required = false) String key)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(ledgerLinkService.apply(id, body, key));
     }
 
     @GetMapping("/batches")
