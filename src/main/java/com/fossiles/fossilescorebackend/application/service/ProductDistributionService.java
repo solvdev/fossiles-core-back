@@ -959,13 +959,14 @@ public class ProductDistributionService {
                     detail.getProductId(), returnsLoc.getId(), detail.getColorId(), detail.getSizeLabel());
             BigDecimal ptQty = productInventoryService.getAvailableQuantity(
                     detail.getProductId(), ptLoc.getId(), detail.getColorId(), detail.getSizeLabel());
-            BigDecimal primaryQty = switch (plan.primary()) {
+            DispatchPlan linePlan = resolveLineDispatchPlan(shipment, plan, detail.getProductId());
+            BigDecimal primaryQty = switch (linePlan.primary()) {
                 case RETURNS_ONLY -> returnsQty;
                 case PT_ONLY -> ptQty;
                 default -> returnsQty.add(ptQty);
             };
             BigDecimal shortage = needed.subtract(primaryQty).max(BigDecimal.ZERO);
-            BigDecimal shortageAfterFallback = plan.hasFallback()
+            BigDecimal shortageAfterFallback = linePlan.hasFallback()
                     ? needed.subtract(returnsQty.add(ptQty)).max(BigDecimal.ZERO)
                     : shortage;
             hasShortage |= shortage.signum() > 0;
@@ -1880,17 +1881,29 @@ public class ProductDistributionService {
         if (sentStatus && dispatchInventory) {
             editPlan = resolveDispatchPlan(shipment);
             // Si al enviarlo se autorizó tomar el faltante de la otra cubeta, la edición conserva esa autorización.
-            editUsesFallback = editPlan.hasFallback()
-                    && productInventoryService.hasOutflowFromWarehouses(
-                            "SHIPMENT", shipment.getId(), editPlan.fallbackOnly());
-            ProductInventoryService.DispatchSource editSource = editUsesFallback
-                    ? editPlan.withFallback()
-                    : editPlan.primary();
+            // Se lee del kardex: una salida de PT de un cincho no es un faltante autorizado.
+            editUsesFallback = editPlan.hasFallback() && shipmentUsedAuthorizedFallback(shipment);
+            DispatchPlan planForEdit = editPlan;
+            boolean fallbackForEdit = editUsesFallback;
             reverseSentShipmentDispatchInventory(shipment);
             try {
-                assertDispatchStockAvailable(normalized.stream()
-                        .filter(line -> !skipsWarehouseForLine(shipment, line.getProductId()))
-                        .collect(Collectors.toList()), editSource);
+                // Cada línea se valida contra su bodega (los cinchos, contra Bodega PT).
+                Map<ProductInventoryService.DispatchSource, List<ProductShipmentRequest.ProductShipmentDetailRequest>>
+                        bySource = new java.util.LinkedHashMap<>();
+                for (ProductShipmentRequest.ProductShipmentDetailRequest line : normalized) {
+                    if (skipsWarehouseForLine(shipment, line.getProductId())) {
+                        continue;
+                    }
+                    DispatchPlan linePlan = resolveLineDispatchPlan(shipment, planForEdit, line.getProductId());
+                    ProductInventoryService.DispatchSource lineSource = fallbackForEdit && linePlan.hasFallback()
+                            ? linePlan.withFallback()
+                            : linePlan.primary();
+                    bySource.computeIfAbsent(lineSource, k -> new ArrayList<>()).add(line);
+                }
+                for (Map.Entry<ProductInventoryService.DispatchSource,
+                        List<ProductShipmentRequest.ProductShipmentDetailRequest>> group : bySource.entrySet()) {
+                    assertDispatchStockAvailable(group.getValue(), group.getKey());
+                }
             } catch (BusinessException ex) {
                 // La devolución a PT ya se escribió: sin rollback quedaría stock que no existe con el envío aún SENT.
                 org.springframework.transaction.interceptor.TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
@@ -2135,6 +2148,46 @@ public class ProductDistributionService {
         return resolveDispatchPlan(shipment).primary();
     }
 
+    /** Cincho para inventario (mismo criterio que {@link #skipsWarehouseForLine}). */
+    private static boolean isCinchoDispatchProduct(ProductEntity product) {
+        return product != null
+                && (KioscoInventoryInitRules.isCinchoProduct(product) || CinchoProductUtils.isCinchoLineForProduction(product));
+    }
+
+    /** True si el envío es de una OPL (orden de venta en línea). */
+    boolean isOnlineSaleOrderShipment(ProductShipmentEntity shipment) {
+        if (shipment == null || shipment.getProductionOrderId() == null) {
+            return false;
+        }
+        return productionOrderRepository.findById(shipment.getProductionOrderId())
+                .map(po -> ProductionPlanningConstants.isOnlineSaleOrder(po.getOrderType(), po.getCode()))
+                .orElse(false);
+    }
+
+    /**
+     * Plan de una línea. Los cinchos se guardan en Bodega PT: salen solo de PT, sin tomar faltante de Devoluciones,
+     * sea cual sea el envío. Excepción: el cincho de una OPL (venta en línea) sale de Devoluciones (y de PT solo si
+     * Devoluciones no alcanza). El resto de líneas sigue el plan del envío.
+     */
+    DispatchPlan resolveLineDispatchPlan(ProductShipmentEntity shipment, DispatchPlan shipmentPlan, Long productId) {
+        ProductEntity product = productId == null ? null : productRepository.findById(productId).orElse(null);
+        if (!isCinchoDispatchProduct(product)) {
+            return shipmentPlan;
+        }
+        boolean onlineSale = isOnlineSaleOrderShipment(shipment);
+        ProductInventoryService.DispatchSource source = onlineSale
+                ? ProductInventoryService.DispatchSource.RETURNS_FIRST
+                : ProductInventoryService.DispatchSource.PT_ONLY;
+        return new DispatchPlan(source, null, null, sourceLabel(source), null,
+                shipmentPlan.directKiosk(), shipmentPlan.distribution());
+    }
+
+    /** True si al enviar se autorizó tomar un faltante de la otra cubeta (queda escrito en el kardex). */
+    private boolean shipmentUsedAuthorizedFallback(ProductShipmentEntity shipment) {
+        return productInventoryKardexRepository.findByReferenceTypeAndReferenceId("SHIPMENT", shipment.getId()).stream()
+                .anyMatch(k -> k.getDescription() != null && k.getDescription().contains(" · faltante tomado de "));
+    }
+
     /**
      * Descarga una línea del envío según su plan. Sin {@code useFallback} sale solo de la bodega principal.
      * Con él, primero se agota la principal y el resto sale de la otra cubeta, con su propia descripción
@@ -2256,7 +2309,7 @@ public class ProductDistributionService {
                 continue;
             }
             dispatchShipmentLine(shipment, detail, qty, "Reenvío tras edición hacia " + destinationLabel,
-                    plan, useFallback, authorizedBy);
+                    resolveLineDispatchPlan(shipment, plan, detail.getProductId()), useFallback, authorizedBy);
             creditShipmentLineInTransit(shipment, detail, qty, destinationLabel);
         }
     }
@@ -2693,10 +2746,11 @@ public class ProductDistributionService {
         if (!SKIP_DISPATCH_STOCK_CHECK) {
             // Pre-validar stock contra la bodega principal (o principal + respaldo si se autorizó).
             ProductInventoryService.DispatchSource sendSource = useFallback ? plan.withFallback() : plan.primary();
-            // El desglose muestra las dos cubetas cuando el envío tiene respaldo, para que se vea dónde hay.
+            // El desglose muestra las dos cubetas, para que se vea dónde hay.
             List<LocationEntity> dispatchWarehouses = productInventoryService.getDispatchSourceWarehouses(
-                    plan.hasFallback() ? plan.withFallback() : sendSource);
+                    ProductInventoryService.DispatchSource.RETURNS_FIRST);
             List<String> shortages = new java.util.ArrayList<>();
+            boolean ptOnlyCinchoShort = false;
             for (ProductShipmentDetailEntity detail : details) {
                 BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
                 if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
@@ -2712,9 +2766,17 @@ public class ProductDistributionService {
                     continue;
                 }
 
+                // Los cinchos tienen su propia bodega (ver resolveLineDispatchPlan).
+                DispatchPlan linePlan = resolveLineDispatchPlan(shipment, plan, detail.getProductId());
+                ProductInventoryService.DispatchSource lineSource = linePlan == plan
+                        ? sendSource
+                        : (useFallback && linePlan.hasFallback() ? linePlan.withFallback() : linePlan.primary());
                 BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
-                        detail.getProductId(), detail.getColorId(), sizeLabel, sendSource);
+                        detail.getProductId(), detail.getColorId(), sizeLabel, lineSource);
                 if (availableTotal.compareTo(stillNeeded) < 0) {
+                    if (linePlan != plan && lineSource == ProductInventoryService.DispatchSource.PT_ONLY) {
+                        ptOnlyCinchoShort = true;
+                    }
                     ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
                     String productName = product != null ? product.getCode() + " - " + product.getName() : "Producto #" + detail.getProductId();
                     String colorName = "";
@@ -2725,7 +2787,7 @@ public class ProductDistributionService {
                     String stockBreakdown = buildDispatchStockBreakdown(
                             detail.getProductId(), detail.getColorId(), sizeLabel, dispatchWarehouses);
                     shortages.add(productName + colorName + ": disponible " + availableTotal
-                            + " (" + sourceLabel(sendSource) + "; " + stockBreakdown + "), requerido " + stillNeeded);
+                            + " (" + sourceLabel(lineSource) + "; " + stockBreakdown + "), requerido " + stillNeeded);
                 }
             }
             if (!shortages.isEmpty()) {
@@ -2735,6 +2797,9 @@ public class ProductDistributionService {
                         ? "\nSi el faltante está en " + plan.fallbackLabel() + ", envíe con «Tomar el faltante de "
                                 + plan.fallbackLabel() + "»."
                         : "";
+                if (ptOnlyCinchoShort) {
+                    hint += "\nLos cinchos salen solo de Bodega PT (no se toman de Devoluciones).";
+                }
                 throw new BusinessException(header + String.join("\n• ", shortages) + hint);
             }
         }
@@ -2747,7 +2812,8 @@ public class ProductDistributionService {
             if (skipsWarehouseForLine(shipment, detail.getProductId())) continue;
 
             dispatchShipmentLine(shipment, detail, qtyToSend,
-                    "Salida a envio en transito hacia " + destinationLabel, plan, useFallback, authorizedBy);
+                    "Salida a envio en transito hacia " + destinationLabel,
+                    resolveLineDispatchPlan(shipment, plan, detail.getProductId()), useFallback, authorizedBy);
             creditShipmentLineInTransit(shipment, detail, qtyToSend, destinationLabel);
         }
 

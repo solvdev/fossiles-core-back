@@ -325,6 +325,74 @@ class ProductDistributionServiceDispatchSourceTest {
                 any(), any(), any(), any(), any(), any(), any(), anyString(), any(), any(), anyBoolean(), any());
     }
 
+    // ---------- cinchos: siempre de Bodega PT, salvo los de una OPL ----------
+
+    @Test
+    void cinchoInDirectShipmentLeavesFromBodegaPtEvenWithReturnsStock() throws Exception {
+        givenShipment(kioskShipment(null, null));
+        givenCinchoLine();
+        givenStock("5", "5");
+
+        service.sendShipment(SHIPMENT_ID, false);
+
+        verify(productInventoryService).decrementFromDispatchWarehouses(
+                any(), any(), eq("34"), any(), any(), any(), any(),
+                eq("Envío directo a kiosco · Salida a envio en transito hacia Kiosko Escuintla"),
+                any(), any(), eq(true), eq(DispatchSource.PT_ONLY));
+        verify(productInventoryService, never()).decrementFromDispatchWarehouses(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean(),
+                eq(DispatchSource.RETURNS_ONLY));
+    }
+
+    @Test
+    void cinchoWithoutBodegaPtStockFailsAndIsNeverTakenFromReturns() throws Exception {
+        givenShipment(kioskShipment(7L, null));
+        givenDistribution();
+        givenCinchoLine();
+        givenStock("5", "1");
+
+        assertThatThrownBy(() -> service.sendShipment(SHIPMENT_ID, true))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("disponible 1 (Bodega PT")
+                .hasMessageContaining("Los cinchos salen solo de Bodega PT");
+        verify(productInventoryService, never()).decrementFromDispatchWarehouses(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean(), any());
+    }
+
+    @Test
+    void cinchoOfAnOnlineSaleOrderLeavesFromReturns() throws Exception {
+        givenShipment(kioskShipment(null, 900L));
+        when(productionOrderRepository.findById(900L)).thenReturn(Optional.of(
+                ProductionOrderEntity.builder().id(900L).code("OPL-1201").orderType("VENTA_EN_LINEA").build()));
+        givenCinchoLine();
+        givenStock("5", "5");
+
+        service.sendShipment(SHIPMENT_ID, false);
+
+        verify(productInventoryService).decrementFromDispatchWarehouses(
+                any(), any(), eq("34"), any(), any(), any(), any(), any(), any(), any(), eq(true),
+                eq(DispatchSource.RETURNS_FIRST));
+        verify(productInventoryService, never()).decrementFromDispatchWarehouses(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), anyBoolean(),
+                eq(DispatchSource.PT_ONLY));
+    }
+
+    @Test
+    void stockCheckShowsCinchoAgainstBodegaPtOnly() throws Exception {
+        when(shipmentRepository.findById(SHIPMENT_ID)).thenReturn(Optional.of(kioskShipment(null, null)));
+        givenCinchoLine();
+        givenStock("5", "1");
+
+        ShipmentDispatchStockCheckResponse check = service.checkShipmentDispatchStock(SHIPMENT_ID);
+
+        ShipmentDispatchStockCheckResponse.Line line = check.getLines().get(0);
+        assertThat(line.getPrimaryAvailable()).isEqualByComparingTo("1");
+        assertThat(line.getShortageQuantity()).isEqualByComparingTo("2");
+        // Sin respaldo: Devoluciones no cubre el faltante de un cincho.
+        assertThat(line.getShortageAfterFallback()).isEqualByComparingTo("2");
+        assertThat(check.getCanSendWithFallback()).isFalse();
+    }
+
     // ---------- desglose antes de enviar ----------
 
     @Test
@@ -371,6 +439,20 @@ class ProductDistributionServiceDispatchSourceTest {
         when(distributionRepository.findById(7L)).thenReturn(Optional.of(ProductDistributionEntity.builder()
                 .id(7L).distributionNumber("DIST-20261021-060").origin(DistributionOrigin.MANUAL)
                 .description("Distribución semanal").build()));
+    }
+
+    /** La línea del envío pasa a ser un cincho FOSS talla 34. */
+    private void givenCinchoLine() {
+        when(productRepository.findById(PRODUCT_ID)).thenReturn(Optional.of(ProductEntity.builder()
+                .id(PRODUCT_ID).code("FOSS-4").name("CINCHO BERNARDO").cinchoType("FOSS").build()));
+        when(shipmentDetailRepository.findByShipmentId(SHIPMENT_ID)).thenReturn(List.of(ProductShipmentDetailEntity.builder()
+                .id(DETAIL_ID)
+                .shipmentId(SHIPMENT_ID)
+                .productId(PRODUCT_ID)
+                .colorId(COLOR_ID)
+                .sizeLabel("34")
+                .quantity(new BigDecimal("3"))
+                .build()));
     }
 
     /** Disponible por cubeta para la línea del envío; los totales por fuente salen de las dos. */
