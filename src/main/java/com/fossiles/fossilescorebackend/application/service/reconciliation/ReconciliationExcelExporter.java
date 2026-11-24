@@ -25,7 +25,15 @@ public final class ReconciliationExcelExporter {
 
     public record Row(Long caseId, LocalDate saleDate, String saleNumber, String shipmentNumber, String guide, String carrier,
                       String paymentMethod, String reference, BigDecimal expected, BigDecimal received, BigDecimal difference,
-                      BigDecimal adjustment, String seller, BigDecimal commission, String status, String origin) {
+                      BigDecimal adjustment, String seller, BigDecimal commission, String status, String origin,
+                      /** Lo que era el cobrado antes de rebajar; igual a {@code expected} salvo en devueltas/anuladas. */
+                      BigDecimal original,
+                      /** «Devuelta», «Anulada» o «Cancelada» si el caso entró como rebaja a Q0; null si es una venta normal. */
+                      String rebate) {
+
+        public BigDecimal originalOrExpected() {
+            return original != null ? original : expected;
+        }
     }
 
     public record Adjustment(String shipmentNumber, BigDecimal amount, String reason, String proposedBy, String authorizedBy,
@@ -45,7 +53,9 @@ public final class ReconciliationExcelExporter {
                 .append(nv(r.paymentMethod())).append('|').append(nv(r.reference())).append('|').append(money(r.expected()).toPlainString())
                 .append('|').append(money(r.received()).toPlainString()).append('|').append(money(r.difference()).toPlainString())
                 .append('|').append(money(r.adjustment()).toPlainString()).append('|').append(nv(r.seller())).append('|')
-                .append(money(r.commission()).toPlainString()).append('|').append(r.status()).append('|').append(r.origin()).append('\n'));
+                .append(money(r.commission()).toPlainString()).append('|').append(r.status()).append('|').append(r.origin())
+                // Las filas normales dan la misma huella que antes de existir las rebajas (los lotes ya cerrados siguen verificando).
+                .append(r.rebate() == null ? "" : "|REBAJA|" + r.rebate() + "|" + money(r.original()).toPlainString()).append('\n'));
         return sha256(sb.toString());
     }
 
@@ -95,6 +105,11 @@ public final class ReconciliationExcelExporter {
         r = moneyLine(sh, st, r, "Total recibido", rec);
         r = moneyLine(sh, st, r, "Ajustes autorizados", adj);
         r = moneyLine(sh, st, r, "Saldo (cobrado − recibido − ajustes)", exp.subtract(rec).subtract(adj));
+        List<Row> rebates = d.rows().stream().filter(x -> x.rebate() != null).toList();
+        if (!rebates.isEmpty()) {
+            r = kv(sh, st, r, "Devueltas / anuladas (entran a Q0)", String.valueOf(rebates.size()));
+            r = moneyLine(sh, st, r, "Rebajado por devoluciones y anulaciones", sum(rebates, Row::originalOrExpected));
+        }
         r++;
         r = group(sh, st, r, "Por método de pago", d.rows(), Row::paymentMethod);
         group(sh, st, r + 1, "Por transportista", d.rows(), Row::carrier);
@@ -125,8 +140,8 @@ public final class ReconciliationExcelExporter {
 
     private static void detail(Workbook wb, Styles st, Data d) {
         Sheet sh = wb.createSheet("Detalle");
-        String[] cols = {"Fecha", "Pedido", "ENVL", "Guía", "Transportista", "Método de pago", "Referencia", "Cobrado", "Recibido",
-                "Diferencia", "Ajuste autorizado", "Vendedor", "Comisión (2% sin envío)", "Estado", "Origen"};
+        String[] cols = {"Fecha", "Pedido", "ENVL", "Guía", "Transportista", "Método de pago", "Referencia", "Era (cobrado)", "Queda",
+                "Recibido", "Diferencia", "Ajuste autorizado", "Vendedor", "Comisión (2% sin envío)", "Estado", "Origen"};
         Row0 head = new Row0(sh, 0);
         for (int i = 0; i < cols.length; i++) head.text(i, cols[i], st.header());
         int r = 1;
@@ -139,15 +154,24 @@ public final class ReconciliationExcelExporter {
             line.text(4, nv(x.carrier()), null);
             line.text(5, nv(x.paymentMethod()), null);
             line.text(6, nv(x.reference()), null);
-            line.number(7, x.expected(), st.money());
-            line.number(8, x.received(), st.money());
-            line.number(9, x.difference(), st.money());
-            line.number(10, x.adjustment(), st.money());
-            line.text(11, nv(x.seller()), null);
-            line.number(12, x.commission(), st.money());
-            line.text(13, x.status(), null);
-            line.text(14, x.origin(), null);
+            line.number(7, x.originalOrExpected(), st.money());
+            line.number(8, x.expected(), st.money());
+            line.number(9, x.received(), st.money());
+            line.number(10, x.difference(), st.money());
+            line.number(11, x.adjustment(), st.money());
+            line.text(12, nv(x.seller()), null);
+            line.number(13, x.commission(), st.money());
+            line.text(14, x.rebate() != null ? x.rebate() : x.status(), null);
+            line.text(15, x.origin(), null);
         }
+        Row0 total = new Row0(sh, r);
+        total.text(0, "Total (" + d.rows().size() + ")", st.bold());
+        total.number(7, sum(d.rows(), Row::originalOrExpected), st.moneyBold());
+        total.number(8, sum(d.rows(), Row::expected), st.moneyBold());
+        total.number(9, sum(d.rows(), Row::received), st.moneyBold());
+        total.number(10, sum(d.rows(), Row::difference), st.moneyBold());
+        total.number(11, sum(d.rows(), Row::adjustment), st.moneyBold());
+        total.number(13, sum(d.rows(), Row::commission), st.moneyBold());
         for (int i = 0; i < cols.length; i++) sh.setColumnWidth(i, i == 6 || i == 5 ? 6500 : 4200);
         sh.createFreezePane(0, 1);
     }

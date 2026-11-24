@@ -48,6 +48,7 @@ public class ReconciliationBatchService {
     private final ReconEventService events;
     private final ReconciliationProperties props;
     private final ReconActor actor;
+    private final ReconciliationRebateService rebates;
 
     public record ExportFile(byte[] bytes, String fileName, String sha256) {
     }
@@ -65,16 +66,30 @@ public class ReconciliationBatchService {
         if (available.isEmpty()) {
             throw new BusinessException("No hay casos conciliados sin lote en ese período. Concilie casos en la bandeja primero.");
         }
-        return buildBatch(req.from(), req.to(), available);
+        List<ReconCaseEntity> all = new ArrayList<>(available);
+        // Lo devuelto/anulado del período entra como rebaja a Q0 (mismo filtro de transportista y método).
+        rebates.rebatesForMonths(req.from(), req.to()).stream()
+                .filter(c -> !c.getSaleDate().isBefore(req.from()) && !c.getSaleDate().isAfter(req.to()))
+                .filter(c -> blank(req.carrier()) || carrierKey(req.carrier()).equals(carrierKey(c.getCarrier())))
+                .filter(c -> blank(req.method()) || req.method().equals(c.getPaymentMethod()))
+                .forEach(all::add);
+        return buildBatch(req.from(), req.to(), all);
     }
 
     /** Lote con exactamente los casos elegidos (los ya conciliados y sin lote); el período sale de sus fechas de venta. */
     @Transactional
     public BatchDto createForCases(List<ReconCaseEntity> cases) throws BusinessException {
         if (cases == null || cases.isEmpty()) throw new BusinessException("No hay casos para liquidar.");
-        LocalDate from = cases.stream().map(ReconCaseEntity::getSaleDate).min(Comparator.naturalOrder()).orElseThrow();
-        LocalDate to = cases.stream().map(ReconCaseEntity::getSaleDate).max(Comparator.naturalOrder()).orElseThrow();
-        return buildBatch(from, to, cases);
+        LocalDate first = cases.stream().map(ReconCaseEntity::getSaleDate).min(Comparator.naturalOrder()).orElseThrow();
+        LocalDate last = cases.stream().map(ReconCaseEntity::getSaleDate).max(Comparator.naturalOrder()).orElseThrow();
+        // Lo devuelto/anulado de esos meses que aún no está en un lote entra como rebaja a Q0: así sale en el reporte final.
+        Map<Long, ReconCaseEntity> all = new LinkedHashMap<>();
+        cases.forEach(c -> all.put(c.getId(), c));
+        rebates.rebatesForMonths(first, last).forEach(c -> all.putIfAbsent(c.getId(), c));
+        List<ReconCaseEntity> list = new ArrayList<>(all.values());
+        LocalDate from = list.stream().map(ReconCaseEntity::getSaleDate).min(Comparator.naturalOrder()).orElseThrow();
+        LocalDate to = list.stream().map(ReconCaseEntity::getSaleDate).max(Comparator.naturalOrder()).orElseThrow();
+        return buildBatch(from, to, list);
     }
 
     private BatchDto buildBatch(LocalDate from, LocalDate to, List<ReconCaseEntity> available) {
@@ -179,6 +194,9 @@ public class ReconciliationBatchService {
         recompute.recomputeAll(cases);   // el estado de cada caso debe estar al día al momento de cerrar
         List<String> invalid = new ArrayList<>();
         for (ReconCaseEntity c : cases) {
+            if (isRebate(c)) {
+                continue;   // devuelta/anulada: entra a Q0, sin pagos ni saldo
+            }
             if (!c.getStatus().isReconciled()) {
                 invalid.add(label(c) + ": está «" + c.getStatus() + "»");
             } else if (money(c.getPendingBalance()).signum() != 0) {
@@ -293,11 +311,14 @@ public class ReconciliationBatchService {
             String reference = apps.getOrDefault(c.getId(), List.of()).stream().map(a -> receipts.get(a.getReceiptId())).filter(Objects::nonNull)
                     .map(r -> !blank(r.getReference()) ? r.getReference() : r.getAuthorizationNumber()).filter(s -> !blank(s)).distinct()
                     .collect(Collectors.joining(", "));
-            BigDecimal net = sale == null ? BigDecimal.ZERO : money(sale.getNetAmount());
+            boolean rebate = isRebate(c);
+            BigDecimal net = sale == null || rebate ? BigDecimal.ZERO : money(sale.getNetAmount());
             BigDecimal commission = net.multiply(props.getCommissionRate()).setScale(2, RoundingMode.HALF_UP);
+            String rebateLabel = rebate ? rebateLabel(c.getExcludedReason()) : null;
             rows.add(new ReconciliationExcelExporter.Row(c.getId(), c.getSaleDate(), c.getSaleNumber(), c.getShipmentNumber(), c.getGuideNumber(),
-                    c.getCarrier(), c.getPaymentMethod(), reference, money(c.getExpectedAmount()), money(c.getReceivedAmount()),
-                    money(c.getDifference()), money(c.getAuthorizedAdjustment()), c.getSalesperson(), commission, c.getStatus().name(), c.getOrigin().name()));
+                    c.getCarrier(), c.getPaymentMethod(), reference, remainingExpected(c), money(c.getReceivedAmount()),
+                    rebate ? money(BigDecimal.ZERO) : money(c.getDifference()), money(c.getAuthorizedAdjustment()), c.getSalesperson(), commission,
+                    rebate ? rebateLabel.toUpperCase(Locale.ROOT) : c.getStatus().name(), c.getOrigin().name(), money(c.getExpectedAmount()), rebateLabel));
         }
         return rows;
     }
@@ -318,8 +339,18 @@ public class ReconciliationBatchService {
         return out;
     }
 
+    /** Caso devuelto/anulado dentro del lote: cuenta como Q0 (lo que era se ve en el Excel). */
+    static boolean isRebate(ReconCaseEntity c) {
+        return c.getStatus() == Recon.Status.EXCLUIDO && isSaleStateRebate(c.getExcludedReason());
+    }
+
+    /** Lo que queda por cobrar del caso: su cobrado, o Q0 si es una rebaja. */
+    static BigDecimal remainingExpected(ReconCaseEntity c) {
+        return isRebate(c) ? money(BigDecimal.ZERO) : money(c.getExpectedAmount());
+    }
+
     private void refreshTotals(ReconBatchEntity b, List<ReconCaseEntity> cases) {
-        b.setTotalExpected(money(cases.stream().map(ReconCaseEntity::getExpectedAmount).reduce(BigDecimal.ZERO, BigDecimal::add)));
+        b.setTotalExpected(money(cases.stream().map(ReconciliationBatchService::remainingExpected).reduce(BigDecimal.ZERO, BigDecimal::add)));
         b.setTotalReceived(money(cases.stream().map(ReconCaseEntity::getReceivedAmount).reduce(BigDecimal.ZERO, BigDecimal::add)));
         b.setTotalAdjusted(money(cases.stream().map(ReconCaseEntity::getAuthorizedAdjustment).reduce(BigDecimal.ZERO, BigDecimal::add)));
         batchRepository.save(b);

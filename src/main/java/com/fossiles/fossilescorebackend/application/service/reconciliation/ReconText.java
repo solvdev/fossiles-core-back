@@ -19,6 +19,27 @@ public final class ReconText {
         return value.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
     }
 
+    /** Motivo de exclusión de un caso cuya venta está devuelta, anulada o cancelada: es una rebaja, no una alerta. */
+    public static final String SALE_STATE_EXCLUSION_PREFIX = "Venta en estado ";
+
+    /** Estados de la venta que rebajan el caso a Q0 (se anulan sus pagos y sale en el reporte como rebaja). */
+    public static final java.util.Set<String> CLOSED_SALE_STATUS = java.util.Set.of("DEVOLUCION", "ANULADA", "CANCELADO");
+
+    /** El caso quedó fuera por el estado de su venta (devuelta/anulada/cancelada): entra al lote como rebaja a Q0. */
+    public static boolean isSaleStateRebate(String excludedReason) {
+        return excludedReason != null && excludedReason.startsWith(SALE_STATE_EXCLUSION_PREFIX);
+    }
+
+    /** «Devuelta», «Anulada» o «Cancelada» a partir del motivo de exclusión por estado de la venta. */
+    public static String rebateLabel(String excludedReason) {
+        if (!isSaleStateRebate(excludedReason)) return null;
+        String rest = excludedReason.substring(SALE_STATE_EXCLUSION_PREFIX.length()).toUpperCase(Locale.ROOT);
+        if (rest.startsWith("DEVOLUCI")) return "Devuelta";
+        if (rest.startsWith("ANULAD")) return "Anulada";
+        if (rest.startsWith("CANCELAD")) return "Cancelada";
+        return "Rebajada";
+    }
+
     /** True si el texto trae al menos un dígito (un número real y no una nota como «ANULADO»). */
     public static boolean hasDigit(String value) {
         return value != null && value.chars().anyMatch(Character::isDigit);
