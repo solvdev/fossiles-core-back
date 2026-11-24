@@ -14,6 +14,7 @@ import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.Ta
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.UserRepository;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.recon.*;
 import com.fossiles.fossilescorebackend.infrastructure.util.SecurityUtil;
+import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.junit.jupiter.api.BeforeEach;
@@ -75,7 +76,7 @@ class ReconciliationFlowTest {
                     ReconDifferenceRepository.class, ReconCommissionLineRepository.class, ReconExportRepository.class,
                     ReconExportLineRepository.class, ReconLedgerEntryRepository.class, ReconEventRepository.class,
                     OnlineSaleRepository.class, OnlineSaleItemRepository.class, OnlineSaleReturnRepository.class}))
-    @Import({ReconActor.class, ReconciliationCaseService.class, ReconciliationRecomputeService.class, ReconciliationRuleEngine.class, ReconEventService.class,
+    @Import({ReconActor.class, ReconciliationCaseService.class, ReconciliationRebateService.class, ReconciliationRecomputeService.class, ReconciliationRuleEngine.class, ReconEventService.class,
             ReconciliationLedgerService.class, ReconciliationReceiptService.class, ReconciliationDifferenceService.class,
             ReconciliationBatchService.class, ReconciliationCommissionService.class, ReconciliationQueryService.class,
             ReconciliationDashboardService.class, ReconciliationSellerService.class, ReconciliationGuideImportService.class,
@@ -325,15 +326,16 @@ class ReconciliationFlowTest {
         differenceService.authorize(d.getId());
 
         BatchDto batch = batchService.create(new BatchCreateRequest(FROM, TO, null, null));
-        assertThat(batch.cases()).isEqualTo(3);
+        assertThat(batch.cases()).isEqualTo(4);   // S1, S2, S3 + la devolución S4, que entra como rebaja a Q0
         assertThat(batch.expected()).isEqualByComparingTo("850.00");
         assertThat(batch.received()).isEqualByComparingTo("845.00");
         assertThat(batch.adjusted()).isEqualByComparingTo("5.00");
 
         BatchCloseResult closed = batchService.close(batch.id(), "cierre-oct-1");
         assertThat(closed.alreadyClosed()).isFalse();
-        assertThat(closed.closedCases()).isEqualTo(3);
-        assertThat(closed.exportedCases()).isEqualTo(3);
+        assertThat(closed.closedCases()).isEqualTo(4);
+        assertThat(closed.exportedCases()).isEqualTo(4);
+        assertThat(caseOf(s4).isClosed()).isTrue();
 
         for (Long saleId : List.of(s1, s2, s3)) {
             assertThat(ledgerService.balance(caseOf(saleId).getId())).as("saldo de la venta " + saleId).isEqualByComparingTo("0.00");
@@ -356,7 +358,19 @@ class ReconciliationFlowTest {
         assertThat(file.sha256()).isEqualTo(closed.contentSha256());
         try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(file.bytes()))) {
             assertThat(wb.getSheetName(0)).isEqualTo("Resumen");
-            assertThat(wb.getSheet("Detalle").getLastRowNum()).isEqualTo(3);
+            Sheet detail = wb.getSheet("Detalle");
+            assertThat(detail.getLastRowNum()).isEqualTo(5);   // encabezado + 4 ventas + total
+            assertThat(detail.getRow(0).getCell(7).getStringCellValue()).isEqualTo("Era (cobrado)");
+            assertThat(detail.getRow(0).getCell(8).getStringCellValue()).isEqualTo("Queda");
+            org.apache.poi.ss.usermodel.Row devuelta = java.util.stream.StreamSupport.stream(detail.spliterator(), false)
+                    .filter(r -> r.getCell(2) != null && "ENVL-01604".equals(r.getCell(2).getStringCellValue())).findFirst().orElseThrow();
+            double era = caseOf(s4).getExpectedAmount().doubleValue();
+            assertThat(devuelta.getCell(7).getNumericCellValue()).isEqualTo(era);   // era
+            assertThat(devuelta.getCell(8).getNumericCellValue()).isEqualTo(0.0);     // queda
+            assertThat(devuelta.getCell(14).getStringCellValue()).isEqualTo("Devuelta");
+            assertThat(detail.getRow(5).getCell(0).getStringCellValue()).startsWith("Total");
+            assertThat(detail.getRow(5).getCell(8).getNumericCellValue()).isEqualTo(850.0);
+            assertThat(detail.getRow(5).getCell(7).getNumericCellValue()).isEqualTo(850.0 + era);
             assertThat(wb.getSheet("Ajustes autorizados").getLastRowNum()).isEqualTo(1);
         }
         assertThat(exportRepository.findByBatchIdOrderByIdDesc(batch.id())).extracting(ReconExportEntity::getKind).containsExactly("DESCARGA", "CIERRE");
@@ -368,7 +382,7 @@ class ReconciliationFlowTest {
     void lote_noSeCierraSiUnCasoDejoDeEstarConciliado() throws Exception {
         generateAndImportCarrierFile();
         BatchDto batch = batchService.create(new BatchCreateRequest(FROM, TO, null, null));
-        assertThat(batch.cases()).isEqualTo(1);   // solo S1 está conciliado
+        assertThat(batch.cases()).isEqualTo(2);   // solo S1 está conciliado (+ la devolución S4 como rebaja a Q0)
 
         // se anula el fondo de S1 después de armar el lote
         Long appId = queryService.detail(caseOf(s1).getId()).applications().get(0).id();

@@ -85,6 +85,7 @@ public class ReconciliationLedgerLinkService {
     private final ReconEventRepository eventRepository;
     private final ReconciliationRecomputeService recompute;
     private final ReconciliationRuleEngine engine;
+    private final ReconciliationRebateService rebates;
     private final ReconciliationAccessGuard guard;
     private final ObjectMapper objectMapper;
 
@@ -305,8 +306,9 @@ public class ReconciliationLedgerLinkService {
             if (free && r.getImportFileId() == null) receiptService.voidReceipt(r.getId(), why);
             else kept++;
         }
-        caseService.exclude(c.getId(), "Venta devuelta o anulada: " + reason);
-        return who + ": se anuló el pago de " + q(voided) + " y se excluyó de la conciliación"
+        String saleStatus = recompute.factsFor(c).saleStatus();
+        rebates.rebate(c, CLOSED_SALE_STATUS.contains(String.valueOf(saleStatus)) ? saleStatus : x.ledgerStatus, reason);
+        return who + ": se anuló el pago de " + q(voided) + " y se rebajó a Q0 (sale en el reporte del lote)"
                 + (kept > 0 ? "; " + kept + " fondo(s) importado(s) quedaron sin aplicar para asignarlos a la venta correcta" : "") + ". Motivo: " + reason;
     }
 
@@ -319,8 +321,8 @@ public class ReconciliationLedgerLinkService {
             changes.add("reincorporada");
         }
         if (x.exclude) {
-            caseService.exclude(c.getId(), "El libro contable la tiene como " + x.ledgerStatus + " (periodo «" + p.getLabel() + "»)");
-            changes.add("excluida: " + x.ledgerStatus);
+            rebates.rebate(c, x.ledgerStatus, "según el libro contable, periodo «" + p.getLabel() + "»");
+            changes.add("rebajada a Q0: " + x.ledgerStatus);
             record(c, p, changes);
             return changes;
         }
@@ -560,18 +562,13 @@ public class ReconciliationLedgerLinkService {
             } else if (!apps.isEmpty() && refundNote != null) {
                 x.state = NO_ENTRA;
                 x.reason = "Reembolso pendiente: queda fuera de la liquidación" + (blank(refundNote) ? "" : " (" + refundNote + ")");
-            } else if (!apps.isEmpty()) {
-                x.state = NO_LISTA;
-                x.blockerCode = "PAGO_EN_DEVOLUCION";
-                x.actions = List.of(VOID_AND_EXCLUDE, MARK_REFUND);
-                x.reason = "El libro la tiene como " + x.ledgerStatus + " pero tiene " + q(curReceived) + " aplicados. Si el pago fue un error, "
-                        + "anúlelo y exclúyala; si el dinero sí entró, déjela como reembolso pendiente";
-                diffs.add(new FieldDiff("ESTADO", "Estado", x.ledgerStatus, "Activa con pagos", false, x.reason));
             } else {
+                // Devuelta/anulada: no es alerta. Se rebaja a Q0 (su pago, si tiene, se anula solo) y sale en el reporte del lote.
                 x.state = EXCLUIR;
                 x.exclude = true;
-                x.reason = "El libro la tiene como " + x.ledgerStatus + ": se excluye de la conciliación";
-                diffs.add(new FieldDiff("ESTADO", "Estado", x.ledgerStatus, "Activa", true, "Se excluye"));
+                x.reason = "El libro la tiene como " + x.ledgerStatus + ": se rebaja a Q0" + (apps.isEmpty() ? "" : " y se anula el pago de " + q(curReceived))
+                        + "; sale en el reporte como " + x.ledgerStatus.toLowerCase(Locale.ROOT);
+                diffs.add(new FieldDiff("ESTADO", "Estado", x.ledgerStatus, apps.isEmpty() ? "Activa" : "Activa con " + q(curReceived), true, "Se rebaja a Q0"));
             }
         } else if (c == null && !TRACKED.contains(saleStatus == null ? "" : saleStatus.toUpperCase(Locale.ROOT))) {
             x.state = NO_DESPACHADA;
