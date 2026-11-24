@@ -1,8 +1,10 @@
 package com.fossiles.fossilescorebackend.application.service.reconciliation;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerResponse;
 import com.fossiles.fossilescorebackend.application.dto.onlineledger.OnlineSaleLedgerDtos.LedgerRow;
 import com.fossiles.fossilescorebackend.application.dto.reconciliation.LedgerLinkDtos.*;
+import com.fossiles.fossilescorebackend.application.service.reconciliation.CaseFacts.ReceiptFact;
 import com.fossiles.fossilescorebackend.application.dto.reconciliation.ReconciliationDtos.CaseReceiptRequest;
 import com.fossiles.fossilescorebackend.application.dto.reconciliation.ReconciliationDtos.InvalidCaseRef;
 import com.fossiles.fossilescorebackend.application.dto.reconciliation.ReconciliationDtos.ReplaceReceiptRequest;
@@ -58,6 +60,14 @@ public class ReconciliationLedgerLinkService {
     public static final String NO_ENTRA = "NO_ENTRA";
     public static final String NO_DESPACHADA = "NO_DESPACHADA";
 
+    /** Arreglos que se pueden hacer desde la pantalla de liquidar (ver {@link #resolve}). */
+    public static final String VOID_AND_EXCLUDE = "VOID_AND_EXCLUDE";
+    public static final String MARK_REFUND = "MARK_REFUND";
+    public static final String MARK_VOIDED = "MARK_VOIDED";
+    /** Evento del caso que deja una venta devuelta/anulada con fondos fuera de la liquidación como reembolso pendiente. */
+    static final String REFUND_EVENT = "REEMBOLSO_PENDIENTE";
+    private static final Set<String> MONEY_RULES = Set.of("R06", "R16");
+
     private final OnlineSaleLedgerService ledgerService;
     private final OnlineLedgerPeriodService periodService;
     private final OnlineLedgerPeriodRepository periodRepository;
@@ -72,7 +82,11 @@ public class ReconciliationLedgerLinkService {
     private final ReconciliationSettlementService settlementService;
     private final ReconciliationBatchService batchService;
     private final ReconEventService events;
+    private final ReconEventRepository eventRepository;
+    private final ReconciliationRecomputeService recompute;
+    private final ReconciliationRuleEngine engine;
     private final ReconciliationAccessGuard guard;
+    private final ObjectMapper objectMapper;
 
     // ───────── permisos ─────────
 
@@ -236,6 +250,66 @@ public class ReconciliationLedgerLinkService {
         return new ApplyResult(false, null, null, 0, 0, 0, BigDecimal.ZERO, false, message, blocked);
     }
 
+    // ───────── arreglar un bloqueo desde la pantalla ─────────
+
+    /**
+     * Resuelve el bloqueo de una venta sin salir de la pantalla de liquidar. Solo se acepta un arreglo que la vista previa ofrece
+     * para esa venta en este momento; el motivo queda en el historial del caso y en la bitácora del libro.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ResolveResult resolve(Long periodId, ResolveRequest req) throws BusinessException, ResourceNotFoundException {
+        assertCanApply();
+        if (req == null || req.saleId() == null || blank(req.action())) throw new BusinessException("Elija la venta y el arreglo.");
+        String reason = req.reason() == null ? "" : req.reason().trim();
+        if (reason.length() < 10) throw new BusinessException("Escriba el motivo (mínimo 10 caracteres): queda en el historial.");
+        OnlineLedgerPeriodEntity p = find(periodId);
+        Plan x = evaluate(p, false).plans.stream().filter(y -> y.saleId.equals(req.saleId())).findFirst()
+                .orElseThrow(() -> new BusinessException("La venta no pertenece al periodo."));
+        String who = x.shipmentNumber != null ? x.shipmentNumber : "La venta #" + x.saleNumber;
+        if (!x.actions.contains(req.action())) {
+            throw new BusinessException("Ese arreglo ya no aplica a " + who + ". Vuelva a comparar. Estado: " + x.reason);
+        }
+        String detail;
+        switch (req.action()) {
+            case VOID_AND_EXCLUDE -> detail = voidAndExclude(x, who, reason);
+            case MARK_REFUND -> {
+                ReconCaseEntity c = caseRepository.findById(x.caseId).orElseThrow(() -> new ResourceNotFoundException("Caso no encontrado: " + x.caseId));
+                events.record(c.getId(), null, REFUND_EVENT, c.getStatus(), c.getStatus(), Map.of("motivo", reason, "periodo", p.getLabel()));
+                detail = who + " queda fuera de la liquidación como reembolso pendiente (" + q(c.getReceivedAmount()) + "): " + reason;
+            }
+            case MARK_VOIDED -> {
+                ledgerService.assertCanEdit();
+                ledgerService.update(x.saleId, Map.of("accountingStatus", "ANULADO"));
+                if (x.caseId != null) caseService.observe(x.caseId, "Marcada Anulado en el libro desde Liquidar: " + reason);
+                detail = who + " marcada Anulado en el libro: " + reason;
+            }
+            default -> throw new BusinessException("Arreglo desconocido: " + req.action());
+        }
+        logService.recordPeriodEvent(p, OnlineLedgerLogEntity.LIQUIDATE, "Arreglo antes de liquidar · " + detail);
+        return new ResolveResult(detail);
+    }
+
+    /** El pago de una venta devuelta o anulada fue un error: se anula la aplicación (y el fondo si se capturó a mano) y se excluye. */
+    private String voidAndExclude(Plan x, String who, String reason) throws BusinessException, ResourceNotFoundException {
+        ReconCaseEntity c = caseRepository.findById(x.caseId).orElseThrow(() -> new ResourceNotFoundException("Caso no encontrado: " + x.caseId));
+        String why = "Pago aplicado por error a una venta devuelta o anulada: " + reason;
+        BigDecimal voided = BigDecimal.ZERO;
+        int kept = 0;
+        for (ReconReceiptApplicationEntity a : applicationRepository.findByCaseIdAndStatus(c.getId(), Recon.RowStatus.ACTIVE)) {
+            receiptService.voidApplication(a.getId(), why);
+            voided = voided.add(money(a.getAmountApplied()));
+            ReconReceiptEntity r = receiptRepository.findById(a.getReceiptId()).orElse(null);
+            if (r == null || r.getStatus() != Recon.RowStatus.ACTIVE) continue;
+            boolean free = applicationRepository.findByReceiptIdAndStatus(r.getId(), Recon.RowStatus.ACTIVE).isEmpty();
+            // Un fondo importado (transportista, banco, tarjeta) es dinero real: queda sin aplicar para asignarlo a la venta correcta.
+            if (free && r.getImportFileId() == null) receiptService.voidReceipt(r.getId(), why);
+            else kept++;
+        }
+        caseService.exclude(c.getId(), "Venta devuelta o anulada: " + reason);
+        return who + ": se anuló el pago de " + q(voided) + " y se excluyó de la conciliación"
+                + (kept > 0 ? "; " + kept + " fondo(s) importado(s) quedaron sin aplicar para asignarlos a la venta correcta" : "") + ". Motivo: " + reason;
+    }
+
     /** Deja el caso como el libro. Devuelve lo que cambió (vacío si ya estaba igual). */
     private List<String> applyPlan(ReconCaseEntity c, Plan x, OnlineLedgerPeriodEntity p) throws BusinessException, ResourceNotFoundException {
         String why = "Igualado al libro contable, periodo «" + p.getLabel() + "»";
@@ -301,6 +375,10 @@ public class ReconciliationLedgerLinkService {
         boolean receiptFromLedger;
         boolean replaceExisting;
         BigDecimal setShipping;
+        /** Por qué no está lista, en código (regla R.. o PAGO_EN_DEVOLUCION / NOTA_ANULADO); null si no hay bloqueo. */
+        String blockerCode;
+        /** Arreglos que se pueden hacer desde la pantalla para esta venta. */
+        List<String> actions = List.of();
         Row row;
 
         boolean selectable() {
@@ -369,11 +447,18 @@ public class ReconciliationLedgerLinkService {
         Map<Long, String> batchCodes = batchIds.isEmpty() ? Map.of()
                 : batchRepository.findAllById(batchIds).stream().collect(Collectors.toMap(ReconBatchEntity::getId, ReconBatchEntity::getCode));
 
+        // Las reglas del motor, con una sola carga: la vista previa debe rechazar lo mismo que rechaza la liquidación.
+        Map<Long, CaseFacts> facts = recompute.factsForAll(cases.values().stream()
+                .filter(c -> !c.isClosed() && c.getBatchId() == null).toList());
+        Map<Long, String> refunds = refundNotes(caseIds);
+        boolean ledgerEditable = !p.isClosed() && ledgerService.canEdit();
+
         Evaluation ev = new Evaluation();
         for (LedgerRow l : rows) {
             ReconCaseEntity c = cases.get(l.getId());
             Plan x = plan(l, c, c == null ? List.of() : apps.getOrDefault(c.getId(), List.of()), receipts,
-                    c != null && withAdjustment.contains(c.getId()), c == null || c.getBatchId() == null ? null : batchCodes.get(c.getBatchId()), assumeEqual);
+                    c != null && withAdjustment.contains(c.getId()), c == null || c.getBatchId() == null ? null : batchCodes.get(c.getBatchId()), assumeEqual,
+                    c == null ? null : facts.get(c.getId()), c == null ? null : refunds.get(c.getId()), ledgerEditable);
             if (!x.row.reviewed()) ev.unreviewed++;
             if (!x.row.diffs().isEmpty()) ev.differences++;
             ev.plans.add(x);
@@ -385,8 +470,63 @@ public class ReconciliationLedgerLinkService {
         return ev;
     }
 
+    /** Motivo de la última marca «reembolso pendiente» de cada caso. */
+    private Map<Long, String> refundNotes(List<Long> caseIds) {
+        Map<Long, String> out = new HashMap<>();
+        for (int i = 0; i < caseIds.size(); i += CHUNK) {
+            for (ReconEventEntity e : eventRepository.findByCaseIdInAndEventTypeOrderByIdDesc(caseIds.subList(i, Math.min(caseIds.size(), i + CHUNK)), REFUND_EVENT)) {
+                out.putIfAbsent(e.getCaseId(), payloadText(e.getPayload(), "motivo"));
+            }
+        }
+        return out;
+    }
+
+    private String payloadText(String json, String key) {
+        if (blank(json)) return "";
+        try {
+            Object v = objectMapper.readValue(json, Map.class).get(key);
+            return v == null ? "" : String.valueOf(v);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** La guía o la autorización trae una nota de anulación escrita a mano («ANULADO»), aunque la venta siga activa. */
+    static boolean notedAsVoided(LedgerRow l) {
+        String auth = !blank(l.getAccountingAuthorization()) ? l.getAccountingAuthorization() : l.getPaymentAuthorization();
+        return mentionsVoid(l.getGuideNumber()) || mentionsVoid(auth);
+    }
+
+    private static boolean mentionsVoid(String v) {
+        return v != null && !hasDigit(v) && v.toUpperCase(Locale.ROOT).contains("ANUL");
+    }
+
+    /**
+     * Lo que dirían las reglas del motor después de igualar el caso al libro (cobrado del libro y, si aplica, el pago que se
+     * registraría). Devuelve la primera falla que impide liquidar, o null si quedaría conciliada.
+     */
+    private RuleResult projectedBlocker(ReconCaseEntity c, CaseFacts f, Plan x, BigDecimal afterExpected) {
+        List<ReceiptFact> projected = new ArrayList<>(x.receiptAmount != null && x.replaceExisting ? List.of() : f.receipts());
+        if (x.receiptAmount != null) {
+            projected.add(new ReceiptFact(null, ReconciliationReceiptService.inferSource(c), null, null, x.receiptReference, null,
+                    x.receiptAmount, null, x.receiptDate));
+        }
+        CaseFacts after = new CaseFacts(f.origin(), f.saleStatus(), f.shipmentNumber(), f.guideNumber(), f.carrier(), f.paymentMethod(),
+                f.paymentAuthorization(), f.saleDate(), f.dispatchedAt(), afterExpected, f.netAmount(), f.shippingCost(), f.itemsSubtotal(),
+                f.currentSaleTotal(), f.invoiceTotal(), f.sellerInCatalog(), f.commissionRate(), f.registeredCommission(), projected,
+                f.otherCasesWithSameGuide(), f.otherCasesWithSameReference());
+        List<RuleResult> results = engine.evaluate(after);
+        Recon.Status status = ReconciliationStatusResolver.resolve(results, false, c.isManualReconciled(), afterExpected, after.totalApplied(),
+                !projected.isEmpty(), Optional.empty(), false);
+        if (status.isReconciled() || status == Recon.Status.PENDIENTE_REVISION) return null;
+        return results.stream().filter(RuleResult::criticalFailure).filter(r -> !MONEY_RULES.contains(r.code())).findFirst()
+                .orElseGet(() -> results.stream().filter(RuleResult::criticalFailure).findFirst()
+                        .orElse(new RuleResult("ESTADO", "Estado", Recon.Severity.CRITICAL, Recon.Outcome.FAIL, "Conciliada", status.name(),
+                                "Quedaría en " + status.name() + ".", "Ábrala en el detalle")));
+    }
+
     private Plan plan(LedgerRow l, ReconCaseEntity c, List<ReconReceiptApplicationEntity> apps, Map<Long, ReconReceiptEntity> receipts,
-                      boolean hasAdjustment, String batchCode, boolean assumeEqual) {
+                      boolean hasAdjustment, String batchCode, boolean assumeEqual, CaseFacts facts, String refundNote, boolean ledgerEditable) {
         Plan x = new Plan();
         x.saleId = l.getId();
         x.saleNumber = l.getSaleNumber();
@@ -417,9 +557,15 @@ public class ReconciliationLedgerLinkService {
             if (c == null || c.getExcludedReason() != null) {
                 x.state = NO_ENTRA;
                 x.reason = "El libro la tiene como " + x.ledgerStatus + ": no se liquida";
+            } else if (!apps.isEmpty() && refundNote != null) {
+                x.state = NO_ENTRA;
+                x.reason = "Reembolso pendiente: queda fuera de la liquidación" + (blank(refundNote) ? "" : " (" + refundNote + ")");
             } else if (!apps.isEmpty()) {
                 x.state = NO_LISTA;
-                x.reason = "El libro la tiene como " + x.ledgerStatus + " pero tiene pagos aplicados: anúlelos en el detalle primero";
+                x.blockerCode = "PAGO_EN_DEVOLUCION";
+                x.actions = List.of(VOID_AND_EXCLUDE, MARK_REFUND);
+                x.reason = "El libro la tiene como " + x.ledgerStatus + " pero tiene " + q(curReceived) + " aplicados. Si el pago fue un error, "
+                        + "anúlelo y exclúyala; si el dinero sí entró, déjela como reembolso pendiente";
                 diffs.add(new FieldDiff("ESTADO", "Estado", x.ledgerStatus, "Activa con pagos", false, x.reason));
             } else {
                 x.state = EXCLUIR;
@@ -510,7 +656,34 @@ public class ReconciliationLedgerLinkService {
                     fixableDiff = diffs.stream().anyMatch(FieldDiff::fixable);
                     x.state = fixableDiff ? LISTA_CON_CAMBIOS : LISTA;
                     x.reason = fixableDiff ? "Cuadra después de igualarla al libro" : "Cuadra tal cual";
+                    // El monto cuadra, pero la liquidación vuelve a pasar todas las reglas: si alguna crítica falla, aquí ya no sale lista.
+                    RuleResult r = c == null || facts == null ? null : projectedBlocker(c, facts, x, afterExpected);
+                    if (r != null) {
+                        x.state = NO_LISTA;
+                        x.blockerCode = r.code();
+                        x.reason = r.code() + " · " + r.message() + (blank(r.found()) || "—".equals(r.found()) ? "" : " (" + r.found() + ")")
+                                + (blank(r.action()) ? "" : ". " + r.action());
+                        if ("R15".equals(r.code()) || "R01".equals(r.code()) && !apps.isEmpty()) {
+                            x.actions = refundNote != null ? List.of() : List.of(VOID_AND_EXCLUDE, MARK_REFUND);
+                        }
+                    }
                 }
+            }
+        }
+
+        // «ANULADO» escrito en la guía o la autorización de una venta activa: no se liquida como vendida sin que alguien lo decida.
+        boolean active = !ledgerExcluded && !YA_LIQUIDADA.equals(x.state) && !NO_ENTRA.equals(x.state) && !NO_DESPACHADA.equals(x.state);
+        if (active && notedAsVoided(l)) {
+            if (x.selectable()) {
+                x.state = NO_LISTA;
+                x.blockerCode = "NOTA_ANULADO";
+                x.reason = "La guía o la autorización dice «ANULADO» pero la venta está " + x.ledgerStatus
+                        + ": márquela Anulado en el libro, o corrija la nota si sí se vendió";
+            }
+            if (ledgerEditable) {
+                List<String> acts = new ArrayList<>(x.actions);
+                acts.add(MARK_VOIDED);
+                x.actions = acts;
             }
         }
 
@@ -535,7 +708,7 @@ public class ReconciliationLedgerLinkService {
         x.row = new Row(l.getId(), l.getSaleNumber(), l.getShipmentNumber(), l.getCustomerName(), l.getSaleDate(), l.getCarrier(), l.getPaymentMethodDisplay(),
                 reviewed, x.caseId, c == null ? null : c.getStatus().name(), batchCode, x.state, x.reason, x.selectable(),
                 l.getTotalAmount(), c == null ? saleTotal : c.getExpectedAmount(), l.getRealDepositAmount(), c == null ? null : c.getReceivedAmount(),
-                afterDifference, diffs);
+                afterDifference, diffs, x.blockerCode, x.actions);
         return x;
     }
 

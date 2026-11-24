@@ -35,7 +35,18 @@ public final class LedgerLinkDtos {
     public record Row(Long saleId, String saleNumber, String shipmentNumber, String customer, LocalDate saleDate, String carrier, String paymentMethod,
                       boolean reviewed, Long caseId, String caseStatus, String batchCode, String state, String reason, boolean selectable,
                       BigDecimal ledgerTotal, BigDecimal reconExpected, BigDecimal ledgerDeposit, BigDecimal reconReceived,
-                      BigDecimal afterDifference, List<FieldDiff> diffs) {
+                      BigDecimal afterDifference, List<FieldDiff> diffs, String blockerCode, List<String> actions) {
+    }
+
+    /**
+     * Arreglo de un bloqueo desde la pantalla de liquidar. {@code action}: VOID_AND_EXCLUDE (el pago de una venta devuelta o anulada
+     * fue un error: se anula y la venta se excluye), MARK_REFUND (el dinero sí entró: queda fuera como reembolso pendiente) o
+     * MARK_VOIDED (la venta dice «ANULADO» en la guía o la autorización: se marca Anulado en el libro). El motivo es obligatorio.
+     */
+    public record ResolveRequest(Long saleId, String action, String reason) {
+    }
+
+    public record ResolveResult(String message) {
     }
 
     public record Summary(int sales, int reviewed, int unreviewed, int ready, int readyWithChanges, int toExclude, int notReady, int alreadySettled,

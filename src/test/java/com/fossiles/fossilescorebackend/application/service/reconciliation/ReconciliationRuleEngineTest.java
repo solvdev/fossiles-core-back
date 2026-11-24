@@ -113,7 +113,7 @@ class ReconciliationRuleEngineTest {
 
     @Test
     void depositoPagadoConFondoDeTransportista_esCritico() {
-        CaseFacts f = base().payment("DEPOSITO_LISTO").auth("42568").receipts(List.of(carrierReceipt("480.00"))).build();
+        CaseFacts f = base().payment("DEPOSITO_LISTO").receipts(List.of(carrierReceipt("480.00"))).build();
 
         assertThat(rule(engine.evaluate(f), "R07").criticalFailure()).isTrue();
     }
@@ -160,7 +160,7 @@ class ReconciliationRuleEngineTest {
 
     @Test
     void mismaReferenciaEnDeposito_siEsPosibleDuplicado() {
-        CaseFacts f = base().payment("DEPOSITO_LISTO").receipts(List.of(carrierReceipt("480.00")))
+        CaseFacts f = base().payment("DEPOSITO_LISTO").auth("42568").receipts(List.of(carrierReceipt("480.00")))
                 .sameReference(List.of("ENVL-00074")).build();
 
         assertThat(rule(engine.evaluate(f), "R10").failed()).isTrue();
