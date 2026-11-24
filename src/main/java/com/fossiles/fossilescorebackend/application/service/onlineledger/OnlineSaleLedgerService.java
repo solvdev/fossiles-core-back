@@ -89,7 +89,7 @@ public class OnlineSaleLedgerService {
         FIELDS.put("accountingNote", text(OnlineSaleAccountingEntity::getAccountingNote,
                 OnlineSaleAccountingEntity::setAccountingNote, 1000, "Observación"));
         FIELDS.put("accountingAuthorization", text(OnlineSaleAccountingEntity::getPaymentAuthorization,
-                OnlineSaleAccountingEntity::setPaymentAuthorization, 200, "Autorización"));
+                OnlineSaleAccountingEntity::setPaymentAuthorization, 500, "Autorización"));
         FIELDS.put("paymentForm", text(OnlineSaleAccountingEntity::getPaymentForm,
                 OnlineSaleAccountingEntity::setPaymentForm, 100, "Forma de pago"));
         FIELDS.put("depositSlipNumber", text(OnlineSaleAccountingEntity::getDepositSlipNumber,

@@ -105,6 +105,16 @@ public class ReconciliationRecomputeService {
         return facts(c, ctx);
     }
 
+    /** Hechos de varios casos con una sola carga (la vista previa de liquidar un periodo los necesita todos). */
+    @Transactional(readOnly = true)
+    public Map<Long, CaseFacts> factsForAll(Collection<ReconCaseEntity> cases) {
+        Map<Long, CaseFacts> out = new HashMap<>();
+        if (cases.isEmpty()) return out;
+        Ctx ctx = load(cases);
+        for (ReconCaseEntity c : cases) out.put(c.getId(), facts(c, ctx));
+        return out;
+    }
+
     private void recomputeOne(ReconCaseEntity c, Ctx ctx, boolean recordEvents) {
         OnlineSaleEntity sale = ctx.sales.get(c.getOnlineSaleId());
         if (sale != null) refreshNonMoneySnapshot(c, sale, ctx);
@@ -192,7 +202,8 @@ public class ReconciliationRecomputeService {
         }
         List<String> sameReference = new ArrayList<>();
         String auth = sale == null ? null : sale.getPaymentAuthorization();
-        if (!blank(auth)) {
+        // Mismo criterio que R10: en contra entrega la referencia es la remesa compartida y una nota sin dígitos no es número.
+        if (!blank(auth) && hasDigit(auth) && !isCod(c.getPaymentMethod())) {
             for (OnlineSaleEntity other : saleRepository.findByPaymentAuthorizationIgnoreCase(auth.trim())) {
                 if (!other.getId().equals(c.getOnlineSaleId())) sameReference.add(other.getShipmentNumber() == null ? "venta " + other.getId() : other.getShipmentNumber());
             }

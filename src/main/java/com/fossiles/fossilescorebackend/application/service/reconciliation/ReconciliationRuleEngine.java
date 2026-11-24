@@ -217,12 +217,16 @@ public class ReconciliationRuleEngine {
 
     private RuleResult r10Duplicates(CaseFacts f) {
         String name = "Sin duplicados";
-        if (!f.otherCasesWithSameGuide().isEmpty()) {
+        // Una guía o referencia sin ningún dígito («ANULADO», «DEVOLUCION CLIENTE NO FUE LOCALIZADO») es una nota, no un
+        // número: compartirla no es un duplicado.
+        if (hasDigit(f.guideNumber()) && !f.otherCasesWithSameGuide().isEmpty()) {
             return new RuleResult("R10", name, Severity.CRITICAL, Outcome.FAIL, "Guía usada una vez",
                     "Guía " + f.guideNumber() + " también en " + String.join(", ", f.otherCasesWithSameGuide()),
                     "La misma guía aparece en más de una venta.", "Revisar cuál venta corresponde y anular la aplicación equivocada");
         }
-        if (!f.otherCasesWithSameReference().isEmpty()) {
+        // En contra entrega la referencia es la remesa del transportista: un solo depósito paga varias guías (varios
+        // clientes), así que repetirse es lo normal. Ahí el duplicado real lo delata la guía repetida (arriba).
+        if (!isCod(f.paymentMethod()) && hasDigit(f.paymentAuthorization()) && !f.otherCasesWithSameReference().isEmpty()) {
             return new RuleResult("R10", name, Severity.CRITICAL, Outcome.FAIL, "Referencia usada una vez",
                     "Referencia " + f.paymentAuthorization() + " también en " + String.join(", ", f.otherCasesWithSameReference()),
                     "La misma referencia de pago aparece en más de una venta.", "Verificar si el pago se aplicó dos veces");

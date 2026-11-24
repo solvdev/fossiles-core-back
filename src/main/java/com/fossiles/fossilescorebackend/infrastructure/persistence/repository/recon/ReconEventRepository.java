@@ -9,4 +9,6 @@ public interface ReconEventRepository extends JpaRepository<ReconEventEntity, Lo
     List<ReconEventEntity> findByCaseIdOrderByIdDesc(Long caseId);
 
     List<ReconEventEntity> findByBatchIdOrderByIdDesc(Long batchId);
+
+    List<ReconEventEntity> findByCaseIdInAndEventTypeOrderByIdDesc(java.util.Collection<Long> caseIds, String eventType);
 }
