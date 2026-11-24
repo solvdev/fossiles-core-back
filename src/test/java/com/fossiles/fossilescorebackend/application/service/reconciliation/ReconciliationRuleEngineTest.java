@@ -113,7 +113,7 @@ class ReconciliationRuleEngineTest {
 
     @Test
     void depositoPagadoConFondoDeTransportista_esCritico() {
-        CaseFacts f = base().payment("DEPOSITO_LISTO").receipts(List.of(carrierReceipt("480.00"))).build();
+        CaseFacts f = base().payment("DEPOSITO_LISTO").auth("42568").receipts(List.of(carrierReceipt("480.00"))).build();
 
         assertThat(rule(engine.evaluate(f), "R07").criticalFailure()).isTrue();
     }
@@ -148,6 +148,30 @@ class ReconciliationRuleEngineTest {
 
         assertThat(rule(engine.evaluate(f), "R10").criticalFailure()).isTrue();
         assertThat(statusOf(f)).isEqualTo(Status.POSIBLE_DUPLICADO);
+    }
+
+    @Test
+    void mismaReferenciaEnContraEntrega_esRemesaDelTransportista_noEsDuplicado() {
+        CaseFacts f = base().payment("CONTRA_ENTREGA").auth("42568").receipts(List.of(carrierReceipt("480.00")))
+                .sameReference(List.of("ENVL-00074", "ENVL-00083")).build();
+
+        assertThat(rule(engine.evaluate(f), "R10").failed()).isFalse();
+    }
+
+    @Test
+    void mismaReferenciaEnDeposito_siEsPosibleDuplicado() {
+        CaseFacts f = base().payment("DEPOSITO_LISTO").receipts(List.of(carrierReceipt("480.00")))
+                .sameReference(List.of("ENVL-00074")).build();
+
+        assertThat(rule(engine.evaluate(f), "R10").failed()).isTrue();
+    }
+
+    @Test
+    void guiaOReferenciaQueEsUnaNota_noEsDuplicado() {
+        CaseFacts f = base().payment("DEPOSITO_LISTO").auth("ANULADO").guide("ANULADO").sameGuide(List.of("ENVL-00076"))
+                .sameReference(List.of("ENVL-00226")).build();
+
+        assertThat(rule(engine.evaluate(f), "R10").failed()).isFalse();
     }
 
     @Test
