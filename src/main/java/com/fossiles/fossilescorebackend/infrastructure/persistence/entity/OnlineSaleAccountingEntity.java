@@ -43,7 +43,7 @@ public class OnlineSaleAccountingEntity {
     private String accountingNote;
 
     /** Autorización de pago anotada por Contabilidad (números y texto). Vacío = la de la venta. */
-    @Column(name = "payment_authorization", length = 200)
+    @Column(name = "payment_authorization", length = 500)
     private String paymentAuthorization;
 
     /** Fecha en que se envió. Vacío = fecha de despacho del sistema. */
