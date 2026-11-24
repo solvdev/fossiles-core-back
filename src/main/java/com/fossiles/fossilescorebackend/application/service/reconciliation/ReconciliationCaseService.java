@@ -38,6 +38,7 @@ public class ReconciliationCaseService {
     private final ReconciliationLedgerService ledger;
     private final ReconEventService events;
     private final ReconActor actor;
+    private final ReconciliationRebateService rebates;
 
     /** Crea un caso por venta despachada del período. Idempotente: las ventas que ya tienen caso se omiten. */
     @Transactional
@@ -101,14 +102,16 @@ public class ReconciliationCaseService {
     @Transactional
     public ReconCaseEntity revalidate(Long id) throws ResourceNotFoundException, BusinessException {
         ReconCaseEntity c = openCase(id);
+        if (rebates.rebateClosedSales(List.of(c)) > 0) return c;   // devuelta/anulada: se rebaja a Q0, no es alerta
         recompute.recompute(c);
         return c;
     }
 
-    /** Revalida todos los casos abiertos de un período (por ejemplo tras importar guías). */
+    /** Revalida todos los casos abiertos de un período (por ejemplo tras importar guías). Lo devuelto/anulado se rebaja a Q0. */
     @Transactional
     public int revalidatePeriod(LocalDate from, LocalDate to) {
         List<ReconCaseEntity> cases = caseRepository.findBySaleDateBetween(from, to).stream().filter(c -> !c.isClosed()).toList();
+        rebates.rebateClosedSales(cases);
         recompute.recomputeAll(cases);
         return cases.size();
     }
