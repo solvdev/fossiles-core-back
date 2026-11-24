@@ -27,6 +27,14 @@ public interface TaxInvoiceRepository extends JpaRepository<TaxInvoiceEntity, Lo
     /** Notas NCRE/NDEB ligadas a una factura. */
     List<TaxInvoiceEntity> findByOriginInvoiceIdOrderByIdAsc(Long originInvoiceId);
 
+    /**
+     * Código de establecimiento (CodigoEstablecimiento del emisor) del XML certificado, extraído en la base
+     * para no traer el XML completo. Devuelve pares [id, código]; omite facturas sin XML.
+     */
+    @Query(value = "SELECT t.id, (regexp_match(t.fel_certified_xml, 'CodigoEstablecimiento\\s*=\\s*\"([^\"]+)\"', 'i'))[1] "
+            + "FROM tax_invoice t WHERE t.id IN (:ids) AND t.fel_certified_xml IS NOT NULL", nativeQuery = true)
+    List<Object[]> findCertifiedEstablishmentCodes(@Param("ids") java.util.Collection<Long> ids);
+
     /** Bloquea la factura origen mientras se valida el saldo y se emite una nota. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT t FROM TaxInvoiceEntity t WHERE t.id = :id")

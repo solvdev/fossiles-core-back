@@ -7,10 +7,12 @@ import com.fossiles.fossilescorebackend.application.dto.request.UpdateTaxInvoice
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceAttemptResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceCertifiedXmlDownload;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceBackfillResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceEstablishmentReportResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.TaxInvoiceSummaryResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.TaxInvoiceEstablishmentReportService;
 import com.fossiles.fossilescorebackend.application.service.TaxInvoiceService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -36,6 +38,28 @@ import java.util.List;
 public class TaxInvoiceController {
 
     private final TaxInvoiceService taxInvoiceService;
+    private final TaxInvoiceEstablishmentReportService establishmentReportService;
+
+    /** Establecimientos FEL (Ubicaciones) para el filtro del reporte de facturas por establecimiento. */
+    @GetMapping("/establishments")
+    public ResponseEntity<List<TaxInvoiceEstablishmentReportResponse.EstablishmentOption>> establishments() {
+        return ResponseEntity.ok(establishmentReportService.listEstablishments());
+    }
+
+    /**
+     * Reporte de facturas por establecimiento (una fila por documento emitido o anulado, sin detalle).
+     * {@code establishmentCodes} vacío = todos los establecimientos.
+     */
+    @GetMapping("/establishment-report")
+    public ResponseEntity<TaxInvoiceEstablishmentReportResponse> establishmentReport(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
+            @RequestParam(required = false) List<String> establishmentCodes,
+            @RequestParam(defaultValue = "false") boolean includeTests
+    ) {
+        return ResponseEntity.ok(establishmentReportService.report(
+                fromDate, toDate, establishmentCodes, includeTests));
+    }
 
     @GetMapping
     public ResponseEntity<List<TaxInvoiceResponse>> list(
