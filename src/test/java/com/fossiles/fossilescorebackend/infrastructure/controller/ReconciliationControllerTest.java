@@ -43,7 +43,8 @@ class ReconciliationControllerTest {
         ReconciliationController controller = new ReconciliationController(guard, cases, query,
                 Mockito.mock(ReconciliationDashboardService.class), receipts, Mockito.mock(ReconciliationDifferenceService.class), batches, settlement,
                 Mockito.mock(ReconciliationCommissionService.class), Mockito.mock(ReconciliationSellerService.class),
-                Mockito.mock(ReconciliationGuideImportService.class));
+                Mockito.mock(ReconciliationGuideImportService.class),
+                Mockito.mock(com.fossiles.fossilescorebackend.application.service.reconciliation.ReconciliationLedgerLinkService.class));
         mvc = MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(new GlobalExceptionHandler()).build();
     }
 

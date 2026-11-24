@@ -317,6 +317,13 @@ public class ReconciliationController {
         return ResponseEntity.ok(ledgerLinkService.apply(id, body, key));
     }
 
+    /** Arregla el bloqueo de una venta desde la pantalla de liquidar (anular pago y excluir, reembolso pendiente, marcar anulada). */
+    @PostMapping("/ledger-link/periods/{id}/resolve")
+    public ResponseEntity<LedgerLinkDtos.ResolveResult> ledgerResolve(@PathVariable Long id, @RequestBody LedgerLinkDtos.ResolveRequest body)
+            throws BusinessException, ResourceNotFoundException {
+        return ResponseEntity.ok(ledgerLinkService.resolve(id, body));
+    }
+
     @GetMapping("/batches")
     public ResponseEntity<List<BatchDto>> batches() throws BusinessException {
         guard.assertCanView();

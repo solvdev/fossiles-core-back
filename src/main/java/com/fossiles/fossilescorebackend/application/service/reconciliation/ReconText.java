@@ -19,6 +19,11 @@ public final class ReconText {
         return value.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
     }
 
+    /** True si el texto trae al menos un dígito (un número real y no una nota como «ANULADO»). */
+    public static boolean hasDigit(String value) {
+        return value != null && value.chars().anyMatch(Character::isDigit);
+    }
+
     public static boolean blank(String value) {
         return value == null || value.trim().isEmpty();
     }
