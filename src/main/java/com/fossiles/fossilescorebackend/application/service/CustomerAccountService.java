@@ -465,6 +465,9 @@ public class CustomerAccountService {
         ProductShipmentEntity shipment = shipmentId == null
                 ? null
                 : productShipmentRepository.findById(shipmentId).orElse(null);
+        if (isDispatched(shipment) && isDirectSaleShipment(shipment)) {
+            return createDirectSaleCharge(shipment);
+        }
         if (!isDispatched(shipment) || shipment.getProductionOrderId() == null) {
             return Optional.empty();
         }
@@ -487,6 +490,67 @@ public class CustomerAccountService {
         }
         LocalDate dispatchDate = shipment.getSentAt() != null ? shipment.getSentAt().toLocalDate() : LocalDate.now();
         return Optional.of(saveDispatchCharge(customer, order, shipment, dispatchDate, null, null, null, null));
+    }
+
+    /** Envío directo a un cliente de Luis Felipe (sin OP): el cliente y la cartera vienen del propio envío. */
+    static boolean isDirectSaleShipment(ProductShipmentEntity shipment) {
+        return shipment != null && shipment.getDirectSaleCustomerId() != null && shipment.getProductionOrderId() == null;
+    }
+
+    /** Productos del envío directo: precio congelado en cada línea por su cantidad. */
+    private BigDecimal quoteDirectSaleProducts(ProductShipmentEntity shipment) {
+        BigDecimal total = BigDecimal.ZERO;
+        for (ProductShipmentDetailEntity detail : shipmentDetailRepository.findByShipmentId(shipment.getId())) {
+            int qty = resolveShipmentDetailQuantity(detail);
+            if (qty > 0 && detail.getUnitPrice() != null && detail.getUnitPrice().signum() > 0) {
+                total = total.add(detail.getUnitPrice().multiply(BigDecimal.valueOf(qty)));
+            }
+        }
+        return total.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Cargo del envío directo LF al despacharlo: mismo cargo por despacho que el de una OPV/OPC (cliente, cartera,
+     * vence a los días de crédito desde la salida, costo de envío como ajuste aparte), pero sin orden.
+     */
+    private Optional<CustomerAccountEntryEntity> createDirectSaleCharge(ProductShipmentEntity shipment)
+            throws BusinessException {
+        CustomerEntity customer = customerRepository.findByIdForUpdate(shipment.getDirectSaleCustomerId()).orElse(null);
+        if (customer == null || hasShipmentCharge(shipment.getId())) {
+            return Optional.empty();
+        }
+        BigDecimal products = quoteDirectSaleProducts(shipment);
+        if (products.signum() <= 0) {
+            log.warn("Envío directo {} despachado sin productos con precio: no se genera cargo.",
+                    shipment.getShipmentNumber());
+            return Optional.empty();
+        }
+        Long userId = securityUtil.getCurrentUserId();
+        LocalDate date = shipment.getSentAt() != null ? shipment.getSentAt().toLocalDate() : LocalDate.now();
+        String shipmentNumber = trimToNull(shipment.getShipmentNumber());
+        String kind = shipment.getDirectSaleKind() == null || shipment.getDirectSaleKind().isBlank()
+                ? "OPV"
+                : shipment.getDirectSaleKind().trim().toUpperCase(Locale.ROOT);
+        CustomerAccountEntryEntity charge = saveLedgerEntry(CustomerAccountEntryEntity.builder()
+                .customerId(customer.getId())
+                .entryType(TYPE_CHARGE)
+                .entryDate(date)
+                .amount(products)
+                .description(shipmentNumber != null ? "Envío directo " + shipmentNumber : "Envío directo")
+                .invoiceNumber(shipmentNumber)
+                .documentNumber(shipmentNumber)
+                .productShipmentId(shipment.getId())
+                .vendorShipmentNumber(shipmentNumber)
+                .orderKind(kind)
+                .status(STATUS_ACTIVE)
+                .createdBy(userId)
+                .updatedBy(userId)
+                .build());
+        BigDecimal shipping = actualShippingCost(shipment);
+        if (shipping != null) {
+            saveShippingAdjustment(charge, null, shipment, shipping, date, null, null);
+        }
+        return Optional.of(charge);
     }
 
     private boolean hasShipmentCharge(Long shipmentId) {
@@ -597,13 +661,15 @@ public class CustomerAccountService {
                 .reference(trimToNull(reference))
                 .description(trimToNull(description))
                 .appliedToEntryId(charge.getId())
-                .productionOrderId(order.getId())
+                .productionOrderId(order != null ? order.getId() : null)
                 .partialReleaseId(shipment.getPartialReleaseId())
                 .productShipmentId(shipment.getId())
-                .vendorShipmentNumber(trimToNull(firstNonBlank(charge.getVendorShipmentNumber(), order.getVendorShipmentNumber())))
+                .vendorShipmentNumber(trimToNull(firstNonBlank(charge.getVendorShipmentNumber(),
+                        order != null ? order.getVendorShipmentNumber() : null)))
                 .orderKind(kindCopiedFromCharge(charge))
                 .invoiceNumber(trimToNull(charge.getInvoiceNumber()))
-                .documentNumber(trimToNull(firstNonBlank(charge.getDocumentNumber(), order.getCode())))
+                .documentNumber(trimToNull(firstNonBlank(charge.getDocumentNumber(),
+                        order != null ? order.getCode() : null)))
                 .status(STATUS_ACTIVE)
                 .createdBy(userId)
                 .updatedBy(userId)
@@ -674,7 +740,8 @@ public class CustomerAccountService {
      */
     public void syncShipmentEntries(Long shipmentId) throws BusinessException {
         ProductShipmentEntity shipment = productShipmentRepository.findById(shipmentId).orElse(null);
-        if (!isDispatched(shipment) || shipment.getProductionOrderId() == null) {
+        boolean directSale = isDirectSaleShipment(shipment);
+        if (!isDispatched(shipment) || (shipment.getProductionOrderId() == null && !directSale)) {
             return;
         }
         List<CustomerAccountEntryEntity> charges = entryRepository.findNonVoidChargesByProductShipmentId(shipmentId);
@@ -682,8 +749,10 @@ public class CustomerAccountService {
         if (charges.isEmpty() && adjustments.isEmpty()) {
             return;
         }
-        ProductionOrderEntity order = productionOrderRepository.findById(shipment.getProductionOrderId()).orElse(null);
-        if (order == null) {
+        ProductionOrderEntity order = directSale
+                ? null
+                : productionOrderRepository.findById(shipment.getProductionOrderId()).orElse(null);
+        if (order == null && !directSale) {
             return;
         }
         Long customerId = !charges.isEmpty() ? charges.get(0).getCustomerId() : adjustments.get(0).getCustomerId();
@@ -694,7 +763,7 @@ public class CustomerAccountService {
 
         CustomerAccountEntryEntity charge = charges.isEmpty() ? null : charges.get(0);
         if (charge != null) {
-            BigDecimal products = quoteShipmentProducts(order, shipment);
+            BigDecimal products = directSale ? quoteDirectSaleProducts(shipment) : quoteShipmentProducts(order, shipment);
             if (products.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new BusinessException("El envío quedaría sin productos con precio. Cancele el envío en lugar de editarlo.");
             }
@@ -2987,6 +3056,10 @@ public class CustomerAccountService {
                         .filter(s -> entry.getProductShipmentId().equals(s.getId()))
                         .findFirst()
                         .orElse(null);
+            }
+            if (own == null && entry.getProductionOrderId() == null) {
+                // Envío directo LF: no tiene orden de la cual sacar sus envíos.
+                own = productShipmentRepository.findById(entry.getProductShipmentId()).orElse(null);
             }
             LocalDate sent = shipDate(own);
             return sent == null ? null : sent.plusDays(days);

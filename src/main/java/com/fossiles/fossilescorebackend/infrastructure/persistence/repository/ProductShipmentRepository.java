@@ -84,6 +84,17 @@ public interface ProductShipmentRepository extends JpaRepository<ProductShipment
 
     List<ProductShipmentEntity> findByProductionOrderId(Long productionOrderId);
 
+    /** Envíos directos a clientes de Luis Felipe (sin OP), del más nuevo al más viejo. */
+    @Query("""
+            SELECT s FROM ProductShipmentEntity s
+            WHERE s.directSaleCustomerId IS NOT NULL
+              AND (:customerId IS NULL OR s.directSaleCustomerId = :customerId)
+              AND s.createdAt >= :from
+            ORDER BY s.id DESC
+            """)
+    List<ProductShipmentEntity> findDirectSaleShipments(
+            @Param("customerId") Long customerId, @Param("from") LocalDateTime from, Pageable pageable);
+
     List<ProductShipmentEntity> findByProductionOrderIdIn(java.util.Collection<Long> productionOrderIds);
 
     List<ProductShipmentEntity> findByProductionOrderIdAndLocationIdOrderByIdAsc(Long productionOrderId, Long locationId);
