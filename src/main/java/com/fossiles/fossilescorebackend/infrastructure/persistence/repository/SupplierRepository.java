@@ -10,5 +10,6 @@ import java.util.Optional;
 public interface SupplierRepository extends JpaRepository<SupplierEntity, Long> {
     Optional<SupplierEntity> findByNit(String nit);
     boolean existsByNit(String nit);
+    Optional<SupplierEntity> findByCode(String code);
 }
 

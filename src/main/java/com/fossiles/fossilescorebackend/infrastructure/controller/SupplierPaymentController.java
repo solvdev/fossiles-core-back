@@ -11,6 +11,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.SupplierPayment
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.SupplierPaymentConfigService;
 import com.fossiles.fossilescorebackend.application.service.SupplierPaymentService;
+import com.fossiles.fossilescorebackend.application.service.SupplierStatementService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -34,6 +35,7 @@ public class SupplierPaymentController {
 
     private final SupplierPaymentService service;
     private final SupplierPaymentConfigService configService;
+    private final SupplierStatementService statementService;
 
     public record VoidRequest(String reason) {
     }
@@ -50,6 +52,22 @@ public class SupplierPaymentController {
     @GetMapping("/payables")
     public ResponseEntity<PayablesResponse> payables(@RequestParam(required = false) String scope) throws BusinessException {
         return ResponseEntity.ok(service.payables(scope));
+    }
+
+    /**
+     * Estado de cuenta de proveedores. {@code from}/{@code to}: rango de códigos (PV001…PV167); {@code kind}: ALL, ORDERS,
+     * DOCUMENTS, OPENING o RENTS; {@code includeNoCode}: incluye a quienes no tienen código (arrendadores).
+     */
+    @GetMapping("/statement")
+    public ResponseEntity<SupplierStatementService.StatementResponse> statement(
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate cutoff,
+            @RequestParam(required = false) String kind,
+            @RequestParam(defaultValue = "true") boolean onlyBalance,
+            @RequestParam(defaultValue = "false") boolean includeNoCode) throws BusinessException {
+        return ResponseEntity.ok(statementService.statement(
+                new SupplierStatementService.StatementQuery(from, to, cutoff, kind, onlyBalance, includeNoCode)));
     }
 
     @GetMapping("/payments")

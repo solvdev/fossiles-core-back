@@ -4,14 +4,20 @@ import com.fossiles.fossilescorebackend.application.dto.request.SupplierRequest;
 import com.fossiles.fossilescorebackend.application.dto.response.SupplierResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.exception.ResourceNotFoundException;
+import com.fossiles.fossilescorebackend.application.service.SupplierCodeService;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.entity.SupplierEntity;
 import com.fossiles.fossilescorebackend.infrastructure.persistence.repository.SupplierRepository;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import java.io.IOException;
 
 import java.net.URI;
+import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -20,14 +26,56 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class SupplierController {
 
-    private final SupplierRepository supplierRepository;
+    private static final String XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
+    private final SupplierRepository supplierRepository;
+    private final SupplierCodeService codeService;
+
+    /** Ordenados por código (PV001, PV002…); los que no tienen código al final, por nombre. */
     @GetMapping
     public ResponseEntity<List<SupplierResponse>> getAll() {
         List<SupplierResponse> suppliers = supplierRepository.findAll().stream()
+                .sorted(Comparator.comparingInt((SupplierEntity s) -> {
+                            int n = SupplierCodeService.numberOf(s.getCode());
+                            return n < 0 ? Integer.MAX_VALUE : n;
+                        })
+                        .thenComparing(SupplierEntity::getName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
                 .map(this::toResponse)
                 .collect(Collectors.toList());
         return ResponseEntity.ok(suppliers);
+    }
+
+    public record NextCodeResponse(String code) {}
+
+    @GetMapping("/next-code")
+    public ResponseEntity<NextCodeResponse> nextCode() {
+        return ResponseEntity.ok(new NextCodeResponse(codeService.nextCode()));
+    }
+
+    @GetMapping("/codes/template")
+    public ResponseEntity<byte[]> codesTemplate() throws BusinessException {
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"codigos-proveedores.xlsx\"")
+                .header(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, "Content-Disposition")
+                .contentType(MediaType.parseMediaType(XLSX))
+                .body(codeService.buildTemplate());
+    }
+
+    /** Solo revisa el archivo: no cambia nada. */
+    @PostMapping(value = "/codes/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<SupplierCodeService.ImportPreview> previewCodes(@RequestPart("file") MultipartFile file)
+            throws BusinessException {
+        try {
+            return ResponseEntity.ok(codeService.preview(file.getBytes()));
+        } catch (IOException e) {
+            throw new BusinessException("No se pudo leer el archivo subido.");
+        }
+    }
+
+    @PostMapping("/codes/apply")
+    public ResponseEntity<SupplierCodeService.ApplyResult> applyCodes(@RequestBody SupplierCodeService.ApplyRequest request)
+            throws BusinessException {
+        return ResponseEntity.ok(codeService.apply(request));
     }
 
     @GetMapping("/{id}")
@@ -44,6 +92,7 @@ public class SupplierController {
             throw new BusinessException("Supplier NIT already exists: " + request.getNit());
         }
         SupplierEntity entity = toEntity(request);
+        entity.setCode(codeService.codeForNew(request.getCode()));
         if (entity.getStatus() == null) {
             entity.setStatus("active");
         }
@@ -61,7 +110,12 @@ public class SupplierController {
                 && supplierRepository.existsByNit(request.getNit())) {
             throw new BusinessException("Supplier NIT already exists: " + request.getNit());
         }
-        
+        if (request.getCode() != null && !request.getCode().isBlank()) {
+            entity.setCode(codeService.validFree(request.getCode(), entity.getId()));
+        } else if (entity.getCode() == null) {
+            entity.setCode(codeService.nextCode());
+        }
+
         updateEntity(entity, request);
         SupplierEntity updated = supplierRepository.save(entity);
         return ResponseEntity.ok(toResponse(updated));
@@ -79,6 +133,7 @@ public class SupplierController {
     private SupplierResponse toResponse(SupplierEntity entity) {
         return SupplierResponse.builder()
                 .id(entity.getId())
+                .code(entity.getCode())
                 .name(entity.getName())
                 .nit(entity.getNit())
                 .phone(entity.getPhone())

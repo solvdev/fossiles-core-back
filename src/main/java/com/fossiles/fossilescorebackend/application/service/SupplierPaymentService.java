@@ -249,6 +249,7 @@ public class SupplierPaymentService {
         Map<Long, SupplierEntity> suppliers = new HashMap<>();
         supplierRepository.findAllById(orders.stream().map(PurchaseOrderEntity::getSupplierId).collect(Collectors.toSet()))
                 .forEach(s -> suppliers.put(s.getId(), s));
+        Map<Long, InvoiceInfo> invoices = invoicesByOrder(orders.stream().map(PurchaseOrderEntity::getId).toList());
 
         List<PayableRow> rows = new ArrayList<>();
         for (PurchaseOrderEntity o : orders) {
@@ -259,17 +260,54 @@ public class SupplierPaymentService {
                 continue;
             }
             SupplierEntity supplier = suppliers.get(o.getSupplierId());
-            int creditDays = supplier != null && supplier.getCreditDays() != null ? supplier.getCreditDays() : DEFAULT_CREDIT_DAYS;
-            LocalDate due = receivedOn.plusDays(creditDays);
+            InvoiceInfo invoice = invoices.get(o.getId());
+            LocalDate due = dueDateOf(invoice, receivedOn, supplier);
             int daysToDue = (int) ChronoUnit.DAYS.between(today, due);
             String name = supplier != null ? supplier.getName() : "Proveedor " + o.getSupplierId();
             rows.add(new PayableRow("O:" + o.getId(), "ORDEN", o.getId(), null, o.getCode(),
                     payeeKeyOf(o.getSupplierId(), null), o.getSupplierId(), name, o.getOrderDate(), receivedOn, due,
                     o.getTotal(), alreadyPaid, balance, statusOf(daysToDue, alreadyPaid), daysToDue,
                     supplier != null && supplier.getPayeeName() != null && !supplier.getPayeeName().isBlank()
-                            ? supplier.getPayeeName() : name, null));
+                            ? supplier.getPayeeName() : name, null,
+                    supplier != null ? supplier.getCode() : null,
+                    invoice != null ? invoice.label() : null, invoice != null ? invoice.latestDate() : null));
         }
         return rows;
+    }
+
+    /** Facturas de una orden: «A-539, A-544» y la fecha de la más reciente. */
+    record InvoiceInfo(String label, LocalDate latestDate) {}
+
+    Map<Long, InvoiceInfo> invoicesByOrder(java.util.Collection<Long> orderIds) {
+        Map<Long, InvoiceInfo> out = new HashMap<>();
+        if (orderIds == null || orderIds.isEmpty()) {
+            return out;
+        }
+        for (Object[] r : receiptRepository.findInvoices(orderIds)) {
+            Long orderId = ((Number) r[0]).longValue();
+            String label = invoiceLabel((String) r[1], (String) r[2]);
+            LocalDate date = (LocalDate) r[3];
+            InvoiceInfo prev = out.get(orderId);
+            if (prev == null) {
+                out.put(orderId, new InvoiceInfo(label, date));
+            } else {
+                String joined = prev.label().contains(label) ? prev.label() : prev.label() + ", " + label;
+                LocalDate latest = prev.latestDate() == null || (date != null && date.isAfter(prev.latestDate())) ? date : prev.latestDate();
+                out.put(orderId, new InvoiceInfo(joined, latest));
+            }
+        }
+        return out;
+    }
+
+    static String invoiceLabel(String series, String number) {
+        return series == null || series.isBlank() ? number : series + "-" + number;
+    }
+
+    /** Vence a los días de crédito del proveedor desde la factura más reciente o, si no hay factura, desde la recepción. */
+    static LocalDate dueDateOf(InvoiceInfo invoice, LocalDate receivedOn, SupplierEntity supplier) {
+        int creditDays = supplier != null && supplier.getCreditDays() != null ? supplier.getCreditDays() : DEFAULT_CREDIT_DAYS;
+        LocalDate base = invoice != null && invoice.latestDate() != null ? invoice.latestDate() : receivedOn;
+        return base.plusDays(creditDays);
     }
 
     /** Los documentos por pagar con saldo. No dependen de la fecha de inicio: se capturan a propósito. */
@@ -299,7 +337,8 @@ public class SupplierPaymentService {
                     d.getDocumentNumber() != null ? d.getDocumentNumber() : "DOC-" + d.getId(),
                     payeeKeyOf(d.getSupplierId(), d.getPayeeName()), d.getSupplierId(), name, d.getIssueDate(),
                     d.getIssueDate(), d.getDueDate(), d.getAmount(), alreadyPaid, balance,
-                    statusOf(daysToDue, alreadyPaid), daysToDue, d.getPayeeName(), d.getConcept()));
+                    statusOf(daysToDue, alreadyPaid), daysToDue, d.getPayeeName(), d.getConcept(),
+                    supplier != null ? supplier.getCode() : null, d.getDocumentNumber(), d.getIssueDate()));
         }
         return rows;
     }
