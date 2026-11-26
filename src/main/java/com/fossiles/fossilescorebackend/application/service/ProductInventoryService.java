@@ -798,6 +798,47 @@ public class ProductInventoryService {
         }
     }
 
+    /** Pieza que está físicamente en bodega pero el sistema no la tenía, declarada al revisar una venta en línea. */
+    public static final String REF_ONLINE_SALE_FOUND_STOCK = "ONLINE_SALE_FOUND_STOCK";
+    public static final String MOVEMENT_ADJUSTMENT = "ADJUSTMENT";
+
+    /**
+     * Ajuste de entrada con movimiento de kardex, para que la salida que viene después quede respaldada.
+     */
+    public void registerFoundStock(
+            Long productId,
+            Long locationId,
+            Long colorId,
+            BigDecimal quantity,
+            String sizeLabel,
+            Long referenceId,
+            String referenceNumber,
+            String description,
+            Long referenceLineId) throws BusinessException {
+        if (productId == null || locationId == null
+                || quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        assertSizeProvidedWhenRequired(productId, sizeLabel);
+        // Fila de cincho sin desglose por talla: sumar con talla reemplazaría el total que ya tenía.
+        boolean totalWithoutBreakdown = productInventoryLocationRepository
+                .findByProductIdAndLocationIdAndColorId(productId, locationId, colorId)
+                .map(pil -> pil.getQuantity() != null && pil.getQuantity().signum() > 0
+                        && ProductInventorySizesJson.parse(pil.getSizesData()).isEmpty())
+                .orElse(false);
+        try {
+            BigDecimal before = readQuantity(productId, locationId, colorId);
+            incrementInventory(productId, locationId, colorId, quantity, null, REF_ONLINE_SALE_FOUND_STOCK,
+                    referenceId, referenceNumber, description, totalWithoutBreakdown ? null : sizeLabel);
+            BigDecimal after = readQuantity(productId, locationId, colorId);
+            recordMovement(productId, locationId, colorId, MOVEMENT_ADJUSTMENT, quantity, before, after, null,
+                    REF_ONLINE_SALE_FOUND_STOCK, referenceId, referenceNumber, description,
+                    sizeLabel, referenceLineId);
+        } catch (ResourceNotFoundException e) {
+            throw new BusinessException("No se pudo registrar el ajuste de inventario: " + e.getMessage());
+        }
+    }
+
     // ========== EN TRÁNSITO ==========
 
     /** Ubicación donde quedan las unidades despachadas que el destino aún no ha recibido. */
