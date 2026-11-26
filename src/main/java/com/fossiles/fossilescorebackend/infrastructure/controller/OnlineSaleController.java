@@ -273,7 +273,8 @@ public class OnlineSaleController {
                     Object idObj = it.get("saleItemId");
                     Long itemId = idObj instanceof Number ? ((Number) idObj).longValue() : null;
                     String action = it.get("action") != null ? it.get("action").toString() : null;
-                    return new OnlineSaleProductionOrderService.ItemResolution(itemId, action);
+                    String warehouse = it.get("warehouse") != null ? it.get("warehouse").toString() : null;
+                    return new OnlineSaleProductionOrderService.ItemResolution(itemId, action, warehouse);
                 })
                 .toList();
 
