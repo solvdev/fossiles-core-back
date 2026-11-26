@@ -145,7 +145,18 @@ public class OnlineSaleProductionOrderService {
             List<SaleItemStock> items
     ) {}
 
-    public record ItemResolution(Long saleItemId, String action) {}
+    /**
+     * {@code warehouse} (BODEGA_PT o DEVOLUCIONES) solo se usa en una línea DISPATCH sin stock suficiente:
+     * la pieza está físicamente ahí y se ingresa con un ajuste antes de darle salida.
+     */
+    public record ItemResolution(Long saleItemId, String action, String warehouse) {
+        public ItemResolution(Long saleItemId, String action) {
+            this(saleItemId, action, null);
+        }
+    }
+
+    private static final String WAREHOUSE_PT = "BODEGA_PT";
+    private static final String WAREHOUSE_RETURNS = "DEVOLUCIONES";
 
     public record ResolveMixedResult(
             Long originalSaleId,
@@ -1001,10 +1012,13 @@ public class OnlineSaleProductionOrderService {
     // ─────────────────────────────────────────────────────────────
 
     /**
-     * Resuelve una venta mixta en una sola venta: persiste DISPATCH vs PRODUCE por línea;
+     * Quien revisa la venta decide por línea si sale de bodega (DISPATCH) o se fabrica (PRODUCE);
      * la OP sólo incluye líneas PRODUCE y enlaza los ítems a la venta original.
      *
-     * No descuenta inventario ni marca PRODUCIDO.
+     * Si todas las líneas salen de bodega, descuenta inventario y deja la venta PRODUCIDO (lista para
+     * despacho). Si hay líneas a producir, las de bodega se descuentan al preparar la venta.
+     * Una línea de bodega sin stock suficiente exige indicar la bodega donde está la pieza: se registra
+     * un ajuste de entrada por lo que falta.
      */
     @Transactional(rollbackFor = Exception.class)
     public ResolveMixedResult resolveMixedSale(long saleId, List<ItemResolution> resolutions) throws BusinessException {
@@ -1071,30 +1085,36 @@ public class OnlineSaleProductionOrderService {
             throw new BusinessException("No hay bodegas de despacho configuradas para validar stock de lineas DESPACHAR");
         }
 
-        // Caso 1: solo DISPATCH -> rutas persistentes + validar cobertura de stock para despacho
+        Map<Long, String> foundIn = new HashMap<>();
+        for (ItemResolution r : resolutions) {
+            if (r.warehouse() != null && !r.warehouse().isBlank()) {
+                foundIn.put(r.saleItemId(), r.warehouse().trim().toUpperCase(Locale.ROOT));
+            }
+        }
+        List<OnlineSaleItemEntity> dispatchItems = dispatchIds.stream()
+                .map(itemsById::get)
+                .filter(Objects::nonNull)
+                .toList();
+        BigDecimal adjusted = registerFoundStockForDispatch(
+                sale, dispatchItems, foundIn, warehouses, bodegaPT, bodegaDevoluciones);
+        assertDispatchLinesHaveStock(sale, dispatchItems, warehouses);
+        String adjustedNote = adjusted.signum() > 0
+                ? " Ajuste de entrada registrado: " + adjusted.stripTrailingZeros().toPlainString() + " unidad(es)."
+                : "";
+
+        // Caso 1: todo sale de bodega -> se descuenta ya y queda lista para despacho
         if (produceIds.isEmpty()) {
-            List<OnlineSaleItemEntity> dispatchItems = dispatchIds.stream()
-                    .map(itemsById::get)
-                    .filter(Objects::nonNull)
-                    .toList();
-            assertDispatchLinesHaveStock(sale, dispatchItems, warehouses);
             for (OnlineSaleItemEntity it : items) {
                 it.setFulfillmentRoute(ACTION_DISPATCH);
                 onlineSaleItemRepository.save(it);
             }
+            fulfillFromInventory(sale, warehouses, false);
+            sale.setStatus("PRODUCIDO");
             onlineSaleRepository.save(sale);
             return new ResolveMixedResult(sale.getId(), sale.getSaleNumber(), null, null,
                     null, null, items.size(), 0,
-                    "Sin OP: mismo numero de venta; pendiente despacho desde PT/Devoluciones cuando marques Listo.",
+                    "Venta #" + sale.getSaleNumber() + " lista para despacho desde bodega." + adjustedNote,
                     List.of());
-        }
-
-        List<OnlineSaleItemEntity> dispatchItemsMixed = dispatchIds.stream()
-                .map(itemsById::get)
-                .filter(Objects::nonNull)
-                .toList();
-        if (!dispatchItemsMixed.isEmpty()) {
-            assertDispatchLinesHaveStock(sale, dispatchItemsMixed, warehouses);
         }
 
         for (OnlineSaleItemEntity it : items) {
@@ -1112,7 +1132,7 @@ public class OnlineSaleProductionOrderService {
             CreateResult cr = batch.productionOrders().get(0);
             return new ResolveMixedResult(sale.getId(), sale.getSaleNumber(), null, null,
                     cr.productionOrderId(), cr.productionOrderCode(), 0, produceList.size(),
-                    "OP creada sobre la venta #" + sale.getSaleNumber() + ": " + cr.productionOrderCode(),
+                    "OP creada sobre la venta #" + sale.getSaleNumber() + ": " + cr.productionOrderCode() + ".",
                     batch.kioskOutflows());
         }
 
@@ -1133,7 +1153,8 @@ public class OnlineSaleProductionOrderService {
                 cr.productionOrderId(), cr.productionOrderCode(),
                 dispatchIds.size(), produceIds.size(),
                 "Venta #" + sale.getSaleNumber() + ": " + dispatchIds.size() + " linea(s) despacho cuando listo;"
-                        + " OP " + cr.productionOrderCode() + " con " + produceIds.size() + " linea(s) a producir",
+                        + " OP " + cr.productionOrderCode() + " con " + produceIds.size() + " linea(s) a producir."
+                        + adjustedNote,
                 batch.kioskOutflows());
     }
 
@@ -1141,6 +1162,64 @@ public class OnlineSaleProductionOrderService {
         if (note == null || note.isBlank()) return original;
         if (original == null || original.isBlank()) return note;
         return original + " | " + note;
+    }
+
+    /**
+     * Ingresa lo que le falta al sistema para cubrir las líneas que el usuario marcó como «está en bodega».
+     * La falta se calcula sumando las líneas de la misma pieza (producto, color y talla).
+     *
+     * @return unidades ingresadas por ajuste
+     */
+    private BigDecimal registerFoundStockForDispatch(
+            OnlineSaleEntity sale,
+            List<OnlineSaleItemEntity> dispatchItems,
+            Map<Long, String> foundIn,
+            List<LocationEntity> warehouses,
+            LocationEntity bodegaPT,
+            LocationEntity bodegaDevoluciones
+    ) throws BusinessException {
+        Map<String, List<OnlineSaleItemEntity>> byPiece = new LinkedHashMap<>();
+        for (OnlineSaleItemEntity item : dispatchItems) {
+            if (item.getProductId() == null) continue;
+            byPiece.computeIfAbsent(lineKey(item.getProductId(), item.getColorId(), item.getSize()),
+                    k -> new ArrayList<>()).add(item);
+        }
+        BigDecimal adjusted = BigDecimal.ZERO;
+        for (List<OnlineSaleItemEntity> piece : byPiece.values()) {
+            OnlineSaleItemEntity first = piece.get(0);
+            int needed = piece.stream().mapToInt(i -> i.getQuantity() != null ? i.getQuantity() : 1).sum();
+            BigDecimal stock = getStockAcrossWarehouses(
+                    first.getProductId(), first.getColorId(), warehouses, first.getSize());
+            BigDecimal missing = BigDecimal.valueOf(needed).subtract(stock.max(BigDecimal.ZERO));
+            if (missing.signum() <= 0) continue;
+
+            String choice = piece.stream()
+                    .map(i -> foundIn.get(i.getId()))
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElse(null);
+            // Sin bodega elegida no se ajusta nada: la validación de cobertura rechaza la línea.
+            if (choice == null) continue;
+            LocationEntity target = WAREHOUSE_PT.equals(choice) ? bodegaPT
+                    : WAREHOUSE_RETURNS.equals(choice) ? bodegaDevoluciones : null;
+            if (target == null) {
+                throw new BusinessException("Bodega invalida (use BODEGA_PT o DEVOLUCIONES): " + choice);
+            }
+            Long colorId = productInventoryService.resolveDispatchColorId(first.getProductId(), first.getColorId());
+            productInventoryService.registerFoundStock(
+                    first.getProductId(),
+                    target.getId(),
+                    colorId,
+                    missing,
+                    first.getSize(),
+                    sale.getId(),
+                    sale.getSaleNumber(),
+                    "Pieza encontrada en " + target.getName() + " al revisar venta en línea #" + sale.getSaleNumber()
+                            + " (el sistema no la tenía)",
+                    first.getId());
+            adjusted = adjusted.add(missing);
+        }
+        return adjusted;
     }
 
     private void assertDispatchLinesHaveStock(
