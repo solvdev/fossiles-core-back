@@ -38,12 +38,14 @@ public final class KioskLiquidationDtos {
     public record Person(Long userId, String name) {
     }
 
+    /** {@code countNotes}: «Notas / áreas para corregir» que contabilidad anota al revisar el conteo físico. */
     public record LiquidationRow(Long id, Long locationId, String locationName, Long supervisorUserId,
                                  String supervisorName, LocalDate periodFrom, LocalDate periodTo, String accountant,
                                  LocalDate correctionsDue, LocalDate liquidationDate, int liquidationDays,
                                  Integer areasToFix, String greenNote, String status, String note, String source,
                                  List<Person> accountants, Long countId, String countStatus, String reviewedBy,
-                                 LocalDate reviewedAt, String closedBy, LocalDate closedAt, String countObservations) {
+                                 LocalDate reviewedAt, String closedBy, LocalDate closedAt, String countObservations,
+                                 String countNotes) {
     }
 
     public record LiquidationGroup(Long supervisorUserId, String supervisorName, List<LiquidationRow> rows) {

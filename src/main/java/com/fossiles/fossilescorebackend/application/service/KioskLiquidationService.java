@@ -129,7 +129,8 @@ public class KioskLiquidationService {
 
     /**
      * Las visitas del calendario de un mes con las columnas del Excel de contabilidad: cada fila es una visita
-     * (fecha de liquidación) y trae el inventario anterior del kiosco, que es el que se liquida en ella.
+     * (fecha de liquidación). Trae el conteo hecho en esa visita; mientras no se haya contado, el inventario
+     * anterior del kiosco.
      */
     @Transactional(readOnly = true)
     public LiquidationYearResponse getVisitSheet(String month) throws BusinessException {
@@ -139,7 +140,8 @@ public class KioskLiquidationService {
         if (visits.isEmpty()) {
             return new LiquidationYearResponse(view.getYear(), List.of(), List.of());
         }
-        List<LocalDate> previous = visits.stream().map(VisitResponse::lastCountDate).filter(d -> d != null).toList();
+        List<LocalDate> previous = visits.stream().map(KioskLiquidationService::inventoryDate)
+                .filter(d -> d != null).toList();
         LocalDate from = previous.stream().min(Comparator.naturalOrder()).orElse(view.atDay(1))
                 .minusDays(SAME_COUNT_TOLERANCE_DAYS);
         LocalDate to = view.atEndOfMonth().plusDays(7);
@@ -170,18 +172,19 @@ public class KioskLiquidationService {
                 .forEach(id -> byWho.put(id, new ArrayList<>()));
         for (List<VisitResponse> unit : units.values()) {
             VisitResponse v = unit.get(0);
-            InventoryData count = nearest(counts, v.locationId(), v.lastCountDate());
-            InventoryData liq = nearest(liquidations, v.locationId(), v.lastCountDate());
+            LocalDate periodTo = inventoryDate(v);
+            InventoryData count = nearest(counts, v.locationId(), periodTo);
+            InventoryData liq = nearest(liquidations, v.locationId(), periodTo);
             LocalDate periodFrom = count != null && count.periodFrom() != null ? count.periodFrom()
                     : liq == null ? null : liq.periodFrom();
             LocalDate corrections = liq != null && liq.correctionsDue() != null ? liq.correctionsDue()
                     : count == null ? null : count.correctionsDue();
             byWho.computeIfAbsent(v.supervisorUserId(), id -> new ArrayList<>()).add(new LiquidationRow(v.id(),
                     v.locationId(), v.locationName(), v.supervisorUserId(), v.supervisorName(), periodFrom,
-                    v.lastCountDate(), liq == null ? null : liq.accountant(), corrections, v.visitDate(), unit.size(),
+                    periodTo, liq == null ? null : liq.accountant(), corrections, v.visitDate(), unit.size(),
                     liq == null ? null : liq.areasToFix(), liq == null ? null : liq.greenNote(), "PENDING", v.note(),
                     v.kind(), List.of(), null, null, count == null ? null : count.reviewedBy(), null,
-                    count == null ? null : count.closedBy(), null, null));
+                    count == null ? null : count.closedBy(), null, null, count == null ? null : count.notes()));
         }
         List<LiquidationGroup> groups = new ArrayList<>();
         byWho.forEach((id, rows) -> groups.add(new LiquidationGroup(id, names.getOrDefault(id, "Supervisora"), rows)));
@@ -190,10 +193,14 @@ public class KioskLiquidationService {
         return new LiquidationYearResponse(view.getYear(), groups, nonWorking);
     }
 
+    private static LocalDate inventoryDate(VisitResponse visit) {
+        return visit.countedOn() != null ? visit.countedOn() : visit.lastCountDate();
+    }
+
     /** Lo que se sabe de un inventario, venga del conteo físico o de su liquidación. */
     private record InventoryData(long locationId, LocalDate periodFrom, LocalDate periodTo, String accountant,
                                  LocalDate correctionsDue, Integer areasToFix, String greenNote, String reviewedBy,
-                                 String closedBy) {
+                                 String closedBy, String notes) {
     }
 
     private static InventoryData nearest(List<InventoryData> list, long locationId, LocalDate periodTo) {
@@ -209,7 +216,7 @@ public class KioskLiquidationService {
 
     /** Conteos físicos (sin borradores): quién revisó y cerró, y cuándo se entregó la revisión. */
     private List<InventoryData> loadSystemInventories(LocalDate from, LocalDate to) {
-        return jdbc.query("SELECT c.location_id, c.period_from, c.period_to, COALESCE(c.reviewed_at, c.closed_at) AS done_at, "
+        return jdbc.query("SELECT c.location_id, c.period_from, c.period_to, c.notes, COALESCE(c.reviewed_at, c.closed_at) AS done_at, "
                         + "ru.first_name AS rf, ru.last_name AS rl, ru.username AS ru_user, cu.first_name AS cf, "
                         + "cu.last_name AS cl, cu.username AS cu_user FROM kiosco_physical_count c "
                         + "LEFT JOIN users ru ON ru.id = c.reviewed_by LEFT JOIN users cu ON cu.id = c.closed_by "
@@ -222,7 +229,8 @@ public class KioskLiquidationService {
                             rs.getString("ru_user") == null ? null
                                     : fullName(rs.getString("rf"), rs.getString("rl"), rs.getString("ru_user")),
                             rs.getString("cu_user") == null ? null
-                                    : fullName(rs.getString("cf"), rs.getString("cl"), rs.getString("cu_user")));
+                                    : fullName(rs.getString("cf"), rs.getString("cl"), rs.getString("cu_user")),
+                            rs.getString("notes"));
                 }, Date.valueOf(from), Date.valueOf(to));
     }
 
@@ -235,7 +243,7 @@ public class KioskLiquidationService {
                 (rs, i) -> new InventoryData(rs.getLong("location_id"), localDate(rs.getDate("period_from")),
                         rs.getDate("period_to").toLocalDate(), rs.getString("accountant"),
                         localDate(rs.getDate("corrections_due")), (Integer) rs.getObject("areas_to_fix"),
-                        rs.getString("green_note"), null, null),
+                        rs.getString("green_note"), null, null, null),
                 Date.valueOf(from), Date.valueOf(to), Date.valueOf(from), Date.valueOf(to));
     }
 
@@ -550,7 +558,7 @@ public class KioskLiquidationService {
     private List<LiquidationRow> loadRows(LocalDate from, LocalDate to, Long supervisorId) {
         String sql = "SELECT q.id, q.location_id, l.name, q.supervisor_user_id, q.period_from, q.period_to, q.accountant, "
                 + "q.corrections_due, q.liquidation_date, q.liquidation_days, q.areas_to_fix, q.green_note, q.status, q.note, q.source, "
-                + "c.id AS count_id, c.status AS count_status, c.reviewed_at, c.closed_at, c.observations AS count_obs, "
+                + "c.id AS count_id, c.status AS count_status, c.reviewed_at, c.closed_at, c.observations AS count_obs, c.notes AS count_notes, "
                 + "ru.first_name AS rf, ru.last_name AS rl, ru.username AS ru_user, cu.first_name AS cf, cu.last_name AS cl, cu.username AS cu_user "
                 + "FROM kiosk_liquidation q JOIN locations l ON l.id = q.location_id " + COUNT_LATERAL
                 + "WHERE q.liquidation_date BETWEEN ? AND ? " + (supervisorId == null ? "" : "AND q.supervisor_user_id = ? ")
@@ -577,7 +585,8 @@ public class KioskLiquidationService {
                     reviewedAt == null ? null : reviewedAt.toLocalDateTime().toLocalDate(),
                     rs.getObject("cf") == null && rs.getObject("cu_user") == null ? null
                             : fullName(rs.getString("cf"), rs.getString("cl"), rs.getString("cu_user")),
-                    closedAt == null ? null : closedAt.toLocalDateTime().toLocalDate(), rs.getString("count_obs"));
+                    closedAt == null ? null : closedAt.toLocalDateTime().toLocalDate(), rs.getString("count_obs"),
+                    rs.getString("count_notes"));
         }, args);
         if (rows.isEmpty()) {
             return rows;
@@ -596,7 +605,7 @@ public class KioskLiquidationService {
                     r.periodFrom(), r.periodTo(), r.accountant(), r.correctionsDue(), r.liquidationDate(),
                     r.liquidationDays(), r.areasToFix(), r.greenNote(), r.status(), r.note(), r.source(),
                     people.getOrDefault(r.id(), List.of()), r.countId(), r.countStatus(), r.reviewedBy(), r.reviewedAt(),
-                    r.closedBy(), r.closedAt(), r.countObservations()));
+                    r.closedBy(), r.closedAt(), r.countObservations(), r.countNotes()));
         }
         return out;
     }
