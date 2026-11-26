@@ -5,6 +5,7 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidatio
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.ImportRow;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationGenerateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationWeekResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationYearResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
 import com.fossiles.fossilescorebackend.application.service.KioskCountImportService;
 import com.fossiles.fossilescorebackend.application.service.KioskLiquidationService;
@@ -68,6 +69,12 @@ public class KioskLiquidationController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate week,
             @RequestParam(required = false) Long supervisorUserId) throws BusinessException {
         return ResponseEntity.ok(liquidationService.getWeek(week, supervisorUserId));
+    }
+
+    @GetMapping("/liquidations/year")
+    public ResponseEntity<LiquidationYearResponse> year(@RequestParam(required = false) Integer year)
+            throws BusinessException {
+        return ResponseEntity.ok(liquidationService.getYear(year));
     }
 
     @PostMapping("/liquidations/generate")
