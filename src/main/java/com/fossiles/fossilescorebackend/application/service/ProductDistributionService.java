@@ -674,7 +674,7 @@ public class ProductDistributionService {
         ProductShipmentEntity saved = shipmentRepository.save(shipment);
         updateShipmentProducts(saved.getId(), normalizedProducts);
         confirmShipmentDraft(saved.getId());
-        return sendShipment(saved.getId(), false, chosenSources);
+        return sendShipment(saved.getId(), false, chosenSources, Set.of());
     }
 
     /** Clave producto + color + talla con la que se elige la bodega de salida de una línea. */
@@ -1026,6 +1026,9 @@ public class ProductDistributionService {
                     .returnsAvailable(returnsQty)
                     .ptAvailable(ptQty)
                     .primaryAvailable(primaryQty)
+                    .fallbackQuantity(!linePlan.hasFallback() ? null
+                            : linePlan.fallbackOnly() == ProductInventoryService.DispatchSource.PT_ONLY
+                                    ? ptQty : returnsQty)
                     .shortageQuantity(shortage)
                     .shortageAfterFallback(shortageAfterFallback)
                     .build());
@@ -1943,11 +1946,14 @@ public class ProductDistributionService {
                 // Cada línea se valida contra su bodega (los cinchos, contra Bodega PT).
                 Map<ProductInventoryService.DispatchSource, List<ProductShipmentRequest.ProductShipmentDetailRequest>>
                         bySource = new java.util.LinkedHashMap<>();
+                Set<String> wholeFallbackKeys = wholeFallbackLineKeys(shipment);
                 for (ProductShipmentRequest.ProductShipmentDetailRequest line : normalized) {
                     if (skipsWarehouseForLine(shipment, line.getProductId())) {
                         continue;
                     }
-                    DispatchPlan linePlan = resolveLineDispatchPlan(shipment, planForEdit, line.getProductId());
+                    DispatchPlan linePlan = keepWholeFallback(
+                            resolveLineDispatchPlan(shipment, planForEdit, line.getProductId()), wholeFallbackKeys,
+                            line.getProductId(), line.getColorId(), line.getSize(), line.getQuantity());
                     ProductInventoryService.DispatchSource lineSource = fallbackForEdit && linePlan.hasFallback()
                             ? linePlan.withFallback()
                             : linePlan.primary();
@@ -2242,6 +2248,38 @@ public class ProductDistributionService {
                 .anyMatch(k -> k.getDescription() != null && k.getDescription().contains(" · faltante tomado de "));
     }
 
+    private static final String WHOLE_FALLBACK_KARDEX_MARK = " · todo tomado de ";
+
+    /** Plan de una línea que sale completa de la cubeta de respaldo. */
+    private static DispatchPlan wholeFallbackPlan(DispatchPlan plan) {
+        return new DispatchPlan(plan.fallbackOnly(), null, null, plan.fallbackLabel(), null,
+                plan.directKiosk(), plan.distribution());
+    }
+
+    private static String wholeFallbackNote(DispatchPlan wholeFallbackPlan, String authorizedBy) {
+        return WHOLE_FALLBACK_KARDEX_MARK + wholeFallbackPlan.primaryLabel() + " (autorizado por " + authorizedBy + ")";
+    }
+
+    /** Líneas (producto + color + talla) que al enviar salieron completas de la otra cubeta, según el kardex. */
+    private Set<String> wholeFallbackLineKeys(ProductShipmentEntity shipment) {
+        return productInventoryKardexRepository.findByReferenceTypeAndReferenceId("SHIPMENT", shipment.getId()).stream()
+                .filter(k -> k.getDescription() != null && k.getDescription().contains(WHOLE_FALLBACK_KARDEX_MARK))
+                .map(k -> stockSourceKey(k.getProductId(), k.getColorId(), k.getSizeLabel()))
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    /** Al editar, la línea sigue saliendo de la cubeta elegida mientras esa sola alcance. */
+    private DispatchPlan keepWholeFallback(DispatchPlan plan, Set<String> wholeFallbackKeys,
+            Long productId, Long colorId, String size, BigDecimal quantity) throws BusinessException {
+        if (!plan.hasFallback() || quantity == null
+                || !wholeFallbackKeys.contains(stockSourceKey(productId, colorId, size))) {
+            return plan;
+        }
+        BigDecimal available = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
+                productId, colorId, size, plan.fallbackOnly());
+        return available != null && available.compareTo(quantity) >= 0 ? wholeFallbackPlan(plan) : plan;
+    }
+
     /**
      * Descarga una línea del envío según su plan. Sin {@code useFallback} sale solo de la bodega principal.
      * Con él, primero se agota la principal y el resto sale de la otra cubeta, con su propia descripción
@@ -2350,7 +2388,8 @@ public class ProductDistributionService {
     private void redispatchShipmentProducts(ProductShipmentEntity shipment, DispatchPlan plan, boolean useFallback)
             throws BusinessException {
         String destinationLabel = resolveDispatchDestinationLabel(shipment);
-        String authorizedBy = useFallback ? currentUserDisplayName() : null;
+        Set<String> wholeFallbackKeys = wholeFallbackLineKeys(shipment);
+        String authorizedBy = useFallback || !wholeFallbackKeys.isEmpty() ? currentUserDisplayName() : null;
 
         // Las líneas se reescribieron en product_shipment_detail: se releen para descargar contra el
         // id de cada línea, que es lo que hace idempotente la salida sin confundir tallas.
@@ -2362,8 +2401,12 @@ public class ProductDistributionService {
             if (isPackagingProduct(detail.getProductId()) || skipsWarehouseForLine(shipment, detail.getProductId())) {
                 continue;
             }
-            dispatchShipmentLine(shipment, detail, qty, "Reenvío tras edición hacia " + destinationLabel,
-                    resolveLineDispatchPlan(shipment, plan, detail.getProductId()), useFallback, authorizedBy);
+            DispatchPlan basePlan = resolveLineDispatchPlan(shipment, plan, detail.getProductId());
+            DispatchPlan linePlan = keepWholeFallback(basePlan, wholeFallbackKeys,
+                    detail.getProductId(), detail.getColorId(), detail.getSizeLabel(), qty);
+            String description = "Reenvío tras edición hacia " + destinationLabel
+                    + (linePlan != basePlan ? wholeFallbackNote(linePlan, authorizedBy) : "");
+            dispatchShipmentLine(shipment, detail, qty, description, linePlan, useFallback, authorizedBy);
             creditShipmentLineInTransit(shipment, detail, qty, destinationLabel);
         }
     }
@@ -2717,13 +2760,27 @@ public class ProductDistributionService {
      */
     public ProductShipmentResponse sendShipment(Long shipmentId, boolean takeShortageFromFallback)
             throws ResourceNotFoundException, BusinessException {
-        return sendShipment(shipmentId, takeShortageFromFallback, Map.of());
+        return sendShipment(shipmentId, takeShortageFromFallback, Map.of(), Set.of());
+    }
+
+    /**
+     * {@code fromFallbackDetailIds}: líneas que el usuario eligió sacar completas de la otra cubeta (la que
+     * normalmente solo cubre el faltante), sin tocar la principal. También queda escrito en el kardex.
+     */
+    public ProductShipmentResponse sendShipment(
+            Long shipmentId, boolean takeShortageFromFallback, List<Long> fromFallbackDetailIds)
+            throws ResourceNotFoundException, BusinessException {
+        Set<Long> wholeFallback = fromFallbackDetailIds == null
+                ? Set.of()
+                : fromFallbackDetailIds.stream().filter(Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        return sendShipment(shipmentId, takeShortageFromFallback, Map.of(), wholeFallback);
     }
 
     private ProductShipmentResponse sendShipment(
             Long shipmentId,
             boolean takeShortageFromFallback,
-            Map<String, ProductInventoryService.DispatchSource> chosenSources)
+            Map<String, ProductInventoryService.DispatchSource> chosenSources,
+            Set<Long> wholeFallbackDetailIds)
             throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Shipment", shipmentId));
@@ -2834,13 +2891,23 @@ public class ProductDistributionService {
                 DispatchPlan linePlan = chosen != null
                         ? DispatchPlan.single(chosen)
                         : resolveLineDispatchPlan(shipment, plan, detail.getProductId());
+                boolean wholeFallback = wholeFallbackDetailIds.contains(detail.getId());
+                if (wholeFallback) {
+                    if (!linePlan.hasFallback()) {
+                        ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
+                        throw new BusinessException(
+                                (product != null ? product.getCode() : "Producto #" + detail.getProductId())
+                                        + " solo puede salir de " + linePlan.primaryLabel() + ".");
+                    }
+                    linePlan = wholeFallbackPlan(linePlan);
+                }
                 ProductInventoryService.DispatchSource lineSource = linePlan == plan
                         ? sendSource
                         : (useFallback && linePlan.hasFallback() ? linePlan.withFallback() : linePlan.primary());
                 BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
                         detail.getProductId(), detail.getColorId(), sizeLabel, lineSource);
                 if (availableTotal.compareTo(stillNeeded) < 0) {
-                    if (chosen == null && linePlan != plan
+                    if (chosen == null && !wholeFallback && linePlan != plan
                             && lineSource == ProductInventoryService.DispatchSource.PT_ONLY) {
                         ptOnlyCinchoShort = true;
                     }
@@ -2871,7 +2938,7 @@ public class ProductDistributionService {
             }
         }
 
-        String authorizedBy = useFallback ? currentUserDisplayName() : null;
+        String authorizedBy = useFallback || !wholeFallbackDetailIds.isEmpty() ? currentUserDisplayName() : null;
         for (ProductShipmentDetailEntity detail : details) {
             BigDecimal qtyToSend = detail.getQuantity() != null ? detail.getQuantity() : BigDecimal.ZERO;
             if (qtyToSend.compareTo(BigDecimal.ZERO) <= 0) continue;
@@ -2880,12 +2947,15 @@ public class ProductDistributionService {
 
             ProductInventoryService.DispatchSource chosen = chosenSources.get(
                     stockSourceKey(detail.getProductId(), detail.getColorId(), detail.getSizeLabel()));
-            dispatchShipmentLine(shipment, detail, qtyToSend,
-                    "Salida a envio en transito hacia " + destinationLabel,
-                    chosen != null
-                            ? DispatchPlan.single(chosen)
-                            : resolveLineDispatchPlan(shipment, plan, detail.getProductId()),
-                    useFallback, authorizedBy);
+            DispatchPlan linePlan = chosen != null
+                    ? DispatchPlan.single(chosen)
+                    : resolveLineDispatchPlan(shipment, plan, detail.getProductId());
+            String description = "Salida a envio en transito hacia " + destinationLabel;
+            if (wholeFallbackDetailIds.contains(detail.getId()) && linePlan.hasFallback()) {
+                linePlan = wholeFallbackPlan(linePlan);
+                description += wholeFallbackNote(linePlan, authorizedBy);
+            }
+            dispatchShipmentLine(shipment, detail, qtyToSend, description, linePlan, useFallback, authorizedBy);
             creditShipmentLineInTransit(shipment, detail, qtyToSend, destinationLabel);
         }
 

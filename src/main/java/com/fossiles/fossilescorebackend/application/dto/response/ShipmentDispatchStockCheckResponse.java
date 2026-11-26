@@ -49,6 +49,8 @@ public class ShipmentDispatchStockCheckResponse {
         private BigDecimal returnsAvailable;
         private BigDecimal ptAvailable;
         private BigDecimal primaryAvailable;
+        /** Disponible en la cubeta de respaldo; null si la línea no puede salir de ella (cinchos). */
+        private BigDecimal fallbackQuantity;
         /** Lo que falta con la bodega principal. */
         private BigDecimal shortageQuantity;
         /** Lo que sigue faltando aun tomando de la otra cubeta. */
