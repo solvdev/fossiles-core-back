@@ -9,12 +9,15 @@ public final class KioskCountCalendarDtos {
     private KioskCountCalendarDtos() {
     }
 
-    /** {@code kind}: REGULAR (la visita del mes) o REVISIT (volver a ir). */
+    /**
+     * {@code kind}: REGULAR (la visita del mes) o REVISIT (volver a ir). {@code countStatus}: estado del conteo físico
+     * de esta visita (DRAFT, CONTADO, REVISADO, CERRADO); {@code countedOn} es su fecha de inventario («al»).
+     */
     public record VisitResponse(Long id, LocalDate visitDate, Long locationId, String locationCode,
                                 String locationName, Long supervisorUserId, String supervisorName,
                                 String region, String regionLabel, String status, String kind, boolean manual,
                                 String note, int daySeq, int dayTotal, LocalDate lastCountDate, Integer gapDays,
-                                LocalDate countedOn) {
+                                LocalDate countedOn, Long countId, String countStatus) {
     }
 
     public record KioskRuleResponse(Long locationId, String code, String name, Long supervisorUserId,

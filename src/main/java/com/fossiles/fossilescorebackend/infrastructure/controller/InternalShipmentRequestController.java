@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentApproveRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentRequestCreateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentRequestRejectRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentRequestSlipPrintRequest;
@@ -59,9 +60,11 @@ public class InternalShipmentRequestController {
     }
 
     @PostMapping("/{id}/approve")
-    public ResponseEntity<InternalShipmentRequestResponse> approve(@PathVariable Long id)
+    public ResponseEntity<InternalShipmentRequestResponse> approve(
+            @PathVariable Long id,
+            @RequestBody(required = false) InternalShipmentApproveRequest request)
             throws BusinessException, ResourceNotFoundException {
-        return ResponseEntity.ok(internalShipmentRequestService.approve(id));
+        return ResponseEntity.ok(internalShipmentRequestService.approve(id, request));
     }
 
     @PostMapping("/{id}/authorize-production")

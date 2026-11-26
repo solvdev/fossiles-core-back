@@ -20,4 +20,6 @@ public class DispatchStockShortageResponse {
     private BigDecimal requiredQuantity;
     private BigDecimal availableQuantity;
     private BigDecimal shortageQuantity;
+    private BigDecimal returnsAvailable;
+    private BigDecimal ptAvailable;
 }
