@@ -40,6 +40,21 @@ public class ProductShipmentEntity {
     @Column(name = "partial_release_id")
     private Long partialReleaseId;
 
+    /**
+     * Envío directo a un cliente de Luis Felipe, desde stock, sin orden de producción: cliente al que se le
+     * carga en cuentas por cobrar. Null en todo otro envío.
+     */
+    @Column(name = "direct_sale_customer_id")
+    private Long directSaleCustomerId;
+
+    /** Tipo de cartera del envío directo: OPV (Fossiles) u OPC (GCF: cinchos y marcas). */
+    @Column(name = "direct_sale_kind", length = 10)
+    private String directSaleKind;
+
+    /** Bodega principal del envío directo: PT (Bodega PT) o RETURNS (Devoluciones). */
+    @Column(name = "direct_sale_source", length = 20)
+    private String directSaleSource;
+
     @Column(name = "shipment_number", nullable = false, unique = true, length = 50)
     private String shipmentNumber;
 
