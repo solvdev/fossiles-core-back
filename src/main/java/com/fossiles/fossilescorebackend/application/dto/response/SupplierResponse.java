@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 public class SupplierResponse {
     private Long id;
+    private String code;
     private String name;
     private String nit;
     private String phone;

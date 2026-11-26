@@ -12,6 +12,10 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SupplierRequest {
+    /** PV seguido de números. Vacío al crear = el siguiente disponible. */
+    @Size(max = 10, message = "El código no debe pasar de 10 caracteres")
+    private String code;
+
     @Size(max = 150, message = "Name must not exceed 150 characters")
     private String name;
 

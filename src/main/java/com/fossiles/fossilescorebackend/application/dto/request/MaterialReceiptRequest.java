@@ -24,6 +24,15 @@ public class MaterialReceiptRequest {
     @Size(max = 1000, message = "Observations must not exceed 1000 characters")
     private String observations;
 
+    // Factura del proveedor. En la edición, nulo = no tocar; vacío = quitarla.
+    @Size(max = 20, message = "La serie de la factura no debe pasar de 20 caracteres")
+    private String invoiceSeries;
+
+    @Size(max = 40, message = "El número de factura no debe pasar de 40 caracteres")
+    private String invoiceNumber;
+
+    private LocalDate invoiceDate;
+
     // La creación exige cantidades explícitas; la edición sin ítems solo cambia los datos generales.
     @jakarta.validation.Valid
     private List<MaterialReceiptItemRequest> items;

@@ -29,6 +29,16 @@ public class MaterialReceiptEntity {
     @Column(length = 5000)
     private String observations;
 
+    /** Factura del proveedor que ampara la recepción. */
+    @Column(name = "invoice_series", length = 20)
+    private String invoiceSeries;
+
+    @Column(name = "invoice_number", length = 40)
+    private String invoiceNumber;
+
+    @Column(name = "invoice_date")
+    private LocalDate invoiceDate;
+
     @Builder.Default
     @Column(nullable = false, length = 20)
     private String status = "ACTIVE";

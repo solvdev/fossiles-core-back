@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.*;
 
 /**
@@ -40,9 +41,11 @@ public class MaterialReceiptService {
             throw new BusinessException("Ingrese al menos una cantidad recibida positiva.");
         }
         var detail = validate(order, request, List.of());
-        var receipt = receipts.save(MaterialReceiptEntity.builder().purchaseOrderId(order.getId())
+        var draft = MaterialReceiptEntity.builder().purchaseOrderId(order.getId())
                 .receiptDate(request.getReceiptDate() == null ? GuatemalaDateTime.today() : request.getReceiptDate())
-                .observations(request.getObservations()).createdBy(security.getCurrentUserId()).updatedBy(security.getCurrentUserId()).build());
+                .observations(request.getObservations()).createdBy(security.getCurrentUserId()).updatedBy(security.getCurrentUserId()).build();
+        applyInvoice(draft, request);
+        var receipt = receipts.save(draft);
         apply(order, receipt, detail);
         synchronize(order);
         return receipt;
@@ -59,11 +62,35 @@ public class MaterialReceiptService {
         var detail = validate(order, request, existing);
         if (request.getReceiptDate() != null) receipt.setReceiptDate(request.getReceiptDate());
         if (request.getObservations() != null) receipt.setObservations(request.getObservations());
+        applyInvoice(receipt, request);
         receipt.setUpdatedBy(security.getCurrentUserId());
         apply(order, receipt, detail);
         receipts.save(receipt);
         synchronize(order);
         return receipt;
+    }
+
+    /**
+     * Factura del proveedor. {@code invoiceNumber} nulo no toca lo que haya; vacío la quita. Sin fecha de factura se
+     * toma la de la recepción. Con ella se cuenta el vencimiento en cuentas por pagar.
+     */
+    static void applyInvoice(MaterialReceiptEntity receipt, MaterialReceiptRequest request) throws BusinessException {
+        if (request.getInvoiceNumber() == null) return;
+        String number = request.getInvoiceNumber().trim();
+        if (number.isEmpty()) {
+            receipt.setInvoiceSeries(null);
+            receipt.setInvoiceNumber(null);
+            receipt.setInvoiceDate(null);
+            return;
+        }
+        LocalDate date = request.getInvoiceDate() != null ? request.getInvoiceDate() : receipt.getReceiptDate();
+        if (date != null && date.isAfter(GuatemalaDateTime.today())) {
+            throw new BusinessException("La fecha de la factura no puede ser posterior a hoy.");
+        }
+        String series = request.getInvoiceSeries() == null ? "" : request.getInvoiceSeries().trim();
+        receipt.setInvoiceSeries(series.isEmpty() ? null : series.toUpperCase(Locale.ROOT));
+        receipt.setInvoiceNumber(number);
+        receipt.setInvoiceDate(date);
     }
 
     public MaterialReceiptEntity cancel(Long id, String reason) throws BusinessException, ResourceNotFoundException {

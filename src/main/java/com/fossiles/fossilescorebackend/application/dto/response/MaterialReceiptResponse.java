@@ -20,6 +20,9 @@ public class MaterialReceiptResponse {
     private String purchaseOrderCode;
     private LocalDate receiptDate;
     private String observations;
+    private String invoiceSeries;
+    private String invoiceNumber;
+    private LocalDate invoiceDate;
     private String status;
     private String cancellationReason;
     private LocalDateTime createdAt;

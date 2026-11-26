@@ -51,6 +51,7 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class PayableDocumentService {
 
+    private static final String H_CODE = "Código proveedor (opcional)";
     private static final String H_PAYEE = "Proveedor o arrendador";
     private static final String H_NIT = "NIT (opcional)";
     private static final String H_CONCEPT = "Concepto";
@@ -73,8 +74,12 @@ public class PayableDocumentService {
                                 LocalDate issueDate, LocalDate dueDate, BigDecimal amount) {}
 
     /** Proveedores por NIT y por nombre, para ligar un documento con su proveedor cuando se puede. */
-    private record SupplierIndex(Map<String, SupplierEntity> byNit, Map<String, SupplierEntity> byName) {
-        SupplierEntity find(String name, String nit) {
+    private record SupplierIndex(Map<String, SupplierEntity> byCode, Map<String, SupplierEntity> byNit, Map<String, SupplierEntity> byName) {
+        SupplierEntity find(String code, String name, String nit) {
+            String codeKey = SupplierCodeService.normalize(code);
+            if (codeKey != null && byCode.containsKey(codeKey)) {
+                return byCode.get(codeKey);
+            }
             String nitKey = nitKey(nit);
             if (!nitKey.isEmpty() && byNit.containsKey(nitKey)) {
                 return byNit.get(nitKey);
@@ -88,9 +93,13 @@ public class PayableDocumentService {
     }
 
     private SupplierIndex supplierIndex() {
+        Map<String, SupplierEntity> byCode = new HashMap<>();
         Map<String, SupplierEntity> byNit = new HashMap<>();
         Map<String, SupplierEntity> byName = new HashMap<>();
         for (SupplierEntity s : supplierRepository.findAll()) {
+            if (s.getCode() != null) {
+                byCode.putIfAbsent(s.getCode(), s);
+            }
             if (s.getNit() != null && !nitKey(s.getNit()).isEmpty()) {
                 byNit.putIfAbsent(nitKey(s.getNit()), s);
             }
@@ -101,7 +110,7 @@ public class PayableDocumentService {
                 byName.putIfAbsent(SupplierPaymentService.normalizeName(s.getPayeeName()), s);
             }
         }
-        return new SupplierIndex(byNit, byName);
+        return new SupplierIndex(byCode, byNit, byName);
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -214,7 +223,7 @@ public class PayableDocumentService {
                 }
                 continue;
             }
-            SupplierEntity supplier = suppliers.find(rent.landlord(), null);
+            SupplierEntity supplier = suppliers.find(null, rent.landlord(), null);
             documentRepository.save(rentDocument(userId, period, supplier, rent.landlord(), rent.name(),
                     "RENTA-" + (rent.code() != null ? rent.code() : rent.locationId()) + "-" + period,
                     rent.payDate(), rent.amount(), rent.locationId(), null));
@@ -231,7 +240,7 @@ public class PayableDocumentService {
                 }
                 continue;
             }
-            SupplierEntity supplier = rent.landlord() == null ? null : suppliers.find(rent.landlord(), null);
+            SupplierEntity supplier = rent.landlord() == null ? null : suppliers.find(null, rent.landlord(), null);
             String payee = rent.landlord() != null ? rent.landlord() : rent.name();
             documentRepository.save(rentDocument(userId, period, supplier, payee, rent.name(),
                     "RENTA-O" + rent.otherRentId() + "-" + period, rent.payDate(), rent.amount(), null, rent.otherRentId()));
@@ -290,7 +299,7 @@ public class PayableDocumentService {
             head.setFillPattern(FillPatternType.SOLID_FOREGROUND);
             head.setBorderBottom(BorderStyle.THIN);
             Sheet sheet = wb.createSheet("Saldos");
-            String[] headers = {H_PAYEE, H_NIT, H_CONCEPT, H_NUMBER, H_DATE, H_DUE, H_AMOUNT};
+            String[] headers = {H_CODE, H_PAYEE, H_NIT, H_CONCEPT, H_NUMBER, H_DATE, H_DUE, H_AMOUNT};
             Row row = sheet.createRow(0);
             for (int i = 0; i < headers.length; i++) {
                 Cell c = row.createCell(i);
@@ -301,10 +310,10 @@ public class PayableDocumentService {
             date.setDataFormat(format.getFormat("dd/mm/yyyy"));
             CellStyle money = wb.createCellStyle();
             money.setDataFormat(format.getFormat("#,##0.00"));
-            sheet.setDefaultColumnStyle(4, date);
             sheet.setDefaultColumnStyle(5, date);
-            sheet.setDefaultColumnStyle(6, money);
-            int[] widths = {40, 18, 40, 18, 14, 14, 16};
+            sheet.setDefaultColumnStyle(6, date);
+            sheet.setDefaultColumnStyle(7, money);
+            int[] widths = {16, 40, 18, 40, 18, 14, 14, 16};
             for (int i = 0; i < widths.length; i++) {
                 sheet.setColumnWidth(i, widths[i] * 256);
             }
@@ -315,7 +324,7 @@ public class PayableDocumentService {
                     "SALDOS INICIALES POR PAGAR",
                     "",
                     "1. Un renglón por cada factura o deuda pendiente. Empiece en el renglón 2 de la hoja «Saldos».",
-                    "2. «Proveedor o arrendador» es a quien se le debe. Si coincide con un proveedor del sistema (por NIT o por nombre) se liga con él.",
+                    "2. «Proveedor o arrendador» es a quien se le debe. Se liga con el proveedor del sistema por «Código proveedor» (PV013), por NIT o por nombre.",
                     "3. «Concepto», «Fecha» y «Monto» son obligatorios. «Vence» es opcional: si falta, se usan los días de crédito del proveedor (30 por defecto).",
                     "4. Fechas como 31/12/2026. Monto sin símbolo, por ejemplo 1250.50.",
                     "5. Al subir el archivo primero se muestra una revisión. Si hay algún error no se guarda nada hasta corregirlo.",
@@ -370,6 +379,7 @@ public class PayableDocumentService {
                     if (row == null) {
                         continue;
                     }
+                    Cell codeCell = ExcelCells.cell(row, cols, H_CODE);
                     Cell payeeCell = ExcelCells.cell(row, cols, H_PAYEE);
                     Cell nitCell = ExcelCells.cell(row, cols, H_NIT);
                     Cell conceptCell = ExcelCells.cell(row, cols, H_CONCEPT);
@@ -424,7 +434,7 @@ public class PayableDocumentService {
                         errors.add(new DocImportError(rowNumber, payee, "Hay que corregir: " + String.join("; ", problems) + "."));
                         continue;
                     }
-                    SupplierEntity supplier = suppliers.find(payee, ExcelCells.text(nitCell));
+                    SupplierEntity supplier = suppliers.find(ExcelCells.text(codeCell), payee, ExcelCells.text(nitCell));
                     if (due == null) {
                         int days = supplier != null && supplier.getCreditDays() != null ? supplier.getCreditDays()
                                 : SupplierPaymentService.DEFAULT_CREDIT_DAYS;

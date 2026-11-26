@@ -304,7 +304,7 @@ class PayableRentPayablesTest {
 
         PayablesResponse all = payments.payables();
         PayablesResponse blank = payments.payables("  ");
-        PayablesResponse suppliers = new SupplierPaymentController(payments, null).payables("SUPPLIERS").getBody();
+        PayablesResponse suppliers = new SupplierPaymentController(payments, null, null).payables("SUPPLIERS").getBody();
         PayablesResponse rents = payments.payables("RENTS");
 
         assertEquals(today, all.today());
