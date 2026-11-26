@@ -1,5 +1,7 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.CalendarResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.VisitResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationGenerateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationGroup;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationRow;
@@ -18,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.sql.Date;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -91,11 +94,149 @@ public class KioskLiquidationService {
         for (LiquidationRow row : loadRows(from, to, null)) {
             byWho.computeIfAbsent(row.supervisorUserId(), id -> new ArrayList<>()).add(row);
         }
+        addCalendarVisits(y, byWho);
         List<LiquidationGroup> groups = new ArrayList<>();
         byWho.forEach((id, rows) -> groups.add(new LiquidationGroup(id, names.getOrDefault(id, "Supervisora"), rows)));
         List<NonWorkingDay> nonWorking = new ArrayList<>();
         calendarService.nonWorkingBetween(from, to).forEach((d, reason) -> nonWorking.add(new NonWorkingDay(d, reason)));
         return new LiquidationYearResponse(y, groups, nonWorking);
+    }
+
+    /**
+     * Agrega al año las visitas del calendario aprobado (esta semana incluida) que todavía no tienen una liquidación
+     * registrada del mismo kiosco en esa semana.
+     */
+    private void addCalendarVisits(int year, Map<Long, List<LiquidationRow>> byWho) throws BusinessException {
+        Set<String> registered = byWho.values().stream().flatMap(List::stream)
+                .map(r -> r.locationId() + "|" + weekStart(r.liquidationDate()))
+                .collect(Collectors.toSet());
+        List<String> months = jdbc.queryForList("SELECT DISTINCT visit_month FROM kiosk_count_visit "
+                + "WHERE status NOT IN ('CANCELLED', 'DRAFT') AND visit_month LIKE ? ORDER BY visit_month",
+                String.class, year + "-%");
+        for (String month : months) {
+            for (LiquidationGroup group : getVisitSheet(month).groups()) {
+                for (LiquidationRow row : group.rows()) {
+                    // La hoja de un mes trae semanas completas: cada visita se toma solo en su mes.
+                    if (month.equals(YearMonth.from(row.liquidationDate()).toString())
+                            && !registered.contains(row.locationId() + "|" + weekStart(row.liquidationDate()))) {
+                        byWho.computeIfAbsent(row.supervisorUserId(), id -> new ArrayList<>()).add(row);
+                    }
+                }
+            }
+        }
+        byWho.values().forEach(rows -> rows.sort(Comparator.comparing(LiquidationRow::liquidationDate)));
+    }
+
+    /**
+     * Las visitas del calendario de un mes con las columnas del Excel de contabilidad: cada fila es una visita
+     * (fecha de liquidación) y trae el inventario anterior del kiosco, que es el que se liquida en ella.
+     */
+    @Transactional(readOnly = true)
+    public LiquidationYearResponse getVisitSheet(String month) throws BusinessException {
+        CalendarResponse calendar = calendarService.getCalendar(month, null);
+        List<VisitResponse> visits = calendar.visits().stream().filter(v -> !"DRAFT".equals(v.status())).toList();
+        YearMonth view = YearMonth.parse(calendar.month());
+        if (visits.isEmpty()) {
+            return new LiquidationYearResponse(view.getYear(), List.of(), List.of());
+        }
+        List<LocalDate> previous = visits.stream().map(VisitResponse::lastCountDate).filter(d -> d != null).toList();
+        LocalDate from = previous.stream().min(Comparator.naturalOrder()).orElse(view.atDay(1))
+                .minusDays(SAME_COUNT_TOLERANCE_DAYS);
+        LocalDate to = view.atEndOfMonth().plusDays(7);
+        List<InventoryData> counts = loadSystemInventories(from, to);
+        List<InventoryData> liquidations = loadLiquidationInventories(from, to);
+
+        // Una visita de varios días (Entrecueros, Celajes) es una sola fila.
+        Map<Long, List<VisitResponse>> units = new LinkedHashMap<>();
+        Map<Long, VisitResponse> lastOfUnit = new HashMap<>();
+        Map<Long, Long> unitOfLocation = new HashMap<>();
+        for (VisitResponse v : visits.stream().sorted(Comparator.comparing(VisitResponse::visitDate)).toList()) {
+            Long unit = unitOfLocation.get(v.locationId());
+            if (v.daySeq() > 1 && unit != null
+                    && ChronoUnit.DAYS.between(lastOfUnit.get(unit).visitDate(), v.visitDate()) <= 3) {
+                units.get(unit).add(v);
+            } else {
+                unit = v.id();
+                units.put(unit, new ArrayList<>(List.of(v)));
+                unitOfLocation.put(v.locationId(), unit);
+            }
+            lastOfUnit.put(unit, v);
+        }
+
+        Map<Long, String> names = loadSupervisorNames();
+        Map<Long, List<LiquidationRow>> byWho = new LinkedHashMap<>();
+        names.keySet().stream()
+                .sorted(Comparator.comparing(id -> names.get(id), String.CASE_INSENSITIVE_ORDER))
+                .forEach(id -> byWho.put(id, new ArrayList<>()));
+        for (List<VisitResponse> unit : units.values()) {
+            VisitResponse v = unit.get(0);
+            InventoryData count = nearest(counts, v.locationId(), v.lastCountDate());
+            InventoryData liq = nearest(liquidations, v.locationId(), v.lastCountDate());
+            LocalDate periodFrom = count != null && count.periodFrom() != null ? count.periodFrom()
+                    : liq == null ? null : liq.periodFrom();
+            LocalDate corrections = liq != null && liq.correctionsDue() != null ? liq.correctionsDue()
+                    : count == null ? null : count.correctionsDue();
+            byWho.computeIfAbsent(v.supervisorUserId(), id -> new ArrayList<>()).add(new LiquidationRow(v.id(),
+                    v.locationId(), v.locationName(), v.supervisorUserId(), v.supervisorName(), periodFrom,
+                    v.lastCountDate(), liq == null ? null : liq.accountant(), corrections, v.visitDate(), unit.size(),
+                    liq == null ? null : liq.areasToFix(), liq == null ? null : liq.greenNote(), "PENDING", v.note(),
+                    v.kind(), List.of(), null, null, count == null ? null : count.reviewedBy(), null,
+                    count == null ? null : count.closedBy(), null, null));
+        }
+        List<LiquidationGroup> groups = new ArrayList<>();
+        byWho.forEach((id, rows) -> groups.add(new LiquidationGroup(id, names.getOrDefault(id, "Supervisora"), rows)));
+        List<NonWorkingDay> nonWorking = calendar.nonWorkingDays().stream()
+                .map(d -> new NonWorkingDay(d.date(), d.reason())).toList();
+        return new LiquidationYearResponse(view.getYear(), groups, nonWorking);
+    }
+
+    /** Lo que se sabe de un inventario, venga del conteo físico o de su liquidación. */
+    private record InventoryData(long locationId, LocalDate periodFrom, LocalDate periodTo, String accountant,
+                                 LocalDate correctionsDue, Integer areasToFix, String greenNote, String reviewedBy,
+                                 String closedBy) {
+    }
+
+    private static InventoryData nearest(List<InventoryData> list, long locationId, LocalDate periodTo) {
+        if (periodTo == null) {
+            return null;
+        }
+        return list.stream()
+                .filter(d -> d.locationId() == locationId
+                        && Math.abs(ChronoUnit.DAYS.between(d.periodTo(), periodTo)) <= SAME_COUNT_TOLERANCE_DAYS)
+                .min(Comparator.comparingLong(d -> Math.abs(ChronoUnit.DAYS.between(d.periodTo(), periodTo))))
+                .orElse(null);
+    }
+
+    /** Conteos físicos (sin borradores): quién revisó y cerró, y cuándo se entregó la revisión. */
+    private List<InventoryData> loadSystemInventories(LocalDate from, LocalDate to) {
+        return jdbc.query("SELECT c.location_id, c.period_from, c.period_to, COALESCE(c.reviewed_at, c.closed_at) AS done_at, "
+                        + "ru.first_name AS rf, ru.last_name AS rl, ru.username AS ru_user, cu.first_name AS cf, "
+                        + "cu.last_name AS cl, cu.username AS cu_user FROM kiosco_physical_count c "
+                        + "LEFT JOIN users ru ON ru.id = c.reviewed_by LEFT JOIN users cu ON cu.id = c.closed_by "
+                        + "WHERE c.status <> 'DRAFT' AND c.period_to BETWEEN ? AND ? ORDER BY c.id DESC",
+                (rs, i) -> {
+                    java.sql.Timestamp doneAt = rs.getTimestamp("done_at");
+                    return new InventoryData(rs.getLong("location_id"), localDate(rs.getDate("period_from")),
+                            rs.getDate("period_to").toLocalDate(), null,
+                            doneAt == null ? null : doneAt.toLocalDateTime().toLocalDate(), null, null,
+                            rs.getString("ru_user") == null ? null
+                                    : fullName(rs.getString("rf"), rs.getString("rl"), rs.getString("ru_user")),
+                            rs.getString("cu_user") == null ? null
+                                    : fullName(rs.getString("cf"), rs.getString("cl"), rs.getString("cu_user")));
+                }, Date.valueOf(from), Date.valueOf(to));
+    }
+
+    /** Liquidaciones (con contabilidad asignada y facturas verdes) y el historial del Excel (solo el período). */
+    private List<InventoryData> loadLiquidationInventories(LocalDate from, LocalDate to) {
+        return jdbc.query("SELECT q.location_id, q.period_from, q.period_to, q.accountant, q.corrections_due, "
+                        + "q.areas_to_fix, q.green_note, 0 AS pr FROM kiosk_liquidation q WHERE q.period_to BETWEEN ? AND ? "
+                        + "UNION ALL SELECT h.location_id, h.period_from, h.period_to, NULL, NULL, NULL, NULL, 1 "
+                        + "FROM kiosk_count_history h WHERE h.period_to BETWEEN ? AND ? ORDER BY pr",
+                (rs, i) -> new InventoryData(rs.getLong("location_id"), localDate(rs.getDate("period_from")),
+                        rs.getDate("period_to").toLocalDate(), rs.getString("accountant"),
+                        localDate(rs.getDate("corrections_due")), (Integer) rs.getObject("areas_to_fix"),
+                        rs.getString("green_note"), null, null),
+                Date.valueOf(from), Date.valueOf(to), Date.valueOf(from), Date.valueOf(to));
     }
 
     // ───────────────────────── generar ─────────────────────────
