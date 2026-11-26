@@ -45,11 +45,14 @@ public final class SupplierPaymentDtos {
      * Una orden de compra o un documento por pagar. {@code kind}: ORDEN, DOCUMENTO, SALDO_INICIAL o RENTA;
      * {@code rowKey}: "O:<id>" o "D:<id>"; {@code payeeKey} agrupa lo que se puede pagar junto (mismo beneficiario).
      * {@code status}: VENCIDA, POR_VENCER (15 días o menos), PARCIAL (ya tiene un pago) o AL_DIA.
+     * {@code invoiceNumber}/{@code invoiceDate}: facturas del proveedor de la orden (o el número del documento); el
+     * vencimiento se cuenta desde la fecha de la factura más reciente.
      */
     public record PayableRow(String rowKey, String kind, Long orderId, Long documentId, String code, String payeeKey,
                              Long supplierId, String supplierName, LocalDate orderDate, LocalDate receivedDate,
                              LocalDate dueDate, BigDecimal total, BigDecimal paid, BigDecimal balance, String status,
-                             Integer daysToDue, String payeeName, String concept) {
+                             Integer daysToDue, String payeeName, String concept,
+                             String supplierCode, String invoiceNumber, LocalDate invoiceDate) {
     }
 
     public record PayablesSummary(BigDecimal totalBalance, int orderCount, int supplierCount, BigDecimal overdueAmount,

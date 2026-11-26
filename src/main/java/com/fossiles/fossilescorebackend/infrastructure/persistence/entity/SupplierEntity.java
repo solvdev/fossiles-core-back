@@ -19,6 +19,10 @@ public class SupplierEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /** Código del proveedor: PV001, PV002… Único. */
+    @Column(name = "code", length = 10, unique = true)
+    private String code;
+
     @Column(length = 150)
     private String name;
 

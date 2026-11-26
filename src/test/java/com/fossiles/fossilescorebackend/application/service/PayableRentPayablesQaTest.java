@@ -207,7 +207,7 @@ class PayableRentPayablesQaTest {
         PaymentRow rentPayment = payments.createPayment(pay(methodId, null, rent.getId(), "40.00"));
         assertEquals(2, paymentRepository.count());
 
-        PaymentsResponse history = new SupplierPaymentController(payments, null).payments().getBody();
+        PaymentsResponse history = new SupplierPaymentController(payments, null, null).payments().getBody();
         assertEquals(2, history.rows().size());
         PaymentRow historySupplier = history.rows().stream()
                 .filter(row -> supplierPayment.id().equals(row.id())).findFirst().orElseThrow();
