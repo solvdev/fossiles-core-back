@@ -58,6 +58,13 @@ public final class KioskLiquidationDtos {
                                           List<PendingCount> pending, List<Person> accountants, boolean canGenerate) {
     }
 
+    public record NonWorkingDay(LocalDate date, String reason) {
+    }
+
+    /** El año completo, para el Excel «Liquidaciones por semana». */
+    public record LiquidationYearResponse(int year, List<LiquidationGroup> groups, List<NonWorkingDay> nonWorkingDays) {
+    }
+
     public record LiquidationGenerateResponse(LiquidationWeekResponse week, List<String> warnings) {
     }
 }

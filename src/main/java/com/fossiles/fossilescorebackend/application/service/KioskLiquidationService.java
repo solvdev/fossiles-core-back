@@ -4,6 +4,8 @@ import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidatio
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationGroup;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationRow;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationWeekResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationYearResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.NonWorkingDay;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.PendingCount;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.Person;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -69,6 +71,31 @@ public class KioskLiquidationService {
     public LiquidationWeekResponse getWeek(LocalDate anyDay, Long supervisorUserId) throws BusinessException {
         guard.assertCanView();
         return buildWeek(weekStart(anyDay), supervisorUserId);
+    }
+
+    /** Todas las liquidaciones de un año, por supervisora, para el Excel «Liquidaciones por semana». */
+    @Transactional(readOnly = true)
+    public LiquidationYearResponse getYear(Integer year) throws BusinessException {
+        guard.assertCanView();
+        int y = year == null ? GuatemalaDateTime.today().getYear() : year;
+        if (y < 2000 || y > 2100) {
+            throw new BusinessException("Año no válido.");
+        }
+        LocalDate from = LocalDate.of(y, 1, 1);
+        LocalDate to = LocalDate.of(y, 12, 31);
+        Map<Long, String> names = loadSupervisorNames();
+        Map<Long, List<LiquidationRow>> byWho = new LinkedHashMap<>();
+        names.keySet().stream()
+                .sorted(Comparator.comparing(id -> names.get(id), String.CASE_INSENSITIVE_ORDER))
+                .forEach(id -> byWho.put(id, new ArrayList<>()));
+        for (LiquidationRow row : loadRows(from, to, null)) {
+            byWho.computeIfAbsent(row.supervisorUserId(), id -> new ArrayList<>()).add(row);
+        }
+        List<LiquidationGroup> groups = new ArrayList<>();
+        byWho.forEach((id, rows) -> groups.add(new LiquidationGroup(id, names.getOrDefault(id, "Supervisora"), rows)));
+        List<NonWorkingDay> nonWorking = new ArrayList<>();
+        calendarService.nonWorkingBetween(from, to).forEach((d, reason) -> nonWorking.add(new NonWorkingDay(d, reason)));
+        return new LiquidationYearResponse(y, groups, nonWorking);
     }
 
     // ───────────────────────── generar ─────────────────────────
@@ -443,10 +470,10 @@ public class KioskLiquidationService {
                         + "SELECT DISTINCT ON (location_id, period_to) location_id, period_to, src FROM ("
                         + "SELECT pc.location_id, pc.period_to, 'SISTEMA' AS src, 0 AS pr FROM kiosco_physical_count pc "
                         + "WHERE pc.status <> 'DRAFT' AND EXISTS (SELECT 1 FROM kiosk_count_visit v WHERE v.location_id = pc.location_id "
-                        + "AND v.status NOT IN ('CANCELLED', 'DRAFT') AND ABS(v.visit_date - pc.period_to) <= " + SAME_COUNT_TOLERANCE_DAYS + ") "
+                        + "AND v.status NOT IN ('CANCELLED', 'DRAFT') AND ABS(v.visit_date - pc.period_to) <= " + KioskCountVisitMatcher.MATCH_DAYS + ") "
                         + "UNION ALL SELECT v.location_id, v.visit_date, 'CALENDARIO', 1 FROM kiosk_count_visit v "
                         + "WHERE v.status = 'DONE' AND v.day_seq = 1 AND NOT EXISTS (SELECT 1 FROM kiosco_physical_count pc "
-                        + "WHERE pc.location_id = v.location_id AND pc.status <> 'DRAFT' AND ABS(pc.period_to - v.visit_date) <= " + SAME_COUNT_TOLERANCE_DAYS + ") "
+                        + "WHERE pc.location_id = v.location_id AND pc.status <> 'DRAFT' AND ABS(pc.period_to - v.visit_date) <= " + KioskCountVisitMatcher.MATCH_DAYS + ") "
                         + "UNION ALL SELECT h.location_id, h.period_to, 'MANUAL', 2 FROM kiosk_count_history h WHERE h.source = 'MANUAL') u "
                         + "ORDER BY location_id, period_to, pr) c "
                         + "JOIN locations l ON l.id = c.location_id "

@@ -454,25 +454,35 @@ public class KioskCountCalendarService {
                         k.allowedDays.isEmpty() ? null : weekdaysLabel(k.allowedDays)))
                 .toList();
 
-        Map<Long, List<LocalDate>> counts = loadCountsBetween(rangeFrom.minusDays(120), rangeTo.plusDays(10));
+        Map<Long, List<KioskCountVisitMatcher.Count>> counts =
+                loadCountStates(rangeFrom.minusDays(120), rangeTo.plusDays(21));
+        // Se miran también las visitas de las semanas vecinas, para que un conteo no se asigne dos veces.
+        List<ExistingVisit> nearby = loadVisits(rangeFrom.minusDays(14), rangeTo.plusDays(14), supervisorFilter);
+        Map<Long, KioskCountVisitMatcher.Count> matched = KioskCountVisitMatcher.match(nearby.stream()
+                .filter(v -> !"DRAFT".equals(v.status))
+                .map(v -> new KioskCountVisitMatcher.Visit(v.id, v.locationId, v.date, "REVISIT".equals(v.kind), v.daySeq))
+                .toList(), counts);
         List<VisitResponse> visits = new ArrayList<>();
-        for (ExistingVisit v : loadVisits(rangeFrom, rangeTo, supervisorFilter)) {
+        for (ExistingVisit v : nearby) {
+            if (v.date.isBefore(rangeFrom) || v.date.isAfter(rangeTo)) {
+                continue;
+            }
+            KioskCountVisitMatcher.Count own = matched.get(v.id);
             LocalDate last = null;
-            LocalDate countedOn = null;
-            for (LocalDate c : counts.getOrDefault(v.locationId, List.of())) {
-                if (c.isBefore(v.date) && (last == null || c.isAfter(last))) {
-                    last = c;
-                }
-                if (!c.isBefore(v.date.minusDays(1)) && !c.isAfter(v.date.plusDays(7))
-                        && (countedOn == null || c.isBefore(countedOn))) {
-                    countedOn = c;
+            for (KioskCountVisitMatcher.Count c : counts.getOrDefault(v.locationId, List.of())) {
+                // El «último conteo» es el anterior a esta visita, no el que se hizo en ella.
+                if (!c.draft() && !c.equals(own) && c.periodTo().isBefore(v.date)
+                        && (last == null || c.periodTo().isAfter(last))) {
+                    last = c.periodTo();
                 }
             }
             Integer gap = last == null ? null : (int) ChronoUnit.DAYS.between(last, v.date);
+            String countStatus = own == null ? null : own.status() == null ? "CONTADO" : own.status();
+            LocalDate countedOn = own == null || own.draft() ? null : own.periodTo();
             visits.add(new VisitResponse(v.id, v.date, v.locationId, v.code, v.name, v.supervisorId,
                     supervisorNames.getOrDefault(v.supervisorId, ""), v.region,
                     KioskCountRegion.valueOf(v.region).label(), v.status, v.kind, v.manual, v.note, v.daySeq,
-                    v.dayTotal, last, gap, countedOn));
+                    v.dayTotal, last, gap, countedOn, own == null ? null : own.id(), countStatus));
         }
 
         Map<LocalDate, String> blocked = blockedReasons(rangeFrom, rangeTo);
@@ -615,7 +625,32 @@ public class KioskCountCalendarService {
         return result;
     }
 
-    private static final String VISIT_SELECT = "SELECT v.id, v.visit_date, v.location_id, l.code, l.name, "
+    /**
+     * Conteos con su estado, para el calendario. Incluye borradores (conteo en curso) y el historial del Excel cuando el
+     * sistema no tiene ese conteo.
+     */
+    private Map<Long, List<KioskCountVisitMatcher.Count>> loadCountStates(LocalDate from, LocalDate to) {
+        Map<Long, List<KioskCountVisitMatcher.Count>> result = new HashMap<>();
+        jdbc.query("SELECT id, location_id, period_to, status FROM kiosco_physical_count WHERE period_to BETWEEN ? AND ?",
+                rs -> {
+                    result.computeIfAbsent(rs.getLong("location_id"), id -> new ArrayList<>())
+                            .add(new KioskCountVisitMatcher.Count(rs.getLong("id"),
+                                    rs.getDate("period_to").toLocalDate(), rs.getString("status")));
+                }, Date.valueOf(from), Date.valueOf(to));
+        jdbc.query("SELECT location_id, period_to FROM kiosk_count_history WHERE period_to BETWEEN ? AND ?",
+                rs -> {
+                    LocalDate date = rs.getDate("period_to").toLocalDate();
+                    List<KioskCountVisitMatcher.Count> list =
+                            result.computeIfAbsent(rs.getLong("location_id"), id -> new ArrayList<>());
+                    // El sistema manda: a 3 días o menos de un conteo suyo, es el mismo.
+                    if (list.stream().noneMatch(c -> !c.draft() && Math.abs(ChronoUnit.DAYS.between(c.periodTo(), date)) <= 3)) {
+                        list.add(new KioskCountVisitMatcher.Count(null, date, null));
+                    }
+                }, Date.valueOf(from), Date.valueOf(to));
+        return result;
+    }
+
+    private static final String VISIT_SELECT ="SELECT v.id, v.visit_date, v.location_id, l.code, l.name, "
             + "v.supervisor_user_id, v.region, v.status, v.kind, v.manual, v.note, v.day_seq, v.day_total "
             + "FROM kiosk_count_visit v JOIN locations l ON l.id = v.location_id WHERE v.status <> 'CANCELLED' ";
 
