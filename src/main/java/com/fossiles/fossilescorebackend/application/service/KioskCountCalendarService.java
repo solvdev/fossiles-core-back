@@ -191,6 +191,7 @@ public class KioskCountCalendarService {
                 warnings.add(name + ": en la semana del " + weekStart + " no quedó ninguna visita por programar.");
             }
         }
+        refreshKindsOfWeek(weekStart);
         YearMonth view = viewMonthText == null || viewMonthText.isBlank() ? YearMonth.from(weekStart) : parseMonth(viewMonthText);
         return new GenerateResponse(buildCalendar(view, null), warnings);
     }
@@ -254,6 +255,7 @@ public class KioskCountCalendarService {
             jdbc.update("DELETE FROM kiosk_count_week WHERE week_start = ? AND supervisor_user_id = ? AND status = 'DRAFT'",
                     Date.valueOf(weekStart), supervisorId);
         }
+        refreshKindsOfWeek(weekStart);
         return new GenerateResponse(buildCalendar(viewMonth(viewMonthText, weekStart), null), List.of());
     }
 
@@ -329,6 +331,7 @@ public class KioskCountCalendarService {
                 throw new BusinessException("Esa supervisora ya tiene otra visita el " + newDate + ".");
             }
         }
+        refreshKinds(month);
         return buildCalendar(viewMonthText == null || viewMonthText.isBlank() ? month : parseMonth(viewMonthText), null);
     }
 
@@ -368,6 +371,7 @@ public class KioskCountCalendarService {
         } catch (DuplicateKeyException e) {
             throw new BusinessException("Esa supervisora ya tiene otra visita el " + date + ".");
         }
+        refreshKinds(month);
         return buildCalendar(viewMonthText == null || viewMonthText.isBlank() ? month : parseMonth(viewMonthText), null);
     }
 
@@ -394,6 +398,57 @@ public class KioskCountCalendarService {
         jdbc.update("UPDATE kiosk_count_visit SET location_id = ?, region = ?, kind = ?, day_seq = 1, day_total = 1, "
                         + "manual = TRUE, updated_at = NOW() WHERE id = ?",
                 newLocationId, kiosk.region.name(), alreadyVisited ? "REVISIT" : "REGULAR", visitId);
+    }
+
+    private void refreshKindsOfWeek(LocalDate weekStart) {
+        Set<YearMonth> months = new TreeSet<>(List.of(YearMonth.from(weekStart), YearMonth.from(weekStart.plusDays(6))));
+        months.forEach(this::refreshKinds);
+    }
+
+    /**
+     * Vuelve a decidir qué visitas del mes son revisita. La etiqueta depende de las demás visitas del kiosco, así que
+     * al moverlas, cambiarlas o quitarlas puede quedar vieja.
+     */
+    private void refreshKinds(YearMonth month) {
+        Map<Long, List<ExistingVisit>> byKiosk = new LinkedHashMap<>();
+        jdbc.query(VISIT_SELECT + "AND v.visit_month = ? ORDER BY v.visit_date, v.id", (rs, i) -> mapVisit(rs),
+                month.toString()).forEach(v -> byKiosk.computeIfAbsent(v.locationId, id -> new ArrayList<>()).add(v));
+        Map<Long, Kiosk> kiosks = loadAssignedKiosks();
+        Map<Long, List<LocalDate>> counts = loadCountsBetween(month.atDay(1), month.atEndOfMonth());
+        byKiosk.forEach((locationId, visits) -> {
+            Kiosk kiosk = kiosks.get(locationId);
+            int allowed = kiosk == null ? 1 : kiosk.visitsPerMonth;
+            int index = 0;
+            String kind = null;
+            ExistingVisit previous = null;
+            for (ExistingVisit v : visits) {
+                // Los días siguientes de una visita de varios días (Entrecueros, Celajes) son la misma visita.
+                boolean sameVisit = v.daySeq > 1 && previous != null
+                        && ChronoUnit.DAYS.between(previous.date, v.date) <= 3;
+                if (!sameVisit) {
+                    long countedBefore = counts.getOrDefault(locationId, List.of()).stream()
+                            .filter(d -> d.isBefore(v.date.minusDays(1))).count();
+                    kind = isRevisit(index, allowed, "REVISIT".equals(v.kind), countedBefore) ? "REVISIT" : "REGULAR";
+                    index++;
+                }
+                if (!kind.equals(v.kind)) {
+                    jdbc.update("UPDATE kiosk_count_visit SET kind = ?, updated_at = NOW() WHERE id = ?", kind, v.id);
+                }
+                previous = v;
+            }
+        });
+    }
+
+    /**
+     * Es revisita si el kiosco ya tiene antes, en el calendario del mes, todas las visitas que le tocan. Una marcada
+     * como revisita lo sigue siendo si lo que completa ese cupo es un conteo del mes hecho sin visita en el calendario.
+     *
+     * @param index         cuántas visitas del kiosco hay antes en el mes
+     * @param allowed       visitas que le tocan al mes (Miraflores II: 2)
+     * @param countedBefore conteos del mes anteriores al de esta visita
+     */
+    static boolean isRevisit(int index, int allowed, boolean wasRevisit, long countedBefore) {
+        return index >= allowed || (wasRevisit && index + countedBefore >= allowed);
     }
 
     private void assertDayAllowed(LocalDate date, Kiosk kiosk) throws BusinessException {
