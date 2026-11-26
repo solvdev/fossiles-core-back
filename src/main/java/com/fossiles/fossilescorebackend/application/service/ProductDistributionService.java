@@ -2166,12 +2166,13 @@ public class ProductDistributionService {
 
     /**
      * Plan de una línea. Los cinchos se guardan en Bodega PT: salen solo de PT, sin tomar faltante de Devoluciones,
-     * sea cual sea el envío. Excepción: el cincho de una OPL (venta en línea) sale de Devoluciones (y de PT solo si
-     * Devoluciones no alcanza). El resto de líneas sigue el plan del envío.
+     * sea cual sea el envío. Excepciones: el cincho de una OPL (venta en línea) sale de Devoluciones (y de PT solo si
+     * Devoluciones no alcanza), y el de un ENVI interno sigue el plan del envío (solo Devoluciones): la pieza de una
+     * OPI entra ahí y la solicitud se autoriza contra esa bodega. El resto de líneas sigue el plan del envío.
      */
     DispatchPlan resolveLineDispatchPlan(ProductShipmentEntity shipment, DispatchPlan shipmentPlan, Long productId) {
         ProductEntity product = productId == null ? null : productRepository.findById(productId).orElse(null);
-        if (!isCinchoDispatchProduct(product)) {
+        if (!isCinchoDispatchProduct(product) || isStandaloneInternalEnviShipment(shipment)) {
             return shipmentPlan;
         }
         boolean onlineSale = isOnlineSaleOrderShipment(shipment);

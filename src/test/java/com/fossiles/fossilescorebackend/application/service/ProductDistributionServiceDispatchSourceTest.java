@@ -325,7 +325,20 @@ class ProductDistributionServiceDispatchSourceTest {
                 any(), any(), any(), any(), any(), any(), any(), anyString(), any(), any(), anyBoolean(), any());
     }
 
-    // ---------- cinchos: siempre de Bodega PT, salvo los de una OPL ----------
+    // ---------- cinchos: siempre de Bodega PT, salvo los de una OPL y los de un ENVI interno ----------
+
+    @Test
+    void cinchoInInternalEnviLeavesFromReturnsOnly() {
+        ProductShipmentEntity envi = ProductShipmentEntity.builder()
+                .id(SHIPMENT_ID).shipmentNumber("ENVI-00012").status("CONFIRMED").build();
+        givenCinchoLine();
+
+        ProductDistributionService.DispatchPlan plan =
+                service.resolveLineDispatchPlan(envi, service.resolveDispatchPlan(envi), PRODUCT_ID);
+
+        assertThat(plan.primary()).isEqualTo(DispatchSource.RETURNS_ONLY);
+        assertThat(plan.hasFallback()).isFalse();
+    }
 
     @Test
     void cinchoInDirectShipmentLeavesFromBodegaPtEvenWithReturnsStock() throws Exception {
