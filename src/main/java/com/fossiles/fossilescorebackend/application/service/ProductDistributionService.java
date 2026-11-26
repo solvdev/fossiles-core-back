@@ -603,6 +603,27 @@ public class ProductDistributionService {
             BigDecimal discountAmount,
             List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
             throws BusinessException, ResourceNotFoundException {
+        return dispatchStandaloneInternal(recipientName, recipientPhone, recipientTaxId, notes, documentDate,
+                requestType, discountPercent, discountAmount, products, Map.of());
+    }
+
+    /**
+     * {@code chosenSources}: bodega elegida por línea (clave {@link #stockSourceKey}). La línea sin elección sale
+     * de Devoluciones.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ProductShipmentResponse dispatchStandaloneInternal(
+            String recipientName,
+            String recipientPhone,
+            String recipientTaxId,
+            String notes,
+            String documentDate,
+            String requestType,
+            BigDecimal discountPercent,
+            BigDecimal discountAmount,
+            List<ProductShipmentRequest.ProductShipmentDetailRequest> products,
+            Map<String, ProductInventoryService.DispatchSource> chosenSources)
+            throws BusinessException, ResourceNotFoundException {
         String recipient = recipientName == null ? "" : recipientName.trim();
         if (recipient.isBlank()) {
             throw new BusinessException("El nombre del colaborador es obligatorio.");
@@ -612,7 +633,19 @@ public class ProductDistributionService {
         if (normalizedProducts.isEmpty()) {
             throw new BusinessException("Debe incluir al menos un producto con cantidad.");
         }
-        assertDispatchStockAvailable(normalizedProducts, ProductInventoryService.DispatchSource.RETURNS_ONLY);
+        Map<ProductInventoryService.DispatchSource, List<ProductShipmentRequest.ProductShipmentDetailRequest>>
+                bySource = new java.util.LinkedHashMap<>();
+        for (ProductShipmentRequest.ProductShipmentDetailRequest line : normalizedProducts) {
+            bySource.computeIfAbsent(
+                    chosenSources.getOrDefault(
+                            stockSourceKey(line.getProductId(), line.getColorId(), line.getSize()),
+                            ProductInventoryService.DispatchSource.RETURNS_ONLY),
+                    k -> new ArrayList<>()).add(line);
+        }
+        for (Map.Entry<ProductInventoryService.DispatchSource,
+                List<ProductShipmentRequest.ProductShipmentDetailRequest>> group : bySource.entrySet()) {
+            assertDispatchStockAvailable(group.getValue(), group.getKey());
+        }
 
         String normalizedRequestType = normalizeInternalRequestType(requestType);
         ResolvedInternalDiscount discount = resolveInternalDiscount(
@@ -641,7 +674,12 @@ public class ProductDistributionService {
         ProductShipmentEntity saved = shipmentRepository.save(shipment);
         updateShipmentProducts(saved.getId(), normalizedProducts);
         confirmShipmentDraft(saved.getId());
-        return sendShipment(saved.getId());
+        return sendShipment(saved.getId(), false, chosenSources);
+    }
+
+    /** Clave producto + color + talla con la que se elige la bodega de salida de una línea. */
+    String stockSourceKey(Long productId, Long colorId, String size) {
+        return productId + "|" + colorId + "|" + normalizeSize(size);
     }
 
     public void validateDispatchStock(List<ProductShipmentRequest.ProductShipmentDetailRequest> products)
@@ -660,7 +698,7 @@ public class ProductDistributionService {
         if (normalized.isEmpty()) {
             throw new BusinessException("Debe incluir al menos un producto con cantidad.");
         }
-        return collectDispatchStockLines(normalized, true, ProductInventoryService.DispatchSource.RETURNS_ONLY);
+        return collectDispatchStockLines(normalized, true, ProductInventoryService.DispatchSource.RETURNS_FIRST);
     }
 
     /**
@@ -1032,7 +1070,17 @@ public class ProductDistributionService {
         if (normalized.isEmpty()) {
             throw new BusinessException("Debe incluir al menos un producto con cantidad.");
         }
-        return collectDispatchStockLines(normalized, false, ProductInventoryService.DispatchSource.RETURNS_ONLY);
+        List<DispatchStockShortageResponse> lines =
+                collectDispatchStockLines(normalized, false, ProductInventoryService.DispatchSource.RETURNS_FIRST);
+        for (DispatchStockShortageResponse line : lines) {
+            line.setReturnsAvailable(productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
+                    line.getProductId(), line.getColorId(), line.getSize(),
+                    ProductInventoryService.DispatchSource.RETURNS_ONLY));
+            line.setPtAvailable(productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
+                    line.getProductId(), line.getColorId(), line.getSize(),
+                    ProductInventoryService.DispatchSource.PT_ONLY));
+        }
+        return lines;
     }
 
     private List<DispatchStockShortageResponse> collectDispatchStockLines(
@@ -1881,6 +1929,11 @@ public class ProductDistributionService {
         if (sentStatus && dispatchInventory) {
             editPlan = resolveDispatchPlan(shipment);
             // Si al enviarlo se autorizó tomar el faltante de la otra cubeta, la edición conserva esa autorización.
+            // Un ENVI interno autorizado con salida de Bodega PT conserva las dos bodegas al editarlo.
+            if (isStandaloneInternalEnviShipment(shipment) && productInventoryService.hasOutflowFromWarehouses(
+                    "SHIPMENT", shipment.getId(), ProductInventoryService.DispatchSource.PT_ONLY)) {
+                editPlan = DispatchPlan.single(ProductInventoryService.DispatchSource.RETURNS_FIRST);
+            }
             // Se lee del kardex: una salida de PT de un cincho no es un faltante autorizado.
             editUsesFallback = editPlan.hasFallback() && shipmentUsedAuthorizedFallback(shipment);
             DispatchPlan planForEdit = editPlan;
@@ -2166,12 +2219,13 @@ public class ProductDistributionService {
 
     /**
      * Plan de una línea. Los cinchos se guardan en Bodega PT: salen solo de PT, sin tomar faltante de Devoluciones,
-     * sea cual sea el envío. Excepción: el cincho de una OPL (venta en línea) sale de Devoluciones (y de PT solo si
-     * Devoluciones no alcanza). El resto de líneas sigue el plan del envío.
+     * sea cual sea el envío. Excepciones: el cincho de una OPL (venta en línea) sale de Devoluciones (y de PT solo si
+     * Devoluciones no alcanza), y el de un ENVI interno sigue el plan del envío (solo Devoluciones): la pieza de una
+     * OPI entra ahí y la solicitud se autoriza contra esa bodega. El resto de líneas sigue el plan del envío.
      */
     DispatchPlan resolveLineDispatchPlan(ProductShipmentEntity shipment, DispatchPlan shipmentPlan, Long productId) {
         ProductEntity product = productId == null ? null : productRepository.findById(productId).orElse(null);
-        if (!isCinchoDispatchProduct(product)) {
+        if (!isCinchoDispatchProduct(product) || isStandaloneInternalEnviShipment(shipment)) {
             return shipmentPlan;
         }
         boolean onlineSale = isOnlineSaleOrderShipment(shipment);
@@ -2663,6 +2717,14 @@ public class ProductDistributionService {
      */
     public ProductShipmentResponse sendShipment(Long shipmentId, boolean takeShortageFromFallback)
             throws ResourceNotFoundException, BusinessException {
+        return sendShipment(shipmentId, takeShortageFromFallback, Map.of());
+    }
+
+    private ProductShipmentResponse sendShipment(
+            Long shipmentId,
+            boolean takeShortageFromFallback,
+            Map<String, ProductInventoryService.DispatchSource> chosenSources)
+            throws ResourceNotFoundException, BusinessException {
         ProductShipmentEntity shipment = shipmentRepository.findByIdForUpdate(shipmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Shipment", shipmentId));
         String currentStatus = shipment.getStatus() == null ? "" : shipment.getStatus().trim().toUpperCase();
@@ -2767,14 +2829,19 @@ public class ProductDistributionService {
                 }
 
                 // Los cinchos tienen su propia bodega (ver resolveLineDispatchPlan).
-                DispatchPlan linePlan = resolveLineDispatchPlan(shipment, plan, detail.getProductId());
+                ProductInventoryService.DispatchSource chosen =
+                        chosenSources.get(stockSourceKey(detail.getProductId(), detail.getColorId(), sizeLabel));
+                DispatchPlan linePlan = chosen != null
+                        ? DispatchPlan.single(chosen)
+                        : resolveLineDispatchPlan(shipment, plan, detail.getProductId());
                 ProductInventoryService.DispatchSource lineSource = linePlan == plan
                         ? sendSource
                         : (useFallback && linePlan.hasFallback() ? linePlan.withFallback() : linePlan.primary());
                 BigDecimal availableTotal = productInventoryService.getAvailableQuantityAcrossDispatchWarehouses(
                         detail.getProductId(), detail.getColorId(), sizeLabel, lineSource);
                 if (availableTotal.compareTo(stillNeeded) < 0) {
-                    if (linePlan != plan && lineSource == ProductInventoryService.DispatchSource.PT_ONLY) {
+                    if (chosen == null && linePlan != plan
+                            && lineSource == ProductInventoryService.DispatchSource.PT_ONLY) {
                         ptOnlyCinchoShort = true;
                     }
                     ProductEntity product = productRepository.findById(detail.getProductId()).orElse(null);
@@ -2811,9 +2878,14 @@ public class ProductDistributionService {
             if (isPackagingProduct(detail.getProductId())) continue;
             if (skipsWarehouseForLine(shipment, detail.getProductId())) continue;
 
+            ProductInventoryService.DispatchSource chosen = chosenSources.get(
+                    stockSourceKey(detail.getProductId(), detail.getColorId(), detail.getSizeLabel()));
             dispatchShipmentLine(shipment, detail, qtyToSend,
                     "Salida a envio en transito hacia " + destinationLabel,
-                    resolveLineDispatchPlan(shipment, plan, detail.getProductId()), useFallback, authorizedBy);
+                    chosen != null
+                            ? DispatchPlan.single(chosen)
+                            : resolveLineDispatchPlan(shipment, plan, detail.getProductId()),
+                    useFallback, authorizedBy);
             creditShipmentLineInTransit(shipment, detail, qtyToSend, destinationLabel);
         }
 
