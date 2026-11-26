@@ -7,6 +7,7 @@ import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentD
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentObservationsRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentShippingCostRequest;
+import com.fossiles.fossilescorebackend.application.dto.request.ShipmentSendRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneKioskShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.WarehouseItemReceiptRequest;
@@ -221,14 +222,17 @@ public class ProductDistributionController {
 
     /**
      * takeShortageFromFallback=true: el usuario autorizó tomar el faltante de la otra cubeta (envío directo: de
-     * Bodega PT; envío de distribución: de Devoluciones). Sin él, el envío sale solo de su bodega principal.
+     * Bodega PT; envío de distribución: de Devoluciones). El cuerpo opcional indica las líneas que salen
+     * completas de esa otra cubeta. Sin ninguno de los dos, el envío sale solo de su bodega principal.
      */
     @PutMapping("/shipments/{id}/send")
     public ResponseEntity<ProductShipmentResponse> sendShipment(
             @PathVariable Long id,
-            @RequestParam(required = false, defaultValue = "false") boolean takeShortageFromFallback)
+            @RequestParam(required = false, defaultValue = "false") boolean takeShortageFromFallback,
+            @RequestBody(required = false) ShipmentSendRequest request)
             throws ResourceNotFoundException, BusinessException {
-        return ResponseEntity.ok(distributionService.sendShipment(id, takeShortageFromFallback));
+        return ResponseEntity.ok(distributionService.sendShipment(id, takeShortageFromFallback,
+                request == null ? null : request.getFromFallbackDetailIds()));
     }
 
     /** Desglose Devoluciones / Bodega PT por línea antes de enviar, y si el faltante se puede tomar de la otra cubeta. */
