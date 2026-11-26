@@ -74,5 +74,8 @@ public class InternalShipmentRequestResponse {
         private BigDecimal availableQuantity;
         /** Unidades que faltan para cubrir esta línea; 0 si alcanza. */
         private BigDecimal shortageQuantity;
+        /** Stock por bodega, para elegir de dónde sale al autorizar. */
+        private BigDecimal returnsAvailable;
+        private BigDecimal ptAvailable;
     }
 }

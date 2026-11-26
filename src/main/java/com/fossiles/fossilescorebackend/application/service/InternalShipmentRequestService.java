@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.application.service;
 
+import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentApproveRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.InternalShipmentRequestCreateRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.ProductShipmentRequest;
 import com.fossiles.fossilescorebackend.application.dto.request.StandaloneInternalShipmentRequest;
@@ -121,6 +122,12 @@ public class InternalShipmentRequestService {
     @Transactional(rollbackFor = Exception.class)
     public InternalShipmentRequestResponse approve(Long id)
             throws BusinessException, ResourceNotFoundException {
+        return approve(id, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public InternalShipmentRequestResponse approve(Long id, InternalShipmentApproveRequest request)
+            throws BusinessException, ResourceNotFoundException {
         accessGuard.assertCanApproveOrReject();
         InternalShipmentRequestEntity entity = requestRepository.findByIdWithLines(id)
                 .orElseThrow(() -> new ResourceNotFoundException("InternalShipmentRequest", id));
@@ -137,8 +144,8 @@ public class InternalShipmentRequestService {
             employeeChargeService.assertChargeable(entity);
         }
 
-        // El envío solo se autoriza cuando hay stock en Devoluciones. Si falta, Contabilidad
-        // primero autoriza la producción del faltante (authorizeProduction) y espera el ingreso a Devoluciones.
+        // El envío solo se autoriza cuando hay stock (Devoluciones + Bodega PT). Si falta, Contabilidad
+        // primero autoriza la producción del faltante (authorizeProduction) y espera su ingreso.
         List<DispatchStockShortageResponse> shortages =
                 productDistributionService.computeDispatchStockShortages(products);
         ProductionOrderEntity activeOpi = findActiveLinkedOpi(entity);
@@ -146,7 +153,7 @@ public class InternalShipmentRequestService {
             String detail = formatShortageSummary(shortages);
             if (activeOpi == null) {
                 throw new BusinessException(
-                        "No hay stock suficiente en Devoluciones. "
+                        "No hay stock suficiente en Devoluciones ni en Bodega PT. "
                                 + "Autorice primero la producción del faltante.\n" + detail);
             }
             String opiRef = activeOpi.getCode() != null ? activeOpi.getCode() : "OPI #" + activeOpi.getId();
@@ -155,7 +162,7 @@ public class InternalShipmentRequestService {
                         "Debe autorizar la producción de " + opiRef + " antes de autorizar el envío.\n" + detail);
             }
             throw new BusinessException(
-                    "Aún no hay stock suficiente en Devoluciones. Complete la orden " + opiRef
+                    "Aún no hay stock suficiente en Devoluciones ni en Bodega PT. Complete la orden " + opiRef
                             + " e ingrese el producto terminado antes de autorizar el envío.\n" + detail);
         }
         if (activeOpi != null && "DRAFT".equalsIgnoreCase(safe(activeOpi.getStatus()))) {
@@ -176,7 +183,8 @@ public class InternalShipmentRequestService {
                     entity.getRequestType(),
                     entity.getDiscountPercent(),
                     entity.getDiscountAmount(),
-                    products);
+                    products,
+                    chosenSources(request));
         } catch (BusinessException | ResourceNotFoundException ex) {
             // El despacho ya marcó la transacción para revertir; marcarla aquí devuelve este mensaje en lugar de
             // UnexpectedRollbackException.
@@ -702,6 +710,29 @@ public class InternalShipmentRequestService {
                 .collect(Collectors.joining("\n"));
     }
 
+    /** Bodega elegida por línea, con la clave que usa el despacho. */
+    private Map<String, ProductInventoryService.DispatchSource> chosenSources(InternalShipmentApproveRequest request)
+            throws BusinessException {
+        Map<String, ProductInventoryService.DispatchSource> chosen = new LinkedHashMap<>();
+        if (request == null || request.getLines() == null) {
+            return chosen;
+        }
+        for (InternalShipmentApproveRequest.LineSource line : request.getLines()) {
+            if (line == null || line.getProductId() == null || trimToNull(line.getSource()) == null) {
+                continue;
+            }
+            ProductInventoryService.DispatchSource source = switch (line.getSource().trim().toUpperCase(Locale.ROOT)) {
+                case "DEVOLUCIONES" -> ProductInventoryService.DispatchSource.RETURNS_ONLY;
+                case "BODEGA_PT" -> ProductInventoryService.DispatchSource.PT_ONLY;
+                case "AMBAS" -> ProductInventoryService.DispatchSource.RETURNS_FIRST;
+                default -> throw new BusinessException("Bodega de salida no válida: " + line.getSource());
+            };
+            chosen.put(productDistributionService.stockSourceKey(
+                    line.getProductId(), line.getColorId(), line.getSize()), source);
+        }
+        return chosen;
+    }
+
     private static String stockKey(Long productId, Long colorId, String size) {
         return productId + "|" + colorId + "|" + (size == null ? "" : size.trim().toUpperCase(Locale.ROOT));
     }
@@ -943,6 +974,8 @@ public class InternalShipmentRequestService {
                 .employeeDiscountPercent(product != null ? EmployeeChargeService.employeeDiscountPercent(product) : null)
                 .availableQuantity(stockRow != null ? stockRow.getAvailableQuantity() : null)
                 .shortageQuantity(stockRow != null ? stockRow.getShortageQuantity() : null)
+                .returnsAvailable(stockRow != null ? stockRow.getReturnsAvailable() : null)
+                .ptAvailable(stockRow != null ? stockRow.getPtAvailable() : null)
                 .build();
     }
 
