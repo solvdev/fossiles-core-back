@@ -1259,11 +1259,36 @@ public class ProductDistributionService {
 
     record ResolvedInternalDiscount(BigDecimal discountPercent, BigDecimal discountAmount, boolean legacyHalfPrice) {}
 
+    /** Envío directo a un cliente de Luis Felipe, desde stock y sin OP (ver {@link DirectSaleShipmentService}). */
+    static boolean isDirectSaleShipment(ProductShipmentEntity shipment) {
+        return shipment != null && shipment.getDirectSaleCustomerId() != null && shipment.getProductionOrderId() == null;
+    }
+
+    /**
+     * Plan del envío directo LF: sale de la bodega que se eligió al crearlo; el faltante, de la otra solo si se
+     * autoriza al enviar (o se elige por línea), como en el resto de envíos.
+     */
+    static DispatchPlan directSalePlan(ProductShipmentEntity shipment) {
+        if (DirectSaleShipmentService.SOURCE_RETURNS.equals(shipment.getDirectSaleSource())) {
+            return new DispatchPlan(
+                    ProductInventoryService.DispatchSource.RETURNS_ONLY,
+                    ProductInventoryService.DispatchSource.RETURNS_FIRST,
+                    ProductInventoryService.DispatchSource.PT_ONLY,
+                    RETURNS_WAREHOUSE_LABEL, PT_WAREHOUSE_LABEL, false, false);
+        }
+        return new DispatchPlan(
+                ProductInventoryService.DispatchSource.PT_ONLY,
+                ProductInventoryService.DispatchSource.PT_FIRST,
+                ProductInventoryService.DispatchSource.RETURNS_ONLY,
+                PT_WAREHOUSE_LABEL, RETURNS_WAREHOUSE_LABEL, false, false);
+    }
+
     static boolean isStandaloneInternalEnviShipment(ProductShipmentEntity shipment) {
         if (shipment == null) {
             return false;
         }
-        if (shipment.getProductionOrderId() != null || shipment.getDistributionId() != null) {
+        if (shipment.getProductionOrderId() != null || shipment.getDistributionId() != null
+                || isDirectSaleShipment(shipment)) {
             return false;
         }
         String shipmentNumber = shipment.getShipmentNumber() == null ? "" : shipment.getShipmentNumber().trim();
@@ -2046,7 +2071,7 @@ public class ProductDistributionService {
         if (opiDocumentOnly) {
             return false;
         }
-        if (shipmentLocationId != null) {
+        if (shipmentLocationId != null || isDirectSaleShipment(shipment)) {
             return true;
         }
         if (isVendorReserveShipment(shipment, linkedPoOpt)) {
@@ -2182,6 +2207,9 @@ public class ProductDistributionService {
                 : distributionRepository.findById(shipment.getDistributionId()).orElse(null);
         if (isDirectKioskShipment(shipment, distribution)) {
             return DispatchPlan.directKioskPlan();
+        }
+        if (isDirectSaleShipment(shipment)) {
+            return directSalePlan(shipment);
         }
         if (shipment.getDistributionId() != null) {
             return DispatchPlan.distributionPlan();
@@ -2827,7 +2855,7 @@ public class ProductDistributionService {
                 .map(po -> isCinchoOrderType(po.getOrderType())
                         && !extractDestinationFromNotes(shipment.getNotes()).isBlank())
                 .orElse(false);
-        boolean ptWarehouseOut = opcPtOutOnly || standaloneInternalEnvi;
+        boolean ptWarehouseOut = opcPtOutOnly || standaloneInternalEnvi || isDirectSaleShipment(shipment);
 
         if (opiDocumentOnly) {
             shipment.setStatus("SENT");
@@ -2950,7 +2978,9 @@ public class ProductDistributionService {
             DispatchPlan linePlan = chosen != null
                     ? DispatchPlan.single(chosen)
                     : resolveLineDispatchPlan(shipment, plan, detail.getProductId());
-            String description = "Salida a envio en transito hacia " + destinationLabel;
+            String description = isDirectSaleShipment(shipment)
+                    ? "Envío directo LF " + shipment.getShipmentNumber() + " a " + destinationLabel
+                    : "Salida a envio en transito hacia " + destinationLabel;
             if (wholeFallbackDetailIds.contains(detail.getId()) && linePlan.hasFallback()) {
                 linePlan = wholeFallbackPlan(linePlan);
                 description += wholeFallbackNote(linePlan, authorizedBy);

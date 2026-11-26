@@ -77,6 +77,13 @@ public class KioskLiquidationController {
         return ResponseEntity.ok(liquidationService.getYear(year));
     }
 
+    /** Visitas del calendario de un mes con las columnas del Excel de contabilidad. */
+    @GetMapping("/visits/sheet")
+    public ResponseEntity<LiquidationYearResponse> visitSheet(@RequestParam(required = false) String month)
+            throws BusinessException {
+        return ResponseEntity.ok(liquidationService.getVisitSheet(month));
+    }
+
     @PostMapping("/liquidations/generate")
     public ResponseEntity<LiquidationGenerateResponse> generate(@RequestBody GenerateWeekRequest request)
             throws BusinessException {
