@@ -67,6 +67,12 @@ public final class KioskLiquidationDtos {
     public record LiquidationYearResponse(int year, List<LiquidationGroup> groups, List<NonWorkingDay> nonWorkingDays) {
     }
 
+    /** Un conteo cerrado, con las columnas del «Reporte de inventarios kioscos». */
+    public record HistoryRow(Long supervisorUserId, String supervisorName, Long locationId, String locationName,
+                             LocalDate periodFrom, LocalDate periodTo, String accountant, LocalDate deliveryDate,
+                             LocalDate liquidationDate, String notes, Integer areasToFix, boolean twiceAMonth) {
+    }
+
     public record LiquidationGenerateResponse(LiquidationWeekResponse week, List<String> warnings) {
     }
 }

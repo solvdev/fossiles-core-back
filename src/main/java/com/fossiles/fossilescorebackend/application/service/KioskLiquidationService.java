@@ -2,6 +2,7 @@ package com.fossiles.fossilescorebackend.application.service;
 
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.CalendarResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.VisitResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.HistoryRow;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationGenerateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationGroup;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.LiquidationRow;
@@ -245,6 +246,59 @@ public class KioskLiquidationService {
                         localDate(rs.getDate("corrections_due")), (Integer) rs.getObject("areas_to_fix"),
                         rs.getString("green_note"), null, null, null),
                 Date.valueOf(from), Date.valueOf(to), Date.valueOf(from), Date.valueOf(to));
+    }
+
+    // ───────────────────────── historial de conteos cerrados ─────────────────────────
+
+    /**
+     * Todos los conteos cerrados. Los del sistema son los de estado CERRADO; los anteriores salen de las liquidaciones
+     * cargadas del Excel que no tienen conteo en el sistema (si el sistema lo tiene, manda su estado).
+     */
+    @Transactional(readOnly = true)
+    public List<HistoryRow> getClosedHistory() throws BusinessException {
+        guard.assertCanView();
+        String near = " <= " + SAME_COUNT_TOLERANCE_DAYS + " ";
+        String sql = "SELECT t.*, l.name, u.first_name, u.last_name, u.username, "
+                + "COALESCE(cfg.visits_per_month, 1) AS per_month FROM ("
+                // Conteos cerrados del sistema, con su liquidación si la hay.
+                + "SELECT c.location_id, COALESCE(c.period_from, q.period_from) AS period_from, c.period_to, "
+                + "q.accountant, ru.first_name AS reviewer, cu.first_name AS closer, "
+                + "COALESCE(CAST(c.reviewed_at AS date), CAST(c.closed_at AS date), q.corrections_due) AS delivery, "
+                + "COALESCE(q.liquidation_date, CAST(c.closed_at AS date)) AS liquidation, "
+                + "COALESCE(NULLIF(btrim(c.notes), ''), q.green_note) AS notes, q.areas_to_fix, "
+                + "COALESCE(q.supervisor_user_id, (SELECT MIN(a.supervisor_user_id) FROM kiosk_supervisor_assignment a "
+                + "WHERE a.kiosk_location_id = c.location_id)) AS supervisor_id "
+                + "FROM kiosco_physical_count c "
+                + "LEFT JOIN LATERAL (SELECT x.* FROM kiosk_liquidation x WHERE x.location_id = c.location_id "
+                + "AND ABS(x.period_to - c.period_to)" + near
+                + "ORDER BY ABS(x.period_to - c.period_to), x.id DESC LIMIT 1) q ON TRUE "
+                + "LEFT JOIN users ru ON ru.id = c.reviewed_by LEFT JOIN users cu ON cu.id = c.closed_by "
+                + "WHERE c.status = 'CERRADO' "
+                + "UNION ALL "
+                // Historial anterior al sistema.
+                + "SELECT q.location_id, q.period_from, q.period_to, q.accountant, NULL, NULL, q.corrections_due, "
+                + "q.liquidation_date, q.green_note, q.areas_to_fix, q.supervisor_user_id "
+                + "FROM kiosk_liquidation q WHERE q.source = 'IMPORT' AND q.liquidation_date <= ? "
+                + "AND NOT EXISTS (SELECT 1 FROM kiosco_physical_count c WHERE c.location_id = q.location_id "
+                + "AND ABS(c.period_to - q.period_to)" + near + ")"
+                + ") t JOIN locations l ON l.id = t.location_id "
+                + "LEFT JOIN users u ON u.id = t.supervisor_id "
+                + "LEFT JOIN kiosk_count_visit_config cfg ON cfg.location_id = t.location_id "
+                + "ORDER BY t.period_to, l.name";
+        return jdbc.query(sql, (rs, i) -> {
+            String accountant = rs.getString("accountant");
+            if (accountant == null || accountant.isBlank()) {
+                accountant = rs.getString("reviewer") != null ? rs.getString("reviewer") : rs.getString("closer");
+            }
+            Long supervisorId = rs.getObject("supervisor_id") == null ? null : rs.getLong("supervisor_id");
+            String supervisor = supervisorId == null ? "Sin supervisora"
+                    : fullName(rs.getString("first_name"), rs.getString("last_name"), rs.getString("username"));
+            return new HistoryRow(supervisorId, supervisor, rs.getLong("location_id"),
+                    displayName(rs.getString("name")), localDate(rs.getDate("period_from")),
+                    rs.getDate("period_to").toLocalDate(), accountant, localDate(rs.getDate("delivery")),
+                    localDate(rs.getDate("liquidation")), rs.getString("notes"),
+                    (Integer) rs.getObject("areas_to_fix"), rs.getInt("per_month") > 1);
+        }, Date.valueOf(GuatemalaDateTime.today()));
     }
 
     // ───────────────────────── generar ─────────────────────────
