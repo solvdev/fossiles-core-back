@@ -41,6 +41,11 @@ public class KioskCountCalendarAccessGuard {
         return user.getId();
     }
 
+    /** Para «Tu calendario de la semana»: cada quien ve solo sus visitas, sin permisos de Contabilidad. */
+    public Long currentUserId() throws BusinessException {
+        return currentUser().getId();
+    }
+
     private UserEntity currentUser() throws BusinessException {
         Long userId = securityUtil.getCurrentUserId();
         UserEntity user = userId == null ? null : userRepository.findById(userId).orElse(null);
