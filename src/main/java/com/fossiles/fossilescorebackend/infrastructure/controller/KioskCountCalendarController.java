@@ -85,12 +85,12 @@ public class KioskCountCalendarController {
     public record ChangeMyDateRequest(@DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date, String reason) {
     }
 
-    /** «Tu calendario de la semana»: solo las visitas de quien está conectada. */
+    /** «Tu calendario de la semana»: las visitas propias; administración puede elegir la supervisora. */
     @GetMapping("/my-week")
     public ResponseEntity<MyWeekResponse> myWeek(
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate week)
-            throws BusinessException {
-        return ResponseEntity.ok(service.getMyWeek(week));
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate week,
+            @RequestParam(required = false) Long supervisorUserId) throws BusinessException {
+        return ResponseEntity.ok(service.getMyWeek(week, supervisorUserId));
     }
 
     @PostMapping("/my-week/visits/{id}/date")
