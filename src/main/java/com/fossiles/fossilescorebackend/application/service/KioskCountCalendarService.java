@@ -468,7 +468,7 @@ public class KioskCountCalendarService {
 
     /**
      * Las visitas aprobadas de la semana de quien está conectada. Administración (permiso del calendario) puede ver
-     * las de cualquier supervisora, sin cambiar fechas. Los demás usuarios no ven nada.
+     * las de cualquier supervisora. Los demás usuarios no ven nada.
      */
     @Transactional(readOnly = true)
     public MyWeekResponse getMyWeek(LocalDate anyDay, Long supervisorUserId) throws BusinessException {
@@ -502,8 +502,9 @@ public class KioskCountCalendarService {
     }
 
     /**
-     * La supervisora cambia la fecha en que llegó (o llegará) a una visita suya. Debe ser un día de la misma semana
-     * y llevar justificación; la fecha programada no se pierde.
+     * Cambia la fecha en que se llegó (o se llegará) a una visita: la supervisora en las suyas, y quien puede
+     * generar el calendario en cualquiera. Debe ser un día de la misma semana y llevar justificación; la fecha
+     * programada no se pierde.
      */
     @Transactional
     public MyWeekResponse changeMyVisitDate(Long visitId, LocalDate newDate, String reason) throws BusinessException {
@@ -515,9 +516,9 @@ public class KioskCountCalendarService {
         if (text.length() < 10) {
             throw new BusinessException("Escribe la justificación del cambio (al menos 10 caracteres).");
         }
-        List<ExistingVisit> found = jdbc.query(VISIT_SELECT + "AND v.id = ? AND v.supervisor_user_id = ? "
-                + "AND v.status <> 'DRAFT'", (rs, i) -> mapVisit(rs), visitId, userId);
-        if (found.isEmpty()) {
+        List<ExistingVisit> found = jdbc.query(VISIT_SELECT + "AND v.id = ? AND v.status <> 'DRAFT'",
+                (rs, i) -> mapVisit(rs), visitId);
+        if (found.isEmpty() || (found.get(0).supervisorId != userId && !canGenerate())) {
             throw new BusinessException("Esa visita no está en tu calendario.");
         }
         ExistingVisit visit = found.get(0);
@@ -538,7 +539,16 @@ public class KioskCountCalendarService {
         jdbc.update("INSERT INTO kiosk_count_visit_change (visit_id, previous_date, new_date, reason, changed_by) "
                         + "VALUES (?, ?, ?, ?, ?)", visitId, Date.valueOf(previous), Date.valueOf(newDate),
                 text.substring(0, Math.min(500, text.length())), userId);
-        return buildMyWeek(userId, weekStart, false, List.of());
+        return getMyWeek(weekStart, visit.supervisorId);
+    }
+
+    private boolean canGenerate() {
+        try {
+            guard.assertCanGenerate();
+            return true;
+        } catch (BusinessException e) {
+            return false;
+        }
     }
 
     private MyWeekResponse buildMyWeek(Long userId, LocalDate anyDay, boolean readOnly,
@@ -547,7 +557,7 @@ public class KioskCountCalendarService {
         LocalDate weekStart = KioskCountVisitPlanner.weekStart(anyDay == null ? today : anyDay);
         LocalDate weekEnd = weekStart.plusDays(6);
         if (!hasKiosks(userId)) {
-            return new MyWeekResponse(weekStart, weekEnd, today, false, List.of(), null, true, List.of());
+            return new MyWeekResponse(weekStart, weekEnd, today, false, List.of(), null, true, List.of(), false);
         }
         // Con las semanas vecinas, para no asignar el mismo conteo a dos visitas.
         List<ExistingVisit> nearby = loadVisits(weekStart.minusDays(14), weekEnd.plusDays(14), userId).stream()
@@ -597,7 +607,8 @@ public class KioskCountCalendarService {
                     own == null ? null : own.status() == null ? "CONTADO" : own.status()));
         }
         result.sort(Comparator.comparing((MyVisit m) -> m.actualDate() == null ? m.visitDate() : m.actualDate()));
-        return new MyWeekResponse(weekStart, weekEnd, today, true, result, userId, readOnly, supervisors);
+        return new MyWeekResponse(weekStart, weekEnd, today, true, result, userId, readOnly, supervisors,
+                !readOnly || canGenerate());
     }
 
     private record DateChange(LocalDate newDate, String reason) {

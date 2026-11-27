@@ -32,11 +32,12 @@ public final class KioskCountCalendarDtos {
 
     /**
      * {@code supervisor}: hay un calendario que mostrar (si no, no se muestra nada). Quien tiene permiso del
-     * calendario y no es supervisora ve el de la que elija ({@code supervisors}) con {@code readOnly}.
+     * calendario y no es supervisora ve el de la que elija ({@code supervisors}) con {@code readOnly} (vista de
+     * administración). {@code canChangeDate}: puede cambiar fechas (la supervisora las suyas; quien genera, cualquiera).
      */
     public record MyWeekResponse(LocalDate weekStart, LocalDate weekEnd, LocalDate today, boolean supervisor,
                                  List<MyVisit> visits, Long supervisorUserId, boolean readOnly,
-                                 List<SupervisorResponse> supervisors) {
+                                 List<SupervisorResponse> supervisors, boolean canChangeDate) {
     }
 
     public record KioskRuleResponse(Long locationId, String code, String name, Long supervisorUserId,
