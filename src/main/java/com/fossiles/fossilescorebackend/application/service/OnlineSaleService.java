@@ -707,6 +707,10 @@ public class OnlineSaleService {
         sale.setUpdatedBy(securityUtil.getCurrentUserId());
         saleRepository.save(sale);
 
+        // Lo que producción ya terminó y Bodega no había recibido (lista para despacho): entra a
+        // Devoluciones. Va después de ANULADA para que la recepción lo mande a Devoluciones y no a PT.
+        productionOrderWarehouseUnitService.receiveProducedUnitsToReturns(sale.getId());
+
         return toResponse(sale);
     }
 
