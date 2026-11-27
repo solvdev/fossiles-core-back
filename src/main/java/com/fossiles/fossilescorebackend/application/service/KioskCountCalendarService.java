@@ -466,11 +466,39 @@ public class KioskCountCalendarService {
 
     // ───────────────────────── tu calendario de la semana (supervisora) ─────────────────────────
 
-    /** Las visitas aprobadas de la semana de quien está conectada. Nadie más las ve por aquí. */
+    /**
+     * Las visitas aprobadas de la semana de quien está conectada. Administración (permiso del calendario) puede ver
+     * las de cualquier supervisora, sin cambiar fechas. Los demás usuarios no ven nada.
+     */
     @Transactional(readOnly = true)
-    public MyWeekResponse getMyWeek(LocalDate anyDay) throws BusinessException {
+    public MyWeekResponse getMyWeek(LocalDate anyDay, Long supervisorUserId) throws BusinessException {
         Long userId = guard.currentUserId();
-        return buildMyWeek(userId, anyDay);
+        if (hasKiosks(userId)) {
+            return buildMyWeek(userId, anyDay, false, List.of());
+        }
+        try {
+            guard.assertCanView();
+        } catch (BusinessException e) {
+            return buildMyWeek(userId, anyDay, false, List.of());
+        }
+        Map<Long, Kiosk> kiosks = loadAssignedKiosks();
+        Map<Long, String> names = loadSupervisorNames(kiosks.values());
+        List<SupervisorResponse> supervisors = names.entrySet().stream()
+                .map(e -> new SupervisorResponse(e.getKey(), e.getValue(),
+                        (int) kiosks.values().stream().filter(k -> k.supervisorId == e.getKey()).count()))
+                .sorted(Comparator.comparing(SupervisorResponse::name, String.CASE_INSENSITIVE_ORDER))
+                .toList();
+        if (supervisors.isEmpty()) {
+            return buildMyWeek(userId, anyDay, false, List.of());
+        }
+        Long target = names.containsKey(supervisorUserId) ? supervisorUserId : supervisors.get(0).userId();
+        return buildMyWeek(target, anyDay, true, supervisors);
+    }
+
+    private boolean hasKiosks(Long userId) {
+        Integer n = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM kiosk_supervisor_assignment WHERE supervisor_user_id = ?", Integer.class, userId);
+        return n != null && n > 0;
     }
 
     /**
@@ -510,17 +538,16 @@ public class KioskCountCalendarService {
         jdbc.update("INSERT INTO kiosk_count_visit_change (visit_id, previous_date, new_date, reason, changed_by) "
                         + "VALUES (?, ?, ?, ?, ?)", visitId, Date.valueOf(previous), Date.valueOf(newDate),
                 text.substring(0, Math.min(500, text.length())), userId);
-        return buildMyWeek(userId, weekStart);
+        return buildMyWeek(userId, weekStart, false, List.of());
     }
 
-    private MyWeekResponse buildMyWeek(Long userId, LocalDate anyDay) {
+    private MyWeekResponse buildMyWeek(Long userId, LocalDate anyDay, boolean readOnly,
+                                       List<SupervisorResponse> supervisors) {
         LocalDate today = GuatemalaDateTime.today();
         LocalDate weekStart = KioskCountVisitPlanner.weekStart(anyDay == null ? today : anyDay);
         LocalDate weekEnd = weekStart.plusDays(6);
-        Integer assigned = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM kiosk_supervisor_assignment WHERE supervisor_user_id = ?", Integer.class, userId);
-        if (assigned == null || assigned == 0) {
-            return new MyWeekResponse(weekStart, weekEnd, today, false, List.of());
+        if (!hasKiosks(userId)) {
+            return new MyWeekResponse(weekStart, weekEnd, today, false, List.of(), null, true, List.of());
         }
         // Con las semanas vecinas, para no asignar el mismo conteo a dos visitas.
         List<ExistingVisit> nearby = loadVisits(weekStart.minusDays(14), weekEnd.plusDays(14), userId).stream()
@@ -570,7 +597,7 @@ public class KioskCountCalendarService {
                     own == null ? null : own.status() == null ? "CONTADO" : own.status()));
         }
         result.sort(Comparator.comparing((MyVisit m) -> m.actualDate() == null ? m.visitDate() : m.actualDate()));
-        return new MyWeekResponse(weekStart, weekEnd, today, true, result);
+        return new MyWeekResponse(weekStart, weekEnd, today, true, result, userId, readOnly, supervisors);
     }
 
     private record DateChange(LocalDate newDate, String reason) {
