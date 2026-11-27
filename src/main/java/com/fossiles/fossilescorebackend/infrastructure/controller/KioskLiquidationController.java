@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.HistoryRow;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.ImportPreview;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.ImportResult;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskLiquidationDtos.ImportRow;
@@ -82,6 +83,12 @@ public class KioskLiquidationController {
     public ResponseEntity<LiquidationYearResponse> visitSheet(@RequestParam(required = false) String month)
             throws BusinessException {
         return ResponseEntity.ok(liquidationService.getVisitSheet(month));
+    }
+
+    /** Historial de conteos cerrados. */
+    @GetMapping("/history")
+    public ResponseEntity<List<HistoryRow>> history() throws BusinessException {
+        return ResponseEntity.ok(liquidationService.getClosedHistory());
     }
 
     @PostMapping("/liquidations/generate")

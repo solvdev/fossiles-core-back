@@ -17,7 +17,22 @@ public final class KioskCountCalendarDtos {
                                 String locationName, Long supervisorUserId, String supervisorName,
                                 String region, String regionLabel, String status, String kind, boolean manual,
                                 String note, int daySeq, int dayTotal, LocalDate lastCountDate, Integer gapDays,
-                                LocalDate countedOn, Long countId, String countStatus) {
+                                LocalDate countedOn, Long countId, String countStatus, LocalDate actualDate,
+                                String changeReason) {
+    }
+
+    /**
+     * Una visita en «Tu calendario de la semana». {@code actualDate}: fecha en que llegó (o llegará), si la cambió;
+     * {@code periodFrom}/{@code periodTo}: período del conteo que le toca.
+     */
+    public record MyVisit(Long id, LocalDate visitDate, LocalDate actualDate, String changeReason, Long locationId,
+                          String locationName, String regionLabel, String kind, int daySeq, int dayTotal,
+                          LocalDate periodFrom, LocalDate periodTo, Long countId, String countStatus) {
+    }
+
+    /** {@code supervisor}: el usuario tiene kioscos asignados; si no, no se le muestra nada. */
+    public record MyWeekResponse(LocalDate weekStart, LocalDate weekEnd, LocalDate today, boolean supervisor,
+                                 List<MyVisit> visits) {
     }
 
     public record KioskRuleResponse(Long locationId, String code, String name, Long supervisorUserId,
