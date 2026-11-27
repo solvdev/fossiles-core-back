@@ -117,6 +117,104 @@ public class ProductionOrderWarehouseUnitService {
         return moved;
     }
 
+    /** Tareas cuyo trabajo de producción ya terminó (la que espera a bodega también ya está hecha). */
+    private static final Set<String> PRODUCED_TASK_STATUSES =
+            Set.of("COMPLETED", ProductionTaskLifecycleService.STATUS_AWAITING_WAREHOUSE);
+
+    /**
+     * Al anular una venta en línea, lo que producción ya terminó pero Bodega nunca recibió (la OPL quedó
+     * lista para despacho sin pasar por recepción) entra a Devoluciones: se recibe la pieza como lo haría
+     * Bodega y, por estar la venta cerrada, cae en Devoluciones. Lo que no se produjo no se toca.
+     * Llamar con la venta ya en ANULADA. Idempotente: solo recibe piezas aún pendientes.
+     *
+     * @return piezas ingresadas a Devoluciones en esta llamada
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int receiveProducedUnitsToReturns(Long onlineSaleId) throws BusinessException, ResourceNotFoundException {
+        if (onlineSaleId == null || !isClosedOnlineSale(onlineSaleId)) {
+            return 0;
+        }
+        List<ProductionOrderItemEntity> saleItems = productionOrderItemRepository.findByOnlineSaleId(onlineSaleId);
+        if (saleItems == null || saleItems.isEmpty()) {
+            return 0;
+        }
+        LocationEntity bodega = getFinishedGoodsLocation();
+        Long userId = securityUtil.getCurrentUserId();
+        LocalDateTime now = LocalDateTime.now();
+        int receivedTotal = 0;
+
+        for (ProductionOrderItemEntity item : saleItems) {
+            if (item.getProductId() == null || item.getProductionOrderId() == null) {
+                continue;
+            }
+            int produced = producedQuantity(item);
+            if (produced <= 0) {
+                continue;
+            }
+            ProductionOrderEntity po = productionOrderRepository.findById(item.getProductionOrderId()).orElse(null);
+            if (po == null) {
+                continue;
+            }
+            // Solo las piezas de esta línea: crear las de toda la OP haría esperar a bodega a otras ventas.
+            reconcileUnitsForItem(po, item);
+            List<ProductionOrderWarehouseUnitEntity> units =
+                    unitRepository.findByProductionOrderItemIdOrderBySizeKeyAscUnitSeqAsc(item.getId());
+            long alreadyIn = units.stream()
+                    .filter(u -> u.getShippedAt() != null
+                            || STATUS_RECEIVED.equals(normalizeReceiptStatus(u.getReceiptStatus())))
+                    .count();
+            int toReceive = (int) Math.max(0, produced - alreadyIn);
+            if (toReceive == 0) {
+                continue;
+            }
+            ProductEntity product = productRepository.findById(item.getProductId()).orElse(null);
+            int receivedHere = 0;
+            for (ProductionOrderWarehouseUnitEntity unit : units) {
+                if (receivedHere >= toReceive) {
+                    break;
+                }
+                if (unit.getShippedAt() != null
+                        || !STATUS_PENDING.equals(normalizeReceiptStatus(unit.getReceiptStatus()))) {
+                    continue;
+                }
+                receiveSingleUnit(po, item, product, unit, bodega, userId, now);
+                receivedHere++;
+            }
+            if (receivedHere > 0) {
+                syncItemReceivedQty(item);
+                productionOrderItemRepository.save(item);
+                productionTaskLifecycleService.tryCompleteTasksAfterWarehouseReceipt(po.getId(), item.getId(), now);
+                receivedTotal += receivedHere;
+            }
+        }
+        return receivedTotal;
+    }
+
+    /**
+     * Piezas de la línea que producción ya terminó: suma de sus tareas hechas, sin contar reprocesos
+     * (rehacen una pieza ya contada) y sin pasar de lo pedido.
+     */
+    private int producedQuantity(ProductionOrderItemEntity item) {
+        List<Long> taskIds = taskItemRepository.findDistinctTaskIdsByProductionOrderItemIdIn(List.of(item.getId()));
+        if (taskIds == null || taskIds.isEmpty()) {
+            return 0;
+        }
+        Set<Long> doneTaskIds = taskRepository.findAllById(taskIds).stream()
+                .filter(t -> t.getStatus() != null && PRODUCED_TASK_STATUSES.contains(t.getStatus().trim()))
+                .filter(t -> t.getObservations() == null || !t.getObservations().startsWith("REPROCESO"))
+                .map(TaskEntity::getId)
+                .collect(Collectors.toSet());
+        if (doneTaskIds.isEmpty()) {
+            return 0;
+        }
+        int produced = taskItemRepository.findByTaskIdIn(new ArrayList<>(doneTaskIds)).stream()
+                .filter(ti -> Objects.equals(ti.getProductionOrderItemId(), item.getId()))
+                .mapToInt(ti -> ti.getQuantity() != null ? Math.max(ti.getQuantity(), 0) : 0)
+                .sum();
+        int ordered = item.getQuantity() != null ? Math.max(item.getQuantity(), 0) : 0;
+        return Math.min(produced, ordered);
+    }
+
     private static final int LF_RECEIPT_LIST_LIMIT = 60;
 
     /** La orden está completa cuando todas sus piezas ya se recibieron (las rechazadas no cuentan). */
