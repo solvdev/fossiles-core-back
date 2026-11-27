@@ -3,6 +3,8 @@ package com.fossiles.fossilescorebackend.application.service;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.CalendarResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.GenerateResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.KioskRuleResponse;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.MyVisit;
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.MyWeekResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.NextWeekResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.NonWorkingDayResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.SupervisorResponse;
@@ -462,6 +464,140 @@ public class KioskCountCalendarService {
         }
     }
 
+    // ───────────────────────── tu calendario de la semana (supervisora) ─────────────────────────
+
+    /** Las visitas aprobadas de la semana de quien está conectada. Nadie más las ve por aquí. */
+    @Transactional(readOnly = true)
+    public MyWeekResponse getMyWeek(LocalDate anyDay) throws BusinessException {
+        Long userId = guard.currentUserId();
+        return buildMyWeek(userId, anyDay);
+    }
+
+    /**
+     * La supervisora cambia la fecha en que llegó (o llegará) a una visita suya. Debe ser un día de la misma semana
+     * y llevar justificación; la fecha programada no se pierde.
+     */
+    @Transactional
+    public MyWeekResponse changeMyVisitDate(Long visitId, LocalDate newDate, String reason) throws BusinessException {
+        Long userId = guard.currentUserId();
+        if (newDate == null) {
+            throw new BusinessException("Indica la fecha.");
+        }
+        String text = reason == null ? "" : reason.trim().replaceAll("\\s+", " ");
+        if (text.length() < 10) {
+            throw new BusinessException("Escribe la justificación del cambio (al menos 10 caracteres).");
+        }
+        List<ExistingVisit> found = jdbc.query(VISIT_SELECT + "AND v.id = ? AND v.supervisor_user_id = ? "
+                + "AND v.status <> 'DRAFT'", (rs, i) -> mapVisit(rs), visitId, userId);
+        if (found.isEmpty()) {
+            throw new BusinessException("Esa visita no está en tu calendario.");
+        }
+        ExistingVisit visit = found.get(0);
+        LocalDate weekStart = KioskCountVisitPlanner.weekStart(visit.date);
+        if (newDate.isBefore(weekStart) || newDate.isAfter(weekStart.plusDays(6))) {
+            throw new BusinessException("La fecha debe ser de la misma semana: del " + weekStart + " al "
+                    + weekStart.plusDays(6) + ".");
+        }
+        assertDayAllowed(newDate, loadAssignedKiosks().get(visit.locationId));
+        if (!changeTableExists()) {
+            throw new BusinessException("Falta correr el script de cambios de fecha del calendario en la base de datos.");
+        }
+        DateChange current = loadDateChanges(List.of(visitId)).get(visitId);
+        LocalDate previous = current == null ? visit.date : current.newDate;
+        if (previous.equals(newDate)) {
+            throw new BusinessException("Esa es la fecha que ya tiene la visita.");
+        }
+        jdbc.update("INSERT INTO kiosk_count_visit_change (visit_id, previous_date, new_date, reason, changed_by) "
+                        + "VALUES (?, ?, ?, ?, ?)", visitId, Date.valueOf(previous), Date.valueOf(newDate),
+                text.substring(0, Math.min(500, text.length())), userId);
+        return buildMyWeek(userId, weekStart);
+    }
+
+    private MyWeekResponse buildMyWeek(Long userId, LocalDate anyDay) {
+        LocalDate today = GuatemalaDateTime.today();
+        LocalDate weekStart = KioskCountVisitPlanner.weekStart(anyDay == null ? today : anyDay);
+        LocalDate weekEnd = weekStart.plusDays(6);
+        Integer assigned = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM kiosk_supervisor_assignment WHERE supervisor_user_id = ?", Integer.class, userId);
+        if (assigned == null || assigned == 0) {
+            return new MyWeekResponse(weekStart, weekEnd, today, false, List.of());
+        }
+        // Con las semanas vecinas, para no asignar el mismo conteo a dos visitas.
+        List<ExistingVisit> nearby = loadVisits(weekStart.minusDays(14), weekEnd.plusDays(14), userId).stream()
+                .filter(v -> !"DRAFT".equals(v.status))
+                .toList();
+        Map<Long, List<KioskCountVisitMatcher.Count>> counts =
+                loadCountStates(weekStart.minusDays(120), weekEnd.plusDays(21));
+        Map<Long, KioskCountVisitMatcher.Count> matched = KioskCountVisitMatcher.match(nearby.stream()
+                .map(v -> new KioskCountVisitMatcher.Visit(v.id, v.locationId, v.date, "REVISIT".equals(v.kind), v.daySeq))
+                .toList(), counts);
+        List<ExistingVisit> mine = nearby.stream()
+                .filter(v -> !v.date.isBefore(weekStart) && !v.date.isAfter(weekEnd))
+                .toList();
+        Map<Long, DateChange> changes = loadDateChanges(mine.stream().map(ExistingVisit::id).toList());
+
+        List<MyVisit> result = new ArrayList<>();
+        for (ExistingVisit v : mine) {
+            KioskCountVisitMatcher.Count own = matched.get(v.id);
+            DateChange change = changes.get(v.id);
+            LocalDate arrival = change == null ? v.date : change.newDate;
+            LocalDate from = null;
+            LocalDate to = null;
+            if (own != null && own.id() != null) {
+                List<LocalDate[]> period = jdbc.query("SELECT period_from, period_to FROM kiosco_physical_count WHERE id = ?",
+                        (rs, i) -> new LocalDate[]{rs.getDate("period_from") == null ? null : rs.getDate("period_from").toLocalDate(),
+                                rs.getDate("period_to").toLocalDate()}, own.id());
+                if (!period.isEmpty()) {
+                    from = period.get(0)[0];
+                    to = period.get(0)[1];
+                }
+            } else {
+                // Sin conteo todavía: desde el día siguiente al anterior hasta el día antes de llegar.
+                LocalDate previous = counts.getOrDefault(v.locationId, List.of()).stream()
+                        .filter(c -> !c.draft() && c.periodTo().isBefore(arrival))
+                        .map(KioskCountVisitMatcher.Count::periodTo)
+                        .max(Comparator.naturalOrder()).orElse(null);
+                from = previous == null ? null : previous.plusDays(1);
+                to = arrival.minusDays(1);
+                if (from != null && to.isBefore(from)) {
+                    to = from;
+                }
+            }
+            result.add(new MyVisit(v.id, v.date, change == null ? null : change.newDate,
+                    change == null ? null : change.reason, v.locationId, v.name,
+                    KioskCountRegion.valueOf(v.region).label(), v.kind, v.daySeq, v.dayTotal, from, to,
+                    own == null ? null : own.id(),
+                    own == null ? null : own.status() == null ? "CONTADO" : own.status()));
+        }
+        result.sort(Comparator.comparing((MyVisit m) -> m.actualDate() == null ? m.visitDate() : m.actualDate()));
+        return new MyWeekResponse(weekStart, weekEnd, today, true, result);
+    }
+
+    private record DateChange(LocalDate newDate, String reason) {
+    }
+
+    /** Si la tabla aún no existe, el calendario sigue funcionando sin los cambios de fecha. */
+    private boolean changeTableExists() {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT to_regclass('kiosk_count_visit_change') IS NOT NULL", Boolean.class));
+    }
+
+    /** El último cambio de fecha de cada visita. */
+    private Map<Long, DateChange> loadDateChanges(List<Long> visitIds) {
+        Map<Long, DateChange> result = new HashMap<>();
+        if (visitIds.isEmpty() || !changeTableExists()) {
+            return result;
+        }
+        String marks = String.join(",", java.util.Collections.nCopies(visitIds.size(), "?"));
+        jdbc.query("SELECT DISTINCT ON (visit_id) visit_id, new_date, reason FROM kiosk_count_visit_change "
+                        + "WHERE visit_id IN (" + marks + ") ORDER BY visit_id, id DESC",
+                rs -> {
+                    result.put(rs.getLong("visit_id"),
+                            new DateChange(rs.getDate("new_date").toLocalDate(), rs.getString("reason")));
+                }, visitIds.toArray());
+        return result;
+    }
+
     // ───────────────────────── días no hábiles ─────────────────────────
 
     @Transactional
@@ -517,6 +653,7 @@ public class KioskCountCalendarService {
                 .filter(v -> !"DRAFT".equals(v.status))
                 .map(v -> new KioskCountVisitMatcher.Visit(v.id, v.locationId, v.date, "REVISIT".equals(v.kind), v.daySeq))
                 .toList(), counts);
+        Map<Long, DateChange> changes = loadDateChanges(nearby.stream().map(ExistingVisit::id).toList());
         List<VisitResponse> visits = new ArrayList<>();
         for (ExistingVisit v : nearby) {
             if (v.date.isBefore(rangeFrom) || v.date.isAfter(rangeTo)) {
@@ -537,7 +674,9 @@ public class KioskCountCalendarService {
             visits.add(new VisitResponse(v.id, v.date, v.locationId, v.code, v.name, v.supervisorId,
                     supervisorNames.getOrDefault(v.supervisorId, ""), v.region,
                     KioskCountRegion.valueOf(v.region).label(), v.status, v.kind, v.manual, v.note, v.daySeq,
-                    v.dayTotal, last, gap, countedOn, own == null ? null : own.id(), countStatus));
+                    v.dayTotal, last, gap, countedOn, own == null ? null : own.id(), countStatus,
+                    changes.containsKey(v.id) ? changes.get(v.id).newDate : null,
+                    changes.containsKey(v.id) ? changes.get(v.id).reason : null));
         }
 
         Map<LocalDate, String> blocked = blockedReasons(rangeFrom, rangeTo);

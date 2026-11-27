@@ -1,5 +1,6 @@
 package com.fossiles.fossilescorebackend.infrastructure.controller;
 
+import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.MyWeekResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.CalendarResponse;
 import com.fossiles.fossilescorebackend.application.dto.response.KioskCountCalendarDtos.GenerateResponse;
 import com.fossiles.fossilescorebackend.application.exception.BusinessException;
@@ -79,6 +80,23 @@ public class KioskCountCalendarController {
             throws BusinessException {
         return ResponseEntity.ok(service.updateVisit(id, request.visitDate(), request.status(), request.note(),
                 request.locationId(), request.month()));
+    }
+
+    public record ChangeMyDateRequest(@DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date, String reason) {
+    }
+
+    /** «Tu calendario de la semana»: solo las visitas de quien está conectada. */
+    @GetMapping("/my-week")
+    public ResponseEntity<MyWeekResponse> myWeek(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate week)
+            throws BusinessException {
+        return ResponseEntity.ok(service.getMyWeek(week));
+    }
+
+    @PostMapping("/my-week/visits/{id}/date")
+    public ResponseEntity<MyWeekResponse> changeMyDate(@PathVariable Long id, @RequestBody ChangeMyDateRequest request)
+            throws BusinessException {
+        return ResponseEntity.ok(service.changeMyVisitDate(id, request.date(), request.reason()));
     }
 
     @PostMapping("/blocked-days")

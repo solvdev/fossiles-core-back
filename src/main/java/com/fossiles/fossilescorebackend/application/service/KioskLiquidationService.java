@@ -182,7 +182,8 @@ public class KioskLiquidationService {
                     : count == null ? null : count.correctionsDue();
             byWho.computeIfAbsent(v.supervisorUserId(), id -> new ArrayList<>()).add(new LiquidationRow(v.id(),
                     v.locationId(), v.locationName(), v.supervisorUserId(), v.supervisorName(), periodFrom,
-                    periodTo, liq == null ? null : liq.accountant(), corrections, v.visitDate(), unit.size(),
+                    periodTo, liq == null ? null : liq.accountant(), corrections,
+                    v.actualDate() == null ? v.visitDate() : v.actualDate(), unit.size(),
                     liq == null ? null : liq.areasToFix(), liq == null ? null : liq.greenNote(), "PENDING", v.note(),
                     v.kind(), List.of(), null, null, count == null ? null : count.reviewedBy(), null,
                     count == null ? null : count.closedBy(), null, null, count == null ? null : count.notes()));
