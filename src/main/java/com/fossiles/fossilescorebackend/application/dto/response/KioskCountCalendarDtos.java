@@ -30,9 +30,13 @@ public final class KioskCountCalendarDtos {
                           LocalDate periodFrom, LocalDate periodTo, Long countId, String countStatus) {
     }
 
-    /** {@code supervisor}: el usuario tiene kioscos asignados; si no, no se le muestra nada. */
+    /**
+     * {@code supervisor}: hay un calendario que mostrar (si no, no se muestra nada). Quien tiene permiso del
+     * calendario y no es supervisora ve el de la que elija ({@code supervisors}) con {@code readOnly}.
+     */
     public record MyWeekResponse(LocalDate weekStart, LocalDate weekEnd, LocalDate today, boolean supervisor,
-                                 List<MyVisit> visits) {
+                                 List<MyVisit> visits, Long supervisorUserId, boolean readOnly,
+                                 List<SupervisorResponse> supervisors) {
     }
 
     public record KioskRuleResponse(Long locationId, String code, String name, Long supervisorUserId,
